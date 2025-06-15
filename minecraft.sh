@@ -19,6 +19,7 @@ set +e  # Allow script to continue on errors for robustness
 # 6. Logs out of the nested session when done.
 #
 # NOTE: This script is robust and heavily commented for clarity and future maintainers!
+# The main script file should be named minecraftSplitscreen.sh for clarity and version-agnostic usage.
 
 # Set a temporary directory for intermediate files (used for wrappers, etc)
 export target=/tmp
@@ -215,7 +216,7 @@ getControllerCount() {
 setSplitscreenModeForPlayer() {
     local player=$1
     local numberOfControllers=$2
-    local config_path="$HOME/.local/share/PollyMC/instances/1.21.5-${player}/.minecraft/config/splitscreen.properties"
+    local config_path="$HOME/.local/share/PollyMC/instances/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
     mkdir -p "$(dirname $config_path)"
     local mode="FULLSCREEN"
     # Decide the splitscreen mode for this player based on total controllers
@@ -254,7 +255,7 @@ launchGames() {
     numberOfControllers=$(getControllerCount) # Detect how many players
     for player in $(seq 1 $numberOfControllers); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "1.21.5-$player" "P$player" # Launch Minecraft instance for this player
+        launchGame "latestUpdate-$player" "P$player" # Launch Minecraft instance for this player
     done
     wait # Wait for all Minecraft instances to exit
     restorePanels # Bring back KDE panels
@@ -318,7 +319,7 @@ else
     numberOfControllers=$(getControllerCount)
     for player in $(seq 1 $numberOfControllers); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "1.21.5-$player" "P$player"
+        launchGame "latestUpdate-$player" "P$player"
     done
     wait
 fi
