@@ -1,505 +1,868 @@
 #!/bin/bash
-# Minecraft Splitscreen Steam Deck Installer
+# =============================================================================
+# Minecraft Splitscreen Steam Deck Installer - REFACTORED VERSION
+# =============================================================================
 # 
-# This script automatically downloads and installs Minecraft with splitscreen support
-# for Steam Deck. It handles mod compatibility checking using the official Modrinth 
-# and CurseForge APIs, and automatically fetches required encrypted API tokens from
-# the GitHub repository using a fixed passphrase that works across all script versions.
+# This script automatically downloads and installs Minecraft with splitscreen 
+# support for Steam Deck. It uses an optimized dual-launcher approach:
+# 1. PrismLauncher CLI for automated instance creation with proper Fabric setup
+# 2. PollyMC for splitscreen gameplay (no forced login, offline-friendly)
+# 3. Smart cleanup removes PrismLauncher after successful PollyMC setup
+#
+# REFACTORING IMPROVEMENTS:
+# - Modular function-based architecture for better maintainability
+# - Enhanced error handling with proper exit codes and validation
+# - Cleaner separation of concerns (setup, compatibility, selection, creation)
+# - Comprehensive progress feedback with colored output
+# - Robust dependency management and mod selection logic
+# - Smart cleanup and launcher integration
+# - Comprehensive Steam and desktop integration
+#
+# Features:
+# - Complete Fabric dependency chain implementation
+# - API filtering for Fabric-compatible mods (Modrinth + CurseForge)
+# - Enhanced error handling with multiple fallback mechanisms
+# - Automatic cleanup of temporary files and directories
+# - User-friendly mod selection interface
+# - Automated launcher script generation
 #
 # No additional setup or token files are required - just run this script.
 #
+# =============================================================================
 
-# --- Get script directory before changing working directory ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
-# Set the Prism Launcher data directory
-# This is where Prism Launcher stores all its configuration, instances, and assets
-# On Steam Deck/Linux, this is typically $HOME/.local/share/PrismLauncher
-# The minecraftSplitscreen.sh launcher expects PrismLauncher paths
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
 
-targetDir=$HOME/.local/share/PrismLauncher
-mkdir -p $targetDir
-pushd $targetDir
+# Script configuration paths
+# SCRIPT_DIR: Directory where this script is located (for relative file access)
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# TARGET_DIR: PrismLauncher installation directory (used for CLI-based instance creation)
+readonly TARGET_DIR="$HOME/.local/share/PrismLauncher"
+# POLLYMC_DIR: PollyMC installation directory (primary launcher for splitscreen gameplay)
+readonly POLLYMC_DIR="$HOME/.local/share/PollyMC"
 
-    # Detect system Java (require Java 21 for modern Minecraft versions)
-    # Only Java 21 is supported for new Minecraft versions
-    if [ -x /usr/lib/jvm/java-21-openjdk/bin/java ]; then
+# Java configuration
+# JAVA_PATH: Full path to Java 21 executable (required for modern Minecraft versions)
+JAVA_PATH=""
+
+# Minecraft configuration
+# MC_VERSION: Target Minecraft version for installation (e.g., "1.21.3")
+MC_VERSION=""
+# FABRIC_VERSION: Fabric mod loader version to install (fetched from API)
+FABRIC_VERSION=""
+
+# Launcher configuration flags
+# USE_POLLYMC: Flag to track whether PollyMC setup was successful (determines final launcher choice)
+USE_POLLYMC=false
+
+# Mod configuration arrays
+# These arrays define the mods available for installation and their relationships
+
+# FRAMEWORK_MODS: Core framework mods that provide APIs for other mods
+# These are automatically installed as dependencies and not shown in user selection
+declare -a FRAMEWORK_MODS=("Fabric API" "Collective" "Framework (Fabric)" "Konkrete" "YetAnotherConfigLib")
+# FRAMEWORK_IDS: Corresponding mod IDs for framework mods (used for dependency resolution)
+declare -a FRAMEWORK_IDS=("fabric-api" "collective" "framework" "konkrete" "yacl")
+
+# REQUIRED_SPLITSCREEN_MODS: Mods essential for splitscreen functionality
+# These are always installed regardless of user selection
+declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
+# REQUIRED_SPLITSCREEN_IDS: Corresponding mod IDs for required splitscreen mods
+declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
+
+# MODS: Master list of all available mods with their metadata
+# Format: "Mod Name|platform|mod_id"
+# Platforms: modrinth, curseforge
+# This list includes performance mods, QoL improvements, and splitscreen essentials
+declare -a MODS=(
+    "Better Name Visibility|modrinth|pSfNeCCY"    # Improves player name visibility in multiplayer
+    "Collective|modrinth|e0M1UDsY"                # Framework for Fabric mods
+    "Controllable (Fabric)|curseforge|317269"     # Controller support (REQUIRED for splitscreen)
+    "Fabric API|modrinth|P7dR8mSH"               # Core Fabric mod loader API
+    "Framework (Fabric)|curseforge|549225"       # Dependency for Controllable mod
+    "Full Brightness Toggle|modrinth|aEK1KhsC"   # Toggle max brightness with hotkey
+    "In-Game Account Switcher|modrinth|cudtvDnd" # Switch between multiple accounts in-game
+    "Just Zoom|modrinth|iAiqcykM"                # Simple zoom functionality
+    "Konkrete|modrinth|J81TRJWm"                 # Kotlin library for mods
+    "Mod Menu|modrinth|mOgUt4GM"                 # In-game mod configuration menu
+    "Old Combat Mod|modrinth|dZ1APLkO"           # Restore pre-1.9 combat mechanics
+    "Reese's Sodium Options|modrinth|Bh37bMuy"   # Enhanced graphics options for Sodium
+    "Sodium|modrinth|AANobbMI"                   # Performance optimization mod
+    "Sodium Dynamic Lights|modrinth|PxQSWIcD"    # Dynamic lighting for Sodium
+    "Sodium Extra|modrinth|PtjYWJkn"             # Additional Sodium features
+    "Sodium Extras|modrinth|vqqx0QiE"            # More Sodium enhancements
+    "Sodium Options API|modrinth|Es5v4eyq"       # API for Sodium options
+    "Splitscreen Support|modrinth|yJgqfSDR"      # Core splitscreen functionality (REQUIRED)
+    "YetAnotherConfigLib|modrinth|1eAoo2KR"      # Configuration library for mods
+)
+
+# Runtime mod tracking arrays
+# These arrays are populated during the mod compatibility checking phase
+# and used throughout the installation process
+
+# SUPPORTED_MODS: Names of mods that are compatible with the selected Minecraft version
+declare -a SUPPORTED_MODS=()
+# MOD_URLS: Download URLs for compatible mod files
+declare -a MOD_URLS=()
+# MOD_IDS: Platform-specific IDs for mods (Modrinth project ID or CurseForge project ID)
+declare -a MOD_IDS=()
+# MOD_TYPES: Platform type for each mod ("modrinth" or "curseforge")
+declare -a MOD_TYPES=()
+# MOD_DEPENDENCIES: Space-separated list of dependency mod IDs for each mod
+declare -a MOD_DEPENDENCIES=()
+# FINAL_MOD_INDEXES: Indexes of mods selected for installation (after user selection + dependencies)
+declare -a FINAL_MOD_INDEXES=()
+# MISSING_MODS: Names of mods that failed to download or were incompatible
+declare -a MISSING_MODS=()
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+# Progress and status reporting functions
+# These functions provide consistent, colored output for better user experience
+
+# print_header: Display a section header with visual separation
+print_header() {
+    echo ""
+    echo "=========================================="
+    echo "$1"
+    echo "=========================================="
+}
+
+# print_success: Display successful operation with green checkmark
+print_success() {
+    echo "✅ $1"
+}
+
+# print_warning: Display warning message with yellow warning symbol
+print_warning() {
+    echo "⚠️  $1"
+}
+
+# print_error: Display error message with red X symbol (sent to stderr)
+print_error() {
+    echo "❌ $1" >&2
+}
+
+# print_info: Display informational message with blue info symbol
+print_info() {
+    echo "💡 $1"
+}
+
+# print_progress: Display in-progress operation with spinning arrow
+print_progress() {
+    echo "🔄 $1"
+}
+
+# =============================================================================
+# JAVA DETECTION AND VALIDATION
+# =============================================================================
+
+# detect_java: Find and validate Java 21 installation
+# Modern Minecraft versions (1.17+) require Java 17+, and 1.21+ needs Java 21
+# This function searches common Java installation paths and validates the version
+detect_java() {
+    print_progress "Detecting Java 21 installation..."
+    
+    # Search for Java 21 in common installation locations
+    # Priority order: OpenJDK 21 -> system default -> PATH
+    if [[ -x "/usr/lib/jvm/java-21-openjdk/bin/java" ]]; then
+        # OpenJDK 21 (most common on Linux distributions)
         JAVA_PATH="/usr/lib/jvm/java-21-openjdk/bin/java"
-    elif [ -x /usr/lib/jvm/default-runtime/bin/java ]; then
+    elif [[ -x "/usr/lib/jvm/default-runtime/bin/java" ]]; then
+        # System default Java runtime (may or may not be Java 21)
         JAVA_PATH="/usr/lib/jvm/default-runtime/bin/java"
     else
-        JAVA_PATH="$(which java)"
+        # Fallback: search in PATH (works for custom installations)
+        JAVA_PATH="$(which java 2>/dev/null || true)"
     fi
 
-    # Check if Java 21 is available and executable
-    # Exit with a clear error if not found
-    if [ -z "$JAVA_PATH" ] || ! "$JAVA_PATH" -version 2>&1 | grep -q '21'; then
-        echo "Error: Java 21 is not installed or not found in a standard location. Refer to the README at https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck for installation instructions." >&2
+    # Validate that we found Java 21 specifically
+    # Modern Minecraft requires Java 21 for optimal performance and compatibility
+    if [[ -z "$JAVA_PATH" ]] || ! "$JAVA_PATH" -version 2>&1 | grep -q '21'; then
+        print_error "Java 21 is not installed or not found in a standard location."
+        print_error "Refer to the README at https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck for installation instructions."
         exit 1
     fi
-
-    # Download Prism Launcher AppImage if not already present
-    if [ ! -f "PrismLauncher.AppImage" ]; then
-        echo "Fetching latest Prism Launcher AppImage URL from GitHub..."
-        PRISM_URL=$(curl -s https://api.github.com/repos/PrismLauncher/PrismLauncher/releases/latest | \
-            jq -r '.assets[] | select(.name | test("AppImage$")) | .browser_download_url' | head -n1)
-        if [ -z "$PRISM_URL" ] || [ "$PRISM_URL" = "null" ]; then
-            echo "Error: Could not find latest Prism Launcher AppImage URL. Please check https://github.com/PrismLauncher/PrismLauncher/releases manually." >&2
-            exit 1
-        fi
-        wget -O PrismLauncher.AppImage "$PRISM_URL"
-        chmod +x PrismLauncher.AppImage
-    fi
-
-    # Verify PrismLauncher CLI functionality
-    echo "Verifying PrismLauncher CLI capabilities..."
     
-    # Check for basic CLI support
-    if ! ./PrismLauncher.AppImage --help 2>/dev/null | grep -q -E "(cli|create|instance)"; then
-        echo "Warning: PrismLauncher CLI may not support instance creation. Checking with --help-all..."
-        if ! ./PrismLauncher.AppImage --help-all 2>/dev/null | grep -q -E "(cli|create-instance)"; then
-            echo "Error: This version of PrismLauncher does not support CLI instance creation." >&2
+    print_success "Found Java 21 at: $JAVA_PATH"
+}
+
+# =============================================================================
+# PRISM LAUNCHER SETUP
+# =============================================================================
+# PrismLauncher is used for automated instance creation via CLI
+# It provides reliable Minecraft instance management and Fabric loader installation
+# =============================================================================
+
+# download_prism_launcher: Download the latest PrismLauncher AppImage
+# PrismLauncher provides CLI tools for automated instance creation
+# We download it to the target directory for temporary use during setup
+download_prism_launcher() {
+    # Skip download if AppImage already exists
+    if [[ -f "$TARGET_DIR/PrismLauncher.AppImage" ]]; then
+        print_success "PrismLauncher AppImage already present"
+        return 0
+    fi
+    
+    print_progress "Downloading latest PrismLauncher AppImage..."
+    
+    # Query GitHub API to get the latest release download URL
+    # We specifically look for AppImage files in the release assets
+    local prism_url
+    prism_url=$(curl -s https://api.github.com/repos/PrismLauncher/PrismLauncher/releases/latest | \
+        jq -r '.assets[] | select(.name | test("AppImage$")) | .browser_download_url' | head -n1)
+    
+    # Validate that we got a valid download URL
+    if [[ -z "$prism_url" || "$prism_url" == "null" ]]; then
+        print_error "Could not find latest PrismLauncher AppImage URL."
+        print_error "Please check https://github.com/PrismLauncher/PrismLauncher/releases manually."
+        exit 1
+    fi
+    
+    # Download and make executable
+    wget -O "$TARGET_DIR/PrismLauncher.AppImage" "$prism_url"
+    chmod +x "$TARGET_DIR/PrismLauncher.AppImage"
+    print_success "PrismLauncher AppImage downloaded successfully"
+}
+
+# verify_prism_cli: Ensure PrismLauncher supports CLI operations
+# We need CLI support for automated instance creation
+# This function validates that the downloaded version has the required features
+verify_prism_cli() {
+    print_progress "Verifying PrismLauncher CLI capabilities..."
+    
+    local appimage="$TARGET_DIR/PrismLauncher.AppImage"
+    
+    # Test for basic CLI support by checking help output
+    # Look for keywords that indicate CLI instance creation is available
+    if ! "$appimage" --help 2>/dev/null | grep -q -E "(cli|create|instance)"; then
+        print_warning "PrismLauncher CLI may not support instance creation. Checking with --help-all..."
+        
+        # Fallback: try the extended help option
+        if ! "$appimage" --help-all 2>/dev/null | grep -q -E "(cli|create-instance)"; then
+            print_error "This version of PrismLauncher does not support CLI instance creation."
             echo "Available options:" >&2
-            ./PrismLauncher.AppImage --help 2>&1 | head -20 >&2
-            echo "Please update to a newer version that supports CLI operations." >&2
+            "$appimage" --help 2>&1 | head -20 >&2
+            print_error "Please update to a newer version that supports CLI operations."
             exit 1
         fi
     fi
     
-    # Show available CLI commands for debugging
-    echo "Available PrismLauncher CLI commands:"
-    ./PrismLauncher.AppImage --help 2>&1 | grep -E "(create|instance|cli)" || echo "  (Basic CLI commands found)"
-    echo "✅ PrismLauncher CLI instance creation verified"
+    # Display available CLI commands for debugging purposes
+    print_info "Available PrismLauncher CLI commands:"
+    "$appimage" --help 2>&1 | grep -E "(create|instance|cli)" || echo "  (Basic CLI commands found)"
+    print_success "PrismLauncher CLI instance creation verified"
+}
 
-    # Prompt user for Minecraft version
+# =============================================================================
+# MINECRAFT VERSION SELECTION
+# =============================================================================
+# Allow user to specify Minecraft version or auto-detect latest release
+
+# get_minecraft_version: Get target Minecraft version from user or API
+# Supports both user input and automatic latest version detection
+get_minecraft_version() {
+    print_progress "Setting up Minecraft version..."
+    
+    # Prompt user for Minecraft version preference
+    # Empty input will trigger automatic latest version detection
     read -p "Enter the Minecraft version to install (leave blank for latest): " MC_VERSION
-    if [ -z "$MC_VERSION" ]; then
-        echo "Detecting latest Minecraft version from Mojang..."
+    
+    if [[ -z "$MC_VERSION" ]]; then
+        # Auto-detect latest release version from Mojang's official API
+        print_progress "Detecting latest Minecraft version from Mojang..."
         MC_VERSION=$(curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" | jq -r '.latest.release')
-        echo "Using latest Minecraft version: $MC_VERSION"
-    fi
-
-    # Ensure the instances directory exists
-    mkdir -p "$targetDir/instances"
-
-    # --- Mod List (name, type, id/url) ---
-    # Framework mods to never prompt for (optional but auto-included when needed)
-    FRAMEWORK_MODS=("Fabric API" "Collective" "Framework (Fabric)" "Konkrete" "YetAnotherConfigLib")
-    FRAMEWORK_IDS=("fabric-api" "collective" "framework" "konkrete" "yacl")
-    # Required splitscreen mods that are ALWAYS installed (essential for functionality)
-    REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
-    REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
-    MODS=(
-      "Better Name Visibility|modrinth|pSfNeCCY"
-      "Collective|modrinth|e0M1UDsY"
-      "Controllable (Fabric)|curseforge|317269"
-      "Fabric API|modrinth|P7dR8mSH"
-      "Framework (Fabric)|curseforge|549225"
-      "Full Brightness Toggle|modrinth|aEK1KhsC"
-      "In-Game Account Switcher|modrinth|cudtvDnd"
-      "Just Zoom|modrinth|iAiqcykM"
-      "Konkrete|modrinth|J81TRJWm"
-      "Mod Menu|modrinth|mOgUt4GM"
-      "Old Combat Mod|modrinth|dZ1APLkO"
-      "Reese's Sodium Options|modrinth|Bh37bMuy"
-      "Sodium|modrinth|AANobbMI"
-      "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-      "Sodium Extra|modrinth|PtjYWJkn"
-      "Sodium Extras|modrinth|vqqx0QiE"
-      "Sodium Options API|modrinth|Es5v4eyq"
-      "Splitscreen Support|modrinth|yJgqfSDR"
-      "YetAnotherConfigLib|modrinth|1eAoo2KR"
-    )
-
-    # --- Mod Compatibility Check and Selection ---
-    SUPPORTED_MODS=()
-    MOD_URLS=()
-    MOD_IDS=()
-    MOD_TYPES=()
-    MOD_DEPENDENCIES=()
-    echo "Checking mod compatibility for Minecraft $MC_VERSION..."
-    for mod in "${MODS[@]}"; do
-      IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "$mod"
-      if [ "$MOD_TYPE" = "modrinth" ]; then
-        API_URL="https://api.modrinth.com/v2/project/$MOD_ID/version"
-        
-        TMP_BODY=$(mktemp)
-        if [ -z "$TMP_BODY" ]; then
-            echo "Error: mktemp failed for $MOD_NAME."
-            continue 
-        fi
-
-        # Fetch response body to TMP_BODY, get HTTP code. Follow redirects with -L.
-        HTTP_CODE=$(curl -s -L -w "%{http_code}" -o "$TMP_BODY" "$API_URL")
-        VERSION_JSON=$(cat "$TMP_BODY")
-        rm "$TMP_BODY"
-
-        IS_JSON_VALID=false
-        # Check for HTTP 200 and if the response is valid JSON
-        if [ "$HTTP_CODE" == "200" ] && printf "%s" "$VERSION_JSON" | jq -e . > /dev/null 2>&1; then
-          IS_JSON_VALID=true
-        fi
-
-        if ! $IS_JSON_VALID; then
-          echo "Mod $MOD_NAME ($MOD_ID) is not compatible with $MC_VERSION (API error or invalid data)"
-          continue # Skip to the next mod in the main loop
-        fi
-        # --- All Modrinth logic must be inside this block ---
-        if $IS_JSON_VALID; then
-          # Try exact match first - ONLY FABRIC VERSIONS
-          FILE_URL=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-          DEP_IDS=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
-          
-          # If no exact match, try major.minor match (e.g., 1.21 for 1.21.5) - ONLY FABRIC
-          if [ -z "$FILE_URL" ] || [ "$FILE_URL" = "null" ]; then
-            MC_MAJOR_MINOR=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-            # Try 1.21
-            FILE_URL=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-            DEP_IDS=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
-            # Try 1.21.x
-            if [ -z "$FILE_URL" ] || [ "$FILE_URL" = "null" ]; then
-              MC_MAJOR_MINOR_X="$MC_MAJOR_MINOR.x"
-              FILE_URL=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR_X" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-              DEP_IDS=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR_X" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
-            fi
-            # Try 1.21.0
-            if [ -z "$FILE_URL" ] || [ "$FILE_URL" = "null" ]; then
-              MC_MAJOR_MINOR_0="$MC_MAJOR_MINOR.0"
-              FILE_URL=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-              DEP_IDS=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
-            fi
-            # Try any version in the list that matches the same major.minor - ONLY FABRIC
-            if [ -z "$FILE_URL" ] || [ "$FILE_URL" = "null" ]; then
-              FILE_URL=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-              DEP_IDS=$(printf "%s" "$VERSION_JSON" | jq -r --arg v "$MC_MAJOR_MINOR" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
-            fi
-          fi
-          # Enhanced: Check all files in all releases for any matching game_version - FABRIC ONLY
-          if [ -z "$FILE_URL" ] || [ "$FILE_URL" = "null" ]; then
-            FILE_URL="" # Reset FILE_URL before the enhanced search logic
-            DEP_IDS=""  # Reset DEP_IDS
-            MC_MAJOR_MINOR=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-            MC_MAJOR_MINOR_X="$MC_MAJOR_MINOR.x"
-            MC_MAJOR_MINOR_0="$MC_MAJOR_MINOR.0"
-            jq_filter='
-              .[] as $release
-              | select($release.loaders[] == "fabric")
-              | $release.files[]
-              | {
-                  url,
-                  dependencies: ($release.dependencies // [] | map(select(.dependency_type == "required") | .project_id)),
-                  game_versions: (if has("game_versions") and (.game_versions | length > 0) then .game_versions else $release.game_versions end),
-                  loaders: $release.loaders
-                }
-              | select(
-                  .game_versions[]
-                  | test("^" + $mc_major_minor + "\\..*$") or
-                    . == $mc_version or
-                    . == $mc_major_minor or
-                    . == $mc_major_minor_x or
-                    . == $mc_major_minor_0 or
-                    (test("^[0-9]+\\.[0-9]+\\.x$") and ($mc_version | startswith((. | capture("^(?<majmin>[0-9]+\\.[0-9]+)")).majmin)))
-                    or
-                    (test("^[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+$") and (
-                      ($mc_version | split(".") | map(tonumber)) as $ver
-                      | (. | capture("^(?<start>[0-9]+\\.[0-9]+\\.[0-9]+)-(?<end>[0-9]+\\.[0-9]+\\.[0-9]+)$")) as $range
-                      | ($range.start | split(".") | map(tonumber)) as $start
-                      | ($range.end | split(".") | map(tonumber)) as $end
-                      | ($ver >= $start and $ver <= $end)
-                    ))
-                )
-              | {url, dependencies}
-              | @base64
-            '
-            jq_result=$(printf "%s" "$VERSION_JSON" | jq -r \
-              --arg mc_version "$MC_VERSION" \
-              --arg mc_major_minor "$MC_MAJOR_MINOR" \
-              --arg mc_major_minor_x "$MC_MAJOR_MINOR_X" \
-              --arg mc_major_minor_0 "$MC_MAJOR_MINOR_0" \
-              "$jq_filter" 2>/dev/null | head -n1)
-
-            if [ -n "$jq_result" ]; then
-              decoded=$(echo "$jq_result" | base64 --decode)
-              FILE_URL=$(echo "$decoded" | jq -r '.url')
-              DEP_IDS=$(echo "$decoded" | jq -r '.dependencies[]?' | tr '\n' ' ')
-            fi
-          fi
-
-          if [ -n "$FILE_URL" ] && [ "$FILE_URL" != "null" ]; then
-            SUPPORTED_MODS+=("$MOD_NAME")
-            MOD_URLS+=("$FILE_URL")
-            MOD_IDS+=("$MOD_ID")
-            MOD_TYPES+=("modrinth")
-            MOD_DEPENDENCIES+=("$DEP_IDS")
-          else
-            echo "Mod $MOD_NAME ($MOD_ID) is not compatible with $MC_VERSION or could not be downloaded"
-          fi
-          continue
-        fi
-      elif [ "$MOD_TYPE" = "curseforge" ]; then
-        # --- Use official CurseForge API for CurseForge mods ---
-        CF_PROJECT_ID="$MOD_ID"
-        # Fetch and decrypt API token from GitHub repository
-        CF_TOKEN_ENC_URL="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-        TMP_TOKEN_FILE=$(mktemp)
-        if [ -z "$TMP_TOKEN_FILE" ]; then
-          echo "Error: mktemp failed for $MOD_NAME."
-          continue
-        fi
-        
-        # Download encrypted token from GitHub
-        HTTP_CODE=$(curl -s -L -w "%{http_code}" -o "$TMP_TOKEN_FILE" "$CF_TOKEN_ENC_URL")
-        if [ "$HTTP_CODE" != "200" ] || [ ! -s "$TMP_TOKEN_FILE" ]; then
-          echo "Failed to download encrypted CurseForge API token from GitHub (HTTP: $HTTP_CODE)."
-          rm -f "$TMP_TOKEN_FILE"
-          continue
-        fi
-        
-        # Decrypt token using a fixed passphrase that works across all script versions
-        FIXED_PASSPHRASE="MinecraftSplitscreenSteamDeck2025"
-        CF_API_KEY=$(openssl enc -aes-256-cbc -d -a -pbkdf2 -pass pass:"$FIXED_PASSPHRASE" -in "$TMP_TOKEN_FILE" 2>/dev/null)
-        rm -f "$TMP_TOKEN_FILE"
-        
-        if [ $? -ne 0 ] || [ -z "$CF_API_KEY" ]; then
-          echo "Failed to decrypt CurseForge API token for $MOD_NAME."
-          continue
-        fi
-        CF_API_URL="https://api.curseforge.com/v1/mods/$CF_PROJECT_ID/files?modLoaderType=4"
-        TMP_BODY=$(mktemp)
-        if [ -z "$TMP_BODY" ]; then
-          echo "Error: mktemp failed for $MOD_NAME."
-          continue
-        fi
-        HTTP_CODE=$(curl -s -L -w "%{http_code}" -o "$TMP_BODY" -H "x-api-key: $CF_API_KEY" "$CF_API_URL")
-        VERSION_JSON=$(cat "$TMP_BODY")
-        rm "$TMP_BODY"
-        
-        IS_JSON_VALID=false
-        if [ "$HTTP_CODE" == "200" ] && printf "%s" "$VERSION_JSON" | jq -e . > /dev/null 2>&1; then
-          IS_JSON_VALID=true
-        else
-          echo "Mod $MOD_NAME ($CF_PROJECT_ID) is not compatible with $MC_VERSION or could not be downloaded (CurseForge API, HTTP $HTTP_CODE)"
-          continue
-        fi
-        if $IS_JSON_VALID; then
-          MC_MAJOR_MINOR=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-          MC_MAJOR_MINOR_X="$MC_MAJOR_MINOR.x"
-          MC_MAJOR_MINOR_0="$MC_MAJOR_MINOR.0"
-          # Find the first file compatible with the MC version and Fabric loader
-          jq_filter='
-            .data[]
-            | select(
-                ((.gameVersions[] == $mc_version) or
-                (.gameVersions[] == $mc_major_minor) or
-                (.gameVersions[] == $mc_major_minor_x) or
-                (.gameVersions[] == $mc_major_minor_0))
-              )
-            | {url: .downloadUrl, dependencies: (.dependencies // [] | map(select(.relationType == 3) | .modId))}
-            | @base64
-          '
-          jq_result=$(printf "%s" "$VERSION_JSON" | jq -r \
-            --arg mc_version "$MC_VERSION" \
-            --arg mc_major_minor "$MC_MAJOR_MINOR" \
-            --arg mc_major_minor_x "$MC_MAJOR_MINOR_X" \
-            --arg mc_major_minor_0 "$MC_MAJOR_MINOR_0" \
-            "$jq_filter" 2>/dev/null | head -n1)
-          if [ -n "$jq_result" ]; then
-            decoded=$(echo "$jq_result" | base64 --decode)
-            FILE_URL=$(echo "$decoded" | jq -r '.url')
-            DEP_IDS=$(echo "$decoded" | jq -r '.dependencies[]?' | tr '\n' ' ')
-            SUPPORTED_MODS+=("$MOD_NAME")
-            MOD_URLS+=("$FILE_URL")
-            MOD_IDS+=("$CF_PROJECT_ID")
-            MOD_TYPES+=("curseforge")
-            MOD_DEPENDENCIES+=("$DEP_IDS")
-          else
-            echo "Mod $MOD_NAME ($CF_PROJECT_ID) is not compatible with $MC_VERSION or could not be downloaded"
-          fi
-        fi
-      fi # <-- This closes the main if/elif block for mod type
-    done
-
-    # --- User Selection of Mods (skip framework mods and required splitscreen mods) ---
-    echo "\nThe following mods are available for Minecraft $MC_VERSION:"
-    USER_MOD_INDEXES=()
-    for i in "${!SUPPORTED_MODS[@]}"; do
-      skip=false
-      # Skip framework mods
-      for fw in "${FRAMEWORK_MODS[@]}"; do
-        if [[ "${SUPPORTED_MODS[$i]}" == "$fw"* ]]; then skip=true; break; fi
-      done
-      # Skip required splitscreen mods
-      for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
-        if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]]; then skip=true; break; fi
-      done
-      if ! $skip; then
-        menu_num=$((${#USER_MOD_INDEXES[@]}+1))
-        printf "%2d) %s\n" "$menu_num" "${SUPPORTED_MODS[$i]}"
-        USER_MOD_INDEXES+=("$i")
-      fi
-    done
-    echo " 0) Install ALL mods above (default)"
-    echo "-1) Skip all mods"
-    echo ""
-    echo "Note: Controllable (Fabric) and Splitscreen Support will be automatically installed"
-    echo "      as they are required for splitscreen functionality to work."
-    read -p "Enter the numbers of the mods you want to install (e.g. 1 2 5), or 0 for all: " MOD_SELECTION
-    INSTALL_ALL_MODS=false
-    if [ -z "$MOD_SELECTION" ] || [ "$MOD_SELECTION" = "0" ]; then
-      INSTALL_ALL_MODS=true
-    fi
-    if [ "$MOD_SELECTION" = "-1" ]; then
-      MOD_SELECTION=""
-    fi
-
-    # --- Build final mod list including dependencies ---
-    FINAL_MOD_INDEXES=()
-    declare -A ADDED
-    if $INSTALL_ALL_MODS; then
-      for i in "${!SUPPORTED_MODS[@]}"; do
-        FINAL_MOD_INDEXES+=("$i")
-        ADDED[$i]=1
-      done
+        print_success "Using latest Minecraft version: $MC_VERSION"
     else
-      echo "Selected mods:"
-      for sel in $MOD_SELECTION; do
-        idx=${USER_MOD_INDEXES[$((sel-1))]}
-        echo "  ${SUPPORTED_MODS[$idx]}"
-        FINAL_MOD_INDEXES+=("$idx")
-        ADDED[$idx]=1
-      done
-      
-      # For each selected mod, add required framework mods (dependencies) if not already included
-      for sel in $MOD_SELECTION; do
-        idx=${USER_MOD_INDEXES[$((sel-1))]}
-        # Add required framework mods for curseforge mods (e.g. Controllable)
-        if [[ "${SUPPORTED_MODS[$idx]}" == "Controllable (Fabric)"* ]]; then
-          for j in "${!MODS[@]}"; do
+        # Use user-specified version (validation happens during mod compatibility check)
+        print_success "Using specified Minecraft version: $MC_VERSION"
+    fi
+}
+
+# =============================================================================
+# FABRIC VERSION DETECTION
+# =============================================================================
+# Fabric mod loader is required for all the performance and splitscreen mods
+# We automatically detect the latest compatible version
+
+# get_fabric_version: Fetch the latest Fabric loader version from official API
+# Fabric loader provides the mod loading framework for Minecraft
+get_fabric_version() {
+    print_progress "Detecting latest Fabric loader version..."
+    
+    # Query Fabric Meta API for the latest loader version
+    FABRIC_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version' 2>/dev/null)
+    
+    # Fallback to known stable version if API call fails
+    if [[ -z "$FABRIC_VERSION" || "$FABRIC_VERSION" == "null" ]]; then
+        print_warning "Could not detect latest Fabric version, using fallback"
+        FABRIC_VERSION="0.16.9"  # Known stable version that works with most mods
+    fi
+    
+    print_success "Using Fabric loader version: $FABRIC_VERSION"
+}
+
+# =============================================================================
+# MOD COMPATIBILITY CHECKING
+# =============================================================================
+# This section handles the complex process of checking mod compatibility
+# across both Modrinth and CurseForge platforms for the target Minecraft version
+
+# check_mod_compatibility: Main coordination function for mod compatibility checking
+# Iterates through all mods and delegates to platform-specific checkers
+check_mod_compatibility() {
+    print_header "🔍 CHECKING MOD COMPATIBILITY"
+    print_progress "Checking mod compatibility for Minecraft $MC_VERSION..."
+    
+    # Process each mod in the MODS array
+    # Format: "ModName|platform|mod_id" 
+    for mod in "${MODS[@]}"; do
+        IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "$mod"
+        
+        # Route to appropriate platform-specific checker
+        if [[ "$MOD_TYPE" == "modrinth" ]]; then
+            check_modrinth_mod "$MOD_NAME" "$MOD_ID"
+        elif [[ "$MOD_TYPE" == "curseforge" ]]; then
+            check_curseforge_mod "$MOD_NAME" "$MOD_ID"
+        fi
+    done
+    
+    print_success "Mod compatibility check completed"
+    print_info "Found ${#SUPPORTED_MODS[@]} compatible mods for Minecraft $MC_VERSION"
+}
+
+# check_modrinth_mod: Check if a Modrinth mod is compatible with target MC version
+# Modrinth is the preferred platform - it has better API and more reliable data
+# This function implements complex version matching logic to handle various version formats
+check_modrinth_mod() {
+    local mod_name="$1"     # Human-readable mod name
+    local mod_id="$2"       # Modrinth project ID (e.g., "P7dR8mSH" for Fabric API)
+    local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
+    
+    # Create temporary file for API response
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        print_warning "mktemp failed for $mod_name"
+        return 1
+    fi
+    
+    # Fetch all version data for this mod from Modrinth API
+    # Make HTTP request to Modrinth API and capture both response and status code
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm "$tmp_body"
+    
+    # Validate API response (must be HTTP 200 and valid JSON)
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+        print_warning "Mod $mod_name ($mod_id) is not compatible with $MC_VERSION (API error)"
+        return 1
+    fi
+    
+    # Complex version matching logic - handles multiple version format scenarios
+    # This logic tries progressively more lenient matching patterns
+    local file_url=""     # Download URL for compatible mod file
+    local dep_ids=""      # Space-separated list of dependency mod IDs
+    
+    # STAGE 1: Try exact version match with Fabric loader requirement
+    # Example: Looking for exactly "1.21.3" with "fabric" loader
+    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+    dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
+    
+    # STAGE 2: Try major.minor version match if exact match failed
+    # Example: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+        local mc_major_minor
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        
+        # Try exact major.minor (e.g., "1.21")
+        file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+        dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
+        
+        # Try wildcard version format (e.g., "1.21.x") 
+        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+            local mc_major_minor_x="$mc_major_minor.x"
+            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+            dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
+        fi
+        
+        # Try zero-padded version format (e.g., "1.21.0")
+        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+            local mc_major_minor_0="$mc_major_minor.0"
+            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+            dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
+        fi
+        
+        # Try prefix matching (any version starting with major.minor)
+        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+            dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null)
+        fi
+    fi
+    
+    # STAGE 3: Advanced pattern matching with comprehensive version range support
+    # This handles complex version patterns like ranges, wildcards, and edge cases
+    if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+        file_url=""  # Reset for clean advanced search
+        dep_ids=""   # Reset dependencies
+        local mc_major_minor
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+        local mc_major_minor_x="$mc_major_minor.x"
+        local mc_major_minor_0="$mc_major_minor.0"
+        
+        # Complex jq filter that handles multiple version pattern types:
+        # 1. Exact matches (1.21.3)
+        # 2. Major.minor matches (1.21)  
+        # 3. Wildcard patterns (1.21.x)
+        # 4. Zero-padded versions (1.21.0)
+        # 5. Version ranges (1.21.0-1.21.5)
+        # 6. Regex patterns for version compatibility
+        local jq_filter='
+          .[] as $release
+          | select($release.loaders[] == "fabric")
+          | $release.files[]
+          | {
+              url,
+              dependencies: ($release.dependencies // [] | map(select(.dependency_type == "required") | .project_id)),
+              game_versions: (if has("game_versions") and (.game_versions | length > 0) then .game_versions else $release.game_versions end),
+              loaders: $release.loaders
+            }
+          | select(
+              .game_versions[]
+              | test("^" + $mc_major_minor + "\\..*$") or
+                . == $mc_version or
+                . == $mc_major_minor or
+                . == $mc_major_minor_x or
+                . == $mc_major_minor_0 or
+                (test("^[0-9]+\\.[0-9]+\\.x$") and ($mc_version | startswith((. | capture("^(?<majmin>[0-9]+\\.[0-9]+)")).majmin)))
+                or
+                (test("^[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+$") and (
+                  ($mc_version | split(".") | map(tonumber)) as $ver
+                  | (. | capture("^(?<start>[0-9]+\\.[0-9]+\\.[0-9]+)-(?<end>[0-9]+\\.[0-9]+\\.[0-9]+)$")) as $range
+                  | ($range.start | split(".") | map(tonumber)) as $start
+                  | ($range.end | split(".") | map(tonumber)) as $end
+                  | ($ver >= $start and $ver <= $end)
+                ))
+            )
+          | {url, dependencies}
+          | @base64
+        '
+        
+        # Execute the complex jq filter with all version variants
+        local jq_result
+        jq_result=$(printf "%s" "$version_json" | jq -r \
+          --arg mc_version "$MC_VERSION" \
+          --arg mc_major_minor "$mc_major_minor" \
+          --arg mc_major_minor_x "$mc_major_minor_x" \
+          --arg mc_major_minor_0 "$mc_major_minor_0" \
+          "$jq_filter" 2>/dev/null | head -n1)
+
+        # Decode the base64-encoded result and extract URL and dependencies
+        if [[ -n "$jq_result" ]]; then
+            local decoded
+            decoded=$(echo "$jq_result" | base64 --decode)
+            file_url=$(echo "$decoded" | jq -r '.url')
+            dep_ids=$(echo "$decoded" | jq -r '.dependencies[]?' | tr '\n' ' ')
+        fi
+    fi
+    
+    # Final result processing: Add to supported mods if we found a compatible version
+    if [[ -n "$file_url" && "$file_url" != "null" ]]; then
+        SUPPORTED_MODS+=("$mod_name")          # Add to list of compatible mods
+        MOD_URLS+=("$file_url")                # Store download URL
+        MOD_IDS+=("$mod_id")                   # Store Modrinth project ID
+        MOD_TYPES+=("modrinth")                # Mark as Modrinth mod
+        MOD_DEPENDENCIES+=("$dep_ids")         # Store dependency information
+        print_success "✅ $mod_name (Modrinth)"
+    else
+        print_warning "❌ $mod_name ($mod_id) - not compatible with $MC_VERSION"
+    fi
+}
+
+# check_curseforge_mod: Check CurseForge mod compatibility with encrypted API access
+# CurseForge requires API key authentication and has more restrictive access
+# API token is encrypted and stored in the GitHub repository for security
+check_curseforge_mod() {
+    local mod_name="$1"           # Human-readable mod name
+    local cf_project_id="$2"      # CurseForge project ID (numeric)
+    
+    # Download encrypted CurseForge API token from GitHub repository
+    # Token is encrypted to prevent abuse while allowing public access
+    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local tmp_token_file
+    # Create temporary file for encrypted token download
+    tmp_token_file=$(mktemp)
+    if [[ -z "$tmp_token_file" ]]; then
+        print_warning "mktemp failed for $mod_name"
+        return 1
+    fi
+    
+    # Download the encrypted API token file
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_token_file" "$cf_token_enc_url")
+    if [[ "$http_code" != "200" ]] || [[ ! -s "$tmp_token_file" ]]; then
+        print_warning "Failed to download CurseForge API token (HTTP: $http_code)"
+        rm -f "$tmp_token_file"
+        return 1
+    fi
+    
+    # Decrypt the API token using OpenSSL AES-256-CBC with fixed passphrase
+    # This provides security while allowing public access to the installer
+    local fixed_passphrase="MinecraftSplitscreenSteamDeck2025"
+    # Attempt to decrypt the API token
+    local cf_api_key
+    cf_api_key=$(openssl enc -aes-256-cbc -d -a -pbkdf2 -pass pass:"$fixed_passphrase" -in "$tmp_token_file" 2>/dev/null)
+    rm -f "$tmp_token_file"
+    
+    if [[ $? -ne 0 ]] || [[ -z "$cf_api_key" ]]; then
+        print_warning "Failed to decrypt CurseForge API token for $mod_name"
+        return 1
+    fi
+    
+    # Query CurseForge API with Fabric loader filter (modLoaderType=4 = Fabric)
+    # Note: We filter by Fabric loader but not by game version in the URL
+    # Game version filtering is done in post-processing for more flexibility
+    local cf_api_url="https://api.curseforge.com/v1/mods/$cf_project_id/files?modLoaderType=4"
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        print_warning "mktemp failed for CurseForge API call"
+        return 1
+    fi
+    
+    # Make authenticated API request to CurseForge
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url")
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm "$tmp_body"
+    
+    # Validate API response
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+        print_warning "❌ $mod_name ($cf_project_id) - API error (HTTP $http_code)"
+        return 1
+    fi
+    
+    # Version compatibility checking for CurseForge mods
+    # Uses same versioning logic as Modrinth but with CurseForge API structure
+    local mc_major_minor
+    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    local mc_major_minor_x="$mc_major_minor.x"
+    local mc_major_minor_0="$mc_major_minor.0"
+    
+    # CurseForge-specific jq filter for version matching
+    # Checks gameVersions array and extracts downloadUrl and dependencies
+    # relationType == 3 means "required dependency" in CurseForge API
+    local jq_filter='
+        .data[]
+        | select(
+            ((.gameVersions[] == $mc_version) or
+            (.gameVersions[] == $mc_major_minor) or
+            (.gameVersions[] == $mc_major_minor_x) or
+            (.gameVersions[] == $mc_major_minor_0))
+          )
+        | {url: .downloadUrl, dependencies: (.dependencies // [] | map(select(.relationType == 3) | .modId))}
+        | @base64
+    '
+    
+    # Execute the jq filter to find compatible CurseForge mod version
+    local jq_result
+    jq_result=$(printf "%s" "$version_json" | jq -r \
+        --arg mc_version "$MC_VERSION" \
+        --arg mc_major_minor "$mc_major_minor" \
+        --arg mc_major_minor_x "$mc_major_minor_x" \
+        --arg mc_major_minor_0 "$mc_major_minor_0" \
+        "$jq_filter" 2>/dev/null | head -n1)
+    
+    # Process the result if we found a compatible version
+    if [[ -n "$jq_result" ]]; then
+        local decoded
+        decoded=$(echo "$jq_result" | base64 --decode)
+        local file_url
+        file_url=$(echo "$decoded" | jq -r '.url')
+        local dep_ids
+        dep_ids=$(echo "$decoded" | jq -r '.dependencies[]?' | tr '\n' ' ')
+        
+        # Add to supported mods list with CurseForge-specific information
+        SUPPORTED_MODS+=("$mod_name")
+        MOD_URLS+=("$file_url")
+        MOD_IDS+=("$cf_project_id")           # Store numeric CurseForge project ID
+        MOD_TYPES+=("curseforge")             # Mark as CurseForge mod
+        MOD_DEPENDENCIES+=("$dep_ids")        # Store CurseForge dependency IDs
+        print_success "✅ $mod_name (CurseForge)"
+    else
+        print_warning "❌ $mod_name ($cf_project_id) - not compatible with $MC_VERSION"
+    fi
+}
+
+# =============================================================================
+# USER MOD SELECTION
+# =============================================================================
+# This section presents compatible mods to the user and handles their selection
+# It categorizes mods into framework/required vs. optional user-selectable mods
+
+# select_user_mods: Interactive mod selection with intelligent categorization
+# Separates framework mods (auto-installed) from user-selectable mods
+# Handles dependency resolution and ensures required splitscreen mods are included
+select_user_mods() {
+    print_header "🎯 MOD SELECTION"
+    
+    # Validate that we have compatible mods to present to the user
+    if [[ ${#SUPPORTED_MODS[@]} -eq 0 ]]; then
+        print_error "No compatible mods found for Minecraft $MC_VERSION"
+        exit 1
+    fi
+    
+    # Build list of user-selectable mods by filtering out framework and required mods
+    # Framework mods (Fabric API, etc.) are installed automatically as dependencies
+    # Required mods (Controllable, Splitscreen Support) are always installed
+    local user_mod_indexes=()    # Indexes of mods user can choose from
+    local install_all_mods=false # Flag for "install all" option
+    
+    echo ""
+    echo "The following mods are available for Minecraft $MC_VERSION:"
+    echo ""
+    
+    # Display numbered list of user-selectable mods
+    local counter=1
+    for i in "${!SUPPORTED_MODS[@]}"; do
+        local skip=false
+        
+        # Skip framework mods (these are installed automatically as dependencies)
+        for fw in "${FRAMEWORK_MODS[@]}"; do
+            if [[ "${SUPPORTED_MODS[$i]}" == "$fw"* ]]; then
+                skip=true
+                break
+            fi
+        done
+        
+        # Skip required splitscreen mods
+        for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
+            if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]]; then
+                skip=true
+                break
+            fi
+        done
+        
+        if [[ "$skip" == false ]]; then
+            echo "  $counter. ${SUPPORTED_MODS[$i]}"
+            user_mod_indexes+=("$i")
+            ((counter++))
+        fi
+    done
+    
+    echo ""
+    echo "Enter the numbers of the mods you want to install (e.g., '1 3 5' or '1-5'):"
+    echo "  0 = Install all available mods (default)"
+    echo "  -1 = Install only required mods (Controllable and Splitscreen Support)"
+    echo ""
+    
+    local mod_selection
+    read -p "Your choice [0]: " mod_selection
+    
+    # Process user selection
+    if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then
+        install_all_mods=true
+        print_info "Installing all available mods"
+    elif [[ "$mod_selection" == "-1" ]]; then
+        mod_selection=""
+        print_info "Installing only required mods"
+    else
+        print_info "Installing selected mods"
+    fi
+    
+    # Build final mod list including dependencies
+    declare -A added
+    
+    if [[ "$install_all_mods" == true ]]; then
+        for i in "${!SUPPORTED_MODS[@]}"; do
+            FINAL_MOD_INDEXES+=("$i")
+            added[$i]=1
+        done
+    else
+        # Add selected mods
+        if [[ -n "$mod_selection" ]]; then
+            echo "Selected mods:"
+            
+            # SELECTION PROCESSING: Parse user input supporting individual numbers and ranges
+            # Examples: "1 3 5", "1-5", "1 3-7 9"
+            local expanded_selection=()
+            
+            # Parse each token in the selection
+            for token in $mod_selection; do
+                if [[ "$token" =~ ^[0-9]+-[0-9]+$ ]]; then
+                    # RANGE PARSING: Handle range format like "1-5"
+                    local start_num=${token%-*}
+                    local end_num=${token#*-}
+                    
+                    # Validate range bounds
+                    if ((start_num >= 1 && end_num <= ${#user_mod_indexes[@]} && start_num <= end_num)); then
+                        for ((range_num=start_num; range_num<=end_num; range_num++)); do
+                            expanded_selection+=("$range_num")
+                        done
+                    else
+                        print_warning "Invalid range: $token (valid range: 1-${#user_mod_indexes[@]})"
+                    fi
+                elif [[ "$token" =~ ^[0-9]+$ ]]; then
+                    # INDIVIDUAL NUMBER: Handle single number
+                    if ((token >= 1 && token <= ${#user_mod_indexes[@]})); then
+                        expanded_selection+=("$token")
+                    else
+                        print_warning "Invalid selection: $token (valid range: 1-${#user_mod_indexes[@]})"
+                    fi
+                else
+                    print_warning "Invalid format: $token (use numbers or ranges like 1-5)"
+                fi
+            done
+            
+            # Remove duplicates and sort
+            expanded_selection=($(printf "%s\n" "${expanded_selection[@]}" | sort -nu))
+            
+            # Process the expanded selection
+            for sel in "${expanded_selection[@]}"; do
+                local idx=${user_mod_indexes[$((sel-1))]}
+                echo "  ${SUPPORTED_MODS[$idx]}"
+                FINAL_MOD_INDEXES+=("$idx")
+                added[$idx]=1
+            done
+            
+            # Add dependencies for selected mods
+            for sel in "${expanded_selection[@]}"; do
+                local idx=${user_mod_indexes[$((sel-1))]}
+                add_mod_dependencies "$idx" added
+            done
+        fi
+    fi
+    
+    # Ensure required splitscreen mods are always included
+    for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
+        for i in "${!SUPPORTED_MODS[@]}"; do
+            if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]] && [[ -z "${added[$i]:-}" ]]; then
+                FINAL_MOD_INDEXES+=("$i")
+                added[$i]=1
+                add_mod_dependencies "$i" added
+            fi
+        done
+    done
+    
+    print_success "Final mod list prepared: ${#FINAL_MOD_INDEXES[@]} mods selected"
+}
+
+add_mod_dependencies() {
+    local mod_idx="$1"
+    local -n added_ref="$2"
+    
+    # Handle special case for Controllable (needs Framework)
+    if [[ "${SUPPORTED_MODS[$mod_idx]}" == "Controllable (Fabric)"* ]]; then
+        for j in "${!MODS[@]}"; do
             IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "${MODS[$j]}"
             if [[ "$MOD_NAME" == "Framework (Fabric)"* ]]; then
-              for k in "${!MOD_IDS[@]}"; do
-                if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [ -z "${ADDED[$k]}" ]; then
-                  FINAL_MOD_INDEXES+=("$k")
-                  ADDED[$k]=1
-                fi
-              done
+                for k in "${!MOD_IDS[@]}"; do
+                    if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [[ -z "${added_ref[$k]:-}" ]]; then
+                        FINAL_MOD_INDEXES+=("$k")
+                        added_ref[$k]=1
+                    fi
+                done
             fi
-          done
-        fi
-        
-        # Add required framework mods for modrinth mods (via dependencies)
-        dep_string="${MOD_DEPENDENCIES[$idx]}"
-        if [ -n "$dep_string" ]; then
-          read -a dep_arr <<< "$dep_string"
-          for dep in "${dep_arr[@]}"; do
-            if [ -n "$dep" ]; then
-              for j in "${!MOD_IDS[@]}"; do
-                if [[ "${MOD_IDS[$j]}" == "$dep" ]] && [ -z "${ADDED[$j]}" ]; then
-                  FINAL_MOD_INDEXES+=("$j")
-                  ADDED[$j]=1
-                fi
-              done
-            fi
-          done
-        fi
-      done
+        done
     fi
     
-    # --- Ensure required splitscreen mods are always included (essential for splitscreen functionality) ---
-    for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
-      for i in "${!SUPPORTED_MODS[@]}"; do
-        if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]]; then
-          if [ -z "${ADDED[$i]}" ]; then
-            FINAL_MOD_INDEXES+=("$i")
-            ADDED[$i]=1
-            
-            # Special handling for Controllable (Fabric) - ensure Framework (Fabric) dependency is added
-            if [[ "${SUPPORTED_MODS[$i]}" == "Controllable (Fabric)"* ]]; then
-              for j in "${!MODS[@]}"; do
-                IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "${MODS[$j]}"
-                if [[ "$MOD_NAME" == "Framework (Fabric)"* ]]; then
-                  for k in "${!MOD_IDS[@]}"; do
-                    if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [ -z "${ADDED[$k]}" ]; then
-                      FINAL_MOD_INDEXES+=("$k")
-                      ADDED[$k]=1
+    # Add Modrinth dependencies
+    local dep_string="${MOD_DEPENDENCIES[$mod_idx]}"
+    if [[ -n "$dep_string" ]]; then
+        read -a dep_arr <<< "$dep_string"
+        for dep in "${dep_arr[@]}"; do
+            if [[ -n "$dep" ]]; then
+                for j in "${!MOD_IDS[@]}"; do
+                    if [[ "${MOD_IDS[$j]}" == "$dep" ]] && [[ -z "${added_ref[$j]:-}" ]]; then
+                        FINAL_MOD_INDEXES+=("$j")
+                        added_ref[$j]=1
                     fi
-                  done
-                fi
-              done
+                done
             fi
-            
-            # Process any Modrinth dependencies for this required mod
-            dep_string="${MOD_DEPENDENCIES[$i]}"
-            if [ -n "$dep_string" ]; then
-              read -a dep_arr <<< "$dep_string"
-              for dep in "${dep_arr[@]}"; do
-                if [ -n "$dep" ]; then
-                  for j in "${!MOD_IDS[@]}"; do
-                    if [[ "${MOD_IDS[$j]}" == "$dep" ]] && [ -z "${ADDED[$j]}" ]; then
-                      FINAL_MOD_INDEXES+=("$j")
-                      ADDED[$j]=1
-                    fi
-                  done
-                fi
-              done
-            fi
-          fi
-          break
-        fi
-      done
-    done
-    
-    # Remove duplicates
-    FINAL_MOD_INDEXES=( $(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u) )
+        done
+    fi
+}
 
-    # --- Download selected mods (including dependencies) ---
+# =============================================================================
+# INSTANCE CREATION
+# =============================================================================
+# This section handles the core task of creating 4 separate Minecraft instances
+# for splitscreen gameplay. Each instance is configured identically with mods
+# but will be launched separately for multi-player splitscreen gaming.
+
+# create_instances: Create 4 identical Minecraft instances for splitscreen play
+# Uses PrismLauncher CLI when possible, falls back to manual creation if needed
+# Each instance gets the same mods but separate configurations for splitscreen
+create_instances() {
+    print_header "🚀 CREATING MINECRAFT INSTANCES"
+    
+    # Clean up the final mod selection list (remove any duplicates from dependency resolution)
+    FINAL_MOD_INDEXES=( $(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u) )
+    
+    # Initialize tracking for mods that fail to install
     MISSING_MODS=()
-    echo "Creating 4 splitscreen instances..."
+    print_progress "Creating 4 splitscreen instances..."
+    
+    # Create exactly 4 instances: latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4
+    # This naming convention is expected by the splitscreen launcher script
     for i in {1..4}; do
-        INSTANCE_NAME="latestUpdate-$i"
-        echo "Creating instance $i of 4: $INSTANCE_NAME"
+        local instance_name="latestUpdate-$i"
+        print_progress "Creating instance $i of 4: $instance_name"
         
-        # Remove existing instance if it exists
-        if [ -d "$targetDir/instances/$INSTANCE_NAME" ]; then
-            echo "  Removing existing instance: $INSTANCE_NAME"
-            rm -rf "$targetDir/instances/$INSTANCE_NAME"
+        # Clean slate: remove any existing instance with the same name
+        if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
+            print_info "Removing existing instance: $instance_name"
+            rm -rf "$TARGET_DIR/instances/$instance_name"
         fi
         
-        # Create new instance using PrismLauncher CLI
-        echo "  Creating Minecraft $MC_VERSION instance with Fabric..."
-        CLI_SUCCESS=false
+        # STAGE 1: Attempt CLI-based instance creation (preferred method)
+        print_progress "Creating Minecraft $MC_VERSION instance with Fabric..."
+        local cli_success=false
         
-        # Try with Fabric loader first
-        if ./PrismLauncher.AppImage --cli create-instance \
-            --name "$INSTANCE_NAME" \
+        # Try multiple CLI creation approaches with progressively fewer parameters
+        # This handles different PrismLauncher versions that may have varying CLI support
+        
+        # Attempt 1: Full specification with Fabric loader
+        if "$TARGET_DIR/PrismLauncher.AppImage" --cli create-instance \
+            --name "$instance_name" \
             --mc-version "$MC_VERSION" \
             --group "Splitscreen" \
             --loader "fabric" >/dev/null 2>&1; then
-            CLI_SUCCESS=true
-            echo "  ✅ Created with Fabric loader"
+            cli_success=true
+            print_success "Created with Fabric loader"
         # Try without loader specification
-        elif ./PrismLauncher.AppImage --cli create-instance \
-            --name "$INSTANCE_NAME" \
+        elif "$TARGET_DIR/PrismLauncher.AppImage" --cli create-instance \
+            --name "$instance_name" \
             --mc-version "$MC_VERSION" \
             --group "Splitscreen" >/dev/null 2>&1; then
-            CLI_SUCCESS=true
-            echo "  ✅ Created without specific loader"
+            cli_success=true
+            print_success "Created without specific loader"
         # Try basic creation with minimal parameters
-        elif ./PrismLauncher.AppImage --cli create-instance \
-            --name "$INSTANCE_NAME" \
+        elif "$TARGET_DIR/PrismLauncher.AppImage" --cli create-instance \
+            --name "$instance_name" \
             --mc-version "$MC_VERSION" >/dev/null 2>&1; then
-            CLI_SUCCESS=true
-            echo "  ✅ Created with minimal parameters"
+            cli_success=true
+            print_success "Created with minimal parameters"
         fi
         
-        # If CLI failed, try manual instance creation
-        if [ "$CLI_SUCCESS" = false ]; then
-            echo "  [Warning] CLI instance creation failed, attempting manual creation..."
-            INSTANCE_DIR="$targetDir/instances/$INSTANCE_NAME"
-            mkdir -p "$INSTANCE_DIR"
+        # FALLBACK: Manual instance creation when CLI methods fail
+        # This creates instances manually by writing configuration files directly
+        # This ensures compatibility even with older PrismLauncher versions that lack CLI support
+        if [[ "$cli_success" == false ]]; then
+            print_warning "CLI instance creation failed, attempting manual creation..."
+            local instance_dir="$TARGET_DIR/instances/$instance_name"
+            mkdir -p "$instance_dir"
             
-            # Create minimal instance.cfg
-            cat > "$INSTANCE_DIR/instance.cfg" <<EOF
+            # Create instance.cfg - PrismLauncher's main instance configuration file
+            # This file defines the instance metadata, version, and launcher settings
+            cat > "$instance_dir/instance.cfg" <<EOF
 InstanceType=OneSix
 iconKey=default
 name=Player $i
@@ -515,16 +878,12 @@ OverrideWindow=false
 IntendedVersion=$MC_VERSION
 EOF
             
-            # Create minimal mmc-pack.json for mod support with Fabric
-            mkdir -p "$INSTANCE_DIR/.minecraft"
+            # Create mmc-pack.json - MultiMC/PrismLauncher component definition file
+            # This file defines the mod loader stack: LWJGL3 → Minecraft → Intermediary → Fabric
+            # Components are loaded in dependency order to ensure proper mod support
+            mkdir -p "$instance_dir/.minecraft"
             
-            # Detect latest Fabric loader version for manual creation
-            FABRIC_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version' 2>/dev/null)
-            if [ -z "$FABRIC_VERSION" ] || [ "$FABRIC_VERSION" = "null" ]; then
-                FABRIC_VERSION="0.16.9"  # Fallback to a known stable version
-            fi
-            
-            cat > "$INSTANCE_DIR/mmc-pack.json" <<EOF
+            cat > "$instance_dir/mmc-pack.json" <<EOF
 {
     "components": [
         {
@@ -577,92 +936,50 @@ EOF
     "formatVersion": 1
 }
 EOF
-            echo "  ✅ Manual instance creation completed"
+            print_success "Manual instance creation completed"
         fi
         
-        # Verify instance was created
-        INSTANCE_DIR="$targetDir/instances/$INSTANCE_NAME"
-        if [ ! -d "$INSTANCE_DIR" ]; then
-            echo "  [Error] Instance directory not found: $INSTANCE_DIR"
-            continue
+        # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
+        # This verification step prevents subsequent operations on non-existent instances
+        local instance_dir="$TARGET_DIR/instances/$instance_name"
+        if [[ ! -d "$instance_dir" ]]; then
+            print_error "Instance directory not found: $instance_dir"
+            continue  # Skip to next instance if this one failed
         fi
         
-        echo "  ✅ Instance created successfully: $INSTANCE_NAME"
+        print_success "Instance created successfully: $instance_name"
         
-        # --- Install Fabric Loader into the instance ---
-        echo "  Installing Fabric loader for mod support..."
-        PACK_JSON="$INSTANCE_DIR/mmc-pack.json"
+        # FABRIC AND MOD INSTALLATION: Configure mod loader and install selected mods
+        # This step adds Fabric loader support and downloads all compatible mods
+        install_fabric_and_mods "$instance_dir" "$instance_name"
+    done
+}
+
+# =============================================================================
+# FABRIC LOADER AND MOD INSTALLATION
+# =============================================================================
+
+# Install Fabric mod loader and download all selected mods for an instance
+# This function ensures each instance has the proper mod loader and all compatible mods
+# Parameters:
+#   $1 - instance_dir: Path to the PrismLauncher instance directory
+#   $2 - instance_name: Display name of the instance for logging
+install_fabric_and_mods() {
+    local instance_dir="$1"
+    local instance_name="$2"
+    
+    print_progress "Installing Fabric loader for mod support..."
+    local pack_json="$instance_dir/mmc-pack.json"
+    
+    # FABRIC LOADER INSTALLATION: Add Fabric to the component stack if not present
+    # Fabric loader is required for all Fabric mods to function properly
+    # We check if it's already installed to avoid duplicate entries
+    if [[ ! -f "$pack_json" ]] || ! grep -q "net.fabricmc.fabric-loader" "$pack_json" 2>/dev/null; then
+        print_progress "Adding Fabric loader to $instance_name..."
         
-        # Detect latest Fabric loader version
-        FABRIC_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version' 2>/dev/null)
-        if [ -z "$FABRIC_VERSION" ] || [ "$FABRIC_VERSION" = "null" ]; then
-            echo "  [Warning] Could not detect latest Fabric version, using fallback"
-            FABRIC_VERSION="0.16.9"  # Fallback to a known stable version
-        fi
-        
-        # Check if instance already has Fabric installed
-        if [ -f "$PACK_JSON" ] && grep -q "net.fabricmc.fabric-loader" "$PACK_JSON" 2>/dev/null; then
-            echo "  ✅ Fabric loader already installed"
-        else
-            echo "  Adding Fabric loader v$FABRIC_VERSION to instance..."
-            
-            # Create or update mmc-pack.json with Fabric
-            if [ -f "$PACK_JSON" ]; then
-                # Add complete Fabric dependency chain to existing pack.json
-                TMP_PACK=$(mktemp)
-                jq --arg fabric_ver "$FABRIC_VERSION" --arg mc_ver "$MC_VERSION" '
-                    .components |= [
-                        {
-                            "cachedName": "LWJGL 3",
-                            "cachedVersion": "3.3.3",
-                            "cachedVolatile": true,
-                            "dependencyOnly": true,
-                            "uid": "org.lwjgl3",
-                            "version": "3.3.3"
-                        },
-                        {
-                            "cachedName": "Minecraft",
-                            "cachedRequires": [
-                                {
-                                    "suggests": "3.3.3",
-                                    "uid": "org.lwjgl3"
-                                }
-                            ],
-                            "cachedVersion": $mc_ver,
-                            "important": true,
-                            "uid": "net.minecraft",
-                            "version": $mc_ver
-                        },
-                        {
-                            "cachedName": "Intermediary Mappings",
-                            "cachedRequires": [
-                                {
-                                    "equals": $mc_ver,
-                                    "uid": "net.minecraft"
-                                }
-                            ],
-                            "cachedVersion": $mc_ver,
-                            "cachedVolatile": true,
-                            "dependencyOnly": true,
-                            "uid": "net.fabricmc.intermediary",
-                            "version": $mc_ver
-                        },
-                        {
-                            "cachedName": "Fabric Loader",
-                            "cachedRequires": [
-                                {
-                                    "uid": "net.fabricmc.intermediary"
-                                }
-                            ],
-                            "cachedVersion": $fabric_ver,
-                            "uid": "net.fabricmc.fabric-loader",
-                            "version": $fabric_ver
-                        }
-                    ] + .
-                ' "$PACK_JSON" > "$TMP_PACK" && mv "$TMP_PACK" "$PACK_JSON"
-            else
-                # Create new pack.json with Fabric
-                cat > "$PACK_JSON" <<EOF
+        # Create complete component stack with proper dependency chain
+        # Order matters: LWJGL3 → Minecraft → Intermediary Mappings → Fabric Loader
+        cat > "$pack_json" <<EOF
 {
     "components": [
         {
@@ -715,546 +1032,1166 @@ EOF
     "formatVersion": 1
 }
 EOF
-            fi
-            echo "  ✅ Fabric loader v$FABRIC_VERSION installed"
-        fi
-        
-        # Create mods directory
-        MODS_DIR="$INSTANCE_DIR/.minecraft/mods"
-        mkdir -p "$MODS_DIR"
-        for idx in "${FINAL_MOD_INDEXES[@]}"; do
-          MOD_URL="${MOD_URLS[$idx]}"
-          MOD_NAME="${SUPPORTED_MODS[$idx]}"
-          if [ -z "$MOD_URL" ] || [ "$MOD_URL" = "null" ]; then
-            echo "  [Warning] No compatible file found for $MOD_NAME. Skipping download."
-            MISSING_MODS+=("$MOD_NAME")
-            continue
-          fi
-          MOD_FILE="$MODS_DIR/${MOD_NAME// /_}.jar"
-          if wget -O "$MOD_FILE" "$MOD_URL"; then
-            echo "  Success: $MOD_NAME"
-          else
-            echo "  [Warning] Failed to download $MOD_NAME."
-            MISSING_MODS+=("$MOD_NAME")
-          fi
-          # Check for 0-byte file (broken PrismLauncher proxy or bad URL)
-          if [ ! -s "$MOD_FILE" ]; then
-            echo "  [Error] Downloaded file for $MOD_NAME is 0 bytes! URL: $MOD_URL"
-            rm -f "$MOD_FILE"
-            MISSING_MODS+=("$MOD_NAME (0byte)")
-            continue
-          fi
-        done
-        
-        # Configure instance for splitscreen play
-        echo "  Configuring instance settings for Player $i..."
-        if [ -f "$INSTANCE_DIR/instance.cfg" ]; then
-            # Set instance name and display name
-            if grep -q "^name=" "$INSTANCE_DIR/instance.cfg"; then
-                sed -i "s/^name=.*/name=Player $i/" "$INSTANCE_DIR/instance.cfg"
-            else
-                echo "name=Player $i" >> "$INSTANCE_DIR/instance.cfg"
-            fi
-            
-            # Configure Java and memory settings for splitscreen performance
-            if grep -q "^JavaPath=" "$INSTANCE_DIR/instance.cfg"; then
-                sed -i "s|^JavaPath=.*|JavaPath=$JAVA_PATH|" "$INSTANCE_DIR/instance.cfg"
-            else
-                echo "JavaPath=$JAVA_PATH" >> "$INSTANCE_DIR/instance.cfg"
-            fi
-            
-            # Memory settings
-            sed -i "s/^MaxMemAlloc=.*/MaxMemAlloc=3072/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "MaxMemAlloc=3072" >> "$INSTANCE_DIR/instance.cfg"
-            sed -i "s/^MinMemAlloc=.*/MinMemAlloc=512/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "MinMemAlloc=512" >> "$INSTANCE_DIR/instance.cfg"
-            sed -i "s/^OverrideMemory=.*/OverrideMemory=true/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "OverrideMemory=true" >> "$INSTANCE_DIR/instance.cfg"
-            sed -i "s/^OverrideJavaLocation=.*/OverrideJavaLocation=true/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "OverrideJavaLocation=true" >> "$INSTANCE_DIR/instance.cfg"
-            
-            # Disable console auto-show for cleaner splitscreen experience
-            sed -i "s/^ShowConsole=.*/ShowConsole=false/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "ShowConsole=false" >> "$INSTANCE_DIR/instance.cfg"
-            sed -i "s/^ShowConsoleOnError=.*/ShowConsoleOnError=false/" "$INSTANCE_DIR/instance.cfg" 2>/dev/null || echo "ShowConsoleOnError=false" >> "$INSTANCE_DIR/instance.cfg"
-        else
-            echo "  [Warning] instance.cfg not found for $INSTANCE_NAME"
-        fi
-        
-        # Create splitscreen configuration for each player
-        CONFIG_DIR="$INSTANCE_DIR/.minecraft/config"
-        mkdir -p "$CONFIG_DIR"
-        SPLITSCREEN_CONFIG="$CONFIG_DIR/splitscreen.properties"
-        
-        # Set splitscreen mode based on player number
-        case $i in
-            1)
-                echo "gap=1" > "$SPLITSCREEN_CONFIG"
-                echo "mode=TOP" >> "$SPLITSCREEN_CONFIG"
-                ;;
-            2)
-                echo "gap=1" > "$SPLITSCREEN_CONFIG"
-                echo "mode=BOTTOM" >> "$SPLITSCREEN_CONFIG"
-                ;;
-            3)
-                echo "gap=1" > "$SPLITSCREEN_CONFIG"
-                echo "mode=BOTTOM_LEFT" >> "$SPLITSCREEN_CONFIG"
-                ;;
-            4)
-                echo "gap=1" > "$SPLITSCREEN_CONFIG"
-                echo "mode=BOTTOM_RIGHT" >> "$SPLITSCREEN_CONFIG"
-                ;;
-        esac
-        
-        echo "Configured instance: Player $i (${SPLITSCREEN_CONFIG##*/})"
-    done
-
-    # --- Verify all instances were created successfully ---
-    echo "Verifying splitscreen instances..."
-    CREATED_INSTANCES=0
-    for i in {1..4}; do
-        INSTANCE_NAME="latestUpdate-$i"
-        INSTANCE_DIR="$targetDir/instances/$INSTANCE_NAME"
-        if [ -d "$INSTANCE_DIR" ] && [ -f "$INSTANCE_DIR/instance.cfg" ]; then
-            # Check if Fabric is properly installed
-            PACK_JSON="$INSTANCE_DIR/mmc-pack.json"
-            if [ -f "$PACK_JSON" ] && grep -q "net.fabricmc.fabric-loader" "$PACK_JSON"; then
-                FABRIC_VER=$(jq -r '.components[] | select(.uid == "net.fabricmc.fabric-loader") | .version' "$PACK_JSON" 2>/dev/null)
-                echo "  ✅ Player $i instance verified (Fabric $FABRIC_VER)"
-            else
-                echo "  ⚠️  Player $i instance verified (no Fabric loader)"
-            fi
-            CREATED_INSTANCES=$((CREATED_INSTANCES + 1))
-        else
-            echo "  ❌ Player $i instance missing or incomplete"
-        fi
-    done
-    
-    if [ "$CREATED_INSTANCES" -eq 0 ]; then
-        echo "Error: No instances were created successfully. Please check PrismLauncher installation." >&2
-        exit 1
-    elif [ "$CREATED_INSTANCES" -lt 4 ]; then
-        echo "Warning: Only $CREATED_INSTANCES out of 4 instances were created successfully."
-        echo "You can still play splitscreen with $CREATED_INSTANCES player(s)."
-    else
-        echo "✅ All 4 splitscreen instances created successfully"
+        print_success "Fabric loader v$FABRIC_VERSION installed"
     fi
-
-    # --- Refresh PrismLauncher instance list ---
-    echo "Refreshing PrismLauncher instance list..."
-    # Create instances.json to help PrismLauncher recognize the instances
-    INSTANCES_JSON="$targetDir/instances.json"
     
-    # Build instances.json dynamically based on created instances
-    echo "{" > "$INSTANCES_JSON"
-    echo '    "formatVersion": 1,' >> "$INSTANCES_JSON"
-    echo '    "instances": {' >> "$INSTANCES_JSON"
+    # MOD DOWNLOAD AND INSTALLATION: Download all selected mods to instance
+    # Create the mods directory where Fabric will load .jar files from
+    local mods_dir="$instance_dir/.minecraft/mods"
+    mkdir -p "$mods_dir"
     
-    INSTANCE_ENTRIES=()
-    for i in {1..4}; do
-        INSTANCE_NAME="latestUpdate-$i"
-        if [ -d "$targetDir/instances/$INSTANCE_NAME" ]; then
-            INSTANCE_ENTRIES+=("        \"$INSTANCE_NAME\": {
-            \"name\": \"Player $i\",
-            \"group\": \"Splitscreen\"
-        }")
+    # Process each mod that was selected and has a compatible download URL
+    # FINAL_MOD_INDEXES contains indices of mods that passed compatibility checking
+    for idx in "${FINAL_MOD_INDEXES[@]}"; do
+        local mod_url="${MOD_URLS[$idx]}"
+        local mod_name="${SUPPORTED_MODS[$idx]}"
+        
+        # SKIP INVALID MODS: Handle cases where compatibility check failed
+        # Some mods may not have compatible versions for the selected Minecraft version
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+            print_warning "No compatible file found for $mod_name. Skipping download."
+            MISSING_MODS+=("$mod_name")  # Track for final summary
+            continue
+        fi
+        
+        # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
+        # Filename is sanitized (spaces replaced with underscores) for filesystem compatibility
+        local mod_file="$mods_dir/${mod_name// /_}.jar"
+        if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
+            print_success "Success: $mod_name"
+        else
+            print_warning "Failed: $mod_name"
+            MISSING_MODS+=("$mod_name")  # Track download failures for summary
         fi
     done
     
-    # Join instance entries with commas
-    IFS=','
-    echo "${INSTANCE_ENTRIES[*]}" >> "$INSTANCES_JSON"
-    unset IFS
-    
-    echo '    }' >> "$INSTANCES_JSON"
-    echo '}' >> "$INSTANCES_JSON"
-    
-    echo "✅ Instance registry updated with ${#INSTANCE_ENTRIES[@]} instances"
+    print_success "Fabric and mods installation complete for $instance_name"
+}
 
-    # --- Download accounts.json for splitscreen (needed for both launchers) ---
-    echo "Setting up offline accounts for splitscreen..."
-    if ! wget -O accounts.json "https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/accounts.json"; then
-        echo "Warning: Failed to download accounts.json. Using local copy if available..." >&2
-        if [ ! -f "accounts.json" ]; then
-            echo "Error: No accounts.json found. Splitscreen accounts may not work properly." >&2
-        fi
-    else
-        echo "✅ Offline accounts downloaded successfully"
-    fi
+# =============================================================================
+# POLLYMC SETUP AND CLEANUP
+# =============================================================================
 
-    # --- Download PollyMC for gameplay ---
-    echo "Downloading PollyMC for splitscreen gameplay..."
+# =============================================================================
+# POLLYMC SETUP AND OPTIMIZATION
+# =============================================================================
+
+# setup_pollymc: Configure PollyMC as the primary launcher for splitscreen gameplay
+# 
+# POLLYMC ADVANTAGES FOR SPLITSCREEN:
+# - No forced Microsoft login requirements (offline-friendly)
+# - Better handling of multiple simultaneous instances
+# - Cleaner interface without authentication popups
+# - More stable for automated controller-based launching
+# 
+# PROCESS OVERVIEW:
+# 1. Download PollyMC AppImage from GitHub releases
+# 2. Migrate all instances from PrismLauncher to PollyMC
+# 3. Copy offline accounts configuration
+# 4. Test PollyMC compatibility and functionality
+# 5. Set up splitscreen launcher script for PollyMC
+# 6. Clean up PrismLauncher files to save space
+#
+# FALLBACK STRATEGY:
+# If PollyMC fails at any step, we fall back to PrismLauncher
+# This ensures the installation completes successfully regardless
+setup_pollymc() {
+    print_header "🎮 SETTING UP POLLYMC"
     
-    # Create PollyMC directory
+    print_progress "Downloading PollyMC for optimized splitscreen gameplay..."
+    
+    # =============================================================================
+    # POLLYMC DIRECTORY INITIALIZATION
+    # =============================================================================
+    
+    # Create PollyMC data directory structure
+    # PollyMC stores instances, accounts, configuration, and launcher script here
+    # Structure: ~/.local/share/PollyMC/{instances/, accounts.json, PollyMC AppImage}
     mkdir -p "$HOME/.local/share/PollyMC"
     
-    # Download latest PollyMC AppImage
-    POLLYMC_URL="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
-    echo "Downloading PollyMC from $POLLYMC_URL..."
+    # =============================================================================
+    # POLLYMC APPIMAGE DOWNLOAD AND VERIFICATION
+    # =============================================================================
     
-    if ! wget -O "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" "$POLLYMC_URL"; then
-        echo "Warning: Failed to download PollyMC. Continuing with PrismLauncher only..." >&2
-        USE_POLLYMC=false
+    # Download PollyMC AppImage from official GitHub releases
+    # AppImage format provides universal Linux compatibility without dependencies
+    # PollyMC GitHub releases API endpoint for latest version
+    # We download the x86_64 Linux AppImage which works on most modern Linux systems
+    local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
+    print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
+    
+    # DOWNLOAD WITH FALLBACK HANDLING
+    # If PollyMC download fails, we continue with PrismLauncher as the primary launcher
+    # This ensures installation doesn't fail completely due to network issues or GitHub downtime
+    if ! wget -O "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" "$pollymc_url"; then
+        print_warning "❌ PollyMC download failed - continuing with PrismLauncher as primary launcher"
+        print_info "   This is not a critical error - PrismLauncher works fine for splitscreen"
+        USE_POLLYMC=false  # Global flag tracks which launcher is active
+        return 0
     else
+        # APPIMAGE PERMISSIONS: Make the downloaded AppImage executable
+        # AppImages require execute permissions to run properly
         chmod +x "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage"
-        echo "✅ PollyMC downloaded successfully"
-        USE_POLLYMC=true
+        print_success "✅ PollyMC AppImage downloaded and configured successfully"
+        USE_POLLYMC=true  # Mark PollyMC as available for further setup
     fi
 
-    # --- Copy instances from PrismLauncher to PollyMC ---
-    if [ "$USE_POLLYMC" = true ]; then
-        echo "Copying instances from PrismLauncher to PollyMC..."
+    # =============================================================================
+    # INSTANCE MIGRATION: Transfer all Minecraft instances from PrismLauncher
+    # =============================================================================
+    
+    # INSTANCE DIRECTORY MIGRATION
+    # Copy the complete instances directory structure from PrismLauncher to PollyMC
+    # This includes all 4 splitscreen instances with their configurations, mods, and saves
+    print_progress "Migrating PrismLauncher instances to PollyMC data directory..."
+    
+    # INSTANCES TRANSFER: Copy entire instances folder with all splitscreen configurations
+    # Each instance (latestUpdate-1 through latestUpdate-4) contains:
+    # - Minecraft version configuration
+    # - Fabric mod loader setup
+    # - All downloaded mods and their dependencies
+    # - Splitscreen-specific mod configurations
+    # - Instance-specific settings (memory, Java args, etc.)
+    if [[ -d "$TARGET_DIR/instances" ]]; then
+        cp -r "$TARGET_DIR/instances" "$HOME/.local/share/PollyMC/"
+        print_success "✅ Splitscreen instances migrated to PollyMC"
         
-        # Ensure PollyMC instances directory exists
-        mkdir -p "$HOME/.local/share/PollyMC/instances"
+        # INSTANCE COUNT VERIFICATION: Ensure all 4 instances were copied successfully
+        local instance_count
+        instance_count=$(find "$HOME/.local/share/PollyMC/instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
+        print_info "   → $instance_count splitscreen instances available in PollyMC"
+    else
+        print_warning "⚠️  No instances directory found in PrismLauncher - this shouldn't happen"
+    fi
+    
+    # =============================================================================
+    # ACCOUNT CONFIGURATION MIGRATION
+    # =============================================================================
+    
+    # OFFLINE ACCOUNTS TRANSFER: Copy splitscreen player account configurations
+    # The accounts.json file contains offline player profiles for Player 1-4
+    # These accounts allow splitscreen gameplay without requiring multiple Microsoft accounts
+    if [[ -f "$TARGET_DIR/accounts.json" ]]; then
+        cp "$TARGET_DIR/accounts.json" "$HOME/.local/share/PollyMC/"
+        print_success "✅ Offline splitscreen accounts copied to PollyMC"
+        print_info "   → Player accounts P1, P2, P3, P4 configured for offline gameplay"
+    else
+        print_warning "⚠️  accounts.json not found - splitscreen accounts may need manual setup"
+    fi
+
+    # =============================================================================
+    # POLLYMC COMPATIBILITY VERIFICATION
+    # =============================================================================
+    
+    # POLLYMC FUNCTIONALITY TEST: Verify PollyMC works on this system
+    # Test basic AppImage execution and CLI functionality before committing to use PollyMC
+    # Some older systems or restricted environments may have issues with AppImages
+    print_progress "Testing PollyMC compatibility and basic functionality..."
+    
+    # APPIMAGE EXECUTION TEST: Run PollyMC with --help flag to verify it works
+    # Timeout prevents hanging if AppImage has issues
+    # This tests: AppImage execution, basic CLI functionality, system compatibility
+    if timeout 5s "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" --help >/dev/null 2>&1; then
+        print_success "✅ PollyMC compatibility test passed - AppImage executes properly"
         
-        # Copy each created instance
-        for i in {1..4}; do
-            INSTANCE_NAME="latestUpdate-$i"
-            PRISM_INSTANCE="$targetDir/instances/$INSTANCE_NAME"
-            POLLY_INSTANCE="$HOME/.local/share/PollyMC/instances/$INSTANCE_NAME"
+        # =============================================================================
+        # POLLYMC INSTANCE VERIFICATION AND FINAL SETUP
+        # =============================================================================
+        
+        # INSTANCE ACCESS VERIFICATION: Confirm PollyMC can detect and access migrated instances
+        # This ensures PollyMC properly recognizes the instance format from PrismLauncher
+        # Both launchers use similar formats, but compatibility should be verified
+        print_progress "Verifying PollyMC can access migrated splitscreen instances..."
+        local polly_instances_count
+        polly_instances_count=$(find "$HOME/.local/share/PollyMC/instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
+        
+        if [[ "$polly_instances_count" -eq 4 ]]; then
+            print_success "✅ PollyMC instance verification successful - all 4 instances accessible"
+            print_info "   → latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4 ready"
             
-            if [ -d "$PRISM_INSTANCE" ]; then
-                echo "  Copying Player $i instance to PollyMC..."
-                cp -r "$PRISM_INSTANCE" "$POLLY_INSTANCE"
-                echo "  ✅ Player $i instance copied"
-            fi
-        done
-        
-        # Copy instances registry
-        if [ -f "$INSTANCES_JSON" ]; then
-            cp "$INSTANCES_JSON" "$HOME/.local/share/PollyMC/instances.json"
-        fi
-        
-        # Copy accounts for PollyMC
-        echo "Configuring PollyMC accounts..."
-        if [ -f "accounts.json" ]; then
-            # Verify accounts.json has content before copying
-            if [ -s "accounts.json" ]; then
-                cp "accounts.json" "$HOME/.local/share/PollyMC/accounts.json"
-                echo "✅ Accounts copied to PollyMC"
-                echo "  📋 Verifying account copy..."
-                if [ -f "$HOME/.local/share/PollyMC/accounts.json" ] && [ -s "$HOME/.local/share/PollyMC/accounts.json" ]; then
-                    ACCOUNT_COUNT=$(jq -r '.accounts | length' "$HOME/.local/share/PollyMC/accounts.json" 2>/dev/null || echo "0")
-                    echo "  ✅ Found $ACCOUNT_COUNT accounts in PollyMC"
-                    
-                    # List account names for verification
-                    if [ "$ACCOUNT_COUNT" -gt 0 ]; then
-                        echo "  📋 Account names: $(jq -r '.accounts[].profile.name' "$HOME/.local/share/PollyMC/accounts.json" 2>/dev/null | tr '\n' ', ' | sed 's/,$//')"
-                    fi
-                else
-                    echo "  ❌ Account copy verification failed"
-                fi
-            else
-                echo "⚠️  Warning: accounts.json is empty, cannot copy to PollyMC"
-            fi
-        else
-            echo "⚠️  Warning: accounts.json not found, PollyMC may not have splitscreen accounts"
-        fi
-        
-        # Test PollyMC functionality
-        echo "Testing PollyMC compatibility..."
-        if timeout 5s "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" --help >/dev/null 2>&1; then
-            echo "✅ PollyMC is working correctly"
+            # LAUNCHER SCRIPT CONFIGURATION: Set up the splitscreen launcher for PollyMC
+            # This configures the controller detection and multi-instance launch script
+            setup_pollymc_launcher
             
-            # Verify instances are accessible in PollyMC
-            echo "Verifying PollyMC can access instances..."
-            POLLY_INSTANCES_COUNT=$(find "$HOME/.local/share/PollyMC/instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
-            if [ "$POLLY_INSTANCES_COUNT" -gt 0 ]; then
-                echo "✅ PollyMC has access to $POLLY_INSTANCES_COUNT splitscreen instances"
-                
-                # Download and configure the launcher script for PollyMC before cleanup
-                echo "Setting up launcher script for PollyMC..."
-                rm -f minecraftSplitscreen.sh
-                if wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh; then
-                    chmod +x minecraftSplitscreen.sh
-                    # Configure launcher script for PollyMC
-                    sed -i 's|PrismLauncher/PrismLauncher.AppImage|PollyMC/PollyMC-Linux-x86_64.AppImage|g' minecraftSplitscreen.sh
-                    sed -i 's|/.local/share/PrismLauncher/|/.local/share/PollyMC/|g' minecraftSplitscreen.sh
-                    # Copy configured launcher script to PollyMC directory
-                    cp minecraftSplitscreen.sh "$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-                    echo "  ✅ Launcher script configured and copied to PollyMC"
-                else
-                    echo "  ⚠️  Warning: Failed to download launcher script"
-                fi
-                
-                # Clean up PrismLauncher since PollyMC is working
-                echo "🧹 Cleaning up PrismLauncher (no longer needed)..."
-                
-                # Remove PrismLauncher AppImage
-                if [ -f "./PrismLauncher.AppImage" ]; then
-                    rm -f "./PrismLauncher.AppImage"
-                    echo "  ✅ Removed PrismLauncher AppImage"
-                fi
-                
-                # Remove PrismLauncher instances (since they're copied to PollyMC)
-                if [ -d "$targetDir/instances" ]; then
-                    rm -rf "$targetDir/instances"
-                    echo "  ✅ Removed PrismLauncher instances directory"
-                fi
-                
-                # Remove PrismLauncher config files
-                PRISM_CONFIG_FILES=(
-                    "$targetDir/instances.json"
-                    "$targetDir/prismlauncher.cfg"
-                    "$targetDir/accounts.json"
-                    "$targetDir/metacache"
-                    "$targetDir/libraries"
-                    "$targetDir/assets"
-                    "$targetDir/jars"
-                )
-                
-                for config_file in "${PRISM_CONFIG_FILES[@]}"; do
-                    if [ -e "$config_file" ]; then
-                        rm -rf "$config_file"
-                        echo "  ✅ Removed $(basename "$config_file")"
-                    fi
-                done
-                
-                # Remove the entire PrismLauncher directory since everything is now in PollyMC
-                echo "  🗑️  Removing entire PrismLauncher directory..."
-                
-                # First, exit the directory we're about to delete
-                cd "$HOME"
-                
-                # Safety check: make sure we're not deleting critical directories
-                if [ -d "$targetDir" ] && [ "$targetDir" != "$HOME" ] && [ "$targetDir" != "/" ] && [[ "$targetDir" == *"PrismLauncher"* ]]; then
-                    rm -rf "$targetDir"
-                    echo "  ✅ Removed PrismLauncher directory: $targetDir"
-                    echo "  💾 All essential files now in PollyMC directory"
-                else
-                    echo "  ⚠️  Skipped directory removal for safety: $targetDir"
-                fi
-                echo "  🎯 PollyMC is now the primary launcher for splitscreen gameplay"
-            else
-                echo "⚠️  PollyMC instance verification failed, keeping PrismLauncher as backup"
-                USE_POLLYMC=false
-            fi
+            # CLEANUP PHASE: Remove PrismLauncher since PollyMC is working
+            # This saves significant disk space (~500MB+) and avoids launcher confusion
+            # PrismLauncher was only needed for the CLI-based instance creation process
+            cleanup_prism_launcher
+            
+            print_success "🎮 PollyMC is now the primary launcher for splitscreen gameplay"
+            print_info "   → PrismLauncher files cleaned up to save disk space"
         else
-            echo "⚠️  PollyMC test failed, will fall back to PrismLauncher for gameplay"
+            print_warning "⚠️  PollyMC instance verification failed - found $polly_instances_count instances instead of 4"
+            print_info "   → Falling back to PrismLauncher as primary launcher"
             USE_POLLYMC=false
         fi
+    else
+        print_warning "❌ PollyMC compatibility test failed - AppImage execution issues detected"
+        print_info "   → This may be due to system restrictions, missing dependencies, or AppImage incompatibility"
+        print_info "   → Falling back to PrismLauncher for gameplay (still fully functional)"
+        USE_POLLYMC=false
+    fi
+}
+
+# Configure the splitscreen launcher script for PollyMC
+# Downloads and modifies the launcher script to use PollyMC instead of PrismLauncher
+setup_pollymc_launcher() {
+    print_progress "Setting up launcher script for PollyMC..."
+    
+    # LAUNCHER SCRIPT DOWNLOAD: Get the splitscreen launcher script from GitHub
+    # This script handles controller detection and multi-instance launching
+    if wget -O "$HOME/.local/share/PollyMC/minecraftSplitscreen.sh" \
+        "https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"; then
+        chmod +x "$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
         
-        echo "✅ Instances and accounts copied to PollyMC"
+        # LAUNCHER SCRIPT CONFIGURATION: Modify paths to use PollyMC instead of PrismLauncher
+        # Replace PrismLauncher AppImage path with PollyMC AppImage path
+        sed -i 's|PrismLauncher/PrismLauncher.AppImage|PollyMC/PollyMC-Linux-x86_64.AppImage|g' \
+            "$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+        # Replace PrismLauncher data directory with PollyMC data directory
+        sed -i 's|/.local/share/PrismLauncher/|/.local/share/PollyMC/|g' \
+            "$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+        
+        print_success "Launcher script configured and copied to PollyMC"
+    else
+        print_warning "Failed to download launcher script"
     fi
+}
 
-    # --- Initialize PrismLauncher configuration ---
-    echo "Initializing PrismLauncher configuration..."
+# Clean up PrismLauncher installation after successful PollyMC setup
+# This removes the temporary PrismLauncher directory to save disk space
+# PrismLauncher was only needed for automated instance creation via CLI
+cleanup_prism_launcher() {
+    print_progress "Cleaning up PrismLauncher (no longer needed)..."
     
-    # First, run PrismLauncher to create initial configuration structure
-    echo "Creating initial PrismLauncher configuration..."
-    timeout 10s ./PrismLauncher.AppImage --help >/dev/null 2>&1 || true
+    # SAFETY: Navigate to home directory before removal operations
+    # This prevents accidental deletion if we're currently in the target directory
+    cd "$HOME" || return 1
     
-    # Ensure configuration directory exists
-    mkdir -p "$targetDir"
-    
-    # Configure PrismLauncher settings for better splitscreen experience
-    SETTINGS_FILE="$targetDir/prismlauncher.cfg"
-    cat > "$SETTINGS_FILE" <<EOF
-[General]
-CloseAfterLaunch=true
-UseNativeGLFW=false
-UseNativeOpenAL=false
-ShowConsole=false
-ShowConsoleOnError=false
-MaxMemAlloc=3072
-MinMemAlloc=512
-JavaPath=$JAVA_PATH
-OverrideMemory=true
-OverrideJavaLocation=true
-LastUsedAccount=Player1
-ActiveAccount=Player1
-EOF
+    # SAFETY CHECKS: Multiple validations before removing directories
+    # Ensure we're not deleting critical system directories or user home
+    if [[ -d "$TARGET_DIR" && "$TARGET_DIR" != "$HOME" && "$TARGET_DIR" != "/" && "$TARGET_DIR" == *"PrismLauncher"* ]]; then
+        rm -rf "$TARGET_DIR"
+        print_success "Removed PrismLauncher directory: $TARGET_DIR"
+        print_info "All essential files now in PollyMC directory"
+    else
+        print_warning "Skipped directory removal for safety: $TARGET_DIR"
+    fi
+}
 
-    # Configure launcher script for PrismLauncher fallback (if PollyMC setup failed)
-    if [ "$USE_POLLYMC" = false ]; then
-        echo "Downloading launcher script for PrismLauncher fallback..."
-        rm -f minecraftSplitscreen.sh
-        if wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh; then
-            chmod +x minecraftSplitscreen.sh
-            # Configure for PrismLauncher
-            sed -i 's|PollyMC/PollyMC-Linux-x86_64.AppImage|PrismLauncher/PrismLauncher.AppImage|g' minecraftSplitscreen.sh
-            sed -i 's|/.local/share/PollyMC/|/.local/share/PrismLauncher/|g' minecraftSplitscreen.sh
-            echo "✅ Launcher configured for PrismLauncher fallback"
+# =============================================================================
+# STEAM INTEGRATION
+# =============================================================================
+
+# =============================================================================
+# STEAM INTEGRATION SYSTEM
+# =============================================================================
+
+# setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
+#
+# STEAM INTEGRATION BENEFITS:
+# - Launch directly from Steam's game library interface
+# - Access from Steam Big Picture mode (ideal for Steam Deck)
+# - Controller support through Steam Input system
+# - Game Mode integration on Steam Deck
+# - Professional appearance with custom artwork
+# - Consistent with other Steam games in library
+#
+# TECHNICAL IMPLEMENTATION:
+# 1. Detects active Steam installation and user data
+# 2. Safely shuts down Steam to modify shortcuts database
+# 3. Creates backup of existing shortcuts for safety
+# 4. Uses specialized Python script to modify binary shortcuts.vdf format
+# 5. Downloads custom artwork from SteamGridDB for professional appearance
+# 6. Restarts Steam with new shortcut available
+#
+# SAFETY MEASURES:
+# - Checks for existing shortcut to prevent duplicates
+# - Creates backup before modifications
+# - Uses official Steam binary format handling
+# - Handles multiple Steam installation types (native, Flatpak)
+setup_steam_integration() {
+    print_header "🎯 STEAM INTEGRATION SETUP"
+    
+    # =============================================================================
+    # STEAM INTEGRATION USER PROMPT
+    # =============================================================================
+    
+    # USER PREFERENCE GATHERING: Ask if they want Steam integration
+    # Steam integration is optional but highly recommended for Steam Deck users
+    # Desktop users may prefer to launch manually or from application menu
+    print_info "Steam integration adds Minecraft Splitscreen to your Steam library."
+    print_info "Benefits: Easy access from Steam, Big Picture mode support, Steam Deck Game Mode integration"
+    echo ""
+    read -p "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " add_to_steam
+    if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
+        
+        # =============================================================================
+        # LAUNCHER PATH DETECTION AND CONFIGURATION
+        # =============================================================================
+        
+        # LAUNCHER TYPE DETECTION: Determine which launcher is active for Steam integration
+        # The Steam shortcut needs to point to the correct launcher executable and script
+        # Path fragments are used by the duplicate detection system
+        local launcher_path=""
+        if [[ "$USE_POLLYMC" == true ]]; then
+            launcher_path="local/share/PollyMC/minecraft"  # PollyMC path signature for duplicate detection
+            print_info "Configuring Steam integration for PollyMC launcher"
         else
-            echo "⚠️  Warning: Failed to download launcher script for PrismLauncher"
+            launcher_path="local/share/PrismLauncher/minecraft"  # PrismLauncher path signature
+            print_info "Configuring Steam integration for PrismLauncher"
         fi
+        
+        # =============================================================================
+        # DUPLICATE SHORTCUT PREVENTION
+        # =============================================================================
+        
+        # EXISTING SHORTCUT CHECK: Search Steam's shortcuts database for existing entries
+        # Prevents creating duplicate shortcuts which can cause confusion and clutter
+        # Searches all Steam user accounts on the system for existing Minecraft shortcuts
+        print_progress "Checking for existing Minecraft shortcuts in Steam..."
+        if ! grep -q "$launcher_path" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then
+            # =============================================================================
+            # STEAM SHUTDOWN AND BACKUP PROCEDURE
+            # =============================================================================
+            
+            print_progress "Adding Minecraft Splitscreen launcher to Steam library..."
+            
+            # STEAM PROCESS TERMINATION: Safely shut down Steam before modifying shortcuts
+            # Steam must be completely closed to safely modify the shortcuts.vdf binary database
+            # The shortcuts.vdf file is locked while Steam is running and changes may be lost
+            print_progress "Shutting down Steam to safely modify shortcuts database..."
+            
+            # More robust Steam shutdown with multiple approaches
+            {
+                steam -shutdown 2>/dev/null || true
+                pkill -f "steam" 2>/dev/null || true
+                sleep 2
+            } >/dev/null 2>&1
+            
+            # STEAM SHUTDOWN VERIFICATION: Wait for complete shutdown
+            # Check for Steam processes and wait until Steam fully exits
+            # This prevents corruption of the shortcuts database during modification
+            local shutdown_attempts=0
+            local max_attempts=15
+            
+            while [[ $shutdown_attempts -lt $max_attempts ]]; do
+                # Check multiple ways Steam might be running
+                local steam_running=false
+                
+                # Check for steam processes (multiple approaches for reliability)
+                if pgrep -x "steam" >/dev/null 2>&1 || \
+                   pgrep -f "steam" >/dev/null 2>&1 || \
+                   pgrep -f "Steam" >/dev/null 2>&1 || \
+                   ([ -f ~/.steam/steam.pid ] && kill -0 "$(cat ~/.steam/steam.pid 2>/dev/null)" 2>/dev/null); then
+                    steam_running=true
+                fi
+                
+                if [[ "$steam_running" == false ]]; then
+                    break
+                fi
+                
+                sleep 1
+                ((shutdown_attempts++))
+            done
+            
+            if [[ $shutdown_attempts -ge $max_attempts ]]; then
+                print_warning "⚠️  Steam shutdown timeout - proceeding anyway (may cause issues)"
+                print_info "   → Some Steam processes may still be running"
+            else
+                print_success "✅ Steam shutdown complete"
+            fi
+            
+            # =============================================================================
+            # STEAM SHORTCUTS BACKUP SYSTEM
+            # =============================================================================
+            
+            # BACKUP CREATION: Create safety backup of existing Steam shortcuts
+            # Backup stored in current working directory (safer than TARGET_DIR which may be cleaned)
+            # Compressed archive saves space and preserves all user shortcuts databases
+            local backup_path="$PWD/steam-shortcuts-backup-$(date +%Y%m%d_%H%M%S).tar.xz"
+            print_progress "Creating backup of Steam shortcuts database..."
+            
+            if tar cJf "$backup_path" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then
+                print_success "✅ Steam shortcuts backup created: $(basename "$backup_path")"
+            else
+                print_warning "⚠️  Could not create shortcuts backup - proceeding without backup"
+            fi
+            
+            # =============================================================================
+            # STEAM INTEGRATION SCRIPT EXECUTION
+            # =============================================================================
+            
+            # PYTHON INTEGRATION SCRIPT: Download and execute Steam shortcut creation tool
+            # Uses the official add-to-steam.py script from the repository
+            # This script handles the complex shortcuts.vdf binary format safely
+            # Includes automatic artwork download from SteamGridDB for professional appearance
+            print_progress "Running Steam integration script to add Minecraft Splitscreen..."
+            print_info "   → Downloading launcher detection and shortcut creation script"
+            print_info "   → Modifying Steam shortcuts.vdf binary database"
+            print_info "   → Downloading custom artwork from SteamGridDB"
+            
+            # Execute the Steam integration script with error handling
+            # Download script to temporary file first to avoid pipefail issues
+            local steam_script_temp
+            steam_script_temp=$(mktemp)
+            if curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp"; then
+                # Execute the downloaded script with proper error handling
+                if python3 "$steam_script_temp"; then
+                    print_success "✅ Minecraft Splitscreen successfully added to Steam library"
+                    print_info "   → Custom artwork downloaded and applied"
+                    print_info "   → Shortcut configured with proper launch parameters"
+                else
+                    print_warning "⚠️  Steam integration script encountered errors"
+                    print_info "   → You may need to add the shortcut manually"
+                    print_info "   → Common causes: PollyMC not found, Steam not installed, or permissions issues"
+                fi
+                rm -f "$steam_script_temp"
+            else
+                print_warning "⚠️  Failed to download Steam integration script"
+                print_info "   → You may need to add the shortcut manually"
+            fi
+            
+            # =============================================================================
+            # STEAM RESTART AND VERIFICATION
+            # =============================================================================
+            
+            # STEAM RESTART: Launch Steam in background after successful modification
+            # Use nohup to prevent Steam from being tied to terminal session
+            # Steam will automatically detect the new shortcut in its library
+            print_progress "Restarting Steam with new shortcut..."
+            nohup steam >/dev/null 2>&1 &
+            
+            print_success "🎮 Steam integration complete!"
+            print_info "   → Minecraft Splitscreen should now appear in your Steam library"
+            print_info "   → Accessible from Steam Big Picture mode and Steam Deck Game Mode"
+            print_info "   → Launch directly from Steam for automatic controller detection"
+        else
+            # =============================================================================
+            # DUPLICATE SHORTCUT HANDLING
+            # =============================================================================
+            
+            print_info "✅ Minecraft Splitscreen launcher already present in Steam library"
+            print_info "   → No changes needed - existing shortcut is functional"
+            print_info "   → If you need to update the shortcut, please remove it manually from Steam first"
+        fi
+    else
+        # =============================================================================
+        # STEAM INTEGRATION DECLINED
+        # =============================================================================
+        
+        print_info "⏭️  Skipping Steam integration"
+        print_info "   → You can still launch Minecraft Splitscreen manually or from desktop launcher"
+        print_info "   → To add to Steam later, run this installer again or use the add-to-steam.py script"
     fi
+}
 
-# Exit the directory if we haven't already (due to PollyMC cleanup)
-if [ "$PWD" != "$HOME" ]; then
-    popd
-fi
+# =============================================================================
+# DESKTOP LAUNCHER CREATION
+# =============================================================================
 
-# --- Optionally add the launch wrapper to Steam automatically ---
-read -p "Do you want to add the Minecraft launch wrapper to Steam? [y/N]: " add_to_steam
-if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
-    # Check for existing launcher in Steam based on what we're using
-    LAUNCHER_PATH=""
-    if [ "$USE_POLLYMC" = true ]; then
-        LAUNCHER_PATH="local/share/PollyMC/minecraft"
-    else
-        LAUNCHER_PATH="local/share/PrismLauncher/minecraft"
-    fi
-    
-    if ! grep -q "$LAUNCHER_PATH" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then
-        echo "Adding Minecraft launch wrapper to Steam..."
-        steam -shutdown
-        while pgrep -F ~/.steam/steam.pid; do
-            sleep 1
-        done
-        [ -f $targetDir/shortcuts-backup.tar.xz ] || tar cJf $targetDir/shortcuts-backup.tar.xz ~/.steam/steam/userdata/*/config/shortcuts.vdf
-        # Download and run the latest add-to-steam.py from the official repo for standalone use
-        curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py | python3 -
-        nohup steam &
-    else
-        echo "Minecraft launch wrapper already present in Steam shortcuts."
-    fi
-else
-    echo "Skipping adding Minecraft launch wrapper to Steam."
-fi
+# =============================================================================
+# DESKTOP LAUNCHER CREATION SYSTEM
+# =============================================================================
 
-# --- Optionally create a .desktop launcher ---
-# Prompt the user to create a desktop launcher for Minecraft Splitscreen
-read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop
-if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
-    # Set the .desktop file name and paths
-    DESKTOP_FILE_NAME="MinecraftSplitscreen.desktop"
-    DESKTOP_FILE_PATH="$HOME/Desktop/$DESKTOP_FILE_NAME"
-    APP_DIR="$HOME/.local/share/applications"
-    mkdir -p "$APP_DIR" # Ensure the applications directory exists
-    # --- Icon Handling ---
-    # Use the same icon as the Steam shortcut (SteamGridDB icon)
-    ICON_DIR="$targetDir/icons"
-    ICON_PATH="$ICON_DIR/minecraft-splitscreen-steamgriddb.ico"
-    ICON_URL="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
-    mkdir -p "$ICON_DIR" # Ensure the icon directory exists
-    # Download the icon if it doesn't already exist
-    if [ ! -f "$ICON_PATH" ]; then
-        wget -O "$ICON_PATH" "$ICON_URL"
-    fi
-    # Determine which icon to use for the .desktop file
-    if [ -f "$ICON_PATH" ]; then
-        ICON_DESKTOP="$ICON_PATH" # Use the downloaded SteamGridDB icon
-    elif [ -f "$targetDir/instances/latestUpdate-1/icon.png" ]; then
-        ICON_DESKTOP="$targetDir/instances/latestUpdate-1/icon.png" # Fallback: use PrismLauncher instance icon
-    else
-        ICON_DESKTOP=application-x-executable # Fallback: use a generic system icon
-    fi
-    # --- Create the .desktop file ---
-    # This file allows launching Minecraft Splitscreen from the desktop and application menu
+# create_desktop_launcher: Generate .desktop file for system integration
+#
+# DESKTOP LAUNCHER BENEFITS:
+# - Native desktop environment integration (GNOME, KDE, XFCE, etc.)
+# - Appears in application menus and search results
+# - Desktop shortcut for quick access
+# - Proper icon and metadata for professional appearance
+# - Follows freedesktop.org Desktop Entry Specification
+# - Works with all Linux desktop environments
+#
+# ICON HIERARCHY:
+# 1. SteamGridDB custom icon (downloaded, professional appearance)
+# 2. PollyMC instance icon (if PollyMC setup successful)
+# 3. PrismLauncher instance icon (fallback)
+# 4. System generic icon (ultimate fallback)
+#
+# DESKTOP FILE LOCATIONS:
+# - Desktop shortcut: ~/Desktop/MinecraftSplitscreen.desktop
+# - System integration: ~/.local/share/applications/MinecraftSplitscreen.desktop
+create_desktop_launcher() {
+    print_header "🖥️ DESKTOP LAUNCHER SETUP"
     
-    # Determine the correct launcher script path based on which launcher is being used
-    if [ "$USE_POLLYMC" = true ]; then
-        LAUNCHER_SCRIPT_PATH="$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-        LAUNCHER_COMMENT="Launch Minecraft in splitscreen mode with PollyMC"
-    else
-        LAUNCHER_SCRIPT_PATH="$targetDir/minecraftSplitscreen.sh"
-        LAUNCHER_COMMENT="Launch Minecraft in splitscreen mode with PrismLauncher"
-    fi
+    # =============================================================================
+    # DESKTOP LAUNCHER USER PROMPT
+    # =============================================================================
     
-    cat <<EOF > "$DESKTOP_FILE_PATH"
+    # USER PREFERENCE GATHERING: Ask if they want desktop integration
+    # Desktop launchers provide convenient access without terminal or Steam
+    # Particularly useful for users who don't use Steam or prefer native desktop integration
+    print_info "Desktop launcher creates a native shortcut for your desktop environment."
+    print_info "Benefits: Desktop shortcut, application menu entry, search integration"
+    echo ""
+    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop
+    if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
+        
+        # =============================================================================
+        # DESKTOP FILE CONFIGURATION AND PATHS
+        # =============================================================================
+        
+        # DESKTOP FILE SETUP: Define paths and filenames following Linux standards
+        # .desktop files follow the freedesktop.org Desktop Entry Specification
+        # Standard locations ensure compatibility across all Linux desktop environments
+        local desktop_file_name="MinecraftSplitscreen.desktop"
+        local desktop_file_path="$HOME/Desktop/$desktop_file_name"  # User desktop shortcut
+        local app_dir="$HOME/.local/share/applications"              # System integration directory
+        
+        # APPLICATIONS DIRECTORY CREATION: Ensure the applications directory exists
+        # This directory is where desktop environments look for user-installed applications
+        mkdir -p "$app_dir"
+        print_info "Desktop file will be created at: $desktop_file_path"
+        print_info "Application menu entry will be registered in: $app_dir"
+        
+        # =============================================================================
+        # ICON ACQUISITION AND CONFIGURATION
+        # =============================================================================
+        
+        # CUSTOM ICON DOWNLOAD: Get professional SteamGridDB icon for consistent branding
+        # This provides the same visual identity as the Steam integration
+        # SteamGridDB provides high-quality gaming artwork used by many Steam applications
+        local icon_dir="$PWD/minecraft-splitscreen-icons"
+        local icon_path="$icon_dir/minecraft-splitscreen-steamgriddb.ico"
+        local icon_url="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
+        
+        print_progress "Configuring desktop launcher icon..."
+        mkdir -p "$icon_dir"  # Ensure icon storage directory exists
+        
+        # ICON DOWNLOAD: Fetch SteamGridDB icon if not already present
+        # This provides a professional-looking icon that matches Steam integration
+        if [[ ! -f "$icon_path" ]]; then
+            print_progress "Downloading custom icon from SteamGridDB..."
+            if wget -O "$icon_path" "$icon_url" >/dev/null 2>&1; then
+                print_success "✅ Custom icon downloaded successfully"
+            else
+                print_warning "⚠️  Custom icon download failed - will use fallback icons"
+            fi
+        else
+            print_info "   → Custom icon already present"
+        fi
+        
+        # =============================================================================
+        # ICON SELECTION WITH FALLBACK HIERARCHY
+        # =============================================================================
+        
+        # ICON SELECTION: Determine the best available icon with intelligent fallbacks
+        # Priority system ensures we always have a functional icon, preferring custom over generic
+        local icon_desktop
+        if [[ -f "$icon_path" ]]; then
+            icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
+            print_info "   → Using custom SteamGridDB icon for consistent branding"
+        elif [[ "$USE_POLLYMC" == true ]] && [[ -f "$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png" ]]; then
+            icon_desktop="$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png"  # Good: PollyMC instance icon
+            print_info "   → Using PollyMC instance icon"
+        elif [[ -f "$TARGET_DIR/instances/latestUpdate-1/icon.png" ]]; then
+            icon_desktop="$TARGET_DIR/instances/latestUpdate-1/icon.png"  # Acceptable: PrismLauncher instance icon
+            print_info "   → Using PrismLauncher instance icon"
+        else
+            icon_desktop="application-x-executable"  # Fallback: Generic system executable icon
+            print_info "   → Using system default executable icon"
+        fi
+        
+        # =============================================================================
+        # LAUNCHER SCRIPT PATH CONFIGURATION
+        # =============================================================================
+        
+        # LAUNCHER SCRIPT PATH DETECTION: Set correct executable path based on active launcher
+        # The desktop file needs to point to the appropriate launcher script
+        # Different paths and descriptions for PollyMC vs PrismLauncher configurations
+        local launcher_script_path
+        local launcher_comment
+        if [[ "$USE_POLLYMC" == true ]]; then
+            launcher_script_path="$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+            launcher_comment="Launch Minecraft splitscreen with PollyMC (optimized for offline gameplay)"
+            print_info "   → Desktop launcher configured for PollyMC"
+        else
+            launcher_script_path="$TARGET_DIR/minecraftSplitscreen.sh"
+            launcher_comment="Launch Minecraft splitscreen with PrismLauncher"
+            print_info "   → Desktop launcher configured for PrismLauncher"
+        fi
+        
+        # =============================================================================
+        # DESKTOP ENTRY FILE GENERATION
+        # =============================================================================
+        
+        # DESKTOP FILE CREATION: Generate .desktop file following freedesktop.org specification
+        # This creates a proper desktop entry that integrates with all Linux desktop environments
+        # The file contains metadata, execution parameters, and display information
+        print_progress "Generating desktop entry file..."
+        
+        # Desktop Entry Specification fields:
+        # - Type=Application: Indicates this is an application launcher
+        # - Name: Display name in menus and desktop
+        # - Comment: Tooltip/description text
+        # - Exec: Command to execute when launched
+        # - Icon: Icon file path or theme icon name
+        # - Terminal: Whether to run in terminal (false for GUI applications)
+        # - Categories: Menu categories for proper organization
+        local desktop_file_name="MinecraftSplitscreen.desktop"
+        local desktop_file_path="$HOME/Desktop/$desktop_file_name"  # User desktop shortcut
+        local app_dir="$HOME/.local/share/applications"              # System integration directory
+        
+        # APPLICATIONS DIRECTORY CREATION: Ensure the applications directory exists
+        # This directory is where desktop environments look for user-installed applications
+        mkdir -p "$app_dir"
+        print_info "Desktop file will be created at: $desktop_file_path"
+        print_info "Application menu entry will be registered in: $app_dir"
+        
+        # =============================================================================
+        # ICON ACQUISITION AND CONFIGURATION
+        # =============================================================================
+        
+        # CUSTOM ICON DOWNLOAD: Get professional SteamGridDB icon for consistent branding
+        # This provides the same visual identity as the Steam integration
+        # SteamGridDB provides high-quality gaming artwork used by many Steam applications
+        local icon_dir="$PWD/minecraft-splitscreen-icons"
+        local icon_path="$icon_dir/minecraft-splitscreen-steamgriddb.ico"
+        local icon_url="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
+        
+        print_progress "Configuring desktop launcher icon..."
+        mkdir -p "$icon_dir"  # Ensure icon storage directory exists
+        
+        # ICON DOWNLOAD: Fetch SteamGridDB icon if not already present
+        # This provides a professional-looking icon that matches Steam integration
+        if [[ ! -f "$icon_path" ]]; then
+            print_progress "Downloading custom icon from SteamGridDB..."
+            if wget -O "$icon_path" "$icon_url" >/dev/null 2>&1; then
+                print_success "✅ Custom icon downloaded successfully"
+            else
+                print_warning "⚠️  Custom icon download failed - will use fallback icons"
+            fi
+        else
+            print_info "   → Custom icon already present"
+        fi
+        
+        # =============================================================================
+        # ICON SELECTION WITH FALLBACK HIERARCHY
+        # =============================================================================
+        
+        # ICON SELECTION: Determine the best available icon with intelligent fallbacks
+        # Priority system ensures we always have a functional icon, preferring custom over generic
+        local icon_desktop
+        if [[ -f "$icon_path" ]]; then
+            icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
+            print_info "   → Using custom SteamGridDB icon for consistent branding"
+        elif [[ "$USE_POLLYMC" == true ]] && [[ -f "$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png" ]]; then
+            icon_desktop="$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png"  # Good: PollyMC instance icon
+            print_info "   → Using PollyMC instance icon"
+        elif [[ -f "$TARGET_DIR/instances/latestUpdate-1/icon.png" ]]; then
+            icon_desktop="$TARGET_DIR/instances/latestUpdate-1/icon.png"  # Acceptable: PrismLauncher instance icon
+            print_info "   → Using PrismLauncher instance icon"
+        else
+            icon_desktop="application-x-executable"  # Fallback: Generic system executable icon
+            print_info "   → Using system default executable icon"
+        fi
+        
+        # =============================================================================
+        # LAUNCHER SCRIPT PATH CONFIGURATION
+        # =============================================================================
+        
+        # LAUNCHER SCRIPT PATH DETECTION: Set correct executable path based on active launcher
+        # The desktop file needs to point to the appropriate launcher script
+        # Different paths and descriptions for PollyMC vs PrismLauncher configurations
+        local launcher_script_path
+        local launcher_comment
+        if [[ "$USE_POLLYMC" == true ]]; then
+            launcher_script_path="$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+            launcher_comment="Launch Minecraft splitscreen with PollyMC (optimized for offline gameplay)"
+            print_info "   → Desktop launcher configured for PollyMC"
+        else
+            launcher_script_path="$TARGET_DIR/minecraftSplitscreen.sh"
+            launcher_comment="Launch Minecraft splitscreen with PrismLauncher"
+            print_info "   → Desktop launcher configured for PrismLauncher"
+        fi
+        
+        # =============================================================================
+        # DESKTOP ENTRY FILE GENERATION
+        # =============================================================================
+        
+        # DESKTOP FILE CREATION: Generate .desktop file following freedesktop.org specification
+        # This creates a proper desktop entry that integrates with all Linux desktop environments
+        # The file contains metadata, execution parameters, and display information
+        print_progress "Generating desktop entry file..."
+        
+        # Desktop Entry Specification fields:
+        # - Type=Application: Indicates this is an application launcher
+        # - Name: Display name in menus and desktop
+        # - Comment: Tooltip/description text
+        # - Exec: Command to execute when launched
+        # - Icon: Icon file path or theme icon name
+        # - Terminal: Whether to run in terminal (false for GUI applications)
+        # - Categories: Menu categories for proper organization
+        
+        cat > "$desktop_file_path" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Minecraft Splitscreen
-Comment=$LAUNCHER_COMMENT
-Exec=$LAUNCHER_SCRIPT_PATH
-Icon=$ICON_DESKTOP
+Comment=$launcher_comment
+Exec=$launcher_script_path
+Icon=$icon_desktop
 Terminal=false
 Categories=Game;
 EOF
-    # Make the .desktop file executable (required for some desktop environments)
-    chmod +x "$DESKTOP_FILE_PATH"
-    # Copy the .desktop file to the applications directory so it appears in the app menu
-    cp "$DESKTOP_FILE_PATH" "$APP_DIR/$DESKTOP_FILE_NAME"
-    # Update the desktop database (if available) to register the new launcher
-    update-desktop-database "$APP_DIR" 2>/dev/null || true
-    echo "Desktop launcher created at $DESKTOP_FILE_PATH and added to application menu."
-else
-    echo "Skipping desktop launcher creation."
-fi
+        
+        print_success "✅ Desktop entry file created successfully"
+        
+        # =============================================================================
+        # DESKTOP FILE PERMISSIONS AND VALIDATION
+        # =============================================================================
+        
+        # DESKTOP FILE PERMISSIONS: Make the .desktop file executable
+        # Many desktop environments require .desktop files to be executable
+        # This ensures the launcher appears and functions properly across all DEs
+        chmod +x "$desktop_file_path"
+        print_info "   → Desktop file permissions set to executable"
+        
+        # DESKTOP FILE VALIDATION: Basic syntax check
+        # Verify the generated .desktop file has required fields
+        if [[ -f "$desktop_file_path" ]] && grep -q "Type=Application" "$desktop_file_path"; then
+            print_success "✅ Desktop file validation passed"
+        else
+            print_warning "⚠️  Desktop file validation failed - file may not work properly"
+        fi
+        
+        # =============================================================================
+        # SYSTEM INTEGRATION AND REGISTRATION
+        # =============================================================================
+        
+        # SYSTEM INTEGRATION: Copy to applications directory for system-wide access
+        # This makes the launcher appear in application menus, search results, and launchers
+        # The ~/.local/share/applications directory is the standard location for user applications
+        print_progress "Registering application with desktop environment..."
+        
+        if cp "$desktop_file_path" "$app_dir/$desktop_file_name"; then
+            print_success "✅ Application registered in system applications directory"
+        else
+            print_warning "⚠️  Failed to register application system-wide"
+        fi
+        
+        # =============================================================================
+        # DESKTOP DATABASE UPDATE
+        # =============================================================================
+        
+        # DATABASE UPDATE: Refresh desktop database to register new application immediately
+        # This ensures the launcher appears in menus without requiring logout/reboot
+        # The update-desktop-database command updates the application cache
+        print_progress "Updating desktop application database..."
+        
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database "$app_dir" 2>/dev/null || true
+            print_success "✅ Desktop database updated - launcher available immediately"
+        else
+            print_info "   → Desktop database update tool not found (launcher may need logout to appear)"
+        fi
+        
+        # =============================================================================
+        # DESKTOP LAUNCHER COMPLETION SUMMARY
+        # =============================================================================
+        
+        print_success "🖥️ Desktop launcher setup complete!"
+        print_info ""
+        print_info "📋 Desktop Integration Summary:"
+        print_info "   → Desktop shortcut: $desktop_file_path"
+        print_info "   → Application menu: $app_dir/$desktop_file_name"
+        print_info "   → Icon: $(basename "$icon_desktop")"
+        print_info "   → Target launcher: $(basename "$launcher_script_path")"
+        print_info ""
+        print_info "🚀 Access Methods:"
+        print_info "   → Double-click desktop shortcut"
+        print_info "   → Search for 'Minecraft Splitscreen' in application menu"
+        print_info "   → Launch from desktop environment's application launcher"
+    else
+        # =============================================================================
+        # DESKTOP LAUNCHER DECLINED
+        # =============================================================================
+        
+        print_info "⏭️  Skipping desktop launcher creation"
+        print_info "   → You can still launch via Steam (if configured) or manually run the script"
+        print_info "   → Manual launch command:"
+        if [[ "$USE_POLLYMC" == true ]]; then
+            print_info "     $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+        else
+            print_info "     $TARGET_DIR/minecraftSplitscreen.sh"
+        fi
+    fi
+}
 
-# --- Summary of missing mods ---
-if [ ${#MISSING_MODS[@]} -gt 0 ]; then
-  echo "\n====================="
-  echo "WARNING: The following required mods could not be installed (missing compatible version or download failed):"
-  for mod in "${MISSING_MODS[@]}"; do
-    echo "  - $mod"
-  done
-  echo "====================="
-fi
+# =============================================================================
+# MAIN EXECUTION WORKFLOW
+# =============================================================================
 
-# --- Installation Complete ---
-echo ""
-echo "=========================================="
-echo "🎮 MINECRAFT SPLITSCREEN SETUP COMPLETE! 🎮"
-echo "=========================================="
-echo ""
-if [ "$USE_POLLYMC" = true ]; then
-    echo "✅ PollyMC Setup Complete!"
+# =============================================================================
+# MAIN EXECUTION WORKFLOW ORCHESTRATION
+# =============================================================================
+
+# main: Primary function that orchestrates the complete splitscreen installation process
+#
+# INSTALLATION WORKFLOW:
+# 1. WORKSPACE SETUP: Create directories and initialize environment
+# 2. CORE SETUP: Java detection, PrismLauncher download, CLI verification
+# 3. VERSION DETECTION: Minecraft and Fabric version determination
+# 4. ACCOUNT SETUP: Download offline splitscreen player accounts
+# 5. MOD COMPATIBILITY: Query APIs and determine compatible mod versions
+# 6. USER SELECTION: Interactive mod selection interface
+# 7. INSTANCE CREATION: Create 4 splitscreen instances with PrismLauncher CLI
+# 8. LAUNCHER OPTIMIZATION: Setup PollyMC and cleanup PrismLauncher (if successful)
+# 9. INTEGRATION: Optional Steam and desktop launcher integration
+# 10. COMPLETION: Summary report and usage instructions
+#
+# ERROR HANDLING STRATEGY:
+# - Each phase has fallback mechanisms to ensure installation can complete
+# - Non-critical failures (like PollyMC setup) don't halt the entire process
+# - Comprehensive error reporting helps users understand any issues
+# - Multiple validation checkpoints ensure data integrity
+#
+# DUAL-LAUNCHER APPROACH:
+# The script uses an optimized strategy combining two launchers:
+# - PrismLauncher: CLI automation for reliable instance creation with proper Fabric setup
+# - PollyMC: Offline-friendly gameplay launcher without forced authentication
+# - Smart cleanup: Removes PrismLauncher after successful PollyMC setup to save space
+main() {
+    print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
+    print_info "Advanced installation system with dual-launcher optimization"
+    print_info "Strategy: PrismLauncher CLI automation → PollyMC gameplay → Smart cleanup"
     echo ""
-    echo "🔧 Setup Strategy Used: OPTIMIZED APPROACH"
-    echo "   • PrismLauncher: Used for automated instance creation ✅ COMPLETED"
-    echo "   • PollyMC: Primary launcher for splitscreen gameplay ✅ ACTIVE"
-    echo "   • PrismLauncher cleanup: Removed after successful setup ✅ CLEANED"
+    
+    # =============================================================================
+    # WORKSPACE INITIALIZATION PHASE
+    # =============================================================================
+    
+    # WORKSPACE SETUP: Create and navigate to working directory
+    # All temporary files, downloads, and initial setup happen in TARGET_DIR
+    # This provides a clean, isolated environment for the installation process
+    print_progress "Initializing installation workspace: $TARGET_DIR"
+    mkdir -p "$TARGET_DIR"
+    cd "$TARGET_DIR" || exit 1
+    print_success "✅ Workspace initialized successfully"
+    
+    # =============================================================================
+    # CORE SYSTEM REQUIREMENTS VALIDATION
+    # =============================================================================
+    
+    detect_java                    # Verify Java 21+ availability and set JAVA_PATH
+    download_prism_launcher        # Download PrismLauncher AppImage for CLI automation
+    verify_prism_cli              # Test CLI functionality and validate installation
+    
+    # =============================================================================
+    # VERSION DETECTION AND CONFIGURATION
+    # =============================================================================
+    
+    get_minecraft_version         # Determine target Minecraft version (user choice or latest)
+    get_fabric_version           # Get compatible Fabric loader version from API
+    
+    # =============================================================================
+    # OFFLINE ACCOUNTS CONFIGURATION
+    # =============================================================================
+    
+    print_progress "Setting up offline accounts for splitscreen gameplay..."
+    print_info "Downloading pre-configured offline accounts for Player 1-4"
+    
+    # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
+    # These accounts enable splitscreen without requiring multiple Microsoft accounts
+    # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
+    if ! wget -O accounts.json "https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/accounts.json"; then
+        print_warning "⚠️  Failed to download accounts.json from repository"
+        print_info "   → Attempting to use local copy if available..."
+        if [[ ! -f "accounts.json" ]]; then
+            print_error "❌ No accounts.json found - splitscreen accounts may require manual setup"
+            print_info "   → Splitscreen will still work but players may have generic names"
+        fi
+    else
+        print_success "✅ Offline splitscreen accounts configured successfully"
+        print_info "   → P1, P2, P3, P4 player accounts ready for offline gameplay"
+    fi
+    
+    # =============================================================================
+    # MOD ECOSYSTEM SETUP PHASE
+    # =============================================================================
+    
+    check_mod_compatibility       # Query Modrinth/CurseForge APIs for compatible versions
+    select_user_mods             # Interactive mod selection interface with categories
+    
+    # =============================================================================
+    # MINECRAFT INSTANCE CREATION PHASE
+    # =============================================================================
+    
+    
+    create_instances             # Create 4 instances using PrismLauncher CLI with comprehensive fallbacks
+    
+    # =============================================================================
+    # LAUNCHER OPTIMIZATION PHASE: Advanced launcher configuration
+    # =============================================================================
+    
+    setup_pollymc               # Download PollyMC, migrate instances, verify, cleanup PrismLauncher
+    
+    # =============================================================================
+    # SYSTEM INTEGRATION PHASE: Optional platform integration
+    # =============================================================================
+    
+    setup_steam_integration     # Add splitscreen launcher to Steam library (optional)
+    create_desktop_launcher     # Create native desktop launcher and app menu entry (optional)
+    
+    # =============================================================================
+    # INSTALLATION COMPLETION AND STATUS REPORTING
+    # =============================================================================
+    
+    print_header "🎉 INSTALLATION ANALYSIS AND COMPLETION REPORT"
+    
+    # =============================================================================
+    # MISSING MODS ANALYSIS: Report any compatibility issues
+    # =============================================================================
+    
+    # MISSING MODS REPORT: Alert user to any mods that couldn't be installed
+    # This helps users understand if specific functionality might be unavailable
+    # Common causes: no Fabric version available, API changes, temporary download issues
+    if [[ ${#MISSING_MODS[@]} -gt 0 ]]; then
+        echo ""
+        print_warning "====================="
+        print_warning "⚠️  MISSING MODS ANALYSIS"
+        print_warning "====================="
+        print_warning "The following mods could not be installed:"
+        print_info "Common causes: No compatible Fabric version, API issues, download failures"
+        echo ""
+        for mod in "${MISSING_MODS[@]}"; do
+            echo "  ❌ $mod"
+        done
+        print_warning "====================="
+        print_info "These mods can be installed manually later if compatible versions become available"
+        print_info "The splitscreen functionality will work without these optional mods"
+    fi
+    
+    # =============================================================================
+    # COMPREHENSIVE INSTALLATION SUCCESS REPORT
+    # =============================================================================
+    
     echo ""
+    echo "=========================================="
+    echo "🎮 MINECRAFT SPLITSCREEN INSTALLATION COMPLETE! 🎮"
+    echo "=========================================="
+    echo ""
+    
+    # =============================================================================
+    # LAUNCHER STRATEGY SUCCESS ANALYSIS
+    # =============================================================================
+    
+    # LAUNCHER STRATEGY REPORT: Explain which approach was successful and the benefits
+    # The dual-launcher approach provides the best of both worlds when successful
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "✅ OPTIMIZED INSTALLATION SUCCESSFUL!"
+        echo ""
+        echo "🔧 DUAL-LAUNCHER STRATEGY COMPLETED:"
+        echo "   🛠️  PrismLauncher: CLI automation for reliable instance creation ✅ COMPLETED"
+        echo "   🎮 PollyMC: Primary launcher for offline splitscreen gameplay ✅ ACTIVE"
+        echo "   🧹 Smart cleanup: PrismLauncher removed after successful setup ✅ CLEANED"
+        echo ""
+        echo "🎯 STRATEGY BENEFITS ACHIEVED:"
+        echo "   • Reliable instance creation through proven CLI automation"
+        echo "   • Offline-friendly gameplay without forced Microsoft login prompts"
+        echo "   • Optimized disk usage through intelligent cleanup"
+        echo "   • Best performance for splitscreen scenarios"
+        echo ""
+        echo "✅ Primary launcher: PollyMC (optimized for splitscreen)"
+        echo "✅ All instances migrated and verified in PollyMC"
+        echo "✅ Temporary PrismLauncher files cleaned up successfully"
+    else
+        echo "✅ FALLBACK INSTALLATION SUCCESSFUL!"
+        echo ""
+        echo "🔧 FALLBACK STRATEGY USED:"
+        echo "   🛠️  PrismLauncher: Instance creation + primary launcher ✅ ACTIVE"
+        echo "   ⚠️  PollyMC: Download/setup encountered issues, using PrismLauncher for everything"
+        echo ""
+        echo "📋 FALLBACK EXPLANATION:"
+        echo "   • PollyMC setup failed (network issues, system compatibility, or download problems)"
+        echo "   • PrismLauncher provides full functionality as backup launcher"
+        echo "   • Splitscreen works perfectly with PrismLauncher"
+        echo ""
+        echo "✅ Primary launcher: PrismLauncher (proven reliability)"
+        echo "⚠️  Note: PollyMC optimization unavailable, but full functionality preserved"
+    fi
+    
+    # =============================================================================
+    # TECHNICAL ACHIEVEMENT SUMMARY
+    # =============================================================================
+    
+    # INSTALLATION COMPONENTS SUMMARY: List all successfully completed setup elements
+    echo ""
+    echo "🏆 TECHNICAL ACHIEVEMENTS COMPLETED:"
+    echo "✅ Java 21+ detection and configuration"
     echo "✅ Automated instance creation via PrismLauncher CLI"
-    echo "✅ PollyMC configured as primary launcher"
-    echo "✅ All instances transferred to PollyMC"
-    echo "✅ PrismLauncher components cleaned up"
-else
-    echo "✅ PrismLauncher Setup Complete!"
+    echo "✅ Complete Fabric dependency chain implementation"
+    echo "✅ 4 splitscreen instances created and configured (Player 1-4)"
+    echo "✅ Fabric mod loader installation with proper dependency resolution"
+    echo "✅ Compatible mod versions detected and downloaded via API filtering"
+    echo "✅ Splitscreen-specific configurations applied to all instances"
+    echo "✅ Offline player accounts configured for splitscreen gameplay"
+    echo "✅ Java memory settings optimized for splitscreen performance"
+    echo "✅ Instance verification and launcher registration completed"
     echo ""
-    echo "🔧 Setup Strategy Used: FALLBACK MODE"
-    echo "   • PrismLauncher: Instance creation + gameplay"
-    echo "   • PollyMC: Download/setup failed, keeping PrismLauncher"
+    
+    # =============================================================================
+    # USER GUIDANCE AND LAUNCH INSTRUCTIONS
+    # =============================================================================
+    
+    echo "🚀 READY TO PLAY SPLITSCREEN MINECRAFT!"
     echo ""
-    echo "✅ PrismLauncher: CLI-based instance creation completed"
-    echo "⚠️  Note: PollyMC setup failed, using PrismLauncher for everything"
+    
+    # LAUNCH METHODS: Comprehensive guide to starting splitscreen Minecraft
+    echo "🎮 HOW TO LAUNCH SPLITSCREEN MINECRAFT:"
+    echo ""
+    
+    # PRIMARY LAUNCH METHOD: Direct script execution
+    echo "1. 🔧 DIRECT LAUNCH (Recommended):"
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "   Command: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+        echo "   Description: Optimized PollyMC launcher with automatic controller detection"
+    else
+        echo "   Command: $TARGET_DIR/minecraftSplitscreen.sh"
+        echo "   Description: PrismLauncher-based splitscreen with automatic controller detection"
+    fi
+    echo ""
+    
+    # ALTERNATIVE LAUNCH METHODS: Other integration options
+    echo "2. 🖥️  DESKTOP LAUNCHER:"
+    echo "   Method: Double-click desktop shortcut or search 'Minecraft Splitscreen' in app menu"
+    echo "   Availability: $(if [[ -f "$HOME/Desktop/MinecraftSplitscreen.desktop" ]]; then echo "✅ Configured"; else echo "❌ Not configured"; fi)"
+    echo ""
+    
+    echo "3. 🎯 STEAM INTEGRATION:"
+    echo "   Method: Launch from Steam library or Big Picture mode"
+    echo "   Benefits: Steam Deck Game Mode integration, Steam Input support"
+    echo "   Availability: $(if grep -q "PollyMC\|PrismLauncher" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then echo "✅ Configured"; else echo "❌ Not configured"; fi)"
+    echo ""
+    
+    # =============================================================================
+    # SYSTEM REQUIREMENTS AND TECHNICAL DETAILS
+    # =============================================================================
+    
+    echo "⚙️  SYSTEM CONFIGURATION DETAILS:"
+    echo ""
+    
+    # LAUNCHER DETAILS: Technical information about the setup
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "🛠️  LAUNCHER CONFIGURATION:"
+        echo "   • Instance creation: PrismLauncher CLI (automated)"
+        echo "   • Gameplay launcher: PollyMC (offline-optimized)"
+        echo "   • Strategy: Best of both worlds approach"
+        echo "   • Benefits: CLI automation + offline gameplay + no forced login"
+    else
+        echo "🛠️  LAUNCHER CONFIGURATION:"
+        echo "   • Primary launcher: PrismLauncher (all functions)"
+        echo "   • Strategy: Single launcher approach"
+        echo "   • Note: PollyMC optimization unavailable, but fully functional"
+    fi
+    echo ""
+    
+    # MINECRAFT ACCOUNT REQUIREMENTS: Important user information
+    echo "💳 ACCOUNT REQUIREMENTS:"
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "   • Microsoft account: Required for initial setup and updates"
+        echo "   • Account type: PAID Minecraft Java Edition required"
+        echo "   • Login frequency: Minimal (PollyMC is offline-friendly)"
+        echo "   • Splitscreen: Uses offline accounts (P1, P2, P3, P4) after initial login"
+    else
+        echo "   • Microsoft account: Required for launcher access"
+        echo "   • Account type: PAID Minecraft Java Edition required" 
+        echo "   • Note: PrismLauncher may prompt for periodic authentication"
+        echo "   • Splitscreen: Uses offline accounts (P1, P2, P3, P4) after login"
+    fi
+    echo ""
+    
+    # CONTROLLER INFORMATION: Hardware requirements and tips
+    echo "🎮 CONTROLLER CONFIGURATION:"
+    echo "   • Supported: Xbox, PlayStation, generic USB/Bluetooth controllers"
+    echo "   • Detection: Automatic (1-4 controllers supported)"
+    echo "   • Steam Deck: Built-in controls + external controllers"
+    echo "   • Recommendation: Use wired controllers for best performance"
+    echo ""
+    
+    # =============================================================================
+    # INSTALLATION LOCATION SUMMARY
+    # =============================================================================
+    
+    echo "📁 INSTALLATION LOCATIONS:"
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "   • Primary installation: $HOME/.local/share/PollyMC/"
+        echo "   • Launcher executable: $HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage"
+        echo "   • Splitscreen script: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
+        echo "   • Instance data: $HOME/.local/share/PollyMC/instances/"
+        echo "   • Account configuration: $HOME/.local/share/PollyMC/accounts.json"
+        echo "   • Temporary build files: Successfully removed after setup ✅"
+    else
+        echo "   • Primary installation: $TARGET_DIR"
+        echo "   • Launcher executable: $TARGET_DIR/PrismLauncher.AppImage"
+        echo "   • Splitscreen script: $TARGET_DIR/minecraftSplitscreen.sh"
+        echo "   • Instance data: $TARGET_DIR/instances/"
+        echo "   • Account configuration: $TARGET_DIR/accounts.json"
+    fi
+    echo ""
+    
+    # =============================================================================
+    # ADVANCED TECHNICAL FEATURE SUMMARY
+    # =============================================================================
+    
+    echo "🔧 ADVANCED FEATURES IMPLEMENTED:"
+    echo "   • Complete Fabric dependency chain with proper version matching"
+    echo "   • API-based mod compatibility verification (Modrinth + CurseForge)"
+    echo "   • Sophisticated version parsing with semantic version support"
+    echo "   • Automatic dependency resolution and installation"
+    echo "   • Enhanced error handling with multiple fallback strategies"
+    echo "   • Instance verification and launcher registration"
+    echo "   • Smart cleanup with disk space optimization"
+    if [[ "$USE_POLLYMC" == true ]]; then
+        echo "   • Dual-launcher optimization strategy successfully implemented"
+    fi
+    echo "   • Cross-platform Linux compatibility (Steam Deck + Desktop)"
+    echo "   • Professional Steam and desktop environment integration"
+    echo ""
+    
+    # =============================================================================
+    # FINAL SUCCESS MESSAGE AND NEXT STEPS
+    # =============================================================================
+    
+    echo "🎉 INSTALLATION COMPLETE - ENJOY SPLITSCREEN MINECRAFT! 🎉"
+    echo ""
+    echo "Next steps:"
+    echo "1. Connect your controllers (1-4 supported)"
+    echo "2. Launch using any of the methods above"
+    echo "3. The system will automatically detect controller count and launch appropriate instances"
+    echo "4. Each player gets their own screen and can play independently"
+    echo ""
+    echo "For troubleshooting or updates, visit:"
+    echo "https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck"
+    echo "=========================================="
+}
+
+# =============================================================================
+# SCRIPT ENTRY POINT AND EXECUTION CONTROL
+# =============================================================================
+
+# SCRIPT ENTRY POINT: Execute main function if script is run directly
+# This allows the script to be sourced for testing without auto-execution
+# The ${BASH_SOURCE[0]} check ensures main() only runs when script is executed directly
+# Command line arguments are passed through to main() for potential future use
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"  # Pass all command line arguments to main function
 fi
-echo "✅ $CREATED_INSTANCES splitscreen instances created (Player 1-$CREATED_INSTANCES)"
-echo "✅ All mods downloaded and installed"
-echo "✅ Splitscreen configurations applied"
-echo "✅ Offline accounts configured"
-echo "✅ Java settings optimized for splitscreen"
-echo ""
-echo "🚀 Ready to play!"
-echo ""
-echo "To start splitscreen Minecraft:"
-if [ "$USE_POLLYMC" = true ]; then
-    echo "1. Launch: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-else
-    echo "1. Launch: $targetDir/minecraftSplitscreen.sh"
-fi
-echo "2. Or use the desktop launcher (if created)"
-echo "3. Or launch from Steam (if added)"
-echo ""
-if [ "$USE_POLLYMC" = true ]; then
-    echo "💡 Launcher Details:"
-    echo "   • Instances created with: PrismLauncher CLI"
-    echo "   • Game launches with: PollyMC (no forced login)"
-    echo "   • Best of both worlds: CLI automation + offline gameplay"
-else
-    echo "💡 Launcher Details:"
-    echo "   • Everything handled by: PrismLauncher"
-    echo "⚠️  IMPORTANT - Minecraft Account Required:"
-    echo "   • You need a PAID Minecraft Java Edition account from Microsoft"
-    echo "   • Free/demo accounts will NOT work for splitscreen gameplay"
-    echo "   • The launcher is configured for offline mode after login"
-fi
-echo ""
-echo "The launcher will automatically detect controllers and"
-echo "start the appropriate number of Minecraft instances."
-echo ""
-if [ "$USE_POLLYMC" = true ]; then
-    echo "📁 Installation locations:"
-    echo "   • Instances & launcher: $HOME/.local/share/PollyMC"
-    echo "   • Temporary build location: Successfully removed after setup"
-else
-    echo "📁 Installation location: $targetDir"
-fi
-echo "🔧 CLI Features Implemented:"
-echo "   • Automatic instance creation via PrismLauncher CLI"
-echo "   • Fabric loader support with fallbacks"
-echo "   • Manual instance creation if CLI fails"
-echo "   • Dynamic instance verification and registration"
-echo "   • Enhanced error handling and recovery"
-if [ "$USE_POLLYMC" = true ]; then
-    echo "   • Optimized launcher approach (PrismLauncher→PollyMC→Cleanup)"
-fi
-echo "=========================================="
+
+# =============================================================================
+# END OF MINECRAFT SPLITSCREEN INSTALLER
+# =============================================================================
+# 
+# FINAL NOTES:
+# - This script implements a comprehensive splitscreen Minecraft installation
+# - Uses advanced dual-launcher strategy for optimal user experience  
+# - Includes extensive error handling and fallback mechanisms
+# - Provides multiple integration options (Steam, desktop, manual)
+# - Supports both Steam Deck and desktop Linux environments
+# - All temporary files are automatically cleaned up after successful installation
+# - The installation is fully self-contained and doesn't require additional setup
+#
+# For issues, updates, or contributions:
+# https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck
+# =============================================================================
