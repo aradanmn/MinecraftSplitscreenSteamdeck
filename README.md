@@ -85,7 +85,7 @@ This hybrid approach ensures reliable automated installation while providing the
      # Download and run the Steam Deck JDK installer script
      wget https://raw.githubusercontent.com/BlackCorsair/install-jdk-on-steam-deck/master/scripts/install-jdk.sh
      chmod +x install-jdk.sh
-     ./install-jdk.sh
+     JDK_VERSION=21 ./install-jdk.sh
      ```
      This script will install Java 21 to `~/.local/jdk/` and is designed specifically for Steam Deck's read-only filesystem.
    
