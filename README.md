@@ -80,9 +80,19 @@ This hybrid approach ensures reliable automated installation while providing the
 
 ## Installation
 1. **Install Java 21**
-   - Refer to your distro's documentation or package manager.
-   - For Arch: `sudo pacman -S jdk21-openjdk`
-   - For Debian/Ubuntu: `sudo apt install openjdk-21-jre`
+   - **For Steam Deck users (recommended):**
+     ```sh
+     # Download and run the Steam Deck JDK installer script
+     wget https://raw.githubusercontent.com/BlackCorsair/install-jdk-on-steam-deck/master/scripts/install-jdk.sh
+     chmod +x install-jdk.sh
+     ./install-jdk.sh
+     ```
+     This script will install Java 21 to `~/.local/jdk/` and is designed specifically for Steam Deck's read-only filesystem.
+   
+   - **For other Linux distributions:**
+     - For Arch: `sudo pacman -S jdk21-openjdk`
+     - For Debian/Ubuntu: `sudo apt install openjdk-21-jre`
+     - Refer to your distro's documentation or package manager for other distributions.
 
 2. **Install Python 3 (optional)**
    - Only required if you want to add the launcher to Steam automatically
@@ -155,6 +165,7 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen) (original concept/script, but this project is mostly a full rewrite).
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
 - Uses [PollyMC](https://github.com/fn2006/PollyMC) for gameplay and [PrismLauncher](https://github.com/PrismLauncher/PrismLauncher) for instance creation.
+- Steam Deck Java installation script by [BlackCorsair](https://github.com/BlackCorsair/install-jdk-on-steam-deck) - provides seamless Java 21 installation for Steam Deck's read-only filesystem.
 
 ## Technical Improvements
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
