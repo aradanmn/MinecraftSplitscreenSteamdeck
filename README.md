@@ -32,16 +32,14 @@ This approach ensures reliable instance creation while providing the best gamepl
 - [PollyMC](https://github.com/fn2006/PollyMC) AppImage (primary launcher)
 - **Minecraft version:** User-selectable (defaults to latest stable release, with 4 separate instances for splitscreen)
 - **Fabric Loader:** Complete dependency chain including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader
-- **Mods included:** All mods are automatically filtered to ensure Fabric compatibility:
+- **Mods included (automatically installed):**
+  - [Controllable](https://www.curseforge.com/minecraft/mc-mods/controllable) - Required for controller support
+  - [Splitscreen Support](https://modrinth.com/mod/splitscreen) - Required for splitscreen functionality (preconfigured for 1–4 players)
+- **Optional mods (selectable during installation):**
   - [Better Name Visibility](https://modrinth.com/mod/better-name-visibility)
-  - [Collective](https://modrinth.com/mod/collective)
-  - [Controllable](https://www.curseforge.com/minecraft/mc-mods/controllable)
-  - [Fabric API](https://modrinth.com/mod/fabric-api)
-  - [Framework](https://www.curseforge.com/minecraft/mc-mods/framework)
   - [Full Brightness Toggle](https://modrinth.com/mod/full-brightness-toggle)
   - [In-Game Account Switcher](https://modrinth.com/mod/in-game-account-switcher)
   - [Just Zoom](https://modrinth.com/mod/just-zoom)
-  - [Konkrete](https://modrinth.com/mod/konkrete)
   - [Mod Menu](https://modrinth.com/mod/modmenu)
   - [Old Combat Mod](https://modrinth.com/mod/old-combat-mod)
   - [Reese's Sodium Options](https://modrinth.com/mod/reeses-sodium-options)
@@ -49,9 +47,14 @@ This approach ensures reliable instance creation while providing the best gamepl
   - [Sodium Dynamic Lights](https://modrinth.com/mod/sodium-dynamic-lights)
   - [Sodium Extra](https://modrinth.com/mod/sodium-extra)
   - [Sodium Extras](https://modrinth.com/mod/sodium-extras)
-  - [Sodium Options API](https://modrinth.com/mod/sodium-options-api)
-  - [Splitscreen Support](https://modrinth.com/mod/splitscreen) (preconfigured for 1–4 players)
-  - [YetAnotherConfigLib](https://modrinth.com/mod/yacl)
+- **Mod dependencies (automatically installed when needed):**
+  - [Collective](https://modrinth.com/mod/collective) - Required by several optional mods
+  - [Fabric API](https://modrinth.com/mod/fabric-api) - Required by most Fabric mods
+  - [Framework](https://www.curseforge.com/minecraft/mc-mods/framework) - Required by Controllable
+  - [Konkrete](https://modrinth.com/mod/konkrete) - Required by some optional mods
+  - [Sodium Options API](https://modrinth.com/mod/sodium-options-api) - Required by Sodium-related mods
+  - [YetAnotherConfigLib](https://modrinth.com/mod/yacl) - Required by several optional mods
+  - *Note: These dependencies are automatically downloaded when a mod that requires them is selected*
 
 ## Installation Features
 - **CLI-driven instance creation:** Automated setup using PrismLauncher's command-line interface
