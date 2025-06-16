@@ -130,6 +130,12 @@ This hybrid approach ensures reliable automated installation while providing the
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
 
+5. **Steam Deck only - Install Steam Deck controller auto-disable (recommended):**
+   ```sh
+   curl -sSL https://raw.githubusercontent.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller/main/curl_install.sh | bash
+   ```
+   This automatically disables the built-in Steam Deck controller when external controllers are connected, which is essential for proper splitscreen controller counting. **This step is only needed on Steam Deck.**
+
 ## Technical Details
 - **Mod Compatibility:** Uses both Modrinth and CurseForge APIs with Fabric filtering (`modLoaderType=4` for CurseForge, `.loaders[] == "fabric"` for Modrinth)
 - **Instance Management:** Dynamic verification and registration of created instances
