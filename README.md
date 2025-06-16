@@ -20,13 +20,29 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - *Steam Deck users: For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. See [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller).*
 
 ## Installation Process
-The installer uses an **optimized approach** for the best of both worlds:
+The installer uses an **optimized hybrid approach** combining the strengths of two different launchers:
+
+### Why the Hybrid Approach?
+
+**PrismLauncher** excels at automated setup but has limitations for splitscreen:
+- ✅ **Excellent CLI automation** - Reliable command-line instance creation
+- ✅ **Robust Fabric integration** - Proper mod loader dependency chains
+- ❌ **Requires paid Minecraft license** - Needs a Microsoft account with purchased Minecraft to launch instances
+- ❌ **Single account limitation** - All instances must use the same Microsoft account, limiting true splitscreen functionality
+
+**PollyMC** is perfect for splitscreen but lacks automation:
+- ✅ **Offline-friendly** - No Microsoft account required, supports offline accounts
+- ✅ **No license requirements** - Can run without purchasing Minecraft for local splitscreen play
+- ❌ **No CLI automation** - Manual setup required for instances
+- ❌ **Limited scripting** - Harder to automate initial configuration
+
+### Our Solution: Best of Both Worlds
 
 1. **PrismLauncher CLI** - For automated instance creation with proper Fabric setup
 2. **PollyMC** - For splitscreen gameplay (no forced login, offline-friendly)
 3. **Smart Cleanup** - Removes PrismLauncher after successful PollyMC setup
 
-This approach ensures reliable instance creation while providing the best gameplay experience.
+This hybrid approach ensures reliable automated installation while providing the optimal splitscreen gaming experience.
 
 ## What gets installed
 - [PollyMC](https://github.com/fn2006/PollyMC) AppImage (primary launcher)
