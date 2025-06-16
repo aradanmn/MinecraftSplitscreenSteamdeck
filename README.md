@@ -166,6 +166,7 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
 - Uses [PollyMC](https://github.com/fn2006/PollyMC) for gameplay and [PrismLauncher](https://github.com/PrismLauncher/PrismLauncher) for instance creation.
 - Steam Deck Java installation script by [BlackCorsair](https://github.com/BlackCorsair/install-jdk-on-steam-deck) - provides seamless Java 21 installation for Steam Deck's read-only filesystem.
+- Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
 
 ## Technical Improvements
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
