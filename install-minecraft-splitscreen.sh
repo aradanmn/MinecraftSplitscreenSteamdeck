@@ -164,13 +164,20 @@ print_progress() {
 
 # detect_java: Find and validate Java 21 installation
 # Modern Minecraft versions (1.17+) require Java 17+, and 1.21+ needs Java 21
-# This function searches common Java installation paths and validates the version
+# This function searches common Java installation paths including Steam Deck specific locations
+# Steam Deck users often install Java in ~/.local/jdk/ for user-space installations
 detect_java() {
     print_progress "Detecting Java 21 installation..."
     
     # Search for Java 21 in common installation locations
-    # Priority order: OpenJDK 21 -> system default -> PATH
-    if [[ -x "/usr/lib/jvm/java-21-openjdk/bin/java" ]]; then
+    # Priority order: Steam Deck user install -> OpenJDK 21 -> system default -> PATH
+    if [[ -x "$HOME/.local/jdk/jdk-21.0.7/bin/java" ]]; then
+        # Steam Deck user installation (specific version path)
+        JAVA_PATH="$HOME/.local/jdk/jdk-21.0.7/bin/java"
+    elif [[ -x $(find "$HOME/.local/jdk" -name "java" -path "*/jdk-21*/bin/java" 2>/dev/null | head -1) ]]; then
+        # Steam Deck user installation (any JDK 21 version in ~/.local/jdk)
+        JAVA_PATH="$(find "$HOME/.local/jdk" -name "java" -path "*/jdk-21*/bin/java" 2>/dev/null | head -1)"
+    elif [[ -x "/usr/lib/jvm/java-21-openjdk/bin/java" ]]; then
         # OpenJDK 21 (most common on Linux distributions)
         JAVA_PATH="/usr/lib/jvm/java-21-openjdk/bin/java"
     elif [[ -x "/usr/lib/jvm/default-runtime/bin/java" ]]; then
