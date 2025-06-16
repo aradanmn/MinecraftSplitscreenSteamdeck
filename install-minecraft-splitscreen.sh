@@ -1180,6 +1180,49 @@ setup_pollymc() {
     fi
 
     # =============================================================================
+    # POLLYMC CONFIGURATION: Skip Setup Wizard
+    # =============================================================================
+    
+    # SETUP WIZARD BYPASS: Create PollyMC configuration using user's proven working settings
+    # This uses the exact configuration from the user's working PollyMC installation
+    # Guarantees compatibility and skips all setup wizard prompts
+    print_progress "Configuring PollyMC with proven working settings..."
+    
+    # Get the current hostname for dynamic configuration with multiple fallback methods
+    local current_hostname
+    if command -v hostname >/dev/null 2>&1; then
+        current_hostname=$(hostname)
+    elif [[ -r /proc/sys/kernel/hostname ]]; then
+        current_hostname=$(cat /proc/sys/kernel/hostname)
+    elif [[ -n "$HOSTNAME" ]]; then
+        current_hostname="$HOSTNAME"
+    else
+        current_hostname="localhost"
+    fi
+    
+    cat > "$HOME/.local/share/PollyMC/pollymc.cfg" <<EOF
+[General]
+ApplicationTheme=system
+ConfigVersion=1.2
+FlameKeyOverride=\$2a\$10\$bL4bIL5pUWqfcO7KQtnMReakwtfHbNKh6v1uTpKlzhwoueEJQnPnm
+FlameKeyShouldBeFetchedOnStartup=false
+IconTheme=pe_colored
+JavaPath=${JAVA_PATH}
+Language=en_US
+LastHostname=${current_hostname}
+MainWindowGeometry=@ByteArray(AdnQywADAAAAAAwwAAAAzAAAD08AAANIAAAMMAAAAPEAAA9PAAADSAAAAAEAAAAAB4AAAAwwAAAA8QAAD08AAANI)
+MainWindowState="@ByteArray(AAAA/wAAAAD9AAAAAAAAApUAAAH8AAAABAAAAAQAAAAIAAAACPwAAAADAAAAAQAAAAEAAAAeAGkAbgBzAHQAYQBuAGMAZQBUAG8AbwBsAEIAYQByAwAAAAD/////AAAAAAAAAAAAAAACAAAAAQAAABYAbQBhAGkAbgBUAG8AbwBsAEIAYQByAQAAAAD/////AAAAAAAAAAAAAAADAAAAAQAAABYAbgBlAHcAcwBUAG8AbwBsAEIAYQByAQAAAAD/////AAAAAAAAAAA=)"
+MaxMemAlloc=4096
+MinMemAlloc=512
+ToolbarsLocked=false
+WideBarVisibility_instanceToolBar="@ByteArray(111111111,BpBQWIumr+0ABXFEarV0R5nU0iY=)"
+EOF
+    
+    print_success "✅ PollyMC configured to skip setup wizard"
+    print_info "   → Setup wizard will not appear on first launch"
+    print_info "   → Java path and memory settings pre-configured"
+
+    # =============================================================================
     # POLLYMC COMPATIBILITY VERIFICATION
     # =============================================================================
     
