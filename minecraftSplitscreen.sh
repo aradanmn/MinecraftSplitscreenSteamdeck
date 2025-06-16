@@ -25,6 +25,33 @@ set +e  # Allow script to continue on errors for robustness
 export target=/tmp
 
 # =============================
+# Function: detectLauncher
+# =============================
+# Detects PollyMC launcher for splitscreen gameplay.
+# Returns launcher paths and executable info.
+detectLauncher() {
+    # Check if PollyMC is available
+    if [ -f "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" ] && [ -x "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" ]; then
+        export LAUNCHER_DIR="$HOME/.local/share/PollyMC"
+        export LAUNCHER_EXEC="$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage"
+        export LAUNCHER_NAME="PollyMC"
+        return 0
+    fi
+    
+    echo "[Error] PollyMC not found at $HOME/.local/share/PollyMC/" >&2
+    echo "[Error] Please run the Minecraft Splitscreen installer to set up PollyMC" >&2
+    return 1
+}
+
+# Detect and set launcher variables at startup
+if ! detectLauncher; then
+    echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
+    exit 1
+fi
+
+echo "[Info] Using $LAUNCHER_NAME for splitscreen gameplay"
+
+# =============================
 # Function: selfUpdate
 # =============================
 # Checks if this script is the latest version from GitHub. If not, downloads and replaces itself.
@@ -119,17 +146,17 @@ EOF
 # =============================
 # Function: launchGame
 # =============================
-# Launches a single Minecraft instance using PollyMC, with KDE inhibition to prevent
+# Launches a single Minecraft instance using the detected launcher, with KDE inhibition to prevent
 # the system from sleeping, activating the screensaver, or changing color profiles.
 # Arguments:
-#   $1 = PollyMC instance name (e.g., 1.21.5-1)
+#   $1 = Launcher instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., P1)
 launchGame() {
     if command -v kde-inhibit >/dev/null 2>&1; then
-        kde-inhibit --power --screenSaver --colorCorrect --notifications ~/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage -l "$1" -a "$2" &
+        kde-inhibit --power --screenSaver --colorCorrect --notifications "$LAUNCHER_EXEC" -l "$1" -a "$2" &
     else
-        echo "[Warning] kde-inhibit not found. Running PollyMC without KDE inhibition."
-        ~/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage -l "$1" -a "$2" &
+        echo "[Warning] kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
+        "$LAUNCHER_EXEC" -l "$1" -a "$2" &
     fi
     sleep 10 # Give time for the instance to start (avoid race conditions)
 }
@@ -216,7 +243,7 @@ getControllerCount() {
 setSplitscreenModeForPlayer() {
     local player=$1
     local numberOfControllers=$2
-    local config_path="$HOME/.local/share/PollyMC/instances/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
+    local config_path="$LAUNCHER_DIR/instances/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
     mkdir -p "$(dirname $config_path)"
     local mode="FULLSCREEN"
     # Decide the splitscreen mode for this player based on total controllers

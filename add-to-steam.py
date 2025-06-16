@@ -17,8 +17,30 @@ import urllib.request
 # --- Config: Set up paths and app info dynamically for the current user ---
 HOME = os.path.expanduser("~")  # Get the current user's home directory
 APPNAME  = "Minecraft Splitscreen"  # Name as it will appear in Steam
-EXE      = f'{HOME}/.local/share/PollyMC/minecraftSplitscreen.sh'  # Path to the launch script
-STARTDIR = f"{HOME}/.local/share/PollyMC"  # Working directory for the shortcut
+
+# Detect which launcher is being used (PollyMC only after cleanup)
+def detect_launcher():
+    """Detect PollyMC launcher for splitscreen gameplay."""
+    pollymc_path = f'{HOME}/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage'
+    pollymc_script = f'{HOME}/.local/share/PollyMC/minecraftSplitscreen.sh'
+    
+    # Check for PollyMC (should be the only option after installer cleanup)
+    if os.path.exists(pollymc_path) and os.access(pollymc_path, os.X_OK):
+        if os.path.exists(pollymc_script):
+            return pollymc_script, f"{HOME}/.local/share/PollyMC", "PollyMC"
+        else:
+            # Use the script from current directory if PollyMC directory doesn't have it
+            return f"{HOME}/.local/share/PrismLauncher/minecraftSplitscreen.sh", f"{HOME}/.local/share/PollyMC", "PollyMC"
+    
+    # If PollyMC not found, something went wrong with installation
+    print("❌ Error: PollyMC not found!")
+    print("   Please run the Minecraft Splitscreen installer to set up PollyMC")
+    exit(1)
+
+EXE, STARTDIR, LAUNCHER_NAME = detect_launcher()
+print(f"📱 Detected launcher: {LAUNCHER_NAME}")
+print(f"🚀 Launch script: {EXE}")
+print(f"📁 Working directory: {STARTDIR}")
 
 # SteamGridDB artwork URLs for custom grid images, hero, logo, and icon
 STEAMGRIDDB_IMAGES = {
