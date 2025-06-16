@@ -1065,6 +1065,167 @@ EOF
         fi
     done
     
+    # =============================================================================
+    # MINECRAFT AUDIO CONFIGURATION
+    # =============================================================================
+    
+    # SPLITSCREEN AUDIO SETUP: Configure music volume for each instance
+    # Instance 1 keeps music at default volume (0.3), instances 2-4 have music muted
+    # This prevents audio overlap when multiple instances are running simultaneously
+    print_progress "Configuring splitscreen audio settings for $instance_name..."
+    
+    # Extract instance number from instance name (latestUpdate-X format)
+    local instance_number
+    instance_number=$(echo "$instance_name" | grep -oE '[0-9]+$')
+    
+    # Determine music volume based on instance number
+    local music_volume="0.3"  # Default music volume
+    if [[ "$instance_number" -gt 1 ]]; then
+        music_volume="0.0"    # Mute music for instances 2, 3, and 4
+        print_info "   → Music muted for $instance_name (prevents audio overlap)"
+    else
+        print_info "   → Music enabled for $instance_name (primary audio instance)"
+    fi
+    
+    # Create Minecraft options.txt file with splitscreen-optimized settings
+    # This file contains all Minecraft client settings including audio, graphics, and controls
+    cat > "$instance_dir/.minecraft/options.txt" <<EOF
+version:3465
+autoJump:false
+operatorItemsTab:false
+autoSuggestions:true
+chatColors:true
+chatLinks:true
+chatLinksPrompt:true
+enableVsync:true
+entityShadows:true
+forceUnicodeFont:false
+discrete_mouse_scroll:false
+invertYMouse:false
+realmsNotifications:true
+reducedDebugInfo:false
+showSubtitles:false
+directionalAudio:false
+touchscreen:false
+fullscreen:false
+bobView:true
+toggleCrouch:false
+toggleSprint:false
+darkMojangStudiosBackground:false
+hideLightningFlashes:false
+mouseSensitivity:0.5
+fov:0.0
+screenEffectScale:1.0
+fovEffectScale:1.0
+gamma:0.0
+renderDistance:12
+simulationDistance:12
+entityDistanceScaling:1.0
+guiScale:0
+particles:0
+maxFps:120
+difficulty:2
+graphicsMode:1
+ao:true
+prioritizeChunkUpdates:0
+biomeBlendRadius:2
+renderClouds:"true"
+resourcePacks:[]
+incompatibleResourcePacks:[]
+lastServer:
+lang:en_us
+soundDevice:""
+chatVisibility:0
+chatOpacity:1.0
+chatLineSpacing:0.0
+textBackgroundOpacity:0.5
+backgroundForChatOnly:true
+hideServerAddress:false
+advancedItemTooltips:false
+pauseOnLostFocus:true
+overrideWidth:0
+overrideHeight:0
+heldItemTooltips:true
+chatHeightFocused:1.0
+chatDelay:0.0
+chatHeightUnfocused:0.44366195797920227
+chatScale:1.0
+chatWidth:1.0
+mipmapLevels:4
+useNativeTransport:true
+mainHand:"right"
+attackIndicator:1
+narrator:0
+tutorialStep:none
+mouseWheelSensitivity:1.0
+rawMouseInput:true
+glDebugVerbosity:1
+skipMultiplayerWarning:false
+skipRealms32bitWarning:false
+hideMatchedNames:true
+joinedFirstServer:false
+hideBundleTutorial:false
+syncChunkWrites:true
+showAutosaveIndicator:true
+allowServerListing:true
+onlyShowSecureChat:false
+panoramaScrollSpeed:1.0
+telemetryOptInExtra:false
+soundCategory_master:1.0
+soundCategory_music:${music_volume}
+soundCategory_record:1.0
+soundCategory_weather:1.0
+soundCategory_block:1.0
+soundCategory_hostile:1.0
+soundCategory_neutral:1.0
+soundCategory_player:1.0
+soundCategory_ambient:1.0
+soundCategory_voice:1.0
+modelPart_cape:true
+modelPart_jacket:true
+modelPart_left_sleeve:true
+modelPart_right_sleeve:true
+modelPart_left_pants_leg:true
+modelPart_right_pants_leg:true
+modelPart_hat:true
+key_key.attack:key.mouse.left
+key_key.use:key.mouse.right
+key_key.forward:key.keyboard.w
+key_key.left:key.keyboard.a
+key_key.back:key.keyboard.s
+key_key.right:key.keyboard.d
+key_key.jump:key.keyboard.space
+key_key.sneak:key.keyboard.left.shift
+key_key.sprint:key.keyboard.left.control
+key_key.drop:key.keyboard.q
+key_key.inventory:key.keyboard.e
+key_key.chat:key.keyboard.t
+key_key.playerlist:key.keyboard.tab
+key_key.pickItem:key.mouse.middle
+key_key.command:key.keyboard.slash
+key_key.socialInteractions:key.keyboard.p
+key_key.screenshot:key.keyboard.f2
+key_key.togglePerspective:key.keyboard.f5
+key_key.smoothCamera:key.keyboard.unknown
+key_key.fullscreen:key.keyboard.f11
+key_key.spectatorOutlines:key.keyboard.unknown
+key_key.swapOffhand:key.keyboard.f
+key_key.saveToolbarActivator:key.keyboard.c
+key_key.loadToolbarActivator:key.keyboard.x
+key_key.advancements:key.keyboard.l
+key_key.hotbar.1:key.keyboard.1
+key_key.hotbar.2:key.keyboard.2
+key_key.hotbar.3:key.keyboard.3
+key_key.hotbar.4:key.keyboard.4
+key_key.hotbar.5:key.keyboard.5
+key_key.hotbar.6:key.keyboard.6
+key_key.hotbar.7:key.keyboard.7
+key_key.hotbar.8:key.keyboard.8
+key_key.hotbar.9:key.keyboard.9
+EOF
+    
+    print_success "Audio configuration complete for $instance_name"
+    
     print_success "Fabric and mods installation complete for $instance_name"
 }
 
