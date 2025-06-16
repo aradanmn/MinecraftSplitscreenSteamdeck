@@ -181,5 +181,8 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 - **Smart Cleanup:** Automatically removes temporary build files and directories after successful setup
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
+## TODO
+- Check Controllable, Framework, and Splitscreen Support mods' supported Minecraft versions and only let users select from those versions of Minecraft to ensure compatibility
+
 ---
 For more details, see the comments in the scripts or open an issue on the [GitHub repo](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck).
