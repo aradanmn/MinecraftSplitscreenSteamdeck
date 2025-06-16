@@ -8,8 +8,6 @@
 !minecraftSplitscreen.sh
 !add-to-steam.py
 !accounts.json
-!sampleInstance/
-!sampleInstance/**
 !.github/
 !.github/**
 !token.enc
