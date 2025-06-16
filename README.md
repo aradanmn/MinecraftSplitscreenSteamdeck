@@ -24,17 +24,16 @@ The installer uses an **optimized hybrid approach** combining the strengths of t
 
 ### Why the Hybrid Approach?
 
-**PrismLauncher** excels at automated setup but has limitations for splitscreen:
+Both launchers are essentially the same program with one key difference:
+
+**PrismLauncher** has excellent automation but requires Minecraft licenses:
 - ✅ **Excellent CLI automation** - Reliable command-line instance creation
 - ✅ **Robust Fabric integration** - Proper mod loader dependency chains
-- ❌ **Requires paid Minecraft license** - Needs a Microsoft account with purchased Minecraft to launch instances
-- ❌ **Single account limitation** - All instances must use the same Microsoft account, limiting true splitscreen functionality
+- ❌ **Requires Minecraft license** - Must link a paid Microsoft account before creating offline accounts
 
-**PollyMC** is perfect for splitscreen but lacks automation:
-- ✅ **Offline-friendly** - No Microsoft account required, supports offline accounts
-- ✅ **No license requirements** - Can run without purchasing Minecraft for local splitscreen play
+**PollyMC** is identical but doesn't require licenses:
+- ✅ **No license verification** - Can create offline accounts immediately without any Microsoft account linking
 - ❌ **No CLI automation** - Manual setup required for instances
-- ❌ **Limited scripting** - Harder to automate initial configuration
 
 ### Our Solution: Best of Both Worlds
 
