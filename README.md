@@ -130,7 +130,7 @@ This hybrid approach ensures reliable automated installation while providing the
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
 
-5. **Steam Deck only - Install Steam Deck controller auto-disable (recommended):**
+5. **Steam Deck only - Install Steam Deck controller auto-disable (required):**
    ```sh
    curl -sSL https://raw.githubusercontent.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller/main/curl_install.sh | bash
    ```
