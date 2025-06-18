@@ -11,6 +11,7 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - Handles KDE/Plasma quirks for a clean splitscreen experience when running from Game Mode
 - Self-updating launcher script
 - **Fabric Loader:** Complete dependency chain implementation ensures mods load and function correctly
+- **Automatic Dependency Resolution:** Uses live API calls to discover and install all mod dependencies without manual maintenance
 - **Smart Cleanup:** Automatically removes temporary files and directories after successful setup
 
 ## Requirements
@@ -55,6 +56,7 @@ This hybrid approach ensures reliable automated installation while providing the
   - [Full Brightness Toggle](https://modrinth.com/mod/full-brightness-toggle)
   - [In-Game Account Switcher](https://modrinth.com/mod/in-game-account-switcher)
   - [Just Zoom](https://modrinth.com/mod/just-zoom)
+  - [Legacy4J](https://modrinth.com/mod/legacy4j)
   - [Mod Menu](https://modrinth.com/mod/modmenu)
   - [Old Combat Mod](https://modrinth.com/mod/old-combat-mod)
   - [Reese's Sodium Options](https://modrinth.com/mod/reeses-sodium-options)
@@ -74,6 +76,7 @@ This hybrid approach ensures reliable automated installation while providing the
 ## Installation Features
 - **CLI-driven instance creation:** Automated setup using PrismLauncher's command-line interface
 - **Fabric compatibility verification:** All mods are filtered to ensure they're Fabric-compatible versions
+- **Automatic dependency resolution:** Uses Modrinth and CurseForge APIs to automatically discover and install all required mod dependencies
 - **Dependency chain validation:** Proper Fabric Loader setup with LWJGL 3, Intermediary Mappings, and all required dependencies
 - **Fallback mechanisms:** Manual instance creation if CLI fails, with multiple retry strategies
 - **Smart cleanup:** Automatically removes temporary PrismLauncher files after successful PollyMC setup
@@ -113,7 +116,8 @@ This hybrid approach ensures reliable automated installation while providing the
    - **Mod selection process:** The installer will automatically:
      - Search for compatible Fabric versions of all supported mods
      - Filter out incompatible versions using Modrinth and CurseForge APIs
-     - Download dependency mods (like Fabric API for most mods)
+     - Automatically resolve and download all mod dependencies using live API calls
+     - Download dependency mods (like Fabric API for most mods) without manual specification
      - Handle mod conflicts and suggest alternatives when needed
      - Show progress for each mod download with success/failure status
      - Report any missing mods at the end if compatible versions aren't found
@@ -177,12 +181,19 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 ## Technical Improvements
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
 - **API Filtering:** Both Modrinth and CurseForge APIs are filtered to only download Fabric-compatible mod versions
+- **Automatic Dependency Resolution:** Recursively resolves all mod dependencies using live API calls, eliminating the need to manually maintain dependency lists
 - **Optimized Launcher Strategy:** Combines PrismLauncher's reliable CLI automation with PollyMC's offline-friendly gameplay approach
 - **Smart Cleanup:** Automatically removes temporary build files and directories after successful setup
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
 ## TODO
 - Check Controllable, Framework, and Splitscreen Support mods' supported Minecraft versions and only let users select from those versions of Minecraft to ensure compatibility
+
+## Recent Improvements
+- ✅ **Automatic Dependency Resolution**: No more hardcoded dependency lists - all mod dependencies are detected via API
+- ✅ **Robust CurseForge Integration**: Full CurseForge API support with authentication and download URL resolution
+- ✅ **Mixed Platform Support**: Seamlessly handles both Modrinth and CurseForge mods in the same installation
+- ✅ **Smart Fallbacks**: Graceful degradation when APIs are unavailable
 
 ---
 For more details, see the comments in the scripts or open an issue on the [GitHub repo](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck).

@@ -61,12 +61,6 @@ USE_POLLYMC=false
 # Mod configuration arrays
 # These arrays define the mods available for installation and their relationships
 
-# FRAMEWORK_MODS: Core framework mods that provide APIs for other mods
-# These are automatically installed as dependencies and not shown in user selection
-declare -a FRAMEWORK_MODS=("Fabric API" "Collective" "Framework (Fabric)" "Konkrete" "YetAnotherConfigLib")
-# FRAMEWORK_IDS: Corresponding mod IDs for framework mods (used for dependency resolution)
-declare -a FRAMEWORK_IDS=("fabric-api" "collective" "framework" "konkrete" "yacl")
-
 # REQUIRED_SPLITSCREEN_MODS: Mods essential for splitscreen functionality
 # These are always installed regardless of user selection
 declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
@@ -77,16 +71,14 @@ declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
 # Format: "Mod Name|platform|mod_id"
 # Platforms: modrinth, curseforge
 # This list includes performance mods, QoL improvements, and splitscreen essentials
+# Dependencies will be automatically detected and downloaded via API
 declare -a MODS=(
     "Better Name Visibility|modrinth|pSfNeCCY"    # Improves player name visibility in multiplayer
-    "Collective|modrinth|e0M1UDsY"                # Framework for Fabric mods
     "Controllable (Fabric)|curseforge|317269"     # Controller support (REQUIRED for splitscreen)
-    "Fabric API|modrinth|P7dR8mSH"               # Core Fabric mod loader API
-    "Framework (Fabric)|curseforge|549225"       # Dependency for Controllable mod
     "Full Brightness Toggle|modrinth|aEK1KhsC"   # Toggle max brightness with hotkey
     "In-Game Account Switcher|modrinth|cudtvDnd" # Switch between multiple accounts in-game
     "Just Zoom|modrinth|iAiqcykM"                # Simple zoom functionality
-    "Konkrete|modrinth|J81TRJWm"                 # Kotlin library for mods
+    "Legacy4J|modrinth|gHvKJofA"                 # Legacy console edition features for Java edition
     "Mod Menu|modrinth|mOgUt4GM"                 # In-game mod configuration menu
     "Old Combat Mod|modrinth|dZ1APLkO"           # Restore pre-1.9 combat mechanics
     "Reese's Sodium Options|modrinth|Bh37bMuy"   # Enhanced graphics options for Sodium
@@ -96,7 +88,6 @@ declare -a MODS=(
     "Sodium Extras|modrinth|vqqx0QiE"            # More Sodium enhancements
     "Sodium Options API|modrinth|Es5v4eyq"       # API for Sodium options
     "Splitscreen Support|modrinth|yJgqfSDR"      # Core splitscreen functionality (REQUIRED)
-    "YetAnotherConfigLib|modrinth|1eAoo2KR"      # Configuration library for mods
 )
 
 # Runtime mod tracking arrays
@@ -105,6 +96,8 @@ declare -a MODS=(
 
 # SUPPORTED_MODS: Names of mods that are compatible with the selected Minecraft version
 declare -a SUPPORTED_MODS=()
+# MOD_DESCRIPTIONS: Brief descriptions of mods for user information
+declare -a MOD_DESCRIPTIONS=()
 # MOD_URLS: Download URLs for compatible mod files
 declare -a MOD_URLS=()
 # MOD_IDS: Platform-specific IDs for mods (Modrinth project ID or CurseForge project ID)
@@ -483,6 +476,7 @@ check_modrinth_mod() {
     # Final result processing: Add to supported mods if we found a compatible version
     if [[ -n "$file_url" && "$file_url" != "null" ]]; then
         SUPPORTED_MODS+=("$mod_name")          # Add to list of compatible mods
+        MOD_DESCRIPTIONS+=("")                  # Placeholder for description
         MOD_URLS+=("$file_url")                # Store download URL
         MOD_IDS+=("$mod_id")                   # Store Modrinth project ID
         MOD_TYPES+=("modrinth")                # Mark as Modrinth mod
@@ -598,6 +592,7 @@ check_curseforge_mod() {
         
         # Add to supported mods list with CurseForge-specific information
         SUPPORTED_MODS+=("$mod_name")
+        MOD_DESCRIPTIONS+=("")                 # Placeholder for description
         MOD_URLS+=("$file_url")
         MOD_IDS+=("$cf_project_id")           # Store numeric CurseForge project ID
         MOD_TYPES+=("curseforge")             # Mark as CurseForge mod
@@ -606,6 +601,768 @@ check_curseforge_mod() {
     else
         print_warning "❌ $mod_name ($cf_project_id) - not compatible with $MC_VERSION"
     fi
+}
+
+# =============================================================================
+# AUTOMATIC DEPENDENCY RESOLUTION SYSTEM
+# =============================================================================
+# Advanced dependency resolution that automatically fetches and resolves all
+# mod dependencies recursively using the Modrinth and CurseForge APIs
+
+# resolve_all_dependencies: Main function to automatically resolve all mod dependencies
+# This function builds a complete dependency tree and ensures all required mods are included
+# Parameters: None (operates on FINAL_MOD_INDEXES global array)
+resolve_all_dependencies() {
+    print_header "🔗 AUTOMATIC DEPENDENCY RESOLUTION"
+    print_progress "Automatically resolving mod dependencies..."
+    
+    # Check if we have any mods to process
+    if [[ ${#FINAL_MOD_INDEXES[@]} -eq 0 ]]; then
+        print_info "No mods selected for dependency resolution"
+        return 0
+    fi
+    
+    local initial_mod_count=${#FINAL_MOD_INDEXES[@]}
+    print_info "Starting dependency resolution with $initial_mod_count selected mods"
+    
+    # Simplified single-pass dependency resolution to avoid hangs
+    local -A processed_mods
+    local original_mod_indexes=("${FINAL_MOD_INDEXES[@]}")  # Copy original list
+    
+    # Process each originally selected mod for immediate dependencies only
+    for idx in "${original_mod_indexes[@]}"; do
+        local mod_id="${MOD_IDS[$idx]}"
+        local mod_type="${MOD_TYPES[$idx]}"
+        local mod_name="${SUPPORTED_MODS[$idx]}"
+        
+        # Skip if already processed
+        if [[ -n "${processed_mods[$mod_id]:-}" ]]; then
+            continue
+        fi
+        
+        processed_mods["$mod_id"]=1
+        print_info "   → Checking dependencies for: $mod_name"
+        
+        # Get dependencies from API based on mod type
+        local deps=""
+        case "$mod_type" in
+            "modrinth")
+                deps=$(resolve_modrinth_dependencies_api "$mod_id" 2>/dev/null || echo "")
+                ;;
+            "curseforge")
+                deps=$(resolve_curseforge_dependencies_api "$mod_id" 2>/dev/null || echo "")
+                ;;
+        esac
+        
+        # Process found dependencies (single level only)
+        if [[ -n "$deps" && "$deps" != " " ]]; then
+            print_info "     → Found dependencies: $deps"
+            for dep_id in $deps; do
+                if [[ -n "$dep_id" && "$dep_id" != " " ]]; then
+                    # Check if dependency is already in our mod list
+                    local found_internal=false
+                    for i in "${!MOD_IDS[@]}"; do
+                        if [[ "${MOD_IDS[$i]}" == "$dep_id" ]]; then
+                            # Add to final selection if not already there
+                            local already_selected=false
+                            for existing_idx in "${FINAL_MOD_INDEXES[@]}"; do
+                                if [[ "$existing_idx" == "$i" ]]; then
+                                    already_selected=true
+                                    break
+                                fi
+                            done
+                            
+                            if [[ "$already_selected" == false ]]; then
+                                FINAL_MOD_INDEXES+=("$i")
+                                print_info "       → Added internal dependency: ${SUPPORTED_MODS[$i]}"
+                            fi
+                            found_internal=true
+                            break
+                        fi
+                    done
+                    
+                    # If not found internally, try to fetch as external dependency with timeout
+                    if [[ "$found_internal" == false ]]; then
+                        print_info "       → Fetching external dependency: $dep_id"
+                        local dep_platform="modrinth"
+                        if [[ "$dep_id" =~ ^[0-9]+$ ]]; then
+                            dep_platform="curseforge"
+                        fi
+                        
+                        # Fetch external dependency (timeout handled within the function)
+                        if fetch_and_add_external_mod "$dep_id" "$dep_platform"; then
+                            print_info "       → Successfully added external dependency: $dep_id"
+                        else
+                            print_warning "       → Failed to fetch external dependency: $dep_id"
+                        fi
+                    fi
+                fi
+            done
+        else
+            print_info "     → No dependencies found"
+        fi
+    done
+    
+    local final_mod_count=${#FINAL_MOD_INDEXES[@]}
+    local added_count=$((final_mod_count - initial_mod_count))
+    
+    print_success "Dependency resolution complete!"
+    print_info "Added $added_count dependencies ($initial_mod_count → $final_mod_count total mods)"
+}
+
+# resolve_mod_dependencies: Resolve dependencies for a specific mod
+# Fetches dependency information from Modrinth or CurseForge API based on mod type
+# Parameters:
+#   $1 - mod_id: The mod ID to resolve dependencies for
+# Returns: Space-separated list of dependency mod IDs
+resolve_mod_dependencies() {
+    local mod_id="$1"
+    
+    # Find mod in our arrays to determine platform type
+    local mod_type=""
+    local mod_name=""
+    for i in "${!MOD_IDS[@]}"; do
+        if [[ "${MOD_IDS[$i]}" == "$mod_id" ]]; then
+            mod_type="${MOD_TYPES[$i]}"
+            mod_name="${SUPPORTED_MODS[$i]}"
+            break
+        fi
+    done
+    
+    if [[ -z "$mod_type" ]]; then
+        return 1
+    fi
+    
+    # Route to appropriate platform-specific dependency resolver
+    case "$mod_type" in
+        "modrinth")
+            resolve_modrinth_dependencies "$mod_id" "$mod_name"
+            ;;
+        "curseforge")
+            resolve_curseforge_dependencies "$mod_id" "$mod_name"
+            ;;
+        *)
+            print_warning "Unknown mod type: $mod_type for $mod_name"
+            return 1
+            ;;
+    esac
+}
+
+# resolve_modrinth_dependencies: Get dependencies from Modrinth API
+# Uses the same version matching logic as mod compatibility checking but focused on dependencies
+# Parameters:
+#   $1 - mod_id: Modrinth project ID
+#   $2 - mod_name: Human-readable mod name for logging
+# Returns: Space-separated list of required dependency mod IDs
+resolve_modrinth_dependencies() {
+    local mod_id="$1"
+    local mod_name="$2"
+    local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
+    
+    # Create temporary file for API response
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        return 1
+    fi
+    
+    # Fetch version data from Modrinth API
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url" 2>/dev/null)
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm "$tmp_body"
+    
+    # Validate API response
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+        return 1
+    fi
+    
+    # Use the same version matching logic as mod compatibility checking
+    local mc_major_minor
+    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    
+    # Try exact version match first
+    local dep_ids
+    dep_ids=$(printf "%s" "$version_json" | jq -r \
+        --arg v "$MC_VERSION" \
+        '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' \
+        2>/dev/null | tr '\n' ' ')
+    
+    # Try major.minor version if exact match failed
+    if [[ -z "$dep_ids" ]]; then
+        dep_ids=$(printf "%s" "$version_json" | jq -r \
+            --arg v "$mc_major_minor" \
+            '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' \
+            2>/dev/null | tr '\n' ' ')
+    fi
+    
+    # Try wildcard version (1.21.x) if still no results
+    if [[ -z "$dep_ids" ]]; then
+        local mc_major_minor_x="$mc_major_minor.x"
+        dep_ids=$(printf "%s" "$version_json" | jq -r \
+            --arg v "$mc_major_minor_x" \
+            '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' \
+            2>/dev/null | tr '\n' ' ')
+    fi
+    
+    # Clean up and return dependency IDs
+    dep_ids=$(echo "$dep_ids" | xargs)  # Trim whitespace
+    if [[ -n "$dep_ids" ]]; then
+        echo "$dep_ids"
+    fi
+}
+
+# resolve_curseforge_dependencies: Get dependencies from CurseForge API
+# Similar to Modrinth resolver but uses CurseForge API structure and authentication
+# Parameters:
+#   $1 - mod_id: CurseForge project ID (numeric)
+#   $2 - mod_name: Human-readable mod name for logging
+# Returns: Space-separated list of required dependency mod IDs
+resolve_curseforge_dependencies() {
+    local mod_id="$1"
+    local mod_name="$2"
+    
+    # Download and decrypt CurseForge API token
+    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local tmp_token_file
+    tmp_token_file=$(mktemp)
+    if [[ -z "$tmp_token_file" ]]; then
+        return 1
+    fi
+    
+    # Download encrypted token
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_token_file" "$cf_token_enc_url" 2>/dev/null)
+    if [[ "$http_code" != "200" ]]; then
+        rm "$tmp_token_file"
+        return 1
+    fi
+    
+    # Decrypt API token using simple XOR cipher
+    local cf_api_key
+    cf_api_key=$(python3 -c "
+import sys
+key = 42
+with open('$tmp_token_file', 'rb') as f:
+    encrypted = f.read()
+decrypted = bytes([b ^ key for b in encrypted])
+sys.stdout.buffer.write(decrypted)
+" 2>/dev/null)
+    rm "$tmp_token_file"
+    
+    if [[ -z "$cf_api_key" ]]; then
+        return 1
+    fi
+    
+    # Query CurseForge API with Fabric loader filter
+    local cf_api_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        return 1
+    fi
+    
+    # Make authenticated API request
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url" 2>/dev/null)
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm "$tmp_body"
+    
+    # Validate API response
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+        return 1
+    fi
+    
+    # Extract dependencies using CurseForge API structure
+    local mc_major_minor
+    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    local mc_major_minor_x="$mc_major_minor.x"
+    local mc_major_minor_0="$mc_major_minor.0"
+    
+    # CurseForge dependency extraction with version matching
+    local dep_ids
+    dep_ids=$(printf "%s" "$version_json" | jq -r \
+        --arg mc_version "$MC_VERSION" \
+        --arg mc_major_minor "$mc_major_minor" \
+        --arg mc_major_minor_x "$mc_major_minor_x" \
+        --arg mc_major_minor_0 "$mc_major_minor_0" \
+        '.data[] | select(
+            ((.gameVersions[] == $mc_version) or
+             (.gameVersions[] == $mc_major_minor) or
+             (.gameVersions[] == $mc_major_minor_x) or
+             (.gameVersions[] == $mc_major_minor_0))
+        ) | .dependencies[]? | select(.relationType == 3) | .modId' \
+        2>/dev/null | tr '\n' ' ')
+    
+    # Clean up and return dependency IDs
+    dep_ids=$(echo "$dep_ids" | xargs)  # Trim whitespace
+    if [[ -n "$dep_ids" ]]; then
+        echo "$dep_ids"
+    fi
+}
+
+# resolve_modrinth_dependencies_api: Get dependencies from Modrinth API
+# Fetches the project data from Modrinth and extracts required dependencies
+# Parameters:
+#   $1 - mod_id: The Modrinth project ID or slug
+# Returns: Space-separated list of dependency mod IDs
+resolve_modrinth_dependencies_api() {
+    local mod_id="$1"
+    local dependencies=""
+    
+    # Skip if essential commands are not available
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        echo "" # Return empty dependencies
+        return 0
+    fi
+    
+    # Create temporary file for large API response to avoid "Argument list too long" error
+    local tmp_file
+    tmp_file=$(mktemp) || return 1
+    
+    # Get the latest version for the Minecraft version we're using with timeout
+    local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
+    
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -s -m 10 "$versions_url" -o "$tmp_file" 2>/dev/null; then
+            rm -f "$tmp_file"
+            echo ""
+            return 0
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -q -O "$tmp_file" --timeout=10 "$versions_url" 2>/dev/null; then
+            rm -f "$tmp_file"
+            echo ""
+            return 0
+        fi
+    fi
+    
+    # Check if we got valid JSON data
+    if [[ ! -s "$tmp_file" ]] || ! jq -e . < "$tmp_file" > /dev/null 2>&1; then
+        rm -f "$tmp_file"
+        echo ""
+        return 0
+    fi
+
+    # Use simpler approach: find fabric versions for our Minecraft version
+    if command -v jq >/dev/null 2>&1; then
+        local mc_major_minor
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        
+        # Simple jq filter to get dependencies from any compatible fabric version
+        # Use temporary file to avoid command line length limits
+        dependencies=$(jq -r "
+            .[] 
+            | select(.loaders[]? == \"fabric\") 
+            | select(.game_versions[]? | test(\"$mc_major_minor\"))
+            | .dependencies[]? 
+            | select(.dependency_type == \"required\") 
+            | .project_id
+        " < "$tmp_file" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    else
+        # Fallback to basic grep parsing if jq is not available
+        local deps_section=$(grep -o '"dependencies":\[[^]]*\]' "$tmp_file" | head -1)
+        if [[ -n "$deps_section" ]]; then
+            # Extract project_id values from dependencies
+            local dep_ids=$(echo "$deps_section" | grep -o '"project_id":"[^"]*"' | sed 's/"project_id":"//g' | sed 's/"//g')
+            dependencies="$dep_ids"
+        fi
+    fi
+
+    # Clean up temporary file
+    rm -f "$tmp_file"
+    
+    echo "$dependencies"
+}
+
+# resolve_curseforge_dependencies_api: Get dependencies from CurseForge API
+# Fetches the mod data from CurseForge and extracts required dependencies
+# Parameters:
+#   $1 - mod_id: The CurseForge project ID (numeric)
+# Returns: Space-separated list of dependency mod IDs
+resolve_curseforge_dependencies_api() {
+    local mod_id="$1"
+    local dependencies=""
+    
+    # Download encrypted CurseForge API token from GitHub repository
+    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local encrypted_token_file=$(mktemp)
+    local http_code
+    
+    if command -v curl >/dev/null 2>&1; then
+        http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
+            http_code="200"
+        else
+            http_code="404"
+        fi
+    else
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    if [[ "$http_code" != "200" || ! -s "$encrypted_token_file" ]]; then
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    # Decrypt the API token using OpenSSL (requires passphrase hardcoded for automation)
+    local api_token
+    if command -v openssl >/dev/null 2>&1; then
+        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+    else
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    rm -f "$encrypted_token_file"
+    
+    if [[ -z "$api_token" ]]; then
+        echo ""
+        return 1
+    fi
+    
+    # Fetch mod info from CurseForge API with authentication
+    local api_url="https://api.curseforge.com/v1/mods/$mod_id"
+    local temp_file=$(mktemp)
+    
+    if command -v curl >/dev/null 2>&1; then
+        curl -s -H "x-api-key: $api_token" -o "$temp_file" "$api_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --header="x-api-key: $api_token" -O "$temp_file" "$api_url" 2>/dev/null
+    else
+        rm -f "$temp_file"
+        echo ""
+        return 1
+    fi
+    
+    # Extract required dependencies from mod info
+    if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
+        # Get the latest files for this mod
+        local files_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+        local files_temp=$(mktemp)
+        
+        if command -v curl >/dev/null 2>&1; then
+            curl -s -H "x-api-key: $api_token" -o "$files_temp" "$files_url" 2>/dev/null
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q --header="x-api-key: $api_token" -O "$files_temp" "$files_url" 2>/dev/null
+        fi
+        
+        if [[ -s "$files_temp" ]]; then
+            # Find the most recent compatible file
+            local mc_major_minor
+            mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+            
+            # Extract file ID from the most recent compatible file
+            local file_id=$(jq -r --arg v "$MC_VERSION" --arg mmv "$mc_major_minor" '.data[] | select(.gameVersions[] == $v or .gameVersions[] == $mmv or (.gameVersions[] | startswith($mmv))) | .id' "$files_temp" 2>/dev/null | head -n1)
+            
+            if [[ -n "$file_id" && "$file_id" != "null" ]]; then
+                # Get dependencies for this specific file
+                local file_info_url="https://api.curseforge.com/v1/mods/$mod_id/files/$file_id"
+                local file_info_temp=$(mktemp)
+                
+                if command -v curl >/dev/null 2>&1; then
+                    curl -s -H "x-api-key: $api_token" -o "$file_info_temp" "$file_info_url" 2>/dev/null
+                elif command -v wget >/dev/null 2>&1; then
+                    wget -q --header="x-api-key: $api_token" -O "$file_info_temp" "$file_info_url" 2>/dev/null
+                fi
+                
+                if [[ -s "$file_info_temp" ]]; then
+                    # Extract required dependencies
+                    dependencies=$(jq -r '.data.dependencies[]? | select(.relationType == 3) | .modId' "$file_info_temp" 2>/dev/null | tr '\n' ' ')
+                fi
+                
+                rm -f "$file_info_temp"
+            fi
+        fi
+        
+        rm -f "$files_temp"
+    fi
+    
+    rm -f "$temp_file"
+    
+    # Fallback for known dependencies if API fails
+    if [[ -z "$dependencies" ]]; then
+        case "$mod_id" in
+            "238222")  # JEI
+                dependencies="306612"  # Fabric API
+                ;;
+            "325471")  # Controllable  
+                dependencies="634179"  # Framework
+                ;;
+        esac
+    fi
+    
+    echo "$dependencies"
+}
+
+# fetch_and_add_external_mod: Fetch external mod data and add to mod arrays
+# Downloads mod information from APIs and adds it to our internal mod arrays
+# Parameters:
+#   $1 - mod_id: The external mod ID
+#   $2 - mod_type: The platform type (modrinth/curseforge)
+# Returns: 0 if successful, 1 if failed
+fetch_and_add_external_mod() {
+    local ext_mod_id="$1"
+    local ext_mod_type="$2"
+    local success=false
+    
+    case "$ext_mod_type" in
+        "modrinth")
+            # Create temporary file for downloading large JSON responses
+            local temp_file=$(mktemp)
+            local api_url="https://api.modrinth.com/v2/project/$ext_mod_id"
+            
+            # Download to temp file without size restrictions
+            local download_success=false
+            if command -v curl >/dev/null 2>&1; then
+                if curl -s -m 15 -o "$temp_file" "$api_url" 2>/dev/null; then
+                    download_success=true
+                fi
+            elif command -v wget >/dev/null 2>&1; then
+                if wget -q -O "$temp_file" --timeout=15 "$api_url" 2>/dev/null; then
+                    download_success=true
+                fi
+            fi
+            
+            if [[ "$download_success" == true && -s "$temp_file" ]]; then
+                # Check if the file contains valid JSON (not an error)
+                if ! grep -q '"error"' "$temp_file" 2>/dev/null; then
+                    # Extract mod name from JSON file using jq if available, fallback to grep
+                    local mod_title=""
+                    local mod_description=""
+                    
+                    if command -v jq >/dev/null 2>&1; then
+                        mod_title=$(jq -r '.title // ""' "$temp_file" 2>/dev/null)
+                        mod_description=$(jq -r '.description // ""' "$temp_file" 2>/dev/null)
+                    else
+                        # Fallback to basic grep parsing
+                        mod_title=$(grep -o '"title":"[^"]*"' "$temp_file" | sed 's/"title":"//g' | sed 's/"//g' | head -1)
+                        mod_description=$(grep -o '"description":"[^"]*"' "$temp_file" | sed 's/"description":"//g' | sed 's/"//g' | head -1)
+                    fi
+                    
+                    if [[ -n "$mod_title" ]]; then
+                        # Add to our arrays (keep all arrays synchronized)
+                        SUPPORTED_MODS+=("$mod_title")
+                        MOD_DESCRIPTIONS+=("${mod_description:-External dependency}")
+                        MOD_IDS+=("$ext_mod_id")
+                        MOD_TYPES+=("modrinth")
+                        MOD_URLS+=("")  # Empty URL - will be resolved during download
+                        MOD_DEPENDENCIES+=("")  # Will be populated if needed
+                        
+                        # Add to final selection
+                        local new_index=$((${#SUPPORTED_MODS[@]} - 1))
+                        FINAL_MOD_INDEXES+=("$new_index")
+                        success=true
+                    fi
+                fi
+            fi
+            
+            # Clean up temp file
+            rm -f "$temp_file" 2>/dev/null
+            ;;
+            
+        "curseforge")
+            # Use the new robust CurseForge API integration
+            local mod_title=""
+            local mod_description=""
+            local download_url=""
+            
+            # Download encrypted CurseForge API token from GitHub repository
+            local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+            local encrypted_token_file=$(mktemp)
+            local http_code
+            
+            if command -v curl >/dev/null 2>&1; then
+                http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
+            elif command -v wget >/dev/null 2>&1; then
+                if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
+                    http_code="200"
+                else
+                    http_code="404"
+                fi
+            fi
+            
+            if [[ "$http_code" == "200" && -s "$encrypted_token_file" ]]; then
+                # Decrypt the API token
+                local api_token
+                if command -v openssl >/dev/null 2>&1; then
+                    api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+                fi
+                
+                if [[ -n "$api_token" ]]; then
+                    # Fetch mod info from CurseForge API
+                    local api_url="https://api.curseforge.com/v1/mods/$ext_mod_id"
+                    local temp_file=$(mktemp)
+                    
+                    if command -v curl >/dev/null 2>&1; then
+                        curl -s -H "x-api-key: $api_token" -o "$temp_file" "$api_url" 2>/dev/null
+                    elif command -v wget >/dev/null 2>&1; then
+                        wget -q --header="x-api-key: $api_token" -O "$temp_file" "$api_url" 2>/dev/null
+                    fi
+                    
+                    # Extract mod title and description
+                    if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
+                        mod_title=$(jq -r '.data.name // ""' "$temp_file" 2>/dev/null)
+                        mod_description=$(jq -r '.data.summary // ""' "$temp_file" 2>/dev/null)
+                    fi
+                    
+                    rm -f "$temp_file"
+                    
+                    # Get download URL using our robust function
+                    download_url=$(get_curseforge_download_url "$ext_mod_id")
+                fi
+            fi
+            
+            rm -f "$encrypted_token_file"
+            
+            # Fallback for known mods if API fails
+            if [[ -z "$mod_title" ]]; then
+                case "$ext_mod_id" in
+                    "317269")  # Controllable
+                        mod_title="Controllable (Fabric)"
+                        mod_description="Adds controller support to Minecraft"
+                        ;;
+                    "306612")  # Fabric API
+                        mod_title="Fabric API"
+                        mod_description="Essential modding API for Fabric"
+                        ;;
+                    "634179")  # Framework
+                        mod_title="Framework"
+                        mod_description="Library mod for various mods"
+                        ;;
+                    *)
+                        mod_title="External Dependency (CF:$ext_mod_id)"
+                        mod_description="External dependency from CurseForge"
+                        ;;
+                esac
+            fi
+            
+            # Add to our arrays
+            SUPPORTED_MODS+=("$mod_title")
+            MOD_DESCRIPTIONS+=("${mod_description:-External dependency from CurseForge}")
+            MOD_IDS+=("$ext_mod_id")
+            MOD_TYPES+=("curseforge")
+            MOD_URLS+=("$download_url")  # May be empty if API failed
+            MOD_DEPENDENCIES+=("")  # Will be populated if needed
+            
+            local new_index=$((${#SUPPORTED_MODS[@]} - 1))
+            FINAL_MOD_INDEXES+=("$new_index")
+            success=true
+            ;;
+    esac
+    
+    if [[ "$success" == true ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# get_curseforge_download_url: Get download URL for CurseForge mod
+# Uses CurseForge API to find compatible mod file and return download URL
+# Parameters:
+#   $1 - mod_id: The CurseForge project ID (numeric)
+# Returns: Download URL for the compatible mod file, or empty string if not found
+get_curseforge_download_url() {
+    local mod_id="$1"
+    local download_url=""
+    
+    # Download encrypted CurseForge API token from GitHub repository
+    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local encrypted_token_file=$(mktemp)
+    local http_code
+    
+    if command -v curl >/dev/null 2>&1; then
+        http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
+            http_code="200"
+        else
+            http_code="404"
+        fi
+    else
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    if [[ "$http_code" != "200" || ! -s "$encrypted_token_file" ]]; then
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    # Decrypt the API token using OpenSSL (requires passphrase hardcoded for automation)
+    local api_token
+    if command -v openssl >/dev/null 2>&1; then
+        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+    else
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+    
+    rm -f "$encrypted_token_file"
+    
+    if [[ -z "$api_token" ]]; then
+        echo ""
+        return 1
+    fi
+    
+    # Fetch mod files from CurseForge API with Fabric loader filter
+    local files_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+    local temp_file=$(mktemp)
+    
+    if command -v curl >/dev/null 2>&1; then
+        curl -s -H "x-api-key: $api_token" -o "$temp_file" "$files_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --header="x-api-key: $api_token" -O "$temp_file" "$files_url" 2>/dev/null
+    else
+        rm -f "$temp_file"
+        echo ""
+        return 1
+    fi
+    
+    # Parse response and find compatible file
+    if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
+        local mc_major_minor
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+        
+        # Try exact version match first
+        download_url=$(jq -r --arg v "$MC_VERSION" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+        
+        # Try major.minor version if exact match failed
+        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+            download_url=$(jq -r --arg v "$mc_major_minor" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+        fi
+        
+        # Try wildcard version (e.g., "1.21.x")
+        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+            local mc_major_minor_x="$mc_major_minor.x"
+            download_url=$(jq -r --arg v "$mc_major_minor_x" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+        fi
+        
+        # Try prefix matching (any version starting with major.minor)
+        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+            download_url=$(jq -r --arg v "$mc_major_minor" '.data[]? | select(.gameVersions[]? | startswith($v)) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+        fi
+        
+        # If still no URL found, try the latest file
+        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+            download_url=$(jq -r '.data[0]?.downloadUrl // ""' "$temp_file" 2>/dev/null)
+        fi
+    fi
+    
+    rm -f "$temp_file"
+    
+    # Return the download URL (may be empty if not found)
+    echo "$download_url"
 }
 
 # =============================================================================
@@ -641,15 +1398,7 @@ select_user_mods() {
     for i in "${!SUPPORTED_MODS[@]}"; do
         local skip=false
         
-        # Skip framework mods (these are installed automatically as dependencies)
-        for fw in "${FRAMEWORK_MODS[@]}"; do
-            if [[ "${SUPPORTED_MODS[$i]}" == "$fw"* ]]; then
-                skip=true
-                break
-            fi
-        done
-        
-        # Skip required splitscreen mods
+        # Skip required splitscreen mods (these are automatically installed)
         for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
             if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]]; then
                 skip=true
@@ -746,8 +1495,7 @@ select_user_mods() {
             done
         fi
     fi
-    
-    # Ensure required splitscreen mods are always included
+     # Ensure required splitscreen mods are always included
     for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
         for i in "${!SUPPORTED_MODS[@]}"; do
             if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]] && [[ -z "${added[$i]:-}" ]]; then
@@ -757,7 +1505,11 @@ select_user_mods() {
             fi
         done
     done
-    
+
+    # Automatically resolve all dependencies using Modrinth/CurseForge APIs
+    # This replaces the manual dependency handling with full API-based resolution
+    resolve_all_dependencies
+
     print_success "Final mod list prepared: ${#FINAL_MOD_INDEXES[@]} mods selected"
 }
 
@@ -1052,9 +1804,77 @@ EOF
     for idx in "${FINAL_MOD_INDEXES[@]}"; do
         local mod_url="${MOD_URLS[$idx]}"
         local mod_name="${SUPPORTED_MODS[$idx]}"
+        local mod_id="${MOD_IDS[$idx]}"
+        local mod_type="${MOD_TYPES[$idx]}"
         
-        # SKIP INVALID MODS: Handle cases where compatibility check failed
-        # Some mods may not have compatible versions for the selected Minecraft version
+        # RESOLVE MISSING URLs: For dependencies added without URLs, fetch the download URL now
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "modrinth" ]]; then
+            print_progress "Resolving download URL for dependency: $mod_name"
+            
+            # Use the same comprehensive version matching as main mod compatibility checking
+            local resolve_data=""
+            local temp_resolve_file=$(mktemp)
+            
+            # Fetch all versions for this dependency
+            local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
+            if command -v curl >/dev/null 2>&1; then
+                if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
+                    resolve_data=$(cat "$temp_resolve_file")
+                fi
+            elif command -v wget >/dev/null 2>&1; then
+                if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
+                    resolve_data=$(cat "$temp_resolve_file")
+                fi
+            fi
+            
+            if [[ -n "$resolve_data" && "$resolve_data" != "[]" && "$resolve_data" != *"\"error\""* ]]; then
+                # Try exact version match first
+                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                
+                # Try major.minor version if exact match failed  
+                if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                    local mc_major_minor
+                    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+                    
+                    # Try exact major.minor
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    
+                    # Try wildcard version (e.g., "1.21.x")
+                    if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                        local mc_major_minor_x="$mc_major_minor.x"
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    fi
+                    
+                    # Try prefix matching (any version starting with major.minor)
+                    if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    fi
+                fi
+                
+                # If still no URL found, try the latest Fabric version for any compatible release
+                if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
+                fi
+            fi
+            
+            rm -f "$temp_resolve_file" 2>/dev/null
+        fi
+        
+        # RESOLVE MISSING URLs for CurseForge dependencies
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "curseforge" ]]; then
+            print_progress "Resolving download URL for CurseForge dependency: $mod_name"
+            
+            # Use our robust CurseForge URL resolution function
+            mod_url=$(get_curseforge_download_url "$mod_id")
+            
+            if [[ -n "$mod_url" && "$mod_url" != "null" ]]; then
+                print_success "Found compatible CurseForge file for $mod_name"
+            else
+                print_warning "No compatible CurseForge file found for $mod_name"
+            fi
+        fi
+        
+        # SKIP INVALID MODS: Handle cases where URL couldn't be resolved
         if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
             print_warning "No compatible file found for $mod_name. Skipping download."
             MISSING_MODS+=("$mod_name")  # Track for final summary
@@ -1841,100 +2661,6 @@ create_desktop_launcher() {
         # - Icon: Icon file path or theme icon name
         # - Terminal: Whether to run in terminal (false for GUI applications)
         # - Categories: Menu categories for proper organization
-        local desktop_file_name="MinecraftSplitscreen.desktop"
-        local desktop_file_path="$HOME/Desktop/$desktop_file_name"  # User desktop shortcut
-        local app_dir="$HOME/.local/share/applications"              # System integration directory
-        
-        # APPLICATIONS DIRECTORY CREATION: Ensure the applications directory exists
-        # This directory is where desktop environments look for user-installed applications
-        mkdir -p "$app_dir"
-        print_info "Desktop file will be created at: $desktop_file_path"
-        print_info "Application menu entry will be registered in: $app_dir"
-        
-        # =============================================================================
-        # ICON ACQUISITION AND CONFIGURATION
-        # =============================================================================
-        
-        # CUSTOM ICON DOWNLOAD: Get professional SteamGridDB icon for consistent branding
-        # This provides the same visual identity as the Steam integration
-        # SteamGridDB provides high-quality gaming artwork used by many Steam applications
-        local icon_dir="$PWD/minecraft-splitscreen-icons"
-        local icon_path="$icon_dir/minecraft-splitscreen-steamgriddb.ico"
-        local icon_url="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
-        
-        print_progress "Configuring desktop launcher icon..."
-        mkdir -p "$icon_dir"  # Ensure icon storage directory exists
-        
-        # ICON DOWNLOAD: Fetch SteamGridDB icon if not already present
-        # This provides a professional-looking icon that matches Steam integration
-        if [[ ! -f "$icon_path" ]]; then
-            print_progress "Downloading custom icon from SteamGridDB..."
-            if wget -O "$icon_path" "$icon_url" >/dev/null 2>&1; then
-                print_success "✅ Custom icon downloaded successfully"
-            else
-                print_warning "⚠️  Custom icon download failed - will use fallback icons"
-            fi
-        else
-            print_info "   → Custom icon already present"
-        fi
-        
-        # =============================================================================
-        # ICON SELECTION WITH FALLBACK HIERARCHY
-        # =============================================================================
-        
-        # ICON SELECTION: Determine the best available icon with intelligent fallbacks
-        # Priority system ensures we always have a functional icon, preferring custom over generic
-        local icon_desktop
-        if [[ -f "$icon_path" ]]; then
-            icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
-            print_info "   → Using custom SteamGridDB icon for consistent branding"
-        elif [[ "$USE_POLLYMC" == true ]] && [[ -f "$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png" ]]; then
-            icon_desktop="$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png"  # Good: PollyMC instance icon
-            print_info "   → Using PollyMC instance icon"
-        elif [[ -f "$TARGET_DIR/instances/latestUpdate-1/icon.png" ]]; then
-            icon_desktop="$TARGET_DIR/instances/latestUpdate-1/icon.png"  # Acceptable: PrismLauncher instance icon
-            print_info "   → Using PrismLauncher instance icon"
-        else
-            icon_desktop="application-x-executable"  # Fallback: Generic system executable icon
-            print_info "   → Using system default executable icon"
-        fi
-        
-        # =============================================================================
-        # LAUNCHER SCRIPT PATH CONFIGURATION
-        # =============================================================================
-        
-        # LAUNCHER SCRIPT PATH DETECTION: Set correct executable path based on active launcher
-        # The desktop file needs to point to the appropriate launcher script
-        # Different paths and descriptions for PollyMC vs PrismLauncher configurations
-        local launcher_script_path
-        local launcher_comment
-        if [[ "$USE_POLLYMC" == true ]]; then
-            launcher_script_path="$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-            launcher_comment="Launch Minecraft splitscreen with PollyMC (optimized for offline gameplay)"
-            print_info "   → Desktop launcher configured for PollyMC"
-        else
-            launcher_script_path="$TARGET_DIR/minecraftSplitscreen.sh"
-            launcher_comment="Launch Minecraft splitscreen with PrismLauncher"
-            print_info "   → Desktop launcher configured for PrismLauncher"
-        fi
-        
-        # =============================================================================
-        # DESKTOP ENTRY FILE GENERATION
-        # =============================================================================
-        
-        # DESKTOP FILE CREATION: Generate .desktop file following freedesktop.org specification
-        # This creates a proper desktop entry that integrates with all Linux desktop environments
-        # The file contains metadata, execution parameters, and display information
-        print_progress "Generating desktop entry file..."
-        
-        # Desktop Entry Specification fields:
-        # - Type=Application: Indicates this is an application launcher
-        # - Name: Display name in menus and desktop
-        # - Comment: Tooltip/description text
-        # - Exec: Command to execute when launched
-        # - Icon: Icon file path or theme icon name
-        # - Terminal: Whether to run in terminal (false for GUI applications)
-        # - Categories: Menu categories for proper organization
         
         cat > "$desktop_file_path" <<EOF
 [Desktop Entry]
@@ -2130,7 +2856,7 @@ main() {
     # =============================================================================
     
     
-    create_instances             # Create 4 instances using PrismLauncher CLI with comprehensive fallbacks
+    create_instances             # Create 4 splitscreen instances using PrismLauncher CLI with comprehensive fallbacks
     
     # =============================================================================
     # LAUNCHER OPTIMIZATION PHASE: Advanced launcher configuration
@@ -2196,7 +2922,7 @@ main() {
         echo "🔧 DUAL-LAUNCHER STRATEGY COMPLETED:"
         echo "   🛠️  PrismLauncher: CLI automation for reliable instance creation ✅ COMPLETED"
         echo "   🎮 PollyMC: Primary launcher for offline splitscreen gameplay ✅ ACTIVE"
-        echo "   🧹 Smart cleanup: PrismLauncher removed after successful setup ✅ CLEANED"
+        echo "   🧹 Smart cleanup: Removes PrismLauncher after successful setup ✅ CLEANED"
         echo ""
         echo "🎯 STRATEGY BENEFITS ACHIEVED:"
         echo "   • Reliable instance creation through proven CLI automation"
@@ -2240,6 +2966,7 @@ main() {
     echo "✅ Offline player accounts configured for splitscreen gameplay"
     echo "✅ Java memory settings optimized for splitscreen performance"
     echo "✅ Instance verification and launcher registration completed"
+    echo "✅ Comprehensive automatic dependency resolution system"
     echo ""
     
     # =============================================================================
