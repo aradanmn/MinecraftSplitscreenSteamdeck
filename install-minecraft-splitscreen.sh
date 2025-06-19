@@ -2970,30 +2970,52 @@ setup_steam_integration() {
             # The shortcuts.vdf file is locked while Steam is running and changes may be lost
             print_progress "Shutting down Steam to safely modify shortcuts database..."
             
+            # Temporarily disable strict error handling for Steam shutdown
+            set +e
+            
             # More robust Steam shutdown with multiple approaches
-            {
-                steam -shutdown 2>/dev/null || true
-                pkill -f "steam" 2>/dev/null || true
-                sleep 2
-            } >/dev/null 2>&1
+            print_info "   → Attempting graceful Steam shutdown..."
+            steam -shutdown 2>/dev/null || true
+            sleep 3
+            
+            print_info "   → Force closing any remaining Steam processes..."
+            pkill -f "steam" 2>/dev/null || true
+            pkill -f "Steam" 2>/dev/null || true
+            sleep 2
+            
+            # Re-enable strict error handling
+            set -e
             
             # STEAM SHUTDOWN VERIFICATION: Wait for complete shutdown
             # Check for Steam processes and wait until Steam fully exits
             # This prevents corruption of the shortcuts database during modification
             local shutdown_attempts=0
-            local max_attempts=15
+            local max_attempts=10
             
             while [[ $shutdown_attempts -lt $max_attempts ]]; do
-                # Check multiple ways Steam might be running
+                # Check multiple ways Steam might be running (simplified and safer)
                 local steam_running=false
                 
-                # Check for steam processes (multiple approaches for reliability)
-                if pgrep -x "steam" >/dev/null 2>&1 || \
-                   pgrep -f "steam" >/dev/null 2>&1 || \
-                   pgrep -f "Steam" >/dev/null 2>&1 || \
-                   ([ -f ~/.steam/steam.pid ] && kill -0 "$(cat ~/.steam/steam.pid 2>/dev/null)" 2>/dev/null); then
+                # Temporarily disable error handling for process checks
+                set +e
+                
+                # Check for steam processes (safer approach)
+                if pgrep -x "steam" >/dev/null 2>&1; then
                     steam_running=true
+                elif pgrep -f "steam" >/dev/null 2>&1; then
+                    steam_running=true
+                elif pgrep -f "Steam" >/dev/null 2>&1; then
+                    steam_running=true
+                elif [[ -f ~/.steam/steam.pid ]]; then
+                    local steam_pid
+                    steam_pid=$(cat ~/.steam/steam.pid 2>/dev/null)
+                    if [[ -n "$steam_pid" ]] && kill -0 "$steam_pid" 2>/dev/null; then
+                        steam_running=true
+                    fi
                 fi
+                
+                # Re-enable strict error handling
+                set -e
                 
                 if [[ "$steam_running" == false ]]; then
                     break
@@ -3020,11 +3042,25 @@ setup_steam_integration() {
             local backup_path="$PWD/steam-shortcuts-backup-$(date +%Y%m%d_%H%M%S).tar.xz"
             print_progress "Creating backup of Steam shortcuts database..."
             
-            if tar cJf "$backup_path" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then
-                print_success "✅ Steam shortcuts backup created: $(basename "$backup_path")"
+            # Disable strict error handling for backup creation
+            set +e
+            
+            # Check if Steam userdata directory exists first
+            if [[ -d ~/.steam/steam/userdata ]]; then
+                # Try to create backup with better error handling
+                if tar cJf "$backup_path" ~/.steam/steam/userdata/*/config/shortcuts.vdf 2>/dev/null; then
+                    print_success "✅ Steam shortcuts backup created: $(basename "$backup_path")"
+                else
+                    print_warning "⚠️  Could not create shortcuts backup - proceeding without backup"
+                    print_info "   → This is usually not a problem for new Steam shortcuts"
+                fi
             else
-                print_warning "⚠️  Could not create shortcuts backup - proceeding without backup"
+                print_warning "⚠️  Steam userdata directory not found - skipping backup"
+                print_info "   → Steam may not be properly installed or configured"
             fi
+            
+            # Re-enable strict error handling
+            set -e
             
             # =============================================================================
             # STEAM INTEGRATION SCRIPT EXECUTION
@@ -3043,9 +3079,15 @@ setup_steam_integration() {
             # Download script to temporary file first to avoid pipefail issues
             local steam_script_temp
             steam_script_temp=$(mktemp)
-            if curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp"; then
+            
+            # Disable strict error handling for script download and execution
+            set +e
+            
+            print_info "   → Downloading Steam integration script..."
+            if curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp" 2>/dev/null; then
+                print_info "   → Executing Steam integration script..."
                 # Execute the downloaded script with proper error handling
-                if python3 "$steam_script_temp"; then
+                if python3 "$steam_script_temp" 2>/dev/null; then
                     print_success "✅ Minecraft Splitscreen successfully added to Steam library"
                     print_info "   → Custom artwork downloaded and applied"
                     print_info "   → Shortcut configured with proper launch parameters"
@@ -3054,11 +3096,17 @@ setup_steam_integration() {
                     print_info "   → You may need to add the shortcut manually"
                     print_info "   → Common causes: PollyMC not found, Steam not installed, or permissions issues"
                 fi
-                rm -f "$steam_script_temp"
             else
                 print_warning "⚠️  Failed to download Steam integration script"
                 print_info "   → You may need to add the shortcut manually"
+                print_info "   → Check your internet connection and try again later"
             fi
+            
+            # Clean up temporary file
+            rm -f "$steam_script_temp" 2>/dev/null || true
+            
+            # Re-enable strict error handling
+            set -e
             
             # =============================================================================
             # STEAM RESTART AND VERIFICATION
