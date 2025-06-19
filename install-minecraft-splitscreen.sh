@@ -339,16 +339,65 @@ check_mod_version_compatibility() {
     local mc_version="$3"
     
     if [[ "$platform" == "modrinth" ]]; then
-        # Check Modrinth mod for version compatibility
+        # Check Modrinth mod for version compatibility using same logic as check_modrinth_mod
         local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
-        local versions_data
-        versions_data=$(curl -s "$api_url" 2>/dev/null)
-
-        if [[ -n "$versions_data" ]] && echo "$versions_data" | jq -e '.[] | select(.game_versions[] | contains("'"$mc_version"'"))' >/dev/null 2>&1; then
+        local tmp_body
+        tmp_body=$(mktemp)
+        if [[ -z "$tmp_body" ]]; then
+            return 1
+        fi
+        
+        # Fetch version data from Modrinth API
+        local http_code
+        http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+        local version_json
+        version_json=$(cat "$tmp_body")
+        rm "$tmp_body"
+        
+        # Validate API response
+        if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+            return 1
+        fi
+        
+        # Use the same multi-stage version matching logic as check_modrinth_mod
+        local file_url=""
+        
+        # STAGE 1: Try exact version match with Fabric loader requirement
+        file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+        
+        # STAGE 2: Try major.minor version match if exact match failed
+        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+            local mc_major_minor
+            mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
+            
+            # Try exact major.minor (e.g., "1.21")
+            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            
+            # Try wildcard version format (e.g., "1.21.x") 
+            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                local mc_major_minor_x="$mc_major_minor.x"
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            fi
+            
+            # Try zero-padded version format (e.g., "1.21.0")
+            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                local mc_major_minor_0="$mc_major_minor.0"
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            fi
+            
+            # Try prefix matching (any version starting with major.minor)
+            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            fi
+        fi
+        
+        # Return success if we found a compatible version
+        if [[ -n "$file_url" && "$file_url" != "null" ]]; then
             return 0  # Compatible
         fi
+        
     elif [[ "$platform" == "curseforge" ]]; then
-        # Check CurseForge mod for version compatibility
+        # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
         # First get the encrypted API token
         local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
         local encrypted_token_file=$(mktemp)
@@ -372,11 +421,54 @@ check_mod_version_compatibility() {
             return 1  # Can't get API key
         fi
         
-        local api_url="https://api.curseforge.com/v1/mods/$mod_id/files"
-        local versions_data
-        versions_data=$(curl -s -H "x-api-key: $cf_api_key" "$api_url" 2>/dev/null)
+        # Query CurseForge API with Fabric loader filter
+        local cf_api_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+        local tmp_body
+        tmp_body=$(mktemp)
+        if [[ -z "$tmp_body" ]]; then
+            return 1
+        fi
         
-        if [[ -n "$versions_data" ]] && echo "$versions_data" | jq -e '.data[] | select(.gameVersions[] | contains("'"$mc_version"'"))' >/dev/null 2>&1; then
+        # Make authenticated API request
+        local http_code
+        http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url")
+        local version_json
+        version_json=$(cat "$tmp_body")
+        rm "$tmp_body"
+        
+        # Validate API response
+        if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
+            return 1
+        fi
+        
+        # Version compatibility checking using same logic as check_curseforge_mod
+        local mc_major_minor
+        mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
+        local mc_major_minor_x="$mc_major_minor.x"
+        local mc_major_minor_0="$mc_major_minor.0"
+        
+        # CurseForge-specific jq filter for version matching (same as in check_curseforge_mod)
+        local jq_filter='
+            .data[]
+            | select(
+                ((.gameVersions[] == $mc_version) or
+                (.gameVersions[] == $mc_major_minor) or
+                (.gameVersions[] == $mc_major_minor_x) or
+                (.gameVersions[] == $mc_major_minor_0))
+              )
+            | .downloadUrl
+        '
+        
+        local jq_result
+        jq_result=$(printf "%s" "$version_json" | jq -r \
+            --arg mc_version "$mc_version" \
+            --arg mc_major_minor "$mc_major_minor" \
+            --arg mc_major_minor_x "$mc_major_minor_x" \
+            --arg mc_major_minor_0 "$mc_major_minor_0" \
+            "$jq_filter" 2>/dev/null | head -n1)
+        
+        # Return success if we found a compatible version
+        if [[ -n "$jq_result" && "$jq_result" != "null" ]]; then
             return 0  # Compatible
         fi
     fi
