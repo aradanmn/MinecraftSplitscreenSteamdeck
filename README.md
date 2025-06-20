@@ -3,6 +3,7 @@
 This project provides an easy way to set up splitscreen Minecraft on Steam Deck and Linux using an optimized dual-launcher approach. It supports 1–4 players, controller detection, and seamless integration with Steam Game Mode and your desktop environment.
 
 ## Features
+- **Automatic Java Installation:** Detects required Java version and installs automatically (no manual setup required)
 - **Optimized Installation:** Uses PrismLauncher for automated instance creation, then switches to PollyMC for gameplay
 - Launch 1–4 Minecraft instances in splitscreen mode with proper Fabric support
 - Automatic controller detection and per-player config
@@ -15,9 +16,9 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - **Smart Cleanup:** Automatically removes temporary files and directories after successful setup
 
 ## Requirements
-- **Java 21** (OpenJDK 21)
 - Linux (Steam Deck or any modern distro)
 - Internet connection for initial setup
+- **Java** (automatically installed if not present - no manual setup required)
 - *Steam Deck users: For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. See [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller).*
 
 ## Installation Process
@@ -83,20 +84,15 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Smart cleanup:** Automatically removes temporary PrismLauncher files after successful PollyMC setup
 
 ## Installation
-1. **Install Java 21**
-   - **For Steam Deck users (recommended):**
-     ```sh
-     # Download and run the Steam Deck JDK installer script
-     wget https://raw.githubusercontent.com/BlackCorsair/install-jdk-on-steam-deck/master/scripts/install-jdk.sh
-     chmod +x install-jdk.sh
-     JDK_VERSION=21 ./install-jdk.sh
-     ```
-     This script will install Java 21 to `~/.local/jdk/` and is designed specifically for Steam Deck's read-only filesystem.
+1. **Download and run the installer:**
+   - You can get the latest installer script from the [Releases section](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck/releases) (recommended for stable versions), or use the latest development version with:
+   ```sh
+   wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
+   chmod +x install-minecraft-splitscreen.sh
+   ./install-minecraft-splitscreen.sh
+   ```
    
-   - **For other Linux distributions:**
-     - For Arch: `sudo pacman -S jdk21-openjdk`
-     - For Debian/Ubuntu: `sudo apt install openjdk-21-jre`
-     - Refer to your distro's documentation or package manager for other distributions.
+   **Note:** The installer will automatically detect which Java version you need based on your selected Minecraft version and install it if not present. No manual Java setup required!
 
 2. **Install Python 3 (optional)**
    - Only required if you want to add the launcher to Steam automatically
@@ -104,15 +100,12 @@ This hybrid approach ensures reliable automated installation while providing the
    - For Arch: `sudo pacman -S python`
    - For Debian/Ubuntu: `sudo apt install python3`
 
-3. **Download and run the installer:**
-   - You can get the latest installer script from the [Releases section](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck/releases) (recommended for stable versions), or use the latest development version with:
-   ```sh
-   wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
-   chmod +x install-minecraft-splitscreen.sh
-   ./install-minecraft-splitscreen.sh
-   ```
-
-4. **Follow the prompts** to customize your installation:
+3. **Follow the prompts** to customize your installation:
+   - **Java installation:** The installer will automatically:
+     - Detect the required Java version for your chosen Minecraft version (Java 8, 16, 17, or 21)
+     - Search for existing Java installations on your system
+     - Download and install the correct Java version automatically if not found (using [install-jdk-on-steam-deck](https://github.com/FlyingEwok/install-jdk-on-steam-deck))
+     - Configure environment variables and validate the installation
    - **Minecraft version:** Choose your preferred version from a curated list of versions that are fully compatible with both required splitscreen mods (Controllable and Splitscreen Support), or press Enter for the latest compatible version
    - **Mod selection process:** The installer will automatically:
      - Search for compatible Fabric versions of all supported mods
@@ -132,6 +125,7 @@ This hybrid approach ensures reliable automated installation while providing the
      - PrismLauncher download and CLI verification
      - Instance creation (4 separate Minecraft instances for splitscreen)
      - PollyMC download and configuration
+     - Automatic Java version detection and installation (if needed)
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
 
@@ -159,9 +153,11 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Launcher script:** `~/.local/share/PollyMC/minecraftSplitscreen.sh`
 
 ## Troubleshooting
-- **Java 21 not found:**
-  - Make sure you have Java 21 installed and available in your PATH.
-  - See the error message for a link to this README.
+- **Java installation issues:**
+  - The installer automatically handles Java installation, but if issues occur:
+  - Ensure you have an internet connection for downloading Java
+  - For manual installation, the installer will provide specific instructions for your system
+  - Steam Deck users can use the [install-jdk-on-steam-deck](https://github.com/FlyingEwok/install-jdk-on-steam-deck) script separately if needed
 - **Controller issues:**
   - Make sure controllers are connected before launching.
 
@@ -176,7 +172,7 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen) (original concept/script, but this project is mostly a full rewrite).
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
 - Uses [PollyMC](https://github.com/fn2006/PollyMC) for gameplay and [PrismLauncher](https://github.com/PrismLauncher/PrismLauncher) for instance creation.
-- Steam Deck Java installation script by [BlackCorsair](https://github.com/BlackCorsair/install-jdk-on-steam-deck) - provides seamless Java 21 installation for Steam Deck's read-only filesystem.
+- Steam Deck Java installation script by [FlyingEwok](https://github.com/FlyingEwok/install-jdk-on-steam-deck) - provides seamless Java installation for Steam Deck's read-only filesystem with automatic version detection.
 - Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
 
 ## Technical Improvements
@@ -192,10 +188,11 @@ The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a n
 - **Make uninstall script** - Create a comprehensive uninstall script that removes all traces of the installation including instances, launchers, Steam shortcuts, and desktop entries
 - **Figure out a way to handle steam deck controller without needing to disable it for the whole system** - Find a method to selectively disable the Steam Deck controller only for splitscreen sessions while keeping it available for other games, and somehow figure out how to use Steam Deck controller with other controllers at the same time, as well as have the usecase with no Steam Deck controller at all and just the external controllers
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
-- **Fix java versions for older/newer versions of minecraft which may not use Java 21** - Implement automatic Java version detection and switching based on Minecraft version requirements (Java 8 for older versions, Java 17+ for newer versions, etc.)
 - **Fix LWJGL to not be hardcoded to version 3.3.3** - Implement automatic LWJGL version detection that matches the correct version for each Minecraft version instead of using a hardcoded version
 
 ## Recent Improvements
+- ✅ **Automatic Java Installation**: No manual Java setup required - the installer automatically detects, downloads, and installs the correct Java version for your chosen Minecraft version
+- ✅ **Automatic Java Version Detection**: Automatically detects and uses the correct Java version for each Minecraft version (Java 8, 16, 17, or 21) with smart backward compatibility
 - ✅ **Intelligent Version Selection**: Only Minecraft versions supported by both Controllable and Splitscreen Support mods are offered to users, ensuring full compatibility
 - ✅ **Automatic Dependency Resolution**: No more hardcoded dependency lists - all mod dependencies are detected via API
 - ✅ **Robust CurseForge Integration**: Full CurseForge API support with authentication and download URL resolution
