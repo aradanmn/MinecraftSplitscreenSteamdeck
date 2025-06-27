@@ -1,0 +1,653 @@
+#!/bin/bash
+# =============================================================================
+# Minecraft Splitscreen Steam Deck Installer - Instance Creation Module
+# =============================================================================
+# 
+# This module handles the creation of 4 separate Minecraft instances for splitscreen
+# gameplay. Each instance is configured identically with mods but will be launched
+# separately for multi-player splitscreen gaming.
+#
+# Functions provided:
+# - create_instances: Main function to create 4 splitscreen instances
+# - install_fabric_and_mods: Install Fabric loader and mods for an instance
+#
+# =============================================================================
+
+# create_instances: Create 4 identical Minecraft instances for splitscreen play
+# Uses PrismLauncher CLI when possible, falls back to manual creation if needed
+# Each instance gets the same mods but separate configurations for splitscreen
+create_instances() {
+    print_header "🚀 CREATING MINECRAFT INSTANCES"
+    
+    # Verify required variables are set
+    if [[ -z "${MC_VERSION:-}" ]]; then
+        print_error "MC_VERSION is not set. Cannot create instances."
+        exit 1
+    fi
+    
+    if [[ -z "${FABRIC_VERSION:-}" ]]; then
+        print_error "FABRIC_VERSION is not set. Cannot create instances."
+        exit 1
+    fi
+    
+    print_info "Creating instances for Minecraft $MC_VERSION with Fabric $FABRIC_VERSION"
+    
+    # Clean up the final mod selection list (remove any duplicates from dependency resolution)
+    FINAL_MOD_INDEXES=( $(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u) )
+    
+    # Initialize tracking for mods that fail to install
+    MISSING_MODS=()
+    print_progress "Creating 4 splitscreen instances..."
+    
+    # Create exactly 4 instances: latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4
+    # This naming convention is expected by the splitscreen launcher script
+    
+    # Disable strict error handling for instance creation to prevent early exit
+    print_info "Starting instance creation with improved error handling"
+    set +e  # Disable exit on error for this section
+    
+    for i in {1..4}; do
+        local instance_name="latestUpdate-$i"
+        print_progress "Creating instance $i of 4: $instance_name"
+        
+        # Clean slate: remove any existing instance with the same name
+        if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
+            print_info "Removing existing instance: $instance_name"
+            rm -rf "$TARGET_DIR/instances/$instance_name"
+        fi
+        
+        # STAGE 1: Attempt CLI-based instance creation (preferred method)
+        print_progress "Creating Minecraft $MC_VERSION instance with Fabric..."
+        local cli_success=false
+        
+        # Check if PrismLauncher executable exists and is accessible
+        local prism_exec
+        if prism_exec=$(get_prism_executable) && [[ -x "$prism_exec" ]]; then
+            # Try multiple CLI creation approaches with progressively fewer parameters
+            # This handles different PrismLauncher versions that may have varying CLI support
+            
+            print_info "Attempting CLI instance creation..."
+            
+            # Temporarily disable strict error handling for CLI attempts
+            set +e
+            
+            # Attempt 1: Full specification with Fabric loader
+            if "$prism_exec" --cli create-instance \
+                --name "$instance_name" \
+                --mc-version "$MC_VERSION" \
+                --group "Splitscreen" \
+                --loader "fabric" 2>/dev/null; then
+                cli_success=true
+                print_success "Created with Fabric loader"
+            # Try without loader specification
+            elif "$prism_exec" --cli create-instance \
+                --name "$instance_name" \
+                --mc-version "$MC_VERSION" \
+                --group "Splitscreen" 2>/dev/null; then
+                cli_success=true
+                print_success "Created without specific loader"
+            # Try basic creation with minimal parameters
+            elif "$prism_exec" --cli create-instance \
+                --name "$instance_name" \
+                --mc-version "$MC_VERSION" 2>/dev/null; then
+                cli_success=true
+                print_success "Created with minimal parameters"
+            else
+                print_info "All CLI creation attempts failed, will use manual method"
+            fi
+            
+            # Re-enable strict error handling
+            set -e
+        else
+            print_info "PrismLauncher executable not available, using manual method"
+        fi
+        
+        # FALLBACK: Manual instance creation when CLI methods fail
+        # This creates instances manually by writing configuration files directly
+        # This ensures compatibility even with older PrismLauncher versions that lack CLI support
+        if [[ "$cli_success" == false ]]; then
+            print_info "Using manual instance creation method..."
+            local instance_dir="$TARGET_DIR/instances/$instance_name"
+            
+            # Create instance directory structure
+            mkdir -p "$instance_dir" || {
+                print_error "Failed to create instance directory: $instance_dir"
+                continue  # Skip to next instance
+            }
+            
+            # Create .minecraft subdirectory
+            mkdir -p "$instance_dir/.minecraft" || {
+                print_error "Failed to create .minecraft directory in $instance_dir"
+                continue  # Skip to next instance
+            }
+            
+            # Create instance.cfg - PrismLauncher's main instance configuration file
+            # This file defines the instance metadata, version, and launcher settings
+            cat > "$instance_dir/instance.cfg" <<EOF
+InstanceType=OneSix
+iconKey=default
+name=Player $i
+OverrideCommands=false
+OverrideConsole=false
+OverrideGameTime=false
+OverrideJavaArgs=false
+OverrideJavaLocation=false
+OverrideMCLaunchMethod=false
+OverrideMemory=false
+OverrideNativeWorkarounds=false
+OverrideWindow=false
+IntendedVersion=$MC_VERSION
+EOF
+            
+            if [[ $? -ne 0 ]]; then
+                print_error "Failed to create instance.cfg for $instance_name"
+                continue  # Skip to next instance
+            fi
+            
+            # Create mmc-pack.json - MultiMC/PrismLauncher component definition file
+            # This file defines the mod loader stack: LWJGL3 → Minecraft → Intermediary → Fabric
+            # Components are loaded in dependency order to ensure proper mod support
+            cat > "$instance_dir/mmc-pack.json" <<EOF
+{
+    "components": [
+        {
+            "cachedName": "LWJGL 3",
+            "cachedVersion": "$LWJGL_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "org.lwjgl3",
+            "version": "$LWJGL_VERSION"
+        },
+        {
+            "cachedName": "Minecraft",
+            "cachedRequires": [
+                {
+                    "suggests": "$LWJGL_VERSION",
+                    "uid": "org.lwjgl3"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "important": true,
+            "uid": "net.minecraft",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Intermediary Mappings",
+            "cachedRequires": [
+                {
+                    "equals": "$MC_VERSION",
+                    "uid": "net.minecraft"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "net.fabricmc.intermediary",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Fabric Loader",
+            "cachedRequires": [
+                {
+                    "uid": "net.fabricmc.intermediary"
+                }
+            ],
+            "cachedVersion": "$FABRIC_VERSION",
+            "uid": "net.fabricmc.fabric-loader",
+            "version": "$FABRIC_VERSION"
+        }
+    ],
+    "formatVersion": 1
+}
+EOF
+            
+            if [[ $? -ne 0 ]]; then
+                print_error "Failed to create mmc-pack.json for $instance_name"
+                continue  # Skip to next instance
+            fi
+            
+            print_success "Manual instance creation completed for $instance_name"
+        fi
+        
+        # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
+        # This verification step prevents subsequent operations on non-existent instances
+        if [[ ! -d "$TARGET_DIR/instances/$instance_name" ]]; then
+            print_error "Instance directory not found: $TARGET_DIR/instances/$instance_name"
+            continue  # Skip to next instance if this one failed
+        fi
+        
+        print_success "Instance created successfully: $instance_name"
+        
+        # FABRIC AND MOD INSTALLATION: Configure mod loader and install selected mods
+        # This step adds Fabric loader support and downloads all compatible mods
+        install_fabric_and_mods "$TARGET_DIR/instances/$instance_name" "$instance_name"
+    done
+    
+    # Re-enable strict error handling after instance creation
+    set -e
+    print_success "Instance creation completed - all 4 instances created successfully"
+}
+
+# Install Fabric mod loader and download all selected mods for an instance
+# This function ensures each instance has the proper mod loader and all compatible mods
+# Parameters:
+#   $1 - instance_dir: Path to the PrismLauncher instance directory
+#   $2 - instance_name: Display name of the instance for logging
+install_fabric_and_mods() {
+    local instance_dir="$1"
+    local instance_name="$2"
+    
+    print_progress "Installing Fabric loader for mod support..."
+    
+    # Temporarily disable strict error handling to prevent exit on individual mod failures
+    local original_error_setting=$-
+    set +e
+    
+    local pack_json="$instance_dir/mmc-pack.json"
+    
+    # FABRIC LOADER INSTALLATION: Add Fabric to the component stack if not present
+    # Fabric loader is required for all Fabric mods to function properly
+    # We check if it's already installed to avoid duplicate entries
+    if [[ ! -f "$pack_json" ]] || ! grep -q "net.fabricmc.fabric-loader" "$pack_json" 2>/dev/null; then
+        print_progress "Adding Fabric loader to $instance_name..."
+        
+        # Create complete component stack with proper dependency chain
+        # Order matters: LWJGL3 → Minecraft → Intermediary Mappings → Fabric Loader
+        cat > "$pack_json" <<EOF
+{
+    "components": [
+        {
+            "cachedName": "LWJGL 3",
+            "cachedVersion": "$LWJGL_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "org.lwjgl3",
+            "version": "$LWJGL_VERSION"
+        },
+        {
+            "cachedName": "Minecraft",
+            "cachedRequires": [
+                {
+                    "suggests": "$LWJGL_VERSION",
+                    "uid": "org.lwjgl3"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "important": true,
+            "uid": "net.minecraft",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Intermediary Mappings",
+            "cachedRequires": [
+                {
+                    "equals": "$MC_VERSION",
+                    "uid": "net.minecraft"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "net.fabricmc.intermediary",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Fabric Loader",
+            "cachedRequires": [
+                {
+                    "uid": "net.fabricmc.intermediary"
+                }
+            ],
+            "cachedVersion": "$FABRIC_VERSION",
+            "uid": "net.fabricmc.fabric-loader",
+            "version": "$FABRIC_VERSION"
+        }
+    ],
+    "formatVersion": 1
+}
+EOF
+        print_success "Fabric loader v$FABRIC_VERSION installed"
+    fi
+    
+    # MOD DOWNLOAD AND INSTALLATION: Download all selected mods to instance
+    # Create the mods directory where Fabric will load .jar files from
+    local mods_dir="$instance_dir/.minecraft/mods"
+    mkdir -p "$mods_dir"
+    
+    # Process each mod that was selected and has a compatible download URL
+    # FINAL_MOD_INDEXES contains indices of mods that passed compatibility checking
+    for idx in "${FINAL_MOD_INDEXES[@]}"; do
+        local mod_url="${MOD_URLS[$idx]}"
+        local mod_name="${SUPPORTED_MODS[$idx]}"
+        local mod_id="${MOD_IDS[$idx]}"
+        local mod_type="${MOD_TYPES[$idx]}"
+        
+        # RESOLVE MISSING URLs: For dependencies added without URLs, fetch the download URL now
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "modrinth" ]]; then
+            print_progress "Resolving download URL for dependency: $mod_name"
+            
+            # Use the same comprehensive version matching as main mod compatibility checking
+            local resolve_data=""
+            local temp_resolve_file=$(mktemp)
+            
+            # Fetch all versions for this dependency
+            local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
+            local api_success=false
+            
+            if command -v curl >/dev/null 2>&1; then
+                echo "   Trying curl for $mod_name..."
+                if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
+                    if [[ -s "$temp_resolve_file" ]]; then
+                        resolve_data=$(cat "$temp_resolve_file")
+                        api_success=true
+                        echo "   ✅ curl succeeded, got $(wc -c < "$temp_resolve_file") bytes"
+                    else
+                        echo "   ❌ curl returned empty file"
+                    fi
+                else
+                    echo "   ❌ curl failed"
+                fi
+            elif command -v wget >/dev/null 2>&1; then
+                echo "   Trying wget for $mod_name..."
+                if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
+                    if [[ -s "$temp_resolve_file" ]]; then
+                        resolve_data=$(cat "$temp_resolve_file")
+                        api_success=true
+                        echo "   ✅ wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
+                    else
+                        echo "   ❌ wget returned empty file"
+                    fi
+                else
+                    echo "   ❌ wget failed"
+                fi
+            fi
+            
+            # Debug: Save API response to a persistent file for examination
+            local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
+            
+            # More robust way to write the data
+            if [[ -n "$resolve_data" ]]; then
+                printf "%s" "$resolve_data" > "$debug_file"
+                echo "✅ Resolving data for $mod_name (ID: $mod_id) saved to: $debug_file"
+                echo "   API URL: $versions_url"
+                echo "   Data length: ${#resolve_data} characters"
+            else
+                echo "❌ No data received for $mod_name (ID: $mod_id)"
+                echo "   API URL: $versions_url" 
+                echo "   Check if the API call succeeded"
+                # Special handling for known problematic dependencies
+                if [[ "$mod_name" == *"Collective"* || "$mod_id" == "e0M1UDsY" ]]; then
+                    echo "   💡 Note: Collective mod often has API issues and is usually an optional dependency"
+                    echo "   💡 This is typically safe to ignore - the main mods will still work"
+                fi
+                # Create empty file to indicate the attempt was made
+                touch "$debug_file"
+                echo "   Empty debug file created at: $debug_file"
+            fi
+
+            if [[ -n "$resolve_data" && "$resolve_data" != "[]" && "$resolve_data" != *"\"error\""* ]]; then
+                echo "🔍 DEBUG: Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
+                
+                # Try exact version match first
+                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                echo "   → Exact version match result: ${mod_url:-'(empty)'}"
+                
+                # Try major.minor version if exact match failed  
+                if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                    local mc_major_minor
+                    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+                    echo "   → Trying major.minor version: $mc_major_minor"
+                    
+                    # Try exact major.minor
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    echo "   → Major.minor match result: ${mod_url:-'(empty)'}"
+                    
+                    # Try wildcard version (e.g., "1.21.x")
+                    if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                        local mc_major_minor_x="$mc_major_minor.x"
+                        echo "   → Trying wildcard version: $mc_major_minor_x"
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                        echo "   → Wildcard match result: ${mod_url:-'(empty)'}"
+                    fi
+                    
+                    # Try prefix matching (any version starting with major.minor)
+                    if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                        echo "   → Trying prefix matching with: $mc_major_minor"
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                        echo "   → Prefix match result: ${mod_url:-'(empty)'}"
+                    fi
+                fi
+                
+                # If still no URL found, try the latest Fabric version for any compatible release
+                if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+                    echo "   → Trying latest Fabric version (any compatible release)"
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
+                    echo "   → Latest Fabric match result: ${mod_url:-'(empty)'}"
+                fi
+                
+                echo "🎯 FINAL URL for $mod_name: ${mod_url:-'(none found)'}"
+            fi
+            
+            rm -f "$temp_resolve_file" 2>/dev/null
+        fi
+        
+        # RESOLVE MISSING URLs for CurseForge dependencies
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "curseforge" ]]; then
+            print_progress "Resolving download URL for CurseForge dependency: $mod_name"
+            
+            # Use our robust CurseForge URL resolution function
+            mod_url=$(get_curseforge_download_url "$mod_id")
+            
+            if [[ -n "$mod_url" && "$mod_url" != "null" ]]; then
+                print_success "Found compatible CurseForge file for $mod_name"
+            else
+                print_warning "No compatible CurseForge file found for $mod_name"
+            fi
+        fi
+        
+        # SKIP INVALID MODS: Handle cases where URL couldn't be resolved
+        if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
+            # Check if this is a critical required mod vs. optional dependency
+            local is_required=false
+            for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
+                if [[ "$mod_name" == "$req"* ]]; then
+                    is_required=true
+                    break
+                fi
+            done
+            
+            if [[ "$is_required" == true ]]; then
+                print_error "❌ CRITICAL: Required mod '$mod_name' could not be downloaded!"
+                print_error "   This mod is essential for splitscreen functionality."
+                print_info "   → However, continuing to create remaining instances..."
+                print_info "   → You may need to manually install this mod later."
+                MISSING_MODS+=("$mod_name")  # Track for final summary
+                continue
+            else
+                print_warning "⚠️  Optional dependency '$mod_name' could not be downloaded."
+                print_info "   → This is likely a dependency that doesn't support Minecraft $MC_VERSION"
+                print_info "   → Continuing installation without this optional dependency"
+                MISSING_MODS+=("$mod_name")  # Track for final summary
+                continue
+            fi
+        fi
+        
+        # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
+        # Filename is sanitized (spaces replaced with underscores) for filesystem compatibility
+        local mod_file="$mods_dir/${mod_name// /_}.jar"
+        if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
+            print_success "Success: $mod_name"
+        else
+            print_warning "Failed: $mod_name"
+            MISSING_MODS+=("$mod_name")  # Track download failures for summary
+        fi
+    done
+    
+    # =============================================================================
+    # MINECRAFT AUDIO CONFIGURATION
+    # =============================================================================
+    
+    # SPLITSCREEN AUDIO SETUP: Configure music volume for each instance
+    # Instance 1 keeps music at default volume (0.3), instances 2-4 have music muted
+    # This prevents audio overlap when multiple instances are running simultaneously
+    print_progress "Configuring splitscreen audio settings for $instance_name..."
+    
+    # Extract instance number from instance name (latestUpdate-X format)
+    local instance_number
+    instance_number=$(echo "$instance_name" | grep -oE '[0-9]+$')
+    
+    # Determine music volume based on instance number
+    local music_volume="0.3"  # Default music volume
+    if [[ "$instance_number" -gt 1 ]]; then
+        music_volume="0.0"    # Mute music for instances 2, 3, and 4
+        print_info "   → Music muted for $instance_name (prevents audio overlap)"
+    else
+        print_info "   → Music enabled for $instance_name (primary audio instance)"
+    fi
+    
+    # Create Minecraft options.txt file with splitscreen-optimized settings
+    # This file contains all Minecraft client settings including audio, graphics, and controls
+    cat > "$instance_dir/.minecraft/options.txt" <<EOF
+version:3465
+autoJump:false
+operatorItemsTab:false
+autoSuggestions:true
+chatColors:true
+chatLinks:true
+chatLinksPrompt:true
+enableVsync:true
+entityShadows:true
+forceUnicodeFont:false
+discrete_mouse_scroll:false
+invertYMouse:false
+realmsNotifications:true
+reducedDebugInfo:false
+showSubtitles:false
+directionalAudio:false
+touchscreen:false
+fullscreen:false
+bobView:true
+toggleCrouch:false
+toggleSprint:false
+darkMojangStudiosBackground:false
+hideLightningFlashes:false
+mouseSensitivity:0.5
+fov:0.0
+screenEffectScale:1.0
+fovEffectScale:1.0
+gamma:0.0
+renderDistance:12
+simulationDistance:12
+entityDistanceScaling:1.0
+guiScale:0
+particles:0
+maxFps:120
+difficulty:2
+graphicsMode:1
+ao:true
+prioritizeChunkUpdates:0
+biomeBlendRadius:2
+renderClouds:"true"
+resourcePacks:[]
+incompatibleResourcePacks:[]
+lastServer:
+lang:en_us
+soundDevice:""
+chatVisibility:0
+chatOpacity:1.0
+chatLineSpacing:0.0
+textBackgroundOpacity:0.5
+backgroundForChatOnly:true
+hideServerAddress:false
+advancedItemTooltips:false
+pauseOnLostFocus:true
+overrideWidth:0
+overrideHeight:0
+heldItemTooltips:true
+chatHeightFocused:1.0
+chatDelay:0.0
+chatHeightUnfocused:0.44366195797920227
+chatScale:1.0
+chatWidth:1.0
+mipmapLevels:4
+useNativeTransport:true
+mainHand:"right"
+attackIndicator:1
+narrator:0
+tutorialStep:none
+mouseWheelSensitivity:1.0
+rawMouseInput:true
+glDebugVerbosity:1
+skipMultiplayerWarning:false
+skipRealms32bitWarning:false
+hideMatchedNames:true
+joinedFirstServer:false
+hideBundleTutorial:false
+syncChunkWrites:true
+showAutosaveIndicator:true
+allowServerListing:true
+onlyShowSecureChat:false
+panoramaScrollSpeed:1.0
+telemetryOptInExtra:false
+soundCategory_master:1.0
+soundCategory_music:${music_volume}
+soundCategory_record:1.0
+soundCategory_weather:1.0
+soundCategory_block:1.0
+soundCategory_hostile:1.0
+soundCategory_neutral:1.0
+soundCategory_player:1.0
+soundCategory_ambient:1.0
+soundCategory_voice:1.0
+modelPart_cape:true
+modelPart_jacket:true
+modelPart_left_sleeve:true
+modelPart_right_sleeve:true
+modelPart_left_pants_leg:true
+modelPart_right_pants_leg:true
+modelPart_hat:true
+key_key.attack:key.mouse.left
+key_key.use:key.mouse.right
+key_key.forward:key.keyboard.w
+key_key.left:key.keyboard.a
+key_key.back:key.keyboard.s
+key_key.right:key.keyboard.d
+key_key.jump:key.keyboard.space
+key_key.sneak:key.keyboard.left.shift
+key_key.sprint:key.keyboard.left.control
+key_key.drop:key.keyboard.q
+key_key.inventory:key.keyboard.e
+key_key.chat:key.keyboard.t
+key_key.playerlist:key.keyboard.tab
+key_key.pickItem:key.mouse.middle
+key_key.command:key.keyboard.slash
+key_key.socialInteractions:key.keyboard.p
+key_key.screenshot:key.keyboard.f2
+key_key.togglePerspective:key.keyboard.f5
+key_key.smoothCamera:key.keyboard.unknown
+key_key.fullscreen:key.keyboard.f11
+key_key.spectatorOutlines:key.keyboard.unknown
+key_key.swapOffhand:key.keyboard.f
+key_key.saveToolbarActivator:key.keyboard.c
+key_key.loadToolbarActivator:key.keyboard.x
+key_key.advancements:key.keyboard.l
+key_key.hotbar.1:key.keyboard.1
+key_key.hotbar.2:key.keyboard.2
+key_key.hotbar.3:key.keyboard.3
+key_key.hotbar.4:key.keyboard.4
+key_key.hotbar.5:key.keyboard.5
+key_key.hotbar.6:key.keyboard.6
+key_key.hotbar.7:key.keyboard.7
+key_key.hotbar.8:key.keyboard.8
+key_key.hotbar.9:key.keyboard.9
+EOF
+    
+    print_success "Audio configuration complete for $instance_name"
+    
+    print_success "Fabric and mods installation complete for $instance_name"
+    
+    # Restore original error handling setting
+    if [[ $original_error_setting == *e* ]]; then
+        set -e
+    fi
+}

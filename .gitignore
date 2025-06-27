@@ -11,3 +11,5 @@
 !.github/
 !.github/**
 !token.enc
+!modules/
+!modules/**
