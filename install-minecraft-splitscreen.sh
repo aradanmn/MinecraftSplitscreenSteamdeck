@@ -5,8 +5,10 @@
 # 
 # This is the new, clean modular entry point for the Minecraft Splitscreen installer.
 # All functionality has been moved to organized modules for better maintainability.
+# Required modules are automatically downloaded as temporary files when the script runs.
 #
 # Features:
+# - Automatic temporary module downloading (modules are cleaned up after completion)
 # - Automatic Java detection and installation
 # - Complete Fabric dependency chain implementation
 # - API filtering for Fabric-compatible mods (Modrinth + CurseForge)
@@ -15,26 +17,158 @@
 # - Steam Deck optimized installation
 # - Comprehensive Steam and desktop integration
 #
-# No additional setup, Java installation, or token files are required - just run this script.
+# No additional setup, Java installation, token files, or module downloads required - just run this script.
+# Modules are downloaded temporarily and automatically cleaned up when the script completes.
 #
 # =============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # =============================================================================
-# MODULE LOADING
+# CLEANUP AND SIGNAL HANDLING
+# =============================================================================
+
+# Global variable for modules directory (will be set later)
+MODULES_DIR=""
+
+# Cleanup function to remove temporary modules directory
+cleanup() {
+    if [[ -n "$MODULES_DIR" ]] && [[ -d "$MODULES_DIR" ]]; then
+        echo "🧹 Cleaning up temporary modules..."
+        rm -rf "$MODULES_DIR"
+    fi
+}
+
+# Set up trap to cleanup on script exit (normal or error)
+trap cleanup EXIT INT TERM
+
+# =============================================================================
+# MODULE DOWNLOADING AND LOADING
 # =============================================================================
 
 # Get the directory where this script is located
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly MODULES_DIR="$SCRIPT_DIR/modules"
+# Create a temporary directory for modules that will be cleaned up automatically
+MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
-# Verify modules directory exists
-if [[ ! -d "$MODULES_DIR" ]]; then
-    echo "❌ Error: modules directory not found at $MODULES_DIR"
-    echo "Please ensure all module files are present in the modules/ directory"
-    exit 1
+# GitHub repository information (modify these URLs to match your actual repository)
+readonly REPO_BASE_URL="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/modules"
+
+# List of required module files
+readonly MODULE_FILES=(
+    "utilities.sh"
+    "java_management.sh"
+    "launcher_setup.sh"
+    "version_management.sh"
+    "lwjgl_management.sh"
+    "mod_management.sh"
+    "instance_creation.sh"
+    "pollymc_setup.sh"
+    "steam_integration.sh"
+    "desktop_launcher.sh"
+    "main_workflow.sh"
+)
+
+# Function to download modules if they don't exist
+download_modules() {
+    echo "🔄 Downloading required modules to temporary directory..."
+    echo "📁 Temporary modules directory: $MODULES_DIR"
+    echo "🌐 Repository URL: $REPO_BASE_URL"
+    
+    # Temporarily disable strict error handling for downloads
+    set +e
+    
+    # The temporary directory is already created by mktemp
+    local downloaded_count=0
+    local failed_count=0
+    
+    # Download each required module
+    for module in "${MODULE_FILES[@]}"; do
+        local module_path="$MODULES_DIR/$module"
+        local module_url="$REPO_BASE_URL/$module"
+        
+        echo "⬇️  Downloading module: $module"
+        echo "    URL: $module_url"
+        
+        # Download the module file
+        if command -v curl >/dev/null 2>&1; then
+            curl_output=$(curl -fsSL "$module_url" -o "$module_path" 2>&1)
+            curl_exit_code=$?
+            if [[ $curl_exit_code -eq 0 ]]; then
+                chmod +x "$module_path"
+                ((downloaded_count++))
+                echo "✅ Downloaded: $module"
+            else
+                echo "❌ Failed to download: $module"
+                echo "    Curl exit code: $curl_exit_code"
+                echo "    Error: $curl_output"
+                ((failed_count++))
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            wget_output=$(wget -q "$module_url" -O "$module_path" 2>&1)
+            wget_exit_code=$?
+            if [[ $wget_exit_code -eq 0 ]]; then
+                chmod +x "$module_path"
+                ((downloaded_count++))
+                echo "✅ Downloaded: $module"
+            else
+                echo "❌ Failed to download: $module"
+                echo "    Wget exit code: $wget_exit_code"
+                echo "    Error: $wget_output"
+                ((failed_count++))
+            fi
+        else
+            echo "❌ Error: Neither curl nor wget is available"
+            echo "Please install curl or wget to download modules automatically"
+            echo "Or manually download all modules from: $REPO_BASE_URL"
+            # Re-enable strict error handling before exiting
+            set -euo pipefail
+            exit 1
+        fi
+    done
+    
+    # Re-enable strict error handling
+    set -euo pipefail
+    
+    if [[ $failed_count -gt 0 ]]; then
+        echo "❌ Failed to download $failed_count module(s)"
+        echo "ℹ️  This might be because:"
+        echo "    - The repository doesn't exist or is private"
+        echo "    - The modules haven't been uploaded to the repository yet"
+        echo "    - Network connectivity issues"
+        echo ""
+        echo "🔧 For now, you can place the modules manually in the same directory as this script:"
+        echo "    mkdir -p '$SCRIPT_DIR/modules'"
+        echo "    # Then copy all .sh module files to that directory"
+        echo ""
+        echo "🌐 Or check if the repository exists at: https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck"
+        exit 1
+    fi
+    
+    echo "✅ Downloaded $downloaded_count module(s) to temporary directory"
+    echo "ℹ️  Modules will be automatically cleaned up when script completes"
+}
+
+# Download modules if needed
+# First check if modules exist locally, if not try to download them
+if [[ -d "$SCRIPT_DIR/modules" ]]; then
+    echo "📁 Found local modules directory, copying to temporary location..."
+    cp -r "$SCRIPT_DIR/modules/"* "$MODULES_DIR/"
+    chmod +x "$MODULES_DIR"/*.sh
+    echo "✅ Copied local modules to temporary directory"
+else
+    download_modules
 fi
+
+# Verify all modules are now present
+for module in "${MODULE_FILES[@]}"; do
+    if [[ ! -f "$MODULES_DIR/$module" ]]; then
+        echo "❌ Error: Required module missing: $module"
+        echo "Please check your internet connection or download manually from:"
+        echo "$REPO_BASE_URL/$module"
+        exit 1
+    fi
+done
 
 # Source all module files to load their functions
 # Load modules in dependency order
