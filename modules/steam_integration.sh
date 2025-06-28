@@ -85,19 +85,21 @@ setup_steam_integration() {
             # STEAM PROCESS TERMINATION: Safely shut down Steam before modifying shortcuts
             # Steam must be completely closed to safely modify the shortcuts.vdf binary database
             # The shortcuts.vdf file is locked while Steam is running and changes may be lost
+            # STEAM DECK SAFETY: Use precise process targeting to avoid killing SteamOS components
             print_progress "Shutting down Steam to safely modify shortcuts database..."
             
             # Temporarily disable strict error handling for Steam shutdown
             set +e
             
-            # More robust Steam shutdown with multiple approaches
+            # Steam Deck-aware shutdown approach
             print_info "   → Attempting graceful Steam shutdown..."
             steam -shutdown 2>/dev/null || true
             sleep 3
             
-            print_info "   → Force closing any remaining Steam processes..."
-            pkill -f "steam" 2>/dev/null || true
-            pkill -f "Steam" 2>/dev/null || true
+            # Only force close the actual Steam client process, avoiding SteamOS components
+            print_info "   → Force closing Steam client process (preserving SteamOS)..."
+            # Use exact process name matching to avoid killing SteamOS processes
+            pkill -x "steam" 2>/dev/null || true
             sleep 2
             
             # Re-enable strict error handling
@@ -110,18 +112,14 @@ setup_steam_integration() {
             local max_attempts=10
             
             while [[ $shutdown_attempts -lt $max_attempts ]]; do
-                # Check multiple ways Steam might be running (simplified and safer)
+                # Check for Steam client processes (Steam Deck-safe approach)
                 local steam_running=false
                 
                 # Temporarily disable error handling for process checks
                 set +e
                 
-                # Check for steam processes (safer approach)
+                # Check only for the main Steam client process, not SteamOS components
                 if pgrep -x "steam" >/dev/null 2>&1; then
-                    steam_running=true
-                elif pgrep -f "steam" >/dev/null 2>&1; then
-                    steam_running=true
-                elif pgrep -f "Steam" >/dev/null 2>&1; then
                     steam_running=true
                 elif [[ -f ~/.steam/steam.pid ]]; then
                     local steam_pid
