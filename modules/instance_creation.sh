@@ -410,11 +410,18 @@ EOF
                         echo "   → Wildcard match result: ${mod_url:-'(empty)'}"
                     fi
                     
-                    # Try prefix matching (any version starting with major.minor)
+                    # Try limited previous patch version (more restrictive than prefix matching)
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
-                        echo "   → Trying prefix matching with: $mc_major_minor"
-                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-                        echo "   → Prefix match result: ${mod_url:-'(empty)'}"
+                        local mc_patch_version
+                        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+                        if [[ -n "$mc_patch_version" && $mc_patch_version -gt 0 ]]; then
+                            # Try one patch version down (e.g., if looking for 1.21.6, try 1.21.5)
+                            local prev_patch=$((mc_patch_version - 1))
+                            local mc_prev_version="$mc_major_minor.$prev_patch"
+                            echo "   → Trying limited backwards compatibility with: $mc_prev_version"
+                            mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                            echo "   → Limited backwards compatibility result: ${mod_url:-'(empty)'}"
+                        fi
                     fi
                 fi
                 

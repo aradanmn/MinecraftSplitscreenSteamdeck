@@ -77,41 +77,69 @@ check_modrinth_mod() {
     
     # STAGE 2: Try major.minor version match if exact match failed
     # Example: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    # BUT ONLY if no specific patch version exists that's higher than what we're looking for
     if [[ -z "$file_url" || "$file_url" == "null" ]]; then
         local mc_major_minor
         mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
         
-        # Try exact major.minor (e.g., "1.21")
-        file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-        if [[ -n "$file_url" && "$file_url" != "null" ]]; then
-            dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
-        fi
+        # Before trying major.minor match, check if this version is higher than existing patch versions
+        # This prevents matching 1.21 when looking for 1.21.6 if the highest patch version is only 1.21.5
+        local mc_patch_version
+        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        local should_try_fallback=true
         
-        # Try wildcard version format (e.g., "1.21.x") 
-        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-            local mc_major_minor_x="$mc_major_minor.x"
-            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-            if [[ -n "$file_url" && "$file_url" != "null" ]]; then
-                dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+        # If we have a patch version (e.g. 1.21.6), check if it's higher than any available versions
+        if [[ -n "$mc_patch_version" ]]; then
+            # Check if there's a standalone major.minor version (e.g., "1.21" without patch)
+            local has_standalone_major_minor=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
+                .[] | select(.game_versions[] == $major_minor and (.loaders[] == "fabric")) | .version_number' 2>/dev/null | head -n1)
+            
+            # Get the highest patch version available for this major.minor series
+            local highest_patch=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
+                [.[] | select(.game_versions[] | test("^" + $major_minor + "\\.[0-9]+$") and (.loaders[] == "fabric")) | 
+                 .game_versions[] | select(test("^" + $major_minor + "\\.[0-9]+$")) | 
+                 split(".")[2] | tonumber] | if length > 0 then max else empty end' 2>/dev/null)
+            
+            # Don't try fallback if:
+            # 1. There's a standalone major.minor version (e.g., "1.21") and we're requesting a patch version, OR
+            # 2. There are patch versions and our requested patch is higher than the highest available
+            if [[ -n "$has_standalone_major_minor" && "$has_standalone_major_minor" != "null" ]] || 
+               [[ -n "$highest_patch" && "$highest_patch" != "null" && "$mc_patch_version" -gt "$highest_patch" ]]; then
+                should_try_fallback=false
             fi
         fi
         
-        # Try zero-padded version format (e.g., "1.21.0")
-        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-            local mc_major_minor_0="$mc_major_minor.0"
-            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+        # Only try major.minor fallback if it's safe to do so
+        if [[ "$should_try_fallback" == true ]]; then
+            # Try exact major.minor (e.g., "1.21")
+            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
             if [[ -n "$file_url" && "$file_url" != "null" ]]; then
-                dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+                dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+            fi
+            
+            # Try wildcard version format (e.g., "1.21.x") 
+            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                local mc_major_minor_x="$mc_major_minor.x"
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+                if [[ -n "$file_url" && "$file_url" != "null" ]]; then
+                    dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+                fi
+            fi
+            
+            # Try zero-padded version format (e.g., "1.21.0")
+            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                local mc_major_minor_0="$mc_major_minor.0"
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+                if [[ -n "$file_url" && "$file_url" != "null" ]]; then
+                    dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+                fi
             fi
         fi
         
-        # Try prefix matching (any version starting with major.minor)
-        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-            if [[ -n "$file_url" && "$file_url" != "null" ]]; then
-                dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
-            fi
-        fi
+        # DISABLED: Limited prefix matching - this was allowing false positives
+        # We've disabled this section to prevent matching lower patch versions
+        # when a higher patch version is requested that doesn't exist
+        # (e.g., preventing 1.21.5 from matching when 1.21.6 is requested)
     fi
     
     # STAGE 3: Advanced pattern matching with comprehensive version range support
@@ -123,43 +151,72 @@ check_modrinth_mod() {
         local mc_major_minor_x="$mc_major_minor.x"
         local mc_major_minor_0="$mc_major_minor.0"
         
-        # Simplified and corrected jq filter that handles multiple version pattern types
-        # Fixed: game_versions is always at release level in Modrinth API, not file level
-        local jq_filter='
-          .[] as $release
-          | select($release.loaders[] == "fabric")
-          | select(
-              $release.game_versions[]
-              | test("^" + $mc_major_minor + "\\..*$") or
-                . == $mc_version or
-                . == $mc_major_minor or
-                . == $mc_major_minor_x or
-                . == $mc_major_minor_0
-            )
-          | $release.files[]
-          | select(.primary == true)
-          | {
-              url,
-              dependencies: ($release.dependencies // [] | map(select(.dependency_type == "required") | .project_id))
-            }
-          | @base64
-        '
+        # Apply the same fallback safety check as in STAGE 2
+        local mc_patch_version
+        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        local should_try_stage3_fallback=true
         
-        # Execute the corrected jq filter with all version variants
-        local jq_result
-        jq_result=$(printf "%s" "$version_json" | jq -r \
-          --arg mc_version "$MC_VERSION" \
-          --arg mc_major_minor "$mc_major_minor" \
-          --arg mc_major_minor_x "$mc_major_minor_x" \
-          --arg mc_major_minor_0 "$mc_major_minor_0" \
-          "$jq_filter" 2>/dev/null | head -n1)
+        # If we have a patch version, check if it's higher than any available versions
+        if [[ -n "$mc_patch_version" ]]; then
+            # Check if there's a standalone major.minor version (e.g., "1.21" without patch)
+            local has_standalone_major_minor=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
+                .[] | select(.game_versions[] == $major_minor and (.loaders[] == "fabric")) | .version_number' 2>/dev/null | head -n1)
+            
+            # Get the highest patch version available for this major.minor series
+            local highest_patch=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
+                [.[] | select(.game_versions[] | test("^" + $major_minor + "\\.[0-9]+$") and (.loaders[] == "fabric")) | 
+                 .game_versions[] | select(test("^" + $major_minor + "\\.[0-9]+$")) | 
+                 split(".")[2] | tonumber] | if length > 0 then max else empty end' 2>/dev/null)
+            
+            # Don't try fallback if:
+            # 1. There's a standalone major.minor version (e.g., "1.21") and we're requesting a patch version, OR
+            # 2. There are patch versions and our requested patch is higher than the highest available
+            if [[ -n "$has_standalone_major_minor" && "$has_standalone_major_minor" != "null" ]] || 
+               [[ -n "$highest_patch" && "$highest_patch" != "null" && "$mc_patch_version" -gt "$highest_patch" ]]; then
+                should_try_stage3_fallback=false
+            fi
+        fi
+        
+        # Only proceed with STAGE 3 if fallback is safe
+        if [[ "$should_try_stage3_fallback" == true ]]; then
+            # Simplified and corrected jq filter with stricter version matching
+            # Fixed: game_versions is always at release level in Modrinth API, not file level
+            # Made version matching more strict to avoid false positives
+            local jq_filter='
+              .[] as $release
+              | select($release.loaders[] == "fabric")
+              | select(
+                  $release.game_versions[]
+                  | (. == $mc_version or
+                     . == $mc_major_minor or
+                     . == $mc_major_minor_x or
+                     . == $mc_major_minor_0)
+                )
+              | $release.files[]
+              | select(.primary == true)
+              | {
+                  url,
+                  dependencies: ($release.dependencies // [] | map(select(.dependency_type == "required") | .project_id))
+                }
+              | @base64
+            '
+        
+            # Execute the corrected jq filter with all version variants
+            local jq_result
+            jq_result=$(printf "%s" "$version_json" | jq -r \
+              --arg mc_version "$MC_VERSION" \
+              --arg mc_major_minor "$mc_major_minor" \
+              --arg mc_major_minor_x "$mc_major_minor_x" \
+              --arg mc_major_minor_0 "$mc_major_minor_0" \
+              "$jq_filter" 2>/dev/null | head -n1)
 
-        # Decode the base64-encoded result and extract URL and dependencies
-        if [[ -n "$jq_result" && "$jq_result" != "null" ]]; then
-            local decoded
-            if decoded=$(echo "$jq_result" | base64 --decode 2>/dev/null); then
-                file_url=$(echo "$decoded" | jq -r '.url' 2>/dev/null)
-                dep_ids=$(echo "$decoded" | jq -r '.dependencies[]?' 2>/dev/null | tr '\n' ' ')
+            # Decode the base64-encoded result and extract URL and dependencies
+            if [[ -n "$jq_result" && "$jq_result" != "null" ]]; then
+                local decoded
+                if decoded=$(echo "$jq_result" | base64 --decode 2>/dev/null); then
+                    file_url=$(echo "$decoded" | jq -r '.url' 2>/dev/null)
+                    dep_ids=$(echo "$decoded" | jq -r '.dependencies[]?' 2>/dev/null | tr '\n' ' ')
+                fi
             fi
         fi
     fi
@@ -672,12 +729,12 @@ resolve_modrinth_dependencies_api() {
         local mc_major_minor
         mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
         
-        # Simple jq filter to get dependencies from any compatible fabric version
+        # Simple jq filter to get dependencies from compatible fabric versions with strict matching
         # Use temporary file to avoid command line length limits
         dependencies=$(jq -r "
             .[] 
             | select(.loaders[]? == \"fabric\") 
-            | select(.game_versions[]? | test(\"$mc_major_minor\"))
+            | select(.game_versions[]? | (. == \"$MC_VERSION\" or . == \"$mc_major_minor\" or . == \"${mc_major_minor}.x\" or . == \"${mc_major_minor}.0\"))
             | .dependencies[]? 
             | select(.dependency_type == \"required\") 
             | .project_id
@@ -785,8 +842,8 @@ resolve_curseforge_dependencies_api() {
             local mc_major_minor
             mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
             
-            # Extract file ID from the most recent compatible file
-            local file_id=$(jq -r --arg v "$MC_VERSION" --arg mmv "$mc_major_minor" '.data[] | select(.gameVersions[] == $v or .gameVersions[] == $mmv or (.gameVersions[] | startswith($mmv))) | .id' "$files_temp" 2>/dev/null | head -n1)
+            # Extract file ID from the most recent compatible file with strict version matching
+            local file_id=$(jq -r --arg v "$MC_VERSION" --arg mmv "$mc_major_minor" '.data[] | select(.gameVersions[] == $v or .gameVersions[] == $mmv or .gameVersions[] == ($mmv + ".x") or .gameVersions[] == ($mmv + ".0")) | .id' "$files_temp" 2>/dev/null | head -n1)
             
             if [[ -n "$file_id" && "$file_id" != "null" ]]; then
                 # Get dependencies for this specific file
@@ -1086,9 +1143,16 @@ get_curseforge_download_url() {
             download_url=$(jq -r --arg v "$mc_major_minor_x" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
         fi
         
-        # Try prefix matching (any version starting with major.minor)
+        # Try limited previous patch version (more restrictive than prefix matching)
         if [[ -z "$download_url" || "$download_url" == "null" ]]; then
-            download_url=$(jq -r --arg v "$mc_major_minor" '.data[]? | select(.gameVersions[]? | startswith($v)) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+            local mc_patch_version
+            mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+            if [[ -n "$mc_patch_version" && $mc_patch_version -gt 0 ]]; then
+                # Try one patch version down (e.g., if looking for 1.21.6, try 1.21.5)
+                local prev_patch=$((mc_patch_version - 1))
+                local mc_prev_version="$mc_major_minor.$prev_patch"
+                download_url=$(jq -r --arg v "$mc_prev_version" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
+            fi
         fi
         
         # If still no URL found, try the latest file

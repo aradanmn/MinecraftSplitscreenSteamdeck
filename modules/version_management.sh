@@ -106,29 +106,61 @@ check_mod_version_compatibility() {
         # STAGE 1: Try exact version match with Fabric loader requirement
         file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
         
-        # STAGE 2: Try major.minor version match if exact match failed
+        # STAGE 2: Strict fallback to major.minor version if exact match failed
         if [[ -z "$file_url" || "$file_url" == "null" ]]; then
             local mc_major_minor
             mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
+            local requested_patch
+            requested_patch=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
             
-            # Try exact major.minor (e.g., "1.21")
-            file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            # Get all available game versions for this mod to validate fallback logic
+            local all_game_versions
+            all_game_versions=$(printf "%s" "$version_json" | jq -r '.[] | select(.loaders[] == "fabric") | .game_versions[]' 2>/dev/null | sort -u)
             
-            # Try wildcard version format (e.g., "1.21.x") 
-            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-                local mc_major_minor_x="$mc_major_minor.x"
-                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            # Check if any patch versions or standalone major.minor exist for this series
+            local has_patch_versions=false
+            local has_standalone_major_minor=false
+            local highest_patch_version=0
+            
+            while IFS= read -r version; do
+                if [[ "$version" =~ ^${mc_major_minor//./\.}\.([0-9]+)$ ]]; then
+                    has_patch_versions=true
+                    local patch_num="${BASH_REMATCH[1]}"
+                    if [[ $patch_num -gt $highest_patch_version ]]; then
+                        highest_patch_version=$patch_num
+                    fi
+                elif [[ "$version" == "$mc_major_minor" ]]; then
+                    has_standalone_major_minor=true
+                fi
+            done <<< "$all_game_versions"
+            
+            # Apply strict fallback rules:
+            # 1. If we have patch versions AND the requested patch > highest available patch, block fallback
+            # 2. Only allow fallback to major.minor if no patch versions exist OR standalone major.minor exists
+            local allow_fallback=true
+            
+            if [[ $has_patch_versions == true && -n "$requested_patch" ]]; then
+                if [[ $requested_patch -gt $highest_patch_version ]]; then
+                    allow_fallback=false
+                fi
             fi
             
-            # Try zero-padded version format (e.g., "1.21.0")
-            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-                local mc_major_minor_0="$mc_major_minor.0"
-                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-            fi
-            
-            # Try prefix matching (any version starting with major.minor)
-            if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] | startswith($v) and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+            # Only proceed with fallback if allowed
+            if [[ $allow_fallback == true ]]; then
+                # Try exact major.minor (e.g., "1.21")
+                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+                
+                # Try wildcard version format (e.g., "1.21.x") 
+                if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                    local mc_major_minor_x="$mc_major_minor.x"
+                    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+                fi
+                
+                # Try zero-padded version format (e.g., "1.21.0")
+                if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+                    local mc_major_minor_0="$mc_major_minor.0"
+                    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+                fi
             fi
         fi
         
