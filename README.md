@@ -205,11 +205,8 @@ To update your Minecraft version or mod configuration:
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
 ## TODO
-- **Make update minecraft version and mods script** - Create a dedicated script to update existing installations to newer Minecraft versions and mod updates without full reinstallation
-- **Make uninstall script** - Create a comprehensive uninstall script that removes all traces of the installation including instances, launchers, Steam shortcuts, and desktop entries
 - **Figure out a way to handle steam deck controller without needing to disable it for the whole system** - Find a method to selectively disable the Steam Deck controller only for splitscreen sessions while keeping it available for other games, and somehow figure out how to use Steam Deck controller with other controllers at the same time, as well as have the usecase with no Steam Deck controller at all and just the external controllers
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
-- **Fix LWJGL to not be hardcoded to version 3.3.3** - Implement automatic LWJGL version detection that matches the correct version for each Minecraft version instead of using a hardcoded version
 
 ## Recent Improvements
 - ✅ **Automatic Java Installation**: No manual Java setup required - the installer automatically detects, downloads, and installs the correct Java version for your chosen Minecraft version
