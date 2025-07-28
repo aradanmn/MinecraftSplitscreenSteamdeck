@@ -91,7 +91,22 @@ setup_pollymc() {
     # - Splitscreen-specific mod configurations
     # - Instance-specific settings (memory, Java args, etc.)
     if [[ -d "$TARGET_DIR/instances" ]]; then
-        cp -r "$TARGET_DIR/instances" "$HOME/.local/share/PollyMC/"
+        # Create instances directory if it doesn't exist
+        mkdir -p "$HOME/.local/share/PollyMC/instances"
+        
+        # For updates: remove existing splitscreen instances first to ensure clean update
+        if [[ -d "$HOME/.local/share/PollyMC/instances" ]]; then
+            for i in {1..4}; do
+                local instance_name="latestUpdate-$i"
+                if [[ -d "$HOME/.local/share/PollyMC/instances/$instance_name" ]]; then
+                    print_info "   → Replacing existing $instance_name with updated version"
+                    rm -rf "$HOME/.local/share/PollyMC/instances/$instance_name"
+                fi
+            done
+        fi
+        
+        # Copy the updated instances
+        cp -r "$TARGET_DIR/instances/"* "$HOME/.local/share/PollyMC/instances/"
         print_success "✅ Splitscreen instances migrated to PollyMC"
         
         # INSTANCE COUNT VERIFICATION: Ensure all 4 instances were copied successfully
