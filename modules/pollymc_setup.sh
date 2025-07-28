@@ -94,20 +94,56 @@ setup_pollymc() {
         # Create instances directory if it doesn't exist
         mkdir -p "$HOME/.local/share/PollyMC/instances"
         
-        # For updates: remove existing splitscreen instances first to ensure clean update
+        # For updates: preserve options.txt and replace instances
         if [[ -d "$HOME/.local/share/PollyMC/instances" ]]; then
             for i in {1..4}; do
                 local instance_name="latestUpdate-$i"
-                if [[ -d "$HOME/.local/share/PollyMC/instances/$instance_name" ]]; then
-                    print_info "   → Replacing existing $instance_name with updated version"
-                    rm -rf "$HOME/.local/share/PollyMC/instances/$instance_name"
+                local instance_path="$HOME/.local/share/PollyMC/instances/$instance_name"
+                local options_file="$instance_path/.minecraft/options.txt"
+                
+                if [[ -d "$instance_path" ]]; then
+                    print_info "   → Updating $instance_name while preserving settings"
+                    
+                    # Backup options.txt if it exists
+                    if [[ -f "$options_file" ]]; then
+                        print_info "     → Preserving existing options.txt for $instance_name"
+                        # Create a temporary directory for backups
+                        local backup_dir="$HOME/.local/share/PollyMC/options_backup"
+                        mkdir -p "$backup_dir"
+                        # Copy with path structure to keep track of which instance it belongs to
+                        cp "$options_file" "$backup_dir/${instance_name}_options.txt"
+                    fi
+                    
+                    # Remove old instance but keep options backup
+                    rm -rf "$instance_path"
                 fi
             done
         fi
         
-        # Copy the updated instances
-        cp -r "$TARGET_DIR/instances/"* "$HOME/.local/share/PollyMC/instances/"
+        # Copy the updated instances while excluding options.txt files
+        rsync -a --exclude='*.minecraft/options.txt' "$TARGET_DIR/instances/"* "$HOME/.local/share/PollyMC/instances/"
+        
+        # Restore options.txt files from temporary backup location
+        local backup_dir="$HOME/.local/share/PollyMC/options_backup"
+        for i in {1..4}; do
+            local instance_name="latestUpdate-$i"
+            local instance_path="$HOME/.local/share/PollyMC/instances/$instance_name"
+            local options_file="$instance_path/.minecraft/options.txt"
+            local backup_file="$backup_dir/${instance_name}_options.txt"
+            
+            if [[ -f "$backup_file" ]]; then
+                print_info "   → Restoring saved options.txt for $instance_name"
+                mkdir -p "$(dirname "$options_file")"
+                cp "$backup_file" "$options_file"
+            fi
+        done
+        
         print_success "✅ Splitscreen instances migrated to PollyMC"
+        
+        # Clean up the temporary backup directory
+        if [[ -d "$backup_dir" ]]; then
+            rm -rf "$backup_dir"
+        fi
         
         # INSTANCE COUNT VERIFICATION: Ensure all 4 instances were copied successfully
         local instance_count

@@ -261,10 +261,12 @@ EOF
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
         local target_instance_dir="$TARGET_DIR/instances/$instance_name"
+        local preserve_options_txt=false
         
         # For updates, check if we're working with an existing instance in a different location
         if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$TARGET_DIR/instances" ]]; then
             target_instance_dir="$instances_dir/$instance_name"
+            preserve_options_txt=true
             print_info "Using existing instance at: $target_instance_dir"
         elif [[ ! -d "$target_instance_dir" ]]; then
             print_error "Instance directory not found: $target_instance_dir"
@@ -569,14 +571,17 @@ EOF
         print_info "   → Music enabled for $instance_name (primary audio instance)"
     fi
     
-    # Create Minecraft options.txt file with splitscreen-optimized settings
+    # Create or update Minecraft options.txt file with splitscreen-optimized settings
     # This file contains all Minecraft client settings including audio, graphics, and controls
+    local options_file="$instance_dir/.minecraft/options.txt"
+    
     # Skip creating options.txt if we're preserving existing user settings
-    if [[ "$preserve_options" == "true" ]]; then
-        print_info "   → Skipping options.txt creation (preserving existing user settings)"
+    if [[ "$preserve_options" == "true" ]] && [[ -f "$options_file" ]]; then
+        print_info "   → Preserving existing options.txt settings"
     else
         print_info "   → Creating default splitscreen-optimized options.txt"
-        cat > "$instance_dir/.minecraft/options.txt" <<EOF
+        mkdir -p "$(dirname "$options_file")"
+        cat > "$options_file" <<EOF
 version:3465
 autoJump:false
 operatorItemsTab:false
@@ -749,15 +754,14 @@ handle_instance_update() {
     # Ensure .minecraft directory exists
     mkdir -p "$instance_dir/.minecraft"
     
-    # Check if options.txt exists and preserve it
+    # Check if options.txt exists
     local options_file="$instance_dir/.minecraft/options.txt"
-    local preserve_options=false
     if [[ -f "$options_file" ]]; then
         print_info "✅ Preserving existing options.txt (user settings will be kept)"
-        preserve_options=true
+        # Create a backup of options.txt
+        cp "$options_file" "${options_file}.backup"
     else
         print_info "ℹ️  No existing options.txt found - will create default splitscreen settings"
-        preserve_options=false
     fi
     
     # Update the instance configuration files to match the new version
@@ -769,6 +773,15 @@ handle_instance_update() {
         # Update the IntendedVersion line
         sed -i "s/^IntendedVersion=.*/IntendedVersion=$MC_VERSION/" "$instance_dir/instance.cfg"
         print_success "✅ Instance configuration updated"
+    fi
+    
+    # Perform fabric and mod installation, making sure to preserve options.txt
+    install_fabric_and_mods "$instance_dir" "$instance_name" true
+    
+    # Restore options.txt if it was backed up
+    if [[ -f "${options_file}.backup" ]]; then
+        mv "${options_file}.backup" "$options_file"
+        print_info "✅ Restored user's options.txt settings"
     fi
     
     # Update mmc-pack.json with new component versions
@@ -831,6 +844,10 @@ EOF
     print_info "   → User settings preserved"
     print_info "   → Version updated to MC $MC_VERSION with Fabric $FABRIC_VERSION"
     
-    # Return the preserve_options flag
-    echo "$preserve_options"
+    # Return true if we found and preserved an options.txt file
+    if [[ -f "$options_file" ]]; then
+        echo "true"
+    else
+        echo "false"
+    fi
 }

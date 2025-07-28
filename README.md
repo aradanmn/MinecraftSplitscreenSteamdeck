@@ -162,7 +162,28 @@ This hybrid approach ensures reliable automated installation while providing the
   - Make sure controllers are connected before launching.
 
 ## Updating
+
+### Launcher Updates
 The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a new version is available.
+
+### Minecraft Version Updates
+To update your Minecraft version or mod configuration:
+1. Download the latest installer:
+   ```sh
+   wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
+   chmod +x install-minecraft-splitscreen.sh
+   ```
+2. Run the installer:
+   ```sh
+   ./install-minecraft-splitscreen.sh
+   ```
+3. Select your new Minecraft version when prompted
+4. The installer will:
+   - Preserve your existing options.txt settings (keybindings, video settings, etc.)
+   - Clear old mods and install fresh ones for the new version
+   - Update the Fabric loader and all dependencies
+   - Keep your existing player profiles and accounts
+   - Preserve all your existing worlds
 
 ## Uninstall
 - Delete the PollyMC folder: `rm -rf ~/.local/share/PollyMC`
