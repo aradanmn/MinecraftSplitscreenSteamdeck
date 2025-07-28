@@ -37,6 +37,55 @@ create_instances() {
     
     # Initialize tracking for mods that fail to install
     MISSING_MODS=()
+    
+    # Ensure instances directory exists
+    mkdir -p "$TARGET_DIR/instances"
+    
+    # Check if we're updating existing instances
+    # We need to check both PrismLauncher and PollyMC directories
+    local existing_instances=0
+    local pollymc_dir="$HOME/.local/share/PollyMC"
+    local instances_dir="$TARGET_DIR/instances"
+    local using_pollymc=false
+    
+    for i in {1..4}; do
+        local instance_name="latestUpdate-$i"
+        # Check in current TARGET_DIR (PrismLauncher)
+        if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
+            existing_instances=$((existing_instances + 1))
+        # Also check in PollyMC directory (for subsequent runs)
+        elif [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
+            existing_instances=$((existing_instances + 1))
+            if [[ "$using_pollymc" == "false" ]]; then
+                instances_dir="$pollymc_dir/instances"
+                using_pollymc=true
+                print_info "Found existing instances in PollyMC directory"
+            fi
+        fi
+    done
+    
+    if [[ $existing_instances -gt 0 ]]; then
+        print_info "🔄 UPDATE MODE: Found $existing_instances existing instance(s)"
+        print_info "   → Mods will be updated to match the selected Minecraft version"
+        print_info "   → Your existing options.txt settings will be preserved"
+        print_info "   → Instance configurations will be updated to new versions"
+        
+        # If we're updating from PollyMC, copy instances to working directory
+        if [[ "$using_pollymc" == "true" ]]; then
+            print_info "   → Copying instances from PollyMC to workspace for processing..."
+            for i in {1..4}; do
+                local instance_name="latestUpdate-$i"
+                if [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
+                    cp -r "$pollymc_dir/instances/$instance_name" "$TARGET_DIR/instances/"
+                fi
+            done
+            # Now use the TARGET_DIR for processing
+            instances_dir="$TARGET_DIR/instances"
+        fi
+    else
+        print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
+    fi
+    
     print_progress "Creating 4 splitscreen instances..."
     
     # Create exactly 4 instances: latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4
@@ -48,12 +97,12 @@ create_instances() {
     
     for i in {1..4}; do
         local instance_name="latestUpdate-$i"
+        local preserve_options_txt=false  # Reset for each instance
         print_progress "Creating instance $i of 4: $instance_name"
         
-        # Clean slate: remove any existing instance with the same name
-        if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
-            print_info "Removing existing instance: $instance_name"
-            rm -rf "$TARGET_DIR/instances/$instance_name"
+        # Check if this is an update scenario - look in the correct instances directory
+        if [[ -d "$instances_dir/$instance_name" ]]; then
+            preserve_options_txt=$(handle_instance_update "$instances_dir/$instance_name" "$instance_name")
         fi
         
         # STAGE 1: Attempt CLI-based instance creation (preferred method)
@@ -211,8 +260,14 @@ EOF
         
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
-        if [[ ! -d "$TARGET_DIR/instances/$instance_name" ]]; then
-            print_error "Instance directory not found: $TARGET_DIR/instances/$instance_name"
+        local target_instance_dir="$TARGET_DIR/instances/$instance_name"
+        
+        # For updates, check if we're working with an existing instance in a different location
+        if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$TARGET_DIR/instances" ]]; then
+            target_instance_dir="$instances_dir/$instance_name"
+            print_info "Using existing instance at: $target_instance_dir"
+        elif [[ ! -d "$target_instance_dir" ]]; then
+            print_error "Instance directory not found: $target_instance_dir"
             continue  # Skip to next instance if this one failed
         fi
         
@@ -220,7 +275,7 @@ EOF
         
         # FABRIC AND MOD INSTALLATION: Configure mod loader and install selected mods
         # This step adds Fabric loader support and downloads all compatible mods
-        install_fabric_and_mods "$TARGET_DIR/instances/$instance_name" "$instance_name"
+        install_fabric_and_mods "$target_instance_dir" "$instance_name" "$preserve_options_txt"
     done
     
     # Re-enable strict error handling after instance creation
@@ -233,9 +288,11 @@ EOF
 # Parameters:
 #   $1 - instance_dir: Path to the PrismLauncher instance directory
 #   $2 - instance_name: Display name of the instance for logging
+#   $3 - preserve_options: Whether to preserve existing options.txt (true/false)
 install_fabric_and_mods() {
     local instance_dir="$1"
     local instance_name="$2"
+    local preserve_options="${3:-false}"
     
     print_progress "Installing Fabric loader for mod support..."
     
@@ -514,7 +571,12 @@ EOF
     
     # Create Minecraft options.txt file with splitscreen-optimized settings
     # This file contains all Minecraft client settings including audio, graphics, and controls
-    cat > "$instance_dir/.minecraft/options.txt" <<EOF
+    # Skip creating options.txt if we're preserving existing user settings
+    if [[ "$preserve_options" == "true" ]]; then
+        print_info "   → Skipping options.txt creation (preserving existing user settings)"
+    else
+        print_info "   → Creating default splitscreen-optimized options.txt"
+        cat > "$instance_dir/.minecraft/options.txt" <<EOF
 version:3465
 autoJump:false
 operatorItemsTab:false
@@ -648,6 +710,7 @@ key_key.hotbar.7:key.keyboard.7
 key_key.hotbar.8:key.keyboard.8
 key_key.hotbar.9:key.keyboard.9
 EOF
+    fi
     
     print_success "Audio configuration complete for $instance_name"
     
@@ -657,4 +720,117 @@ EOF
     if [[ $original_error_setting == *e* ]]; then
         set -e
     fi
+}
+
+# handle_instance_update: Handle updating an existing instance
+# This function is called when an existing instance is detected during installation
+# It clears out old mods but preserves the user's options.txt configuration
+# Parameters:
+#   $1 - instance_dir: Path to the existing instance directory
+#   $2 - instance_name: Display name of the instance for logging
+handle_instance_update() {
+    local instance_dir="$1"
+    local instance_name="$2"
+    
+    print_info "🔄 Updating existing instance: $instance_name"
+    print_info "   → This will update the instance to MC $MC_VERSION with Fabric $FABRIC_VERSION"
+    print_info "   → Your existing settings and preferences will be preserved"
+    
+    # Check if there's a mods folder and clear it
+    local mods_dir="$instance_dir/.minecraft/mods"
+    if [[ -d "$mods_dir" ]]; then
+        print_progress "Clearing old mods from $instance_name..."
+        rm -rf "$mods_dir"
+        print_success "✅ Old mods cleared"
+    else
+        print_info "ℹ️  No existing mods folder found - will create fresh mod installation"
+    fi
+    
+    # Ensure .minecraft directory exists
+    mkdir -p "$instance_dir/.minecraft"
+    
+    # Check if options.txt exists and preserve it
+    local options_file="$instance_dir/.minecraft/options.txt"
+    local preserve_options=false
+    if [[ -f "$options_file" ]]; then
+        print_info "✅ Preserving existing options.txt (user settings will be kept)"
+        preserve_options=true
+    else
+        print_info "ℹ️  No existing options.txt found - will create default splitscreen settings"
+        preserve_options=false
+    fi
+    
+    # Update the instance configuration files to match the new version
+    # This ensures the instance uses the correct Minecraft and Fabric versions
+    print_progress "Updating instance configuration for MC $MC_VERSION with Fabric $FABRIC_VERSION..."
+    
+    # Update instance.cfg
+    if [[ -f "$instance_dir/instance.cfg" ]]; then
+        # Update the IntendedVersion line
+        sed -i "s/^IntendedVersion=.*/IntendedVersion=$MC_VERSION/" "$instance_dir/instance.cfg"
+        print_success "✅ Instance configuration updated"
+    fi
+    
+    # Update mmc-pack.json with new component versions
+    cat > "$instance_dir/mmc-pack.json" <<EOF
+{
+    "components": [
+        {
+            "cachedName": "LWJGL 3",
+            "cachedVersion": "$LWJGL_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "org.lwjgl3",
+            "version": "$LWJGL_VERSION"
+        },
+        {
+            "cachedName": "Minecraft",
+            "cachedRequires": [
+                {
+                    "suggests": "$LWJGL_VERSION",
+                    "uid": "org.lwjgl3"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "important": true,
+            "uid": "net.minecraft",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Intermediary Mappings",
+            "cachedRequires": [
+                {
+                    "equals": "$MC_VERSION",
+                    "uid": "net.minecraft"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "net.fabricmc.intermediary",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Fabric Loader",
+            "cachedRequires": [
+                {
+                    "uid": "net.fabricmc.intermediary"
+                }
+            ],
+            "cachedVersion": "$FABRIC_VERSION",
+            "uid": "net.fabricmc.fabric-loader",
+            "version": "$FABRIC_VERSION"
+        }
+    ],
+    "formatVersion": 1
+}
+EOF
+    
+    print_success "✅ Instance update preparation complete for $instance_name"
+    print_info "   → Mods cleared and ready for new installation"
+    print_info "   → User settings preserved"
+    print_info "   → Version updated to MC $MC_VERSION with Fabric $FABRIC_VERSION"
+    
+    # Return the preserve_options flag
+    echo "$preserve_options"
 }
