@@ -373,13 +373,18 @@ EOF
     local mods_dir="$instance_dir/.minecraft/mods"
     mkdir -p "$mods_dir"
     
-    # Process each mod that was selected and has a compatible download URL
-    # FINAL_MOD_INDEXES contains indices of mods that passed compatibility checking
-    for idx in "${FINAL_MOD_INDEXES[@]}"; do
-        local mod_url="${MOD_URLS[$idx]}"
-        local mod_name="${SUPPORTED_MODS[$idx]}"
-        local mod_id="${MOD_IDS[$idx]}"
-        local mod_type="${MOD_TYPES[$idx]}"
+    # Extract instance number from name (e.g., latestUpdate-1 -> 1)
+    local instance_num="${instance_name##*-}"
+    
+    if [[ "$instance_num" == "1" ]]; then
+        print_info "Downloading mods for first instance..."
+        # Process each mod that was selected and has a compatible download URL
+        # FINAL_MOD_INDEXES contains indices of mods that passed compatibility checking
+        for idx in "${FINAL_MOD_INDEXES[@]}"; do
+            local mod_url="${MOD_URLS[$idx]}"
+            local mod_name="${SUPPORTED_MODS[$idx]}"
+            local mod_id="${MOD_IDS[$idx]}"
+            local mod_type="${MOD_TYPES[$idx]}"
         
         # RESOLVE MISSING URLs: For dependencies added without URLs, fetch the download URL now
         if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "modrinth" ]]; then
@@ -548,6 +553,21 @@ EOF
             MISSING_MODS+=("$mod_name")  # Track download failures for summary
         fi
     done
+    else
+        # For instances 2-4, copy mods from instance 1
+        print_info "Copying mods from instance 1 to $instance_name..."
+        local instance1_mods_dir="$TARGET_DIR/instances/latestUpdate-1/.minecraft/mods"
+        if [[ -d "$instance1_mods_dir" ]]; then
+            cp -r "$instance1_mods_dir"/* "$mods_dir/" 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                print_success "✅ Successfully copied mods from instance 1"
+            else
+                print_error "Failed to copy mods from instance 1"
+            fi
+        else
+            print_error "Could not find mods directory from instance 1"
+        fi
+    fi
     
     # =============================================================================
     # MINECRAFT AUDIO CONFIGURATION
