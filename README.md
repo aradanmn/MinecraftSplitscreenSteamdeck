@@ -5,12 +5,15 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 ## Features
 - **Automatic Java Installation:** Detects required Java version and installs automatically (no manual setup required)
 - **Optimized Installation:** Uses PrismLauncher for automated instance creation, then switches to PollyMC for gameplay
+- **Auto-Generated Launcher Script:** The splitscreen launcher is generated at install time with correct paths baked in - no hardcoded paths
+- **Flatpak & AppImage Support:** Works with both Flatpak and AppImage installations of PollyMC and PrismLauncher
+- **Smart Launcher Detection:** Automatically detects existing launcher installations and uses them
 - Launch 1–4 Minecraft instances in splitscreen mode with proper Fabric support
 - Automatic controller detection and per-player config
 - Works on Steam Deck (Game Mode & Desktop Mode) and any Linux PC
 - Optionally adds a launcher to Steam and your desktop menu
 - Handles KDE/Plasma quirks for a clean splitscreen experience when running from Game Mode
-- Self-updating launcher script
+- **Version Tracking:** Generated scripts include version, commit hash, and generation date for troubleshooting
 - **Fabric Loader:** Complete dependency chain implementation ensures mods load and function correctly
 - **Automatic Dependency Resolution:** Uses live API calls to discover and install all mod dependencies without manual maintenance
 - **Smart Cleanup:** Automatically removes temporary files and directories after successful setup
@@ -84,15 +87,23 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Smart cleanup:** Automatically removes temporary PrismLauncher files after successful PollyMC setup
 
 ## Installation
-1. **Download and run the installer:**
-   - You can get the latest installer script from the [Releases section](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck/releases) (recommended for stable versions), or use the latest development version with:
+1. **Quick Install (Recommended):**
+   
+   Run this single command to download and execute the installer:
    ```sh
-   wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
+   curl -fsSL https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh | bash
+   ```
+   
+   **Alternative method** (download first, then run):
+   ```sh
+   wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
    chmod +x install-minecraft-splitscreen.sh
    ./install-minecraft-splitscreen.sh
    ```
    
    **Note:** The installer will automatically detect which Java version you need based on your selected Minecraft version and install it if not present. No manual Java setup required!
+   
+   **Note:** If you already have PollyMC or PrismLauncher installed (via Flatpak or AppImage), the installer will detect and use your existing installation.
 
 2. **Install Python 3 (optional)**
    - Only required if you want to add the launcher to Steam automatically
@@ -148,9 +159,18 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Steam Deck users:** For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. Use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) to automate this process.
 
 ## Installation Locations
+
+**AppImage installations:**
 - **Primary installation:** `~/.local/share/PollyMC/` (instances, launcher, and game files)
+- **Launcher script:** `~/.local/share/PollyMC/minecraftSplitscreen.sh` (auto-generated)
+
+**Flatpak installations:**
+- **Primary installation:** `~/.var/app/org.fn2006.PollyMC/data/PollyMC/`
+- **Launcher script:** `~/.var/app/org.fn2006.PollyMC/data/PollyMC/minecraftSplitscreen.sh` (auto-generated)
+
+**Note:** The launcher script is automatically generated during installation with the correct paths for your system. It includes version metadata for troubleshooting.
+
 - **Temporary files:** Automatically cleaned up after successful installation
-- **Launcher script:** `~/.local/share/PollyMC/minecraftSplitscreen.sh`
 
 ## Troubleshooting
 - **Java installation issues:**
@@ -164,21 +184,14 @@ This hybrid approach ensures reliable automated installation while providing the
 ## Updating
 
 ### Launcher Updates
-The launcher script (`minecraftSplitscreen.sh`) will auto-update itself when a new version is available.
+To update the launcher script, simply re-run the installer. The script will be regenerated with the latest version and your existing settings will be preserved.
 
 ### Minecraft Version Updates
-To update your Minecraft version or mod configuration:
-1. Download the latest installer:
-   ```sh
-   wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
-   chmod +x install-minecraft-splitscreen.sh
-   ```
-2. Run the installer:
-   ```sh
-   ./install-minecraft-splitscreen.sh
-   ```
-3. Select your new Minecraft version when prompted
-4. The installer will:
+To update your Minecraft version or mod configuration, re-run the installer:
+```sh
+curl -fsSL https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh | bash
+```
+Select your new Minecraft version when prompted. The installer will:
    - Preserve your existing options.txt settings (keybindings, video settings, etc.)
    - Clear old mods and install fresh ones for the new version
    - Update the Fabric loader and all dependencies
@@ -186,7 +199,8 @@ To update your Minecraft version or mod configuration:
    - Preserve all your existing worlds
 
 ## Uninstall
-- Delete the PollyMC folder: `rm -rf ~/.local/share/PollyMC`
+- **AppImage installations:** Delete the PollyMC folder: `rm -rf ~/.local/share/PollyMC`
+- **Flatpak installations:** Delete the PollyMC data: `rm -rf ~/.var/app/org.fn2006.PollyMC/data/PollyMC`
 - Remove any desktop or Steam shortcuts you created.
 
 ## Credits
@@ -197,6 +211,9 @@ To update your Minecraft version or mod configuration:
 - Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
 
 ## Technical Improvements
+- **Launcher Detection Module:** Automatically detects AppImage and Flatpak installations with appropriate path handling for each
+- **Script Generation with Version Tracking:** Generated launcher scripts include version, commit hash, and generation timestamp
+- **Dynamic Path Resolution:** No hardcoded paths - all paths are determined at install time based on detected launcher type
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
 - **API Filtering:** Both Modrinth and CurseForge APIs are filtered to only download Fabric-compatible mod versions
 - **Automatic Dependency Resolution:** Recursively resolves all mod dependencies using live API calls, eliminating the need to manually maintain dependency lists
@@ -209,6 +226,10 @@ To update your Minecraft version or mod configuration:
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
 
 ## Recent Improvements
+- ✅ **Auto-Generated Launcher Script**: The splitscreen launcher is now generated at install time with correct paths baked in - no more hardcoded paths
+- ✅ **Flatpak Support**: Works with both Flatpak and AppImage installations of PollyMC and PrismLauncher
+- ✅ **Smart Launcher Detection**: Automatically detects existing launcher installations and uses them instead of downloading new ones
+- ✅ **Version Metadata**: Generated scripts include version, commit hash, and generation date for easier troubleshooting
 - ✅ **Automatic Java Installation**: No manual Java setup required - the installer automatically detects, downloads, and installs the correct Java version for your chosen Minecraft version
 - ✅ **Automatic Java Version Detection**: Automatically detects and uses the correct Java version for each Minecraft version (Java 8, 16, 17, or 21) with smart backward compatibility
 - ✅ **Intelligent Version Selection**: Only Minecraft versions supported by both Controllable and Splitscreen Support mods are offered to users, ensuring full compatibility
@@ -220,4 +241,4 @@ To update your Minecraft version or mod configuration:
 
 
 ---
-For more details, see the comments in the scripts or open an issue on the [GitHub repo](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck).
+For more details, see the comments in the scripts or open an issue on the [GitHub repo](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck).
