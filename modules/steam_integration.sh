@@ -206,15 +206,16 @@ setup_steam_integration() {
             print_info "   → Downloading Steam integration script..."
             if curl -sSL "${REPO_RAW_URL:-https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_BRANCH:-main}}/add-to-steam.py" -o "$steam_script_temp" 2>/dev/null; then
                 print_info "   → Executing Steam integration script..."
-                # Execute the downloaded script with proper error handling
-                if python3 "$steam_script_temp" 2>/dev/null; then
+                # Pass launcher paths from path_configuration.sh to the Python script
+                # Arguments: <launcher_script_path> <data_dir> <launcher_name>
+                if python3 "$steam_script_temp" "$ACTIVE_LAUNCHER_SCRIPT" "$ACTIVE_DATA_DIR" "${ACTIVE_LAUNCHER^}" 2>/dev/null; then
                     print_success "✅ Minecraft Splitscreen successfully added to Steam library"
                     print_info "   → Custom artwork downloaded and applied"
                     print_info "   → Shortcut configured with proper launch parameters"
                 else
                     print_warning "⚠️  Steam integration script encountered errors"
                     print_info "   → You may need to add the shortcut manually"
-                    print_info "   → Common causes: PollyMC not found, Steam not installed, or permissions issues"
+                    print_info "   → Common causes: Launcher script not found, Steam not installed, or permissions issues"
                 fi
             else
                 print_warning "⚠️  Failed to download Steam integration script"

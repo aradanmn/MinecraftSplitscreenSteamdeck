@@ -176,16 +176,26 @@ setup_pollymc() {
     # ACCOUNT CONFIGURATION MIGRATION
     # =============================================================================
 
-    # OFFLINE ACCOUNTS TRANSFER: Copy splitscreen player account configurations
+    # OFFLINE ACCOUNTS TRANSFER: Merge splitscreen player account configurations
     # The accounts.json file contains offline player profiles for Player 1-4
     # These accounts allow splitscreen gameplay without requiring multiple Microsoft accounts
+    # IMPORTANT: We merge accounts to preserve any existing Microsoft/other accounts in PollyMC
     local source_accounts="$CREATION_DATA_DIR/accounts.json"
     local dest_accounts="$ACTIVE_DATA_DIR/accounts.json"
 
     if [[ -f "$source_accounts" ]] && [[ "$source_accounts" != "$dest_accounts" ]]; then
-        cp "$source_accounts" "$dest_accounts"
-        print_success "✅ Offline splitscreen accounts copied to PollyMC"
-        print_info "   → Player accounts P1, P2, P3, P4 configured for offline gameplay"
+        # Merge accounts instead of overwriting to preserve existing accounts
+        if merge_accounts_json "$source_accounts" "$dest_accounts"; then
+            print_success "✅ Offline splitscreen accounts merged into PollyMC"
+            print_info "   → Player accounts P1, P2, P3, P4 configured for offline gameplay"
+            if command -v jq >/dev/null 2>&1; then
+                local existing_count
+                existing_count=$(jq '.accounts | map(select(.profile.name | test("^P[1-4]$") | not)) | length' "$dest_accounts" 2>/dev/null || echo "0")
+                if [[ "$existing_count" -gt 0 ]]; then
+                    print_info "   → Preserved $existing_count existing account(s)"
+                fi
+            fi
+        fi
     elif [[ -f "$dest_accounts" ]]; then
         print_info "   → Accounts already configured in PollyMC"
     else

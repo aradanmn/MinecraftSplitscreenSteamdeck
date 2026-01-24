@@ -95,19 +95,34 @@ main() {
     # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
     # These accounts enable splitscreen without requiring multiple Microsoft accounts
     # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
+    # IMPORTANT: We merge accounts to preserve any existing Microsoft/other accounts
     local accounts_url="${REPO_RAW_URL:-https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_BRANCH:-main}}/accounts.json"
+    local accounts_temp
+    accounts_temp=$(mktemp)
     local accounts_path="$CREATION_DATA_DIR/accounts.json"
-    if ! wget -O "$accounts_path" "$accounts_url"; then
+
+    if wget -q -O "$accounts_temp" "$accounts_url"; then
+        # Merge downloaded accounts with any existing accounts (preserves Microsoft accounts, etc.)
+        if merge_accounts_json "$accounts_temp" "$accounts_path"; then
+            print_success "✅ Offline splitscreen accounts configured successfully"
+            print_info "   → P1, P2, P3, P4 player accounts ready for offline gameplay"
+            if [[ -f "$accounts_path" ]] && command -v jq >/dev/null 2>&1; then
+                local existing_count
+                existing_count=$(jq '.accounts | map(select(.profile.name | test("^P[1-4]$") | not)) | length' "$accounts_path" 2>/dev/null || echo "0")
+                if [[ "$existing_count" -gt 0 ]]; then
+                    print_info "   → Preserved $existing_count existing account(s)"
+                fi
+            fi
+        fi
+    else
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
         if [[ ! -f "$accounts_path" ]]; then
             print_error "❌ No accounts.json found - splitscreen accounts may require manual setup"
             print_info "   → Splitscreen will still work but players may have generic names"
         fi
-    else
-        print_success "✅ Offline splitscreen accounts configured successfully"
-        print_info "   → P1, P2, P3, P4 player accounts ready for offline gameplay"
     fi
+    rm -f "$accounts_temp" 2>/dev/null
 
     # =============================================================================
     # MOD ECOSYSTEM SETUP PHASE
