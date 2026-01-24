@@ -50,7 +50,9 @@ setup_steam_integration() {
     echo ""
     local add_to_steam
     # Read from /dev/tty to handle curl | bash piping
-    read -p "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " add_to_steam </dev/tty 2>/dev/null || add_to_steam=""
+    # Print prompt separately since read -p writes to stderr which may not display properly
+    printf "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: "
+    read add_to_steam </dev/tty 2>/dev/null || add_to_steam=""
     if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
 
         # =============================================================================

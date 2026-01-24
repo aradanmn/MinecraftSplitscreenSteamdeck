@@ -46,7 +46,9 @@ create_desktop_launcher() {
     echo ""
     local create_desktop
     # Read from /dev/tty to handle curl | bash piping
-    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop </dev/tty 2>/dev/null || create_desktop=""
+    # Print prompt separately since read -p writes to stderr which may not display properly
+    printf "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: "
+    read create_desktop </dev/tty 2>/dev/null || create_desktop=""
     if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
 
         # =============================================================================

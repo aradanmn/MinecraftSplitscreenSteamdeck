@@ -1221,7 +1221,9 @@ select_user_mods() {
 
     local mod_selection
     # Read from /dev/tty to handle curl | bash piping
-    read -p "Your choice [0]: " mod_selection </dev/tty 2>/dev/null || mod_selection=""
+    # Print prompt separately since read -p writes to stderr which may not display properly
+    printf "Your choice [0]: "
+    read mod_selection </dev/tty 2>/dev/null || mod_selection=""
 
     # Process user selection
     if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then
