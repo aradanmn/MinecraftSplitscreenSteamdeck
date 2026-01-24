@@ -79,19 +79,21 @@ detect_prismlauncher() {
 
     # Check AppImage first (preferred for CLI capabilities)
     if is_appimage_available "$PRISM_APPIMAGE_PATH"; then
-        PRISM_DETECTED=true
+#        PRISM_DETECTED=true
         PRISM_TYPE="appimage"
         PRISM_DATA_DIR="$PRISM_APPIMAGE_DATA_DIR"
         PRISM_EXECUTABLE="$PRISM_APPIMAGE_PATH"
+        print_info "detected app.image prism launcher"
         return 0
     fi
 
     # Check Flatpak
     if is_flatpak_installed "$PRISM_FLATPAK_ID"; then
-        PRISM_DETECTED=true
+#        PRISM_DETECTED=true
         PRISM_TYPE="flatpak"
         PRISM_DATA_DIR="$PRISM_FLATPAK_DATA_DIR"
         PRISM_EXECUTABLE="flatpak run $PRISM_FLATPAK_ID"
+        print_info "detected flatpak prism launcher"
         return 0
     fi
 
@@ -108,19 +110,21 @@ detect_pollymc() {
 
     # Check AppImage first (preferred)
     if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
-        POLLYMC_DETECTED=true
+#        POLLYMC_DETECTED=true
         POLLYMC_TYPE="appimage"
         POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
         POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
+        print_info "detected appimage pollymc launcher"
         return 0
     fi
 
     # Check Flatpak
     if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
-        POLLYMC_DETECTED=true
+#        POLLYMC_DETECTED=true
         POLLYMC_TYPE="flatpak"
         POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
         POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
+        print_info "detected flatpak pollymc launcher"
         return 0
     fi
 
@@ -137,12 +141,9 @@ detect_pollymc() {
 configure_launcher_paths() {
     print_header "DETECTING LAUNCHER CONFIGURATION"
 
-    # Detect what's available
-    detect_prismlauncher
-    detect_pollymc
-
     # Determine creation launcher (PrismLauncher preferred for CLI instance creation)
-    if [[ "$PRISM_DETECTED" == true ]]; then
+#    if [[ "$PRISM_DETECTED" == true ]]; then
+    if detect_prismlauncher; then
         CREATION_LAUNCHER="prismlauncher"
         CREATION_LAUNCHER_TYPE="$PRISM_TYPE"
         CREATION_DATA_DIR="$PRISM_DATA_DIR"
@@ -158,7 +159,8 @@ configure_launcher_paths() {
     fi
 
     # Determine active/gameplay launcher (PollyMC preferred if available)
-    if [[ "$POLLYMC_DETECTED" == true ]]; then
+#    if [[ "$POLLYMC_DETECTED" == true ]]; then
+    if detect_pollymc; then
         ACTIVE_LAUNCHER="pollymc"
         ACTIVE_LAUNCHER_TYPE="$POLLYMC_TYPE"
         ACTIVE_DATA_DIR="$POLLYMC_DATA_DIR"
@@ -168,8 +170,8 @@ configure_launcher_paths() {
         print_success "Active launcher: PollyMC ($POLLYMC_TYPE)"
         print_info "  Data directory: $ACTIVE_DATA_DIR"
         print_info "  Launcher script: $ACTIVE_LAUNCHER_SCRIPT"
-    elif [[ "$PRISM_DETECTED" == true ]]; then
-        # Fall back to PrismLauncher for gameplay too
+#    elif [[ "$PRISM_DETECTED" == true ]]; then
+    elif detect_prismlauncher; then
         ACTIVE_LAUNCHER="prismlauncher"
         ACTIVE_LAUNCHER_TYPE="$PRISM_TYPE"
         ACTIVE_DATA_DIR="$PRISM_DATA_DIR"

@@ -76,7 +76,8 @@ readonly BOOTSTRAP_REPO_MODULES_URL="https://raw.githubusercontent.com/${BOOTSTR
 readonly MODULE_FILES=(
     "version_info.sh"
     "utilities.sh"
-    "launcher_detection.sh"
+    "path_configuration.sh"
+#    "launcher_detection.sh"
     "launcher_script_generator.sh"
     "java_management.sh"
     "launcher_setup.sh"
@@ -199,7 +200,8 @@ done
 # 4. All other modules
 source "$MODULES_DIR/version_info.sh"
 source "$MODULES_DIR/utilities.sh"
-source "$MODULES_DIR/launcher_detection.sh"
+#source "$MODULES_DIR/launcher_detection.sh"
+source "$MODULES_DIR/path_configuration.sh"
 source "$MODULES_DIR/launcher_script_generator.sh"
 source "$MODULES_DIR/java_management.sh"
 source "$MODULES_DIR/launcher_setup.sh"
