@@ -83,12 +83,23 @@ setup_pollymc() {
         if ! wget -O "$POLLYMC_APPIMAGE_PATH" "$pollymc_url"; then
             print_warning "❌ PollyMC download failed - continuing with PrismLauncher as primary launcher"
             print_info "   This is not a critical error - PrismLauncher works fine for splitscreen"
+            # Clean up any partial download
+            rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
+            # Ensure PrismLauncher remains as the active launcher (it was set during configure_launcher_paths)
+            # No changes needed - ACTIVE_* variables already point to PrismLauncher
             return 0
-        else
-            chmod +x "$POLLYMC_APPIMAGE_PATH"
-            pollymc_executable="$POLLYMC_APPIMAGE_PATH"
-            print_success "✅ PollyMC AppImage downloaded and configured successfully"
         fi
+
+        # Verify the downloaded file is valid (not empty or HTML error page)
+        if [[ ! -s "$POLLYMC_APPIMAGE_PATH" ]] || file "$POLLYMC_APPIMAGE_PATH" | grep -q "HTML\|text"; then
+            print_warning "❌ PollyMC download produced invalid file - continuing with PrismLauncher"
+            rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
+            return 0
+        fi
+
+        chmod +x "$POLLYMC_APPIMAGE_PATH"
+        pollymc_executable="$POLLYMC_APPIMAGE_PATH"
+        print_success "✅ PollyMC AppImage downloaded and configured successfully"
     fi
 
     # Update centralized path configuration to use PollyMC as active launcher
@@ -299,13 +310,14 @@ EOF
             print_warning "⚠️  PollyMC instance verification failed - found $polly_instances_count instances instead of 4"
             print_info "   → Falling back to PrismLauncher as primary launcher"
             # Revert to PrismLauncher as active launcher
-            set_creation_launcher_prismlauncher "$CREATION_LAUNCHER_TYPE" "$CREATION_EXECUTABLE"
+            revert_to_prismlauncher
         fi
     else
         print_warning "❌ PollyMC compatibility test failed"
         print_info "   → This may be due to system restrictions or missing dependencies"
         print_info "   → Falling back to PrismLauncher for gameplay (still fully functional)"
-        # Revert to PrismLauncher as active launcher - it stays as both creation and active
+        # Revert to PrismLauncher as active launcher
+        revert_to_prismlauncher
     fi
 }
 

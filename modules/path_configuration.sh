@@ -251,6 +251,23 @@ set_active_launcher_pollymc() {
     mkdir -p "$ACTIVE_INSTANCES_DIR"
 }
 
+# Revert active launcher back to PrismLauncher
+# Called when PollyMC setup fails and we need to fall back
+revert_to_prismlauncher() {
+    print_info "Reverting to PrismLauncher as active launcher..."
+
+    ACTIVE_LAUNCHER="prismlauncher"
+    ACTIVE_LAUNCHER_TYPE="$CREATION_LAUNCHER_TYPE"
+    ACTIVE_DATA_DIR="$CREATION_DATA_DIR"
+    ACTIVE_INSTANCES_DIR="$CREATION_INSTANCES_DIR"
+    ACTIVE_EXECUTABLE="$CREATION_EXECUTABLE"
+    ACTIVE_LAUNCHER_SCRIPT="$ACTIVE_DATA_DIR/minecraftSplitscreen.sh"
+
+    print_success "Active launcher reverted to PrismLauncher ($ACTIVE_LAUNCHER_TYPE)"
+    print_info "  Data directory: $ACTIVE_DATA_DIR"
+    print_info "  Instances: $ACTIVE_INSTANCES_DIR"
+}
+
 # Finalize paths - call after all downloads/setup complete
 # Ensures ACTIVE_* variables point to where instances actually are
 finalize_launcher_paths() {
