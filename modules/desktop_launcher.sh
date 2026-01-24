@@ -44,7 +44,9 @@ create_desktop_launcher() {
     print_info "Desktop launcher creates a native shortcut for your desktop environment."
     print_info "Benefits: Desktop shortcut, application menu entry, search integration"
     echo ""
-    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop
+    local create_desktop
+    # Read from /dev/tty to handle curl | bash piping
+    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop </dev/tty 2>/dev/null || create_desktop=""
     if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
 
         # =============================================================================
