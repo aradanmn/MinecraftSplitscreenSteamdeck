@@ -8,10 +8,10 @@
 # get_prism_executable: Get the correct path to PrismLauncher executable
 # Handles both AppImage and extracted versions (for FUSE issues)
 get_prism_executable() {
-    if [[ -x "$TARGET_DIR/squashfs-root/AppRun" ]]; then
-        echo "$TARGET_DIR/squashfs-root/AppRun"
-    elif [[ -x "$TARGET_DIR/PrismLauncher.AppImage" ]]; then
-        echo "$TARGET_DIR/PrismLauncher.AppImage"
+    if [[ -x "$PRISMLAUNCHER_DIR/squashfs-root/AppRun" ]]; then
+        echo "$PRISMLAUNCHER_DIR/squashfs-root/AppRun"
+    elif [[ -x "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage" ]]; then
+        echo "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
     else
         return 1  # No executable found, return failure instead of exiting
     fi

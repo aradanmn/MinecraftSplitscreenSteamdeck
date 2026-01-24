@@ -2,7 +2,7 @@
 # =============================================================================
 # Minecraft Splitscreen Steam Deck Installer - Instance Creation Module
 # =============================================================================
-# 
+#
 # This module handles the creation of 4 separate Minecraft instances for splitscreen
 # gameplay. Each instance is configured identically with mods but will be launched
 # separately for multi-player splitscreen gaming.
@@ -18,40 +18,40 @@
 # Each instance gets the same mods but separate configurations for splitscreen
 create_instances() {
     print_header "🚀 CREATING MINECRAFT INSTANCES"
-    
+
     # Verify required variables are set
     if [[ -z "${MC_VERSION:-}" ]]; then
         print_error "MC_VERSION is not set. Cannot create instances."
         exit 1
     fi
-    
+
     if [[ -z "${FABRIC_VERSION:-}" ]]; then
         print_error "FABRIC_VERSION is not set. Cannot create instances."
         exit 1
     fi
-    
+
     print_info "Creating instances for Minecraft $MC_VERSION with Fabric $FABRIC_VERSION"
-    
+
     # Clean up the final mod selection list (remove any duplicates from dependency resolution)
     FINAL_MOD_INDEXES=( $(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u) )
-    
+
     # Initialize tracking for mods that fail to install
     MISSING_MODS=()
-    
+
     # Ensure instances directory exists
-    mkdir -p "$TARGET_DIR/instances"
-    
+    mkdir -p "$PRISMLAUNCHER_DIR/instances"
+
     # Check if we're updating existing instances
     # We need to check both PrismLauncher and PollyMC directories
     local existing_instances=0
     local pollymc_dir="$HOME/.local/share/PollyMC"
-    local instances_dir="$TARGET_DIR/instances"
+    local instances_dir="$PRISMLAUNCHER_DIR/instances"
     local using_pollymc=false
-    
+
     for i in {1..4}; do
         local instance_name="latestUpdate-$i"
-        # Check in current TARGET_DIR (PrismLauncher)
-        if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
+        # Check in current PRISMLAUNCHER_DIR (PrismLauncher)
+        if [[ -d "$PRISMLAUNCHER_DIR/instances/$instance_name" ]]; then
             existing_instances=$((existing_instances + 1))
         # Also check in PollyMC directory (for subsequent runs)
         elif [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
@@ -63,63 +63,63 @@ create_instances() {
             fi
         fi
     done
-    
+
     if [[ $existing_instances -gt 0 ]]; then
         print_info "🔄 UPDATE MODE: Found $existing_instances existing instance(s)"
         print_info "   → Mods will be updated to match the selected Minecraft version"
         print_info "   → Your existing options.txt settings will be preserved"
         print_info "   → Instance configurations will be updated to new versions"
-        
+
         # If we're updating from PollyMC, copy instances to working directory
         if [[ "$using_pollymc" == "true" ]]; then
             print_info "   → Copying instances from PollyMC to workspace for processing..."
             for i in {1..4}; do
                 local instance_name="latestUpdate-$i"
                 if [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
-                    cp -r "$pollymc_dir/instances/$instance_name" "$TARGET_DIR/instances/"
+                    cp -r "$pollymc_dir/instances/$instance_name" "$PRISMLAUNCHER_DIR/instances/"
                 fi
             done
-            # Now use the TARGET_DIR for processing
-            instances_dir="$TARGET_DIR/instances"
+            # Now use the PRISMLAUNCHER_DIR for processing
+            instances_dir="$PRISMLAUNCHER_DIR/instances"
         fi
     else
         print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
     fi
-    
+
     print_progress "Creating 4 splitscreen instances..."
-    
+
     # Create exactly 4 instances: latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4
     # This naming convention is expected by the splitscreen launcher script
-    
+
     # Disable strict error handling for instance creation to prevent early exit
     print_info "Starting instance creation with improved error handling"
     set +e  # Disable exit on error for this section
-    
+
     for i in {1..4}; do
         local instance_name="latestUpdate-$i"
         local preserve_options_txt=false  # Reset for each instance
         print_progress "Creating instance $i of 4: $instance_name"
-        
+
         # Check if this is an update scenario - look in the correct instances directory
         if [[ -d "$instances_dir/$instance_name" ]]; then
             preserve_options_txt=$(handle_instance_update "$instances_dir/$instance_name" "$instance_name")
         fi
-        
+
         # STAGE 1: Attempt CLI-based instance creation (preferred method)
         print_progress "Creating Minecraft $MC_VERSION instance with Fabric..."
         local cli_success=false
-        
+
         # Check if PrismLauncher executable exists and is accessible
         local prism_exec
         if prism_exec=$(get_prism_executable) && [[ -x "$prism_exec" ]]; then
             # Try multiple CLI creation approaches with progressively fewer parameters
             # This handles different PrismLauncher versions that may have varying CLI support
-            
+
             print_info "Attempting CLI instance creation..."
-            
+
             # Temporarily disable strict error handling for CLI attempts
             set +e
-            
+
             # Attempt 1: Full specification with Fabric loader
             if "$prism_exec" --cli create-instance \
                 --name "$instance_name" \
@@ -144,32 +144,32 @@ create_instances() {
             else
                 print_info "All CLI creation attempts failed, will use manual method"
             fi
-            
+
             # Re-enable strict error handling
             set -e
         else
             print_info "PrismLauncher executable not available, using manual method"
         fi
-        
+
         # FALLBACK: Manual instance creation when CLI methods fail
         # This creates instances manually by writing configuration files directly
         # This ensures compatibility even with older PrismLauncher versions that lack CLI support
         if [[ "$cli_success" == false ]]; then
             print_info "Using manual instance creation method..."
-            local instance_dir="$TARGET_DIR/instances/$instance_name"
-            
+            local instance_dir="$PRISMLAUNCHER_DIR/instances/$instance_name"
+
             # Create instance directory structure
             mkdir -p "$instance_dir" || {
                 print_error "Failed to create instance directory: $instance_dir"
                 continue  # Skip to next instance
             }
-            
+
             # Create .minecraft subdirectory
             mkdir -p "$instance_dir/.minecraft" || {
                 print_error "Failed to create .minecraft directory in $instance_dir"
                 continue  # Skip to next instance
             }
-            
+
             # Create instance.cfg - PrismLauncher's main instance configuration file
             # This file defines the instance metadata, version, and launcher settings
             cat > "$instance_dir/instance.cfg" <<EOF
@@ -187,12 +187,12 @@ OverrideNativeWorkarounds=false
 OverrideWindow=false
 IntendedVersion=$MC_VERSION
 EOF
-            
+
             if [[ $? -ne 0 ]]; then
                 print_error "Failed to create instance.cfg for $instance_name"
                 continue  # Skip to next instance
             fi
-            
+
             # Create mmc-pack.json - MultiMC/PrismLauncher component definition file
             # This file defines the mod loader stack: LWJGL3 → Minecraft → Intermediary → Fabric
             # Components are loaded in dependency order to ensure proper mod support
@@ -249,22 +249,22 @@ EOF
     "formatVersion": 1
 }
 EOF
-            
+
             if [[ $? -ne 0 ]]; then
                 print_error "Failed to create mmc-pack.json for $instance_name"
                 continue  # Skip to next instance
             fi
-            
+
             print_success "Manual instance creation completed for $instance_name"
         fi
-        
+
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
-        local target_instance_dir="$TARGET_DIR/instances/$instance_name"
+        local target_instance_dir="$PRISMLAUNCHER_DIR/instances/$instance_name"
         local preserve_options_txt=false
-        
+
         # For updates, check if we're working with an existing instance in a different location
-        if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$TARGET_DIR/instances" ]]; then
+        if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$PRISMLAUNCHER_DIR/instances" ]]; then
             target_instance_dir="$instances_dir/$instance_name"
             preserve_options_txt=true
             print_info "Using existing instance at: $target_instance_dir"
@@ -272,14 +272,14 @@ EOF
             print_error "Instance directory not found: $target_instance_dir"
             continue  # Skip to next instance if this one failed
         fi
-        
+
         print_success "Instance created successfully: $instance_name"
-        
+
         # FABRIC AND MOD INSTALLATION: Configure mod loader and install selected mods
         # This step adds Fabric loader support and downloads all compatible mods
         install_fabric_and_mods "$target_instance_dir" "$instance_name" "$preserve_options_txt"
     done
-    
+
     # Re-enable strict error handling after instance creation
     set -e
     print_success "Instance creation completed - all 4 instances created successfully"
@@ -295,21 +295,21 @@ install_fabric_and_mods() {
     local instance_dir="$1"
     local instance_name="$2"
     local preserve_options="${3:-false}"
-    
+
     print_progress "Installing Fabric loader for mod support..."
-    
+
     # Temporarily disable strict error handling to prevent exit on individual mod failures
     local original_error_setting=$-
     set +e
-    
+
     local pack_json="$instance_dir/mmc-pack.json"
-    
+
     # FABRIC LOADER INSTALLATION: Add Fabric to the component stack if not present
     # Fabric loader is required for all Fabric mods to function properly
     # We check if it's already installed to avoid duplicate entries
     if [[ ! -f "$pack_json" ]] || ! grep -q "net.fabricmc.fabric-loader" "$pack_json" 2>/dev/null; then
         print_progress "Adding Fabric loader to $instance_name..."
-        
+
         # Create complete component stack with proper dependency chain
         # Order matters: LWJGL3 → Minecraft → Intermediary Mappings → Fabric Loader
         cat > "$pack_json" <<EOF
@@ -367,15 +367,15 @@ install_fabric_and_mods() {
 EOF
         print_success "Fabric loader v$FABRIC_VERSION installed"
     fi
-    
+
     # MOD DOWNLOAD AND INSTALLATION: Download all selected mods to instance
     # Create the mods directory where Fabric will load .jar files from
     local mods_dir="$instance_dir/.minecraft/mods"
     mkdir -p "$mods_dir"
-    
+
     # Extract instance number from name (e.g., latestUpdate-1 -> 1)
     local instance_num="${instance_name##*-}"
-    
+
     if [[ "$instance_num" == "1" ]]; then
         print_info "Downloading mods for first instance..."
         # Process each mod that was selected and has a compatible download URL
@@ -385,19 +385,19 @@ EOF
             local mod_name="${SUPPORTED_MODS[$idx]}"
             local mod_id="${MOD_IDS[$idx]}"
             local mod_type="${MOD_TYPES[$idx]}"
-        
+
         # RESOLVE MISSING URLs: For dependencies added without URLs, fetch the download URL now
         if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "modrinth" ]]; then
             print_progress "Resolving download URL for dependency: $mod_name"
-            
+
             # Use the same comprehensive version matching as main mod compatibility checking
             local resolve_data=""
             local temp_resolve_file=$(mktemp)
-            
+
             # Fetch all versions for this dependency
             local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
             local api_success=false
-            
+
             if command -v curl >/dev/null 2>&1; then
                 echo "   Trying curl for $mod_name..."
                 if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
@@ -425,10 +425,10 @@ EOF
                     echo "   ❌ wget failed"
                 fi
             fi
-            
+
             # Debug: Save API response to a persistent file for examination
             local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
-            
+
             # More robust way to write the data
             if [[ -n "$resolve_data" ]]; then
                 printf "%s" "$resolve_data" > "$debug_file"
@@ -437,7 +437,7 @@ EOF
                 echo "   Data length: ${#resolve_data} characters"
             else
                 echo "❌ No data received for $mod_name (ID: $mod_id)"
-                echo "   API URL: $versions_url" 
+                echo "   API URL: $versions_url"
                 echo "   Check if the API call succeeded"
                 # Special handling for known problematic dependencies
                 if [[ "$mod_name" == *"Collective"* || "$mod_id" == "e0M1UDsY" ]]; then
@@ -451,21 +451,21 @@ EOF
 
             if [[ -n "$resolve_data" && "$resolve_data" != "[]" && "$resolve_data" != *"\"error\""* ]]; then
                 echo "🔍 DEBUG: Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
-                
+
                 # Try exact version match first
                 mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
                 echo "   → Exact version match result: ${mod_url:-'(empty)'}"
-                
-                # Try major.minor version if exact match failed  
+
+                # Try major.minor version if exact match failed
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                     local mc_major_minor
                     mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
                     echo "   → Trying major.minor version: $mc_major_minor"
-                    
+
                     # Try exact major.minor
                     mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
                     echo "   → Major.minor match result: ${mod_url:-'(empty)'}"
-                    
+
                     # Try wildcard version (e.g., "1.21.x")
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                         local mc_major_minor_x="$mc_major_minor.x"
@@ -473,7 +473,7 @@ EOF
                         mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
                         echo "   → Wildcard match result: ${mod_url:-'(empty)'}"
                     fi
-                    
+
                     # Try limited previous patch version (more restrictive than prefix matching)
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                         local mc_patch_version
@@ -488,34 +488,34 @@ EOF
                         fi
                     fi
                 fi
-                
+
                 # If still no URL found, try the latest Fabric version for any compatible release
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                     echo "   → Trying latest Fabric version (any compatible release)"
                     mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
                     echo "   → Latest Fabric match result: ${mod_url:-'(empty)'}"
                 fi
-                
+
                 echo "🎯 FINAL URL for $mod_name: ${mod_url:-'(none found)'}"
             fi
-            
+
             rm -f "$temp_resolve_file" 2>/dev/null
         fi
-        
+
         # RESOLVE MISSING URLs for CurseForge dependencies
         if [[ -z "$mod_url" || "$mod_url" == "null" ]] && [[ "$mod_type" == "curseforge" ]]; then
             print_progress "Resolving download URL for CurseForge dependency: $mod_name"
-            
+
             # Use our robust CurseForge URL resolution function
             mod_url=$(get_curseforge_download_url "$mod_id")
-            
+
             if [[ -n "$mod_url" && "$mod_url" != "null" ]]; then
                 print_success "Found compatible CurseForge file for $mod_name"
             else
                 print_warning "No compatible CurseForge file found for $mod_name"
             fi
         fi
-        
+
         # SKIP INVALID MODS: Handle cases where URL couldn't be resolved
         if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
             # Check if this is a critical required mod vs. optional dependency
@@ -526,7 +526,7 @@ EOF
                     break
                 fi
             done
-            
+
             if [[ "$is_required" == true ]]; then
                 print_error "❌ CRITICAL: Required mod '$mod_name' could not be downloaded!"
                 print_error "   This mod is essential for splitscreen functionality."
@@ -542,7 +542,7 @@ EOF
                 continue
             fi
         fi
-        
+
         # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
         # Filename is sanitized (spaces replaced with underscores) for filesystem compatibility
         local mod_file="$mods_dir/${mod_name// /_}.jar"
@@ -556,7 +556,7 @@ EOF
     else
         # For instances 2-4, copy mods from instance 1
         print_info "Copying mods from instance 1 to $instance_name..."
-        local instance1_mods_dir="$TARGET_DIR/instances/latestUpdate-1/.minecraft/mods"
+        local instance1_mods_dir="$PRISMLAUNCHER_DIR/instances/latestUpdate-1/.minecraft/mods"
         if [[ -d "$instance1_mods_dir" ]]; then
             cp -r "$instance1_mods_dir"/* "$mods_dir/" 2>/dev/null
             if [[ $? -eq 0 ]]; then
@@ -568,20 +568,20 @@ EOF
             print_error "Could not find mods directory from instance 1"
         fi
     fi
-    
+
     # =============================================================================
     # MINECRAFT AUDIO CONFIGURATION
     # =============================================================================
-    
+
     # SPLITSCREEN AUDIO SETUP: Configure music volume for each instance
     # Instance 1 keeps music at default volume (0.3), instances 2-4 have music muted
     # This prevents audio overlap when multiple instances are running simultaneously
     print_progress "Configuring splitscreen audio settings for $instance_name..."
-    
+
     # Extract instance number from instance name (latestUpdate-X format)
     local instance_number
     instance_number=$(echo "$instance_name" | grep -oE '[0-9]+$')
-    
+
     # Determine music volume based on instance number
     local music_volume="0.3"  # Default music volume
     if [[ "$instance_number" -gt 1 ]]; then
@@ -590,11 +590,11 @@ EOF
     else
         print_info "   → Music enabled for $instance_name (primary audio instance)"
     fi
-    
+
     # Create or update Minecraft options.txt file with splitscreen-optimized settings
     # This file contains all Minecraft client settings including audio, graphics, and controls
     local options_file="$instance_dir/.minecraft/options.txt"
-    
+
     # Skip creating options.txt if we're preserving existing user settings
     if [[ "$preserve_options" == "true" ]] && [[ -f "$options_file" ]]; then
         print_info "   → Preserving existing options.txt settings"
@@ -736,11 +736,11 @@ key_key.hotbar.8:key.keyboard.8
 key_key.hotbar.9:key.keyboard.9
 EOF
     fi
-    
+
     print_success "Audio configuration complete for $instance_name"
-    
+
     print_success "Fabric and mods installation complete for $instance_name"
-    
+
     # Restore original error handling setting
     if [[ $original_error_setting == *e* ]]; then
         set -e
@@ -756,11 +756,11 @@ EOF
 handle_instance_update() {
     local instance_dir="$1"
     local instance_name="$2"
-    
+
     print_info "🔄 Updating existing instance: $instance_name"
     print_info "   → This will update the instance to MC $MC_VERSION with Fabric $FABRIC_VERSION"
     print_info "   → Your existing settings and preferences will be preserved"
-    
+
     # Check if there's a mods folder and clear it
     local mods_dir="$instance_dir/.minecraft/mods"
     if [[ -d "$mods_dir" ]]; then
@@ -770,10 +770,10 @@ handle_instance_update() {
     else
         print_info "ℹ️  No existing mods folder found - will create fresh mod installation"
     fi
-    
+
     # Ensure .minecraft directory exists
     mkdir -p "$instance_dir/.minecraft"
-    
+
     # Check if options.txt exists
     local options_file="$instance_dir/.minecraft/options.txt"
     if [[ -f "$options_file" ]]; then
@@ -783,27 +783,27 @@ handle_instance_update() {
     else
         print_info "ℹ️  No existing options.txt found - will create default splitscreen settings"
     fi
-    
+
     # Update the instance configuration files to match the new version
     # This ensures the instance uses the correct Minecraft and Fabric versions
     print_progress "Updating instance configuration for MC $MC_VERSION with Fabric $FABRIC_VERSION..."
-    
+
     # Update instance.cfg
     if [[ -f "$instance_dir/instance.cfg" ]]; then
         # Update the IntendedVersion line
         sed -i "s/^IntendedVersion=.*/IntendedVersion=$MC_VERSION/" "$instance_dir/instance.cfg"
         print_success "✅ Instance configuration updated"
     fi
-    
+
     # Perform fabric and mod installation, making sure to preserve options.txt
     install_fabric_and_mods "$instance_dir" "$instance_name" true
-    
+
     # Restore options.txt if it was backed up
     if [[ -f "${options_file}.backup" ]]; then
         mv "${options_file}.backup" "$options_file"
         print_info "✅ Restored user's options.txt settings"
     fi
-    
+
     # Update mmc-pack.json with new component versions
     cat > "$instance_dir/mmc-pack.json" <<EOF
 {
@@ -858,12 +858,12 @@ handle_instance_update() {
     "formatVersion": 1
 }
 EOF
-    
+
     print_success "✅ Instance update preparation complete for $instance_name"
     print_info "   → Mods cleared and ready for new installation"
     print_info "   → User settings preserved"
     print_info "   → Version updated to MC $MC_VERSION with Fabric $FABRIC_VERSION"
-    
+
     # Return true if we found and preserved an options.txt file
     if [[ -f "$options_file" ]]; then
         echo "true"

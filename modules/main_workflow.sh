@@ -48,11 +48,11 @@ main() {
     # =============================================================================
 
     # WORKSPACE SETUP: Create and navigate to working directory
-    # All temporary files, downloads, and initial setup happen in TARGET_DIR
+    # All temporary files, downloads, and initial setup happen in PRISMLAUNCHER_DIR
     # This provides a clean, isolated environment for the installation process
-    print_progress "Initializing installation workspace: $TARGET_DIR"
-    mkdir -p "$TARGET_DIR"
-    cd "$TARGET_DIR" || exit 1
+    print_progress "Initializing installation workspace: $PRISMLAUNCHER_DIR"
+    mkdir -p "$PRISMLAUNCHER_DIR"
+    cd "$PRISMLAUNCHER_DIR" || exit 1
     print_success "✅ Workspace initialized successfully"
 
     # =============================================================================
@@ -248,7 +248,7 @@ main() {
         echo "   Command: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
         echo "   Description: Optimized PollyMC launcher with automatic controller detection"
     else
-        echo "   Command: $TARGET_DIR/minecraftSplitscreen.sh"
+        echo "   Command: $PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
         echo "   Description: PrismLauncher-based splitscreen with automatic controller detection"
     fi
     echo ""
@@ -323,11 +323,11 @@ main() {
         echo "   • Account configuration: $HOME/.local/share/PollyMC/accounts.json"
         echo "   • Temporary build files: Successfully removed after setup ✅"
     else
-        echo "   • Primary installation: $TARGET_DIR"
-        echo "   • Launcher executable: $TARGET_DIR/PrismLauncher.AppImage"
-        echo "   • Splitscreen script: $TARGET_DIR/minecraftSplitscreen.sh"
-        echo "   • Instance data: $TARGET_DIR/instances/"
-        echo "   • Account configuration: $TARGET_DIR/accounts.json"
+        echo "   • Primary installation: $PRISMLAUNCHER_DIR"
+        echo "   • Launcher executable: $PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
+        echo "   • Splitscreen script: $PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
+        echo "   • Instance data: $PRISMLAUNCHER_DIR/instances/"
+        echo "   • Account configuration: $PRISMLAUNCHER_DIR/accounts.json"
     fi
     echo ""
 

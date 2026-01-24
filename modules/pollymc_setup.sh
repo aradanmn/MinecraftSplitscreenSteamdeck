@@ -116,7 +116,7 @@ setup_pollymc() {
     # - All downloaded mods and their dependencies
     # - Splitscreen-specific mod configurations
     # - Instance-specific settings (memory, Java args, etc.)
-    if [[ -d "$TARGET_DIR/instances" ]]; then
+    if [[ -d "$PRISMLAUNCHER_DIR/instances" ]]; then
         # Create instances directory if it doesn't exist
         mkdir -p "$pollymc_data_dir/instances"
 
@@ -147,7 +147,7 @@ setup_pollymc() {
         fi
 
         # Copy the updated instances while excluding options.txt files
-        rsync -a --exclude='*.minecraft/options.txt' "$TARGET_DIR/instances/"* "$pollymc_data_dir/instances/"
+        rsync -a --exclude='*.minecraft/options.txt' "$PRISMLAUNCHER_DIR/instances/"* "$pollymc_data_dir/instances/"
 
         # Restore options.txt files from temporary backup location
         local backup_dir="$pollymc_data_dir/options_backup"
@@ -186,8 +186,8 @@ setup_pollymc() {
     # OFFLINE ACCOUNTS TRANSFER: Copy splitscreen player account configurations
     # The accounts.json file contains offline player profiles for Player 1-4
     # These accounts allow splitscreen gameplay without requiring multiple Microsoft accounts
-    if [[ -f "$TARGET_DIR/accounts.json" ]]; then
-        cp "$TARGET_DIR/accounts.json" "$pollymc_data_dir/"
+    if [[ -f "$PRISMLAUNCHER_DIR/accounts.json" ]]; then
+        cp "$PRISMLAUNCHER_DIR/accounts.json" "$pollymc_data_dir/"
         print_success "✅ Offline splitscreen accounts copied to PollyMC"
         print_info "   → Player accounts P1, P2, P3, P4 configured for offline gameplay"
     else
@@ -329,11 +329,11 @@ cleanup_prism_launcher() {
 
     # SAFETY CHECKS: Multiple validations before removing directories
     # Ensure we're not deleting critical system directories or user home
-    if [[ -d "$TARGET_DIR" && "$TARGET_DIR" != "$HOME" && "$TARGET_DIR" != "/" && "$TARGET_DIR" == *"PrismLauncher"* ]]; then
-        rm -rf "$TARGET_DIR"
-        print_success "Removed PrismLauncher directory: $TARGET_DIR"
+    if [[ -d "$PRISMLAUNCHER_DIR" && "$PRISMLAUNCHER_DIR" != "$HOME" && "$PRISMLAUNCHER_DIR" != "/" && "$PRISMLAUNCHER_DIR" == *"PrismLauncher"* ]]; then
+        rm -rf "$PRISMLAUNCHER_DIR"
+        print_success "Removed PrismLauncher directory: $PRISMLAUNCHER_DIR"
         print_info "All essential files now in PollyMC directory"
     else
-        print_warning "Skipped directory removal for safety: $TARGET_DIR"
+        print_warning "Skipped directory removal for safety: $PRISMLAUNCHER_DIR"
     fi
 }

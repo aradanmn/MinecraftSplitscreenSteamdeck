@@ -211,7 +211,7 @@ source "$MODULES_DIR/main_workflow.sh"
 # =============================================================================
 
 # Script configuration paths
-readonly TARGET_DIR="$HOME/.local/share/PrismLauncher"
+readonly PRISMLAUNCHER_DIR="$HOME/.local/share/PrismLauncher"
 readonly POLLYMC_DIR="$HOME/.local/share/PollyMC"
 
 # Runtime variables (set during execution)

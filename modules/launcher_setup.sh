@@ -32,17 +32,17 @@ download_prism_launcher() {
         local flatpak_data_dir="${PRISM_FLATPAK_DATA_DIR:-$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher}"
         mkdir -p "$flatpak_data_dir/instances"
 
-        # Update TARGET_DIR to use Flatpak data directory for this session
+        # Update PRISMLAUNCHER_DIR to use Flatpak data directory for this session
         # Note: This affects where instances are created
         print_info "   → Using Flatpak data directory: $flatpak_data_dir"
         return 0
     fi
 
     # Priority 2: Check for existing AppImage
-    if [[ -f "$TARGET_DIR/PrismLauncher.AppImage" ]]; then
+    if [[ -f "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage" ]]; then
         print_success "PrismLauncher AppImage already present"
         PRISM_INSTALL_TYPE="appimage"
-        PRISM_EXECUTABLE="$TARGET_DIR/PrismLauncher.AppImage"
+        PRISM_EXECUTABLE="$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
         export PRISM_INSTALL_TYPE PRISM_EXECUTABLE
         return 0
     fi
@@ -65,9 +65,9 @@ download_prism_launcher() {
     fi
 
     # Download and make executable
-    wget -O "$TARGET_DIR/PrismLauncher.AppImage" "$prism_url"
-    chmod +x "$TARGET_DIR/PrismLauncher.AppImage"
-    PRISM_EXECUTABLE="$TARGET_DIR/PrismLauncher.AppImage"
+    wget -O "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage" "$prism_url"
+    chmod +x "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
+    PRISM_EXECUTABLE="$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
     export PRISM_INSTALL_TYPE PRISM_EXECUTABLE
     print_success "PrismLauncher AppImage downloaded successfully"
     print_info "   → Installation type: appimage"
@@ -100,7 +100,7 @@ verify_prism_cli() {
         fi
     else
         # AppImage path
-        local appimage="${PRISM_EXECUTABLE:-$TARGET_DIR/PrismLauncher.AppImage}"
+        local appimage="${PRISM_EXECUTABLE:-$PRISMLAUNCHER_DIR/PrismLauncher.AppImage}"
 
         # Ensure the AppImage is executable
         chmod +x "$appimage" 2>/dev/null || true
@@ -115,12 +115,12 @@ verify_prism_cli() {
 
             # Try extracting AppImage to avoid FUSE dependency
             print_progress "Attempting to extract AppImage contents..."
-            cd "$TARGET_DIR"
+            cd "$PRISMLAUNCHER_DIR"
             if "$appimage" --appimage-extract >/dev/null 2>&1; then
-                if [[ -d "$TARGET_DIR/squashfs-root" ]] && [[ -x "$TARGET_DIR/squashfs-root/AppRun" ]]; then
+                if [[ -d "$PRISMLAUNCHER_DIR/squashfs-root" ]] && [[ -x "$PRISMLAUNCHER_DIR/squashfs-root/AppRun" ]]; then
                     print_success "AppImage extracted successfully"
                     # Update executable path to point to extracted version
-                    PRISM_EXECUTABLE="$TARGET_DIR/squashfs-root/AppRun"
+                    PRISM_EXECUTABLE="$PRISMLAUNCHER_DIR/squashfs-root/AppRun"
                     export PRISM_EXECUTABLE
                     prism_exec="$PRISM_EXECUTABLE"
                     help_output=$("$prism_exec" --help 2>&1)
@@ -176,10 +176,10 @@ get_prism_executable() {
         echo "$PRISM_EXECUTABLE"
     elif [[ "$PRISM_INSTALL_TYPE" == "flatpak" ]]; then
         echo "flatpak run ${PRISM_FLATPAK_ID:-org.prismlauncher.PrismLauncher}"
-    elif [[ -x "$TARGET_DIR/squashfs-root/AppRun" ]]; then
-        echo "$TARGET_DIR/squashfs-root/AppRun"
-    elif [[ -x "$TARGET_DIR/PrismLauncher.AppImage" ]]; then
-        echo "$TARGET_DIR/PrismLauncher.AppImage"
+    elif [[ -x "$PRISMLAUNCHER_DIR/squashfs-root/AppRun" ]]; then
+        echo "$PRISMLAUNCHER_DIR/squashfs-root/AppRun"
+    elif [[ -x "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage" ]]; then
+        echo "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
     else
         echo ""
         return 1
