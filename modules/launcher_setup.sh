@@ -17,7 +17,8 @@ PRISM_INSTALL_TYPE=""
 PRISM_EXECUTABLE=""
 
 # download_prism_launcher: Download or detect PrismLauncher
-# Priority: 1) Existing Flatpak, 2) Existing AppImage, 3) Download AppImage
+# Priority on immutable OS: 1) Existing Flatpak, 2) Install Flatpak, 3) Existing AppImage, 4) Download AppImage
+# Priority on traditional OS: 1) Existing Flatpak, 2) Existing AppImage, 3) Download AppImage
 # This function updates the centralized path configuration via set_creation_launcher_prismlauncher()
 download_prism_launcher() {
     print_progress "Detecting PrismLauncher installation..."
@@ -36,7 +37,39 @@ download_prism_launcher() {
         return 0
     fi
 
-    # Priority 2: Check for existing AppImage
+    # Priority 2 (immutable OS only): Install Flatpak if on immutable system
+    if should_prefer_flatpak; then
+        print_info "Detected immutable OS ($IMMUTABLE_OS_NAME) - preferring Flatpak installation"
+
+        if command -v flatpak &>/dev/null; then
+            print_progress "Installing PrismLauncher via Flatpak..."
+
+            # Ensure Flathub repo is available
+            if ! flatpak remote-list | grep -q flathub; then
+                print_progress "Adding Flathub repository..."
+                flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+            fi
+
+            # Install PrismLauncher Flatpak (user installation to avoid root)
+            if flatpak install --user -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
+                print_success "PrismLauncher Flatpak installed successfully"
+
+                # Ensure Flatpak data directory exists
+                mkdir -p "$PRISM_FLATPAK_DATA_DIR/instances"
+
+                # Update centralized path configuration
+                set_creation_launcher_prismlauncher "flatpak" "flatpak run $PRISM_FLATPAK_ID"
+                print_info "   → Using Flatpak data directory: $PRISM_FLATPAK_DATA_DIR"
+                return 0
+            else
+                print_warning "Flatpak installation failed - falling back to AppImage"
+            fi
+        else
+            print_warning "Flatpak not available - falling back to AppImage"
+        fi
+    fi
+
+    # Priority 3: Check for existing AppImage
     if [[ -f "$PRISM_APPIMAGE_PATH" ]]; then
         print_success "PrismLauncher AppImage already present"
 
@@ -45,7 +78,7 @@ download_prism_launcher() {
         return 0
     fi
 
-    # Priority 3: Download AppImage
+    # Priority 4: Download AppImage
     print_progress "No existing PrismLauncher found - downloading AppImage..."
 
     # Create data directory
