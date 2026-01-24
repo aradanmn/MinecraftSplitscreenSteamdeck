@@ -52,10 +52,14 @@ trap cleanup EXIT INT TERM
 # =============================================================================
 
 # Get the directory where this script is located
-# Fallback to current directory if SCRIPT_DIR is not set
-IF_SOURCE="${BASH_SOURCE[0]:-$PWD}"
-#readonly SCRIPT_DIR="${SCRIPT_DIR:-$(pwd)}"
-readonly SCRIPT_DIR="$cd "$(dirname "$IF_SOURCE")" && pwd)"
+# Handle both direct execution and curl | bash piping
+# When piped, BASH_SOURCE is empty so we fall back to current directory
+if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ "${BASH_SOURCE[0]}" != "bash" ]]; then
+    readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    # Running via curl | bash - use current directory
+    readonly SCRIPT_DIR="$(pwd)"
+fi
 
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
@@ -259,11 +263,9 @@ declare -a MISSING_MODS=()
 # SCRIPT ENTRY POINT
 # =============================================================================
 
-# Execute main function if script is run directly
-# This allows the script to be sourced for testing without auto-execution
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
-    main "$@"
-fi
+# Execute main function
+# Works for both direct execution (./script.sh) and piped execution (curl | bash)
+main "$@"
 
 # =============================================================================
 # END OF MODULAR MINECRAFT SPLITSCREEN INSTALLER
