@@ -52,10 +52,15 @@ download_prism_launcher() {
     mkdir -p "$PRISM_APPIMAGE_DATA_DIR"
 
     # Query GitHub API to get the latest release download URL
-    # We specifically look for AppImage files in the release assets
+    # We specifically look for AppImage files matching the system architecture
     local prism_url
+    local arch
+    arch=$(uname -m)
+
+    # Map architecture names (uname returns x86_64, aarch64, etc.)
+    # AppImage naming: x86_64, aarch64
     prism_url=$(curl -s https://api.github.com/repos/PrismLauncher/PrismLauncher/releases/latest | \
-        jq -r '.assets[] | select(.name | test("AppImage$")) | .browser_download_url' | head -n1)
+        jq -r --arg arch "$arch" '.assets[] | select(.name | test("AppImage$")) | select(.name | contains($arch)) | .browser_download_url' | head -n1)
 
     # Validate that we got a valid download URL
     if [[ -z "$prism_url" || "$prism_url" == "null" ]]; then

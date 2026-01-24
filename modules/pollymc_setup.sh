@@ -83,8 +83,9 @@ setup_pollymc() {
         if ! wget -O "$POLLYMC_APPIMAGE_PATH" "$pollymc_url"; then
             print_warning "❌ PollyMC download failed - continuing with PrismLauncher as primary launcher"
             print_info "   This is not a critical error - PrismLauncher works fine for splitscreen"
-            # Clean up any partial download
+            # Clean up any partial download and empty directory
             rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
+            rmdir "$pollymc_data_dir" 2>/dev/null  # Only removes if empty
             # Ensure PrismLauncher remains as the active launcher (it was set during configure_launcher_paths)
             # No changes needed - ACTIVE_* variables already point to PrismLauncher
             return 0
@@ -94,6 +95,7 @@ setup_pollymc() {
         if [[ ! -s "$POLLYMC_APPIMAGE_PATH" ]] || file "$POLLYMC_APPIMAGE_PATH" | grep -q "HTML\|text"; then
             print_warning "❌ PollyMC download produced invalid file - continuing with PrismLauncher"
             rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
+            rmdir "$pollymc_data_dir" 2>/dev/null  # Only removes if empty
             return 0
         fi
 
