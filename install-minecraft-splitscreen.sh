@@ -52,7 +52,11 @@ trap cleanup EXIT INT TERM
 # =============================================================================
 
 # Get the directory where this script is located
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fallback to current directory if SCRIPT_DIR is not set
+IF_SOURCE="${BASH_SOURCE[0]:-$PWD}"
+#readonly SCRIPT_DIR="${SCRIPT_DIR:-$(pwd)}"
+readonly SCRIPT_DIR="$cd "$(dirname "$IF_SOURCE")" && pwd)"
+
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
