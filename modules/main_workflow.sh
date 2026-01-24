@@ -39,28 +39,40 @@
 # - Smart cleanup: Removes PrismLauncher after successful PollyMC setup to save space
 main() {
     print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
-    print_info "Advanced installation system with dual-launcher optimization"
-    print_info "Strategy: PrismLauncher CLI automation → PollyMC gameplay → Smart cleanup"
+    print_info "Advanced installation system with smart launcher detection"
+    print_info "Strategy: Detect available launchers → Create instances → Generate launcher script"
     echo ""
+
+    # =============================================================================
+    # LAUNCHER DETECTION AND PATH CONFIGURATION (MUST BE FIRST)
+    # =============================================================================
+
+    # This sets up all path variables based on what launchers are available
+    # All subsequent code uses CREATION_* and ACTIVE_* variables from path_configuration.sh
+    configure_launcher_paths
 
     # =============================================================================
     # WORKSPACE INITIALIZATION PHASE
     # =============================================================================
 
     # WORKSPACE SETUP: Create and navigate to working directory
-    # All temporary files, downloads, and initial setup happen in PRISMLAUNCHER_DIR
-    # This provides a clean, isolated environment for the installation process
-    print_progress "Initializing installation workspace: $PRISMLAUNCHER_DIR"
-    mkdir -p "$PRISMLAUNCHER_DIR"
-    cd "$PRISMLAUNCHER_DIR" || exit 1
+    # Use CREATION_DATA_DIR as that's where we'll create instances initially
+    local workspace_dir="${CREATION_DATA_DIR:-$HOME/.local/share/PrismLauncher}"
+    print_progress "Initializing installation workspace: $workspace_dir"
+    mkdir -p "$workspace_dir"
+    cd "$workspace_dir" || exit 1
     print_success "✅ Workspace initialized successfully"
 
     # =============================================================================
     # CORE SYSTEM REQUIREMENTS VALIDATION
     # =============================================================================
 
-    download_prism_launcher        # Download PrismLauncher AppImage for CLI automation
-    if ! verify_prism_cli; then    # Test CLI functionality (non-fatal if it fails)
+    # Only download PrismLauncher if we don't have a creation launcher yet
+    if [[ -z "$CREATION_LAUNCHER" ]]; then
+        download_prism_launcher        # Download PrismLauncher AppImage for CLI automation
+    fi
+
+    if [[ -n "$CREATION_EXECUTABLE" ]] && ! verify_prism_cli; then
         print_info "PrismLauncher CLI unavailable - will use manual instance creation"
     fi
 
@@ -83,11 +95,12 @@ main() {
     # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
     # These accounts enable splitscreen without requiring multiple Microsoft accounts
     # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
-    local accounts_url="${REPO_RAW_URL}:-https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/accounts.json"
-    if ! wget -O accounts.json "$accounts_url"; then
+    local accounts_url="${REPO_RAW_URL:-https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_BRANCH:-main}}/accounts.json"
+    local accounts_path="$CREATION_DATA_DIR/accounts.json"
+    if ! wget -O "$accounts_path" "$accounts_url"; then
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
-        if [[ ! -f "accounts.json" ]]; then
+        if [[ ! -f "$accounts_path" ]]; then
             print_error "❌ No accounts.json found - splitscreen accounts may require manual setup"
             print_info "   → Splitscreen will still work but players may have generic names"
         fi
@@ -176,39 +189,25 @@ main() {
     # LAUNCHER STRATEGY SUCCESS ANALYSIS
     # =============================================================================
 
-    # LAUNCHER STRATEGY REPORT: Explain which approach was successful and the benefits
-    # The dual-launcher approach provides the best of both worlds when successful
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "✅ OPTIMIZED INSTALLATION SUCCESSFUL!"
-        echo ""
-        echo "🔧 DUAL-LAUNCHER STRATEGY COMPLETED:"
-        echo "   🛠️  PrismLauncher: CLI automation for reliable instance creation ✅ COMPLETED"
-        echo "   🎮 PollyMC: Primary launcher for offline splitscreen gameplay ✅ ACTIVE"
-        echo "   🧹 Smart cleanup: Removes PrismLauncher after successful setup ✅ CLEANED"
-        echo ""
-        echo "🎯 STRATEGY BENEFITS ACHIEVED:"
-        echo "   • Reliable instance creation through proven CLI automation"
+    # LAUNCHER STRATEGY REPORT: Explain which launcher is being used
+    echo "✅ INSTALLATION SUCCESSFUL!"
+    echo ""
+    echo "🔧 LAUNCHER CONFIGURATION:"
+    echo "   🎮 Active Launcher: ${ACTIVE_LAUNCHER^} ($ACTIVE_LAUNCHER_TYPE)"
+    echo "   📁 Data Directory: $ACTIVE_DATA_DIR"
+    echo "   📁 Instances: $ACTIVE_INSTANCES_DIR"
+    echo "   📜 Launcher Script: $ACTIVE_LAUNCHER_SCRIPT"
+    echo ""
+    if [[ "$ACTIVE_LAUNCHER" == "pollymc" ]]; then
+        echo "🎯 POLLYMC BENEFITS:"
         echo "   • Offline-friendly gameplay without forced Microsoft login prompts"
-        echo "   • Optimized disk usage through intelligent cleanup"
-        echo "   • Best performance for splitscreen scenarios"
-        echo ""
-        echo "✅ Primary launcher: PollyMC (optimized for splitscreen)"
-        echo "✅ All instances migrated and verified in PollyMC"
-        echo "✅ Temporary PrismLauncher files cleaned up successfully"
+        echo "   • Optimized for splitscreen scenarios"
+        echo "   • Best performance for local multiplayer"
     else
-        echo "✅ FALLBACK INSTALLATION SUCCESSFUL!"
-        echo ""
-        echo "🔧 FALLBACK STRATEGY USED:"
-        echo "   🛠️  PrismLauncher: Instance creation + primary launcher ✅ ACTIVE"
-        echo "   ⚠️  PollyMC: Download/setup encountered issues, using PrismLauncher for everything"
-        echo ""
-        echo "📋 FALLBACK EXPLANATION:"
-        echo "   • PollyMC setup failed (network issues, system compatibility, or download problems)"
-        echo "   • PrismLauncher provides full functionality as backup launcher"
-        echo "   • Splitscreen works perfectly with PrismLauncher"
-        echo ""
-        echo "✅ Primary launcher: PrismLauncher (proven reliability)"
-        echo "⚠️  Note: PollyMC optimization unavailable, but full functionality preserved"
+        echo "🎯 PRISMLAUNCHER BENEFITS:"
+        echo "   • Proven reliability and stability"
+        echo "   • Full functionality for splitscreen gameplay"
+        echo "   • Wide community support"
     fi
 
     # =============================================================================
@@ -244,13 +243,8 @@ main() {
 
     # PRIMARY LAUNCH METHOD: Direct script execution
     echo "1. 🔧 DIRECT LAUNCH (Recommended):"
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "   Command: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-        echo "   Description: Optimized PollyMC launcher with automatic controller detection"
-    else
-        echo "   Command: $PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
-        echo "   Description: PrismLauncher-based splitscreen with automatic controller detection"
-    fi
+    echo "   Command: $ACTIVE_LAUNCHER_SCRIPT"
+    echo "   Description: ${ACTIVE_LAUNCHER^}-based splitscreen with automatic controller detection"
     echo ""
 
     # ALTERNATIVE LAUNCH METHODS: Other integration options
@@ -273,33 +267,17 @@ main() {
     echo ""
 
     # LAUNCHER DETAILS: Technical information about the setup
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "🛠️  LAUNCHER CONFIGURATION:"
-        echo "   • Instance creation: PrismLauncher CLI (automated)"
-        echo "   • Gameplay launcher: PollyMC (offline-optimized)"
-        echo "   • Strategy: Best of both worlds approach"
-        echo "   • Benefits: CLI automation + offline gameplay + no forced login"
-    else
-        echo "🛠️  LAUNCHER CONFIGURATION:"
-        echo "   • Primary launcher: PrismLauncher (all functions)"
-        echo "   • Strategy: Single launcher approach"
-        echo "   • Note: PollyMC optimization unavailable, but fully functional"
-    fi
+    echo "🛠️  LAUNCHER CONFIGURATION:"
+    echo "   • Primary launcher: ${ACTIVE_LAUNCHER^} ($ACTIVE_LAUNCHER_TYPE)"
+    echo "   • Data directory: $ACTIVE_DATA_DIR"
+    echo "   • Instances directory: $ACTIVE_INSTANCES_DIR"
     echo ""
 
     # MINECRAFT ACCOUNT REQUIREMENTS: Important user information
     echo "💳 ACCOUNT REQUIREMENTS:"
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "   • Microsoft account: Required for initial setup and updates"
-        echo "   • Account type: PAID Minecraft Java Edition required"
-        echo "   • Login frequency: Minimal (PollyMC is offline-friendly)"
-        echo "   • Splitscreen: Uses offline accounts (P1, P2, P3, P4) after initial login"
-    else
-        echo "   • Microsoft account: Required for launcher access"
-        echo "   • Account type: PAID Minecraft Java Edition required"
-        echo "   • Note: PrismLauncher may prompt for periodic authentication"
-        echo "   • Splitscreen: Uses offline accounts (P1, P2, P3, P4) after login"
-    fi
+    echo "   • Microsoft account: Required for launcher access"
+    echo "   • Account type: PAID Minecraft Java Edition required"
+    echo "   • Splitscreen: Uses offline accounts (P1, P2, P3, P4) after login"
     echo ""
 
     # CONTROLLER INFORMATION: Hardware requirements and tips
@@ -315,20 +293,11 @@ main() {
     # =============================================================================
 
     echo "📁 INSTALLATION LOCATIONS:"
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "   • Primary installation: $HOME/.local/share/PollyMC/"
-        echo "   • Launcher executable: $HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage"
-        echo "   • Splitscreen script: $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-        echo "   • Instance data: $HOME/.local/share/PollyMC/instances/"
-        echo "   • Account configuration: $HOME/.local/share/PollyMC/accounts.json"
-        echo "   • Temporary build files: Successfully removed after setup ✅"
-    else
-        echo "   • Primary installation: $PRISMLAUNCHER_DIR"
-        echo "   • Launcher executable: $PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
-        echo "   • Splitscreen script: $PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
-        echo "   • Instance data: $PRISMLAUNCHER_DIR/instances/"
-        echo "   • Account configuration: $PRISMLAUNCHER_DIR/accounts.json"
-    fi
+    echo "   • Primary installation: $ACTIVE_DATA_DIR"
+    echo "   • Launcher executable: $ACTIVE_EXECUTABLE"
+    echo "   • Splitscreen script: $ACTIVE_LAUNCHER_SCRIPT"
+    echo "   • Instance data: $ACTIVE_INSTANCES_DIR"
+    echo "   • Account configuration: $ACTIVE_DATA_DIR/accounts.json"
     echo ""
 
     # =============================================================================
@@ -342,10 +311,7 @@ main() {
     echo "   • Automatic dependency resolution and installation"
     echo "   • Enhanced error handling with multiple fallback strategies"
     echo "   • Instance verification and launcher registration"
-    echo "   • Smart cleanup with disk space optimization"
-    if [[ "$USE_POLLYMC" == true ]]; then
-        echo "   • Dual-launcher optimization strategy successfully implemented"
-    fi
+    echo "   • Centralized path configuration for reliable operation"
     echo "   • Cross-platform Linux compatibility (Steam Deck + Desktop)"
     echo "   • Professional Steam and desktop environment integration"
     echo ""
@@ -392,8 +358,8 @@ main() {
 
 # generate_launcher_script: Generate the minecraftSplitscreen.sh launcher with correct paths
 #
-# This function detects the active launcher (PollyMC or PrismLauncher, AppImage or Flatpak)
-# and generates a customized launcher script with the correct paths baked in.
+# This function uses the centralized path configuration from path_configuration.sh
+# to generate a customized launcher script with the correct paths baked in.
 #
 # The generated script will:
 # - Have version metadata embedded (version, commit, generation date)
@@ -403,45 +369,25 @@ main() {
 generate_launcher_script() {
     print_header "🔧 GENERATING SPLITSCREEN LAUNCHER SCRIPT"
 
-    local launcher_name=""
-    local launcher_type=""
-    local launcher_exec=""
-    local launcher_dir=""
-    local instances_dir=""
-    local output_path=""
-
-    # Detect the gameplay launcher (prefer PollyMC)
-    if [[ "$USE_POLLYMC" == true ]]; then
-        # Try to detect PollyMC
-        if detect_pollymc; then
-            launcher_name="$DETECTED_LAUNCHER_NAME"
-            launcher_type="$DETECTED_LAUNCHER_TYPE"
-            launcher_exec="$DETECTED_LAUNCHER_EXEC"
-            launcher_dir="$DETECTED_LAUNCHER_DIR"
-            instances_dir="$DETECTED_INSTANCES_DIR"
-            output_path="$launcher_dir/minecraftSplitscreen.sh"
-            print_success "Detected PollyMC ($launcher_type)"
-        else
-            print_warning "PollyMC detection failed, falling back to PrismLauncher"
-            USE_POLLYMC=false
-        fi
+    # Use the centralized path configuration
+    # These variables are set by configure_launcher_paths() or finalize_launcher_paths()
+    if [[ -z "$ACTIVE_LAUNCHER" ]] || [[ -z "$ACTIVE_DATA_DIR" ]]; then
+        print_error "Launcher paths not configured! Call configure_launcher_paths() first."
+        return 1
     fi
 
-    # Fall back to PrismLauncher if PollyMC not available
-    if [[ "$USE_POLLYMC" != true ]]; then
-        if detect_prismlauncher; then
-            launcher_name="$DETECTED_LAUNCHER_NAME"
-            launcher_type="$DETECTED_LAUNCHER_TYPE"
-            launcher_exec="$DETECTED_LAUNCHER_EXEC"
-            launcher_dir="$DETECTED_LAUNCHER_DIR"
-            instances_dir="$DETECTED_INSTANCES_DIR"
-            output_path="$launcher_dir/minecraftSplitscreen.sh"
-            print_success "Detected PrismLauncher ($launcher_type)"
-        else
-            print_error "No launcher detected! Cannot generate launcher script."
-            print_info "Please ensure either PollyMC or PrismLauncher is installed."
-            return 1
-        fi
+    local launcher_name="$ACTIVE_LAUNCHER"
+    local launcher_type="$ACTIVE_LAUNCHER_TYPE"
+    local launcher_exec="$ACTIVE_EXECUTABLE"
+    local launcher_dir="$ACTIVE_DATA_DIR"
+    local instances_dir="$ACTIVE_INSTANCES_DIR"
+    local output_path="$ACTIVE_LAUNCHER_SCRIPT"
+
+    # Validate paths exist
+    if [[ ! -d "$instances_dir" ]]; then
+        print_warning "Instances directory does not exist: $instances_dir"
+        print_info "Creating directory..."
+        mkdir -p "$instances_dir"
     fi
 
     # Print configuration summary
@@ -466,7 +412,7 @@ generate_launcher_script() {
         if verify_generated_script "$output_path"; then
             print_success "✅ Launcher script generated and verified: $output_path"
 
-            # Store the path for later reference
+            # Store the path for later reference (for Steam/Desktop integration)
             GENERATED_LAUNCHER_SCRIPT="$output_path"
             export GENERATED_LAUNCHER_SCRIPT
         else

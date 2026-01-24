@@ -44,33 +44,33 @@ setup_pollymc() {
 
     local pollymc_type=""
     local pollymc_data_dir=""
+    local pollymc_executable=""
 
     # Priority 1: Check for existing Flatpak installation
-    # If user already has PollyMC via Flatpak, use that instead of downloading AppImage
-    if is_flatpak_installed "${POLLYMC_FLATPAK_ID:-org.fn2006.PollyMC}" 2>/dev/null; then
+    # Use constants from path_configuration.sh
+    if is_flatpak_installed "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
         print_success "✅ Found existing PollyMC Flatpak installation"
         pollymc_type="flatpak"
-        pollymc_data_dir="${POLLYMC_FLATPAK_DATA_DIR:-$HOME/.var/app/org.fn2006.PollyMC/data/PollyMC}"
-        USE_POLLYMC=true
+        pollymc_data_dir="$POLLYMC_FLATPAK_DATA_DIR"
+        pollymc_executable="flatpak run $POLLYMC_FLATPAK_ID"
 
         # Ensure Flatpak data directory exists
-        mkdir -p "$pollymc_data_dir"
         mkdir -p "$pollymc_data_dir/instances"
         print_info "   → Using Flatpak data directory: $pollymc_data_dir"
 
     # Priority 2: Check for existing AppImage
-    elif [[ -x "${POLLYMC_APPIMAGE_PATH:-$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage}" ]]; then
+    elif [[ -x "$POLLYMC_APPIMAGE_PATH" ]]; then
         print_success "✅ Found existing PollyMC AppImage"
         pollymc_type="appimage"
-        pollymc_data_dir="${POLLYMC_APPIMAGE_DIR:-$HOME/.local/share/PollyMC}"
-        USE_POLLYMC=true
-        print_info "   → Using existing AppImage: ${POLLYMC_APPIMAGE_PATH:-$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage}"
+        pollymc_data_dir="$POLLYMC_APPIMAGE_DATA_DIR"
+        pollymc_executable="$POLLYMC_APPIMAGE_PATH"
+        print_info "   → Using existing AppImage: $POLLYMC_APPIMAGE_PATH"
 
     # Priority 3: Download AppImage (fallback)
     else
         print_progress "No existing PollyMC found - downloading AppImage..."
         pollymc_type="appimage"
-        pollymc_data_dir="${POLLYMC_APPIMAGE_DIR:-$HOME/.local/share/PollyMC}"
+        pollymc_data_dir="$POLLYMC_APPIMAGE_DATA_DIR"
 
         # Create PollyMC data directory structure
         mkdir -p "$pollymc_data_dir"
@@ -80,25 +80,22 @@ setup_pollymc() {
         print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
 
         # DOWNLOAD WITH FALLBACK HANDLING
-        local appimage_path="${POLLYMC_APPIMAGE_PATH:-$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage}"
-        if ! wget -O "$appimage_path" "$pollymc_url"; then
+        if ! wget -O "$POLLYMC_APPIMAGE_PATH" "$pollymc_url"; then
             print_warning "❌ PollyMC download failed - continuing with PrismLauncher as primary launcher"
             print_info "   This is not a critical error - PrismLauncher works fine for splitscreen"
-            USE_POLLYMC=false
             return 0
         else
-            chmod +x "$appimage_path"
+            chmod +x "$POLLYMC_APPIMAGE_PATH"
+            pollymc_executable="$POLLYMC_APPIMAGE_PATH"
             print_success "✅ PollyMC AppImage downloaded and configured successfully"
-            USE_POLLYMC=true
         fi
     fi
 
-    # Store the detected type for later use by launcher script generator
-    POLLYMC_INSTALL_TYPE="$pollymc_type"
-    POLLYMC_DATA_DIR="$pollymc_data_dir"
-    export POLLYMC_INSTALL_TYPE POLLYMC_DATA_DIR
+    # Update centralized path configuration to use PollyMC as active launcher
+    set_active_launcher_pollymc "$pollymc_type" "$pollymc_executable"
 
     print_info "   → PollyMC installation type: $pollymc_type"
+    print_info "   → Active data directory: $ACTIVE_DATA_DIR"
 
     # =============================================================================
     # INSTANCE MIGRATION: Transfer all Minecraft instances from PrismLauncher
@@ -110,50 +107,44 @@ setup_pollymc() {
     print_progress "Migrating PrismLauncher instances to PollyMC data directory..."
 
     # INSTANCES TRANSFER: Copy entire instances folder with all splitscreen configurations
-    # Each instance (latestUpdate-1 through latestUpdate-4) contains:
-    # - Minecraft version configuration
-    # - Fabric mod loader setup
-    # - All downloaded mods and their dependencies
-    # - Splitscreen-specific mod configurations
-    # - Instance-specific settings (memory, Java args, etc.)
-    if [[ -d "$PRISMLAUNCHER_DIR/instances" ]]; then
+    # Use centralized paths: CREATION_INSTANCES_DIR -> ACTIVE_INSTANCES_DIR
+    local source_instances="$CREATION_INSTANCES_DIR"
+    local dest_instances="$ACTIVE_INSTANCES_DIR"
+
+    if [[ -d "$source_instances" ]] && [[ "$source_instances" != "$dest_instances" ]]; then
         # Create instances directory if it doesn't exist
-        mkdir -p "$pollymc_data_dir/instances"
+        mkdir -p "$dest_instances"
 
         # For updates: preserve options.txt and replace instances
-        if [[ -d "$pollymc_data_dir/instances" ]]; then
-            for i in {1..4}; do
-                local instance_name="latestUpdate-$i"
-                local instance_path="$pollymc_data_dir/instances/$instance_name"
-                local options_file="$instance_path/.minecraft/options.txt"
-
-                if [[ -d "$instance_path" ]]; then
-                    print_info "   → Updating $instance_name while preserving settings"
-
-                    # Backup options.txt if it exists
-                    if [[ -f "$options_file" ]]; then
-                        print_info "     → Preserving existing options.txt for $instance_name"
-                        # Create a temporary directory for backups
-                        local backup_dir="$pollymc_data_dir/options_backup"
-                        mkdir -p "$backup_dir"
-                        # Copy with path structure to keep track of which instance it belongs to
-                        cp "$options_file" "$backup_dir/${instance_name}_options.txt"
-                    fi
-
-                    # Remove old instance but keep options backup
-                    rm -rf "$instance_path"
-                fi
-            done
-        fi
-
-        # Copy the updated instances while excluding options.txt files
-        rsync -a --exclude='*.minecraft/options.txt' "$PRISMLAUNCHER_DIR/instances/"* "$pollymc_data_dir/instances/"
-
-        # Restore options.txt files from temporary backup location
-        local backup_dir="$pollymc_data_dir/options_backup"
         for i in {1..4}; do
             local instance_name="latestUpdate-$i"
-            local instance_path="$pollymc_data_dir/instances/$instance_name"
+            local instance_path="$dest_instances/$instance_name"
+            local options_file="$instance_path/.minecraft/options.txt"
+
+            if [[ -d "$instance_path" ]]; then
+                print_info "   → Updating $instance_name while preserving settings"
+
+                # Backup options.txt if it exists
+                if [[ -f "$options_file" ]]; then
+                    print_info "     → Preserving existing options.txt for $instance_name"
+                    local backup_dir="$ACTIVE_DATA_DIR/options_backup"
+                    mkdir -p "$backup_dir"
+                    cp "$options_file" "$backup_dir/${instance_name}_options.txt"
+                fi
+
+                # Remove old instance but keep options backup
+                rm -rf "$instance_path"
+            fi
+        done
+
+        # Copy the updated instances while excluding options.txt files
+        rsync -a --exclude='*.minecraft/options.txt' "$source_instances/"* "$dest_instances/"
+
+        # Restore options.txt files from temporary backup location
+        local backup_dir="$ACTIVE_DATA_DIR/options_backup"
+        for i in {1..4}; do
+            local instance_name="latestUpdate-$i"
+            local instance_path="$dest_instances/$instance_name"
             local options_file="$instance_path/.minecraft/options.txt"
             local backup_file="$backup_dir/${instance_name}_options.txt"
 
@@ -173,10 +164,12 @@ setup_pollymc() {
 
         # INSTANCE COUNT VERIFICATION: Ensure all 4 instances were copied successfully
         local instance_count
-        instance_count=$(find "$pollymc_data_dir/instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
+        instance_count=$(find "$dest_instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
         print_info "   → $instance_count splitscreen instances available in PollyMC"
+    elif [[ "$source_instances" == "$dest_instances" ]]; then
+        print_info "   → Instances already in correct location, no migration needed"
     else
-        print_warning "⚠️  No instances directory found in PrismLauncher - this shouldn't happen"
+        print_warning "⚠️  No instances directory found to migrate"
     fi
 
     # =============================================================================
@@ -186,10 +179,15 @@ setup_pollymc() {
     # OFFLINE ACCOUNTS TRANSFER: Copy splitscreen player account configurations
     # The accounts.json file contains offline player profiles for Player 1-4
     # These accounts allow splitscreen gameplay without requiring multiple Microsoft accounts
-    if [[ -f "$PRISMLAUNCHER_DIR/accounts.json" ]]; then
-        cp "$PRISMLAUNCHER_DIR/accounts.json" "$pollymc_data_dir/"
+    local source_accounts="$CREATION_DATA_DIR/accounts.json"
+    local dest_accounts="$ACTIVE_DATA_DIR/accounts.json"
+
+    if [[ -f "$source_accounts" ]] && [[ "$source_accounts" != "$dest_accounts" ]]; then
+        cp "$source_accounts" "$dest_accounts"
         print_success "✅ Offline splitscreen accounts copied to PollyMC"
         print_info "   → Player accounts P1, P2, P3, P4 configured for offline gameplay"
+    elif [[ -f "$dest_accounts" ]]; then
+        print_info "   → Accounts already configured in PollyMC"
     else
         print_warning "⚠️  accounts.json not found - splitscreen accounts may need manual setup"
     fi
@@ -215,7 +213,7 @@ setup_pollymc() {
         current_hostname="localhost"
     fi
 
-    cat > "$pollymc_data_dir/pollymc.cfg" <<EOF
+    cat > "$ACTIVE_DATA_DIR/pollymc.cfg" <<EOF
 [General]
 ApplicationTheme=system
 ConfigVersion=1.2
@@ -247,16 +245,15 @@ EOF
 
     local pollymc_test_passed=false
 
-    if [[ "$pollymc_type" == "flatpak" ]]; then
+    if [[ "$ACTIVE_LAUNCHER_TYPE" == "flatpak" ]]; then
         # FLATPAK TEST: Verify Flatpak app is accessible
-        if flatpak run "${POLLYMC_FLATPAK_ID:-org.fn2006.PollyMC}" --help >/dev/null 2>&1; then
+        if flatpak run "$POLLYMC_FLATPAK_ID" --help >/dev/null 2>&1; then
             pollymc_test_passed=true
             print_success "✅ PollyMC Flatpak compatibility test passed"
         fi
     else
         # APPIMAGE EXECUTION TEST: Run PollyMC with --help flag to verify it works
-        local appimage_path="${POLLYMC_APPIMAGE_PATH:-$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage}"
-        if timeout 5s "$appimage_path" --help >/dev/null 2>&1; then
+        if timeout 5s "$POLLYMC_APPIMAGE_PATH" --help >/dev/null 2>&1; then
             pollymc_test_passed=true
             print_success "✅ PollyMC AppImage compatibility test passed"
         fi
@@ -268,9 +265,9 @@ EOF
         # =============================================================================
 
         # INSTANCE ACCESS VERIFICATION: Confirm PollyMC can detect and access migrated instances
-        print_progress "Verifying PollyMC can access migrated splitscreen instances..."
+        print_progress "Verifying PollyMC can access splitscreen instances..."
         local polly_instances_count
-        polly_instances_count=$(find "$pollymc_data_dir/instances" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
+        polly_instances_count=$(find "$ACTIVE_INSTANCES_DIR" -maxdepth 1 -name "latestUpdate-*" -type d 2>/dev/null | wc -l)
 
         if [[ "$polly_instances_count" -eq 4 ]]; then
             print_success "✅ PollyMC instance verification successful - all 4 instances accessible"
@@ -281,22 +278,24 @@ EOF
             setup_pollymc_launcher
 
             # CLEANUP PHASE: Remove PrismLauncher since PollyMC is working
-            # This saves significant disk space (~500MB+) and avoids launcher confusion
-            cleanup_prism_launcher
+            # Only cleanup if we migrated from a different location
+            if [[ "$CREATION_DATA_DIR" != "$ACTIVE_DATA_DIR" ]]; then
+                cleanup_prism_launcher
+            fi
 
             print_success "🎮 PollyMC is now the primary launcher for splitscreen gameplay"
-            print_info "   → PrismLauncher files cleaned up to save disk space"
-            print_info "   → Installation type: $pollymc_type"
+            print_info "   → Installation type: $ACTIVE_LAUNCHER_TYPE"
         else
             print_warning "⚠️  PollyMC instance verification failed - found $polly_instances_count instances instead of 4"
             print_info "   → Falling back to PrismLauncher as primary launcher"
-            USE_POLLYMC=false
+            # Revert to PrismLauncher as active launcher
+            set_creation_launcher_prismlauncher "$CREATION_LAUNCHER_TYPE" "$CREATION_EXECUTABLE"
         fi
     else
         print_warning "❌ PollyMC compatibility test failed"
         print_info "   → This may be due to system restrictions or missing dependencies"
         print_info "   → Falling back to PrismLauncher for gameplay (still fully functional)"
-        USE_POLLYMC=false
+        # Revert to PrismLauncher as active launcher - it stays as both creation and active
     fi
 }
 
@@ -327,13 +326,16 @@ cleanup_prism_launcher() {
     # This prevents accidental deletion if we're currently in the target directory
     cd "$HOME" || return 1
 
+    # Use CREATION_DATA_DIR which is where PrismLauncher data was stored
+    local prism_dir="$CREATION_DATA_DIR"
+
     # SAFETY CHECKS: Multiple validations before removing directories
     # Ensure we're not deleting critical system directories or user home
-    if [[ -d "$PRISMLAUNCHER_DIR" && "$PRISMLAUNCHER_DIR" != "$HOME" && "$PRISMLAUNCHER_DIR" != "/" && "$PRISMLAUNCHER_DIR" == *"PrismLauncher"* ]]; then
-        rm -rf "$PRISMLAUNCHER_DIR"
-        print_success "Removed PrismLauncher directory: $PRISMLAUNCHER_DIR"
+    if [[ -d "$prism_dir" && "$prism_dir" != "$HOME" && "$prism_dir" != "/" && "$prism_dir" == *"PrismLauncher"* ]]; then
+        rm -rf "$prism_dir"
+        print_success "Removed PrismLauncher directory: $prism_dir"
         print_info "All essential files now in PollyMC directory"
     else
-        print_warning "Skipped directory removal for safety: $PRISMLAUNCHER_DIR"
+        print_info "Skipped directory removal (not a PrismLauncher directory): $prism_dir"
     fi
 }

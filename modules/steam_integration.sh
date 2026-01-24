@@ -59,17 +59,18 @@ setup_steam_integration() {
         # LAUNCHER PATH DETECTION AND CONFIGURATION
         # =============================================================================
 
-        # LAUNCHER TYPE DETECTION: Determine which launcher is active for Steam integration
+        # LAUNCHER TYPE DETECTION: Use centralized path configuration
         # The Steam shortcut needs to point to the correct launcher executable and script
-        # Path fragments are used by the duplicate detection system
-        local launcher_path=""
-        if [[ "$USE_POLLYMC" == true ]]; then
-            launcher_path="local/share/PollyMC/minecraft"  # PollyMC path signature for duplicate detection
-            print_info "Configuring Steam integration for PollyMC launcher"
-        else
-            launcher_path="local/share/PrismLauncher/minecraft"  # PrismLauncher path signature
-            print_info "Configuring Steam integration for PrismLauncher"
+        # Use ACTIVE_LAUNCHER_SCRIPT from path_configuration.sh
+        if [[ -z "$ACTIVE_LAUNCHER_SCRIPT" ]]; then
+            print_error "ACTIVE_LAUNCHER_SCRIPT not set. Cannot configure Steam integration."
+            return 1
         fi
+
+        # Path fragment for duplicate detection (extract from full path)
+        local launcher_path="${ACTIVE_LAUNCHER_SCRIPT#$HOME/}"
+        print_info "Configuring Steam integration for ${ACTIVE_LAUNCHER^} launcher"
+        print_info "  Launcher script: $ACTIVE_LAUNCHER_SCRIPT"
 
         # =============================================================================
         # DUPLICATE SHORTCUT PREVENTION
@@ -203,7 +204,7 @@ setup_steam_integration() {
             set +e
 
             print_info "   → Downloading Steam integration script..."
-            if curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp" 2>/dev/null; then
+            if curl -sSL "${REPO_RAW_URL:-https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_BRANCH:-main}}/add-to-steam.py" -o "$steam_script_temp" 2>/dev/null; then
                 print_info "   → Executing Steam integration script..."
                 # Execute the downloaded script with proper error handling
                 if python3 "$steam_script_temp" 2>/dev/null; then

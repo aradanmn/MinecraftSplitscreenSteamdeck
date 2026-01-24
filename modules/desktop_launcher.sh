@@ -102,15 +102,14 @@ create_desktop_launcher() {
         # ICON SELECTION: Determine the best available icon with intelligent fallbacks
         # Priority system ensures we always have a functional icon, preferring custom over generic
         local icon_desktop
+        local instance_icon_path="$ACTIVE_INSTANCES_DIR/latestUpdate-1/icon.png"
+
         if [[ -f "$icon_path" ]]; then
             icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
             print_info "   → Using custom SteamGridDB icon for consistent branding"
-        elif [[ "$USE_POLLYMC" == true ]] && [[ -f "$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png" ]]; then
-            icon_desktop="$HOME/.local/share/PollyMC/instances/latestUpdate-1/icon.png"  # Good: PollyMC instance icon
-            print_info "   → Using PollyMC instance icon"
-        elif [[ -f "$PRISMLAUNCHER_DIR/instances/latestUpdate-1/icon.png" ]]; then
-            icon_desktop="$PRISMLAUNCHER_DIR/instances/latestUpdate-1/icon.png"  # Acceptable: PrismLauncher instance icon
-            print_info "   → Using PrismLauncher instance icon"
+        elif [[ -f "$instance_icon_path" ]]; then
+            icon_desktop="$instance_icon_path"  # Good: Instance icon from active launcher
+            print_info "   → Using instance icon from $ACTIVE_LAUNCHER"
         else
             icon_desktop="application-x-executable"  # Fallback: Generic system executable icon
             print_info "   → Using system default executable icon"
@@ -120,20 +119,17 @@ create_desktop_launcher() {
         # LAUNCHER SCRIPT PATH CONFIGURATION
         # =============================================================================
 
-        # LAUNCHER SCRIPT PATH DETECTION: Set correct executable path based on active launcher
-        # The desktop file needs to point to the appropriate launcher script
-        # Different paths and descriptions for PollyMC vs PrismLauncher configurations
-        local launcher_script_path
-        local launcher_comment
-        if [[ "$USE_POLLYMC" == true ]]; then
-            launcher_script_path="$HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-            launcher_comment="Launch Minecraft splitscreen with PollyMC (optimized for offline gameplay)"
-            print_info "   → Desktop launcher configured for PollyMC"
-        else
-            launcher_script_path="$PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
-            launcher_comment="Launch Minecraft splitscreen with PrismLauncher"
-            print_info "   → Desktop launcher configured for PrismLauncher"
+        # LAUNCHER SCRIPT PATH: Use centralized path configuration
+        # The desktop file needs to point to ACTIVE_LAUNCHER_SCRIPT
+        if [[ -z "$ACTIVE_LAUNCHER_SCRIPT" ]]; then
+            print_error "ACTIVE_LAUNCHER_SCRIPT not set. Cannot create desktop launcher."
+            return 1
         fi
+
+        local launcher_script_path="$ACTIVE_LAUNCHER_SCRIPT"
+        local launcher_comment="Launch Minecraft splitscreen with ${ACTIVE_LAUNCHER^}"
+        print_info "   → Desktop launcher configured for ${ACTIVE_LAUNCHER^}"
+        print_info "   → Script path: $launcher_script_path"
 
         # =============================================================================
         # DESKTOP ENTRY FILE GENERATION
@@ -239,10 +235,6 @@ EOF
         print_info "⏭️  Skipping desktop launcher creation"
         print_info "   → You can still launch via Steam (if configured) or manually run the script"
         print_info "   → Manual launch command:"
-        if [[ "$USE_POLLYMC" == true ]]; then
-            print_info "     $HOME/.local/share/PollyMC/minecraftSplitscreen.sh"
-        else
-            print_info "     $PRISMLAUNCHER_DIR/minecraftSplitscreen.sh"
-        fi
+        print_info "     $ACTIVE_LAUNCHER_SCRIPT"
     fi
 }

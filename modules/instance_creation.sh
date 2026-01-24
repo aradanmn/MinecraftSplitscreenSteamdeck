@@ -38,29 +38,25 @@ create_instances() {
     # Initialize tracking for mods that fail to install
     MISSING_MODS=()
 
+    # Use centralized path configuration
+    # CREATION_INSTANCES_DIR is where we create instances (set by path_configuration.sh)
+    local instances_dir="$CREATION_INSTANCES_DIR"
+
+    if [[ -z "$instances_dir" ]]; then
+        print_error "CREATION_INSTANCES_DIR not set. Call configure_launcher_paths() first."
+        exit 1
+    fi
+
     # Ensure instances directory exists
-    mkdir -p "$PRISMLAUNCHER_DIR/instances"
+    mkdir -p "$instances_dir"
 
     # Check if we're updating existing instances
-    # We need to check both PrismLauncher and PollyMC directories
     local existing_instances=0
-    local pollymc_dir="$HOME/.local/share/PollyMC"
-    local instances_dir="$PRISMLAUNCHER_DIR/instances"
-    local using_pollymc=false
 
     for i in {1..4}; do
         local instance_name="latestUpdate-$i"
-        # Check in current PRISMLAUNCHER_DIR (PrismLauncher)
-        if [[ -d "$PRISMLAUNCHER_DIR/instances/$instance_name" ]]; then
+        if [[ -d "$instances_dir/$instance_name" ]]; then
             existing_instances=$((existing_instances + 1))
-        # Also check in PollyMC directory (for subsequent runs)
-        elif [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
-            existing_instances=$((existing_instances + 1))
-            if [[ "$using_pollymc" == "false" ]]; then
-                instances_dir="$pollymc_dir/instances"
-                using_pollymc=true
-                print_info "Found existing instances in PollyMC directory"
-            fi
         fi
     done
 
@@ -69,19 +65,6 @@ create_instances() {
         print_info "   → Mods will be updated to match the selected Minecraft version"
         print_info "   → Your existing options.txt settings will be preserved"
         print_info "   → Instance configurations will be updated to new versions"
-
-        # If we're updating from PollyMC, copy instances to working directory
-        if [[ "$using_pollymc" == "true" ]]; then
-            print_info "   → Copying instances from PollyMC to workspace for processing..."
-            for i in {1..4}; do
-                local instance_name="latestUpdate-$i"
-                if [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
-                    cp -r "$pollymc_dir/instances/$instance_name" "$PRISMLAUNCHER_DIR/instances/"
-                fi
-            done
-            # Now use the PRISMLAUNCHER_DIR for processing
-            instances_dir="$PRISMLAUNCHER_DIR/instances"
-        fi
     else
         print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
     fi
@@ -156,7 +139,7 @@ create_instances() {
         # This ensures compatibility even with older PrismLauncher versions that lack CLI support
         if [[ "$cli_success" == false ]]; then
             print_info "Using manual instance creation method..."
-            local instance_dir="$PRISMLAUNCHER_DIR/instances/$instance_name"
+            local instance_dir="$instances_dir/$instance_name"
 
             # Create instance directory structure
             mkdir -p "$instance_dir" || {
@@ -260,15 +243,9 @@ EOF
 
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
-        local target_instance_dir="$PRISMLAUNCHER_DIR/instances/$instance_name"
-        local preserve_options_txt=false
+        local target_instance_dir="$instances_dir/$instance_name"
 
-        # For updates, check if we're working with an existing instance in a different location
-        if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$PRISMLAUNCHER_DIR/instances" ]]; then
-            target_instance_dir="$instances_dir/$instance_name"
-            preserve_options_txt=true
-            print_info "Using existing instance at: $target_instance_dir"
-        elif [[ ! -d "$target_instance_dir" ]]; then
+        if [[ ! -d "$target_instance_dir" ]]; then
             print_error "Instance directory not found: $target_instance_dir"
             continue  # Skip to next instance if this one failed
         fi
@@ -556,7 +533,7 @@ EOF
     else
         # For instances 2-4, copy mods from instance 1
         print_info "Copying mods from instance 1 to $instance_name..."
-        local instance1_mods_dir="$PRISMLAUNCHER_DIR/instances/latestUpdate-1/.minecraft/mods"
+        local instance1_mods_dir="$CREATION_INSTANCES_DIR/latestUpdate-1/.minecraft/mods"
         if [[ -d "$instance1_mods_dir" ]]; then
             cp -r "$instance1_mods_dir"/* "$mods_dir/" 2>/dev/null
             if [[ $? -eq 0 ]]; then
