@@ -268,21 +268,44 @@ restorePanels() {
 # Detect the number of controllers (1-4)
 # Handles Steam Input device duplication when Steam is running
 getControllerCount() {
-    local count
+    local count=0
     local steam_running=0
+    local real_controllers=0
 
-    # Count all joystick/gamepad devices
-    count=$(ls /dev/input/js* 2>/dev/null | wc -l)
+    # Method 1: Count actual gamepad/joystick devices from /proc/bus/input/devices
+    # This is more reliable than /dev/input/js* as it works across different udev configs
+    # Filter for actual gamepads (have js handler) and exclude virtual/Steam duplicates
+    if [ -f /proc/bus/input/devices ]; then
+        # Count unique physical controllers by looking at the Handlers line with "js"
+        # and filtering by Sysfs path - uhid devices are real, virtual/input are Steam duplicates
+        real_controllers=$(grep -B5 "Handlers=.*js[0-9]" /proc/bus/input/devices 2>/dev/null | \
+            grep -c "Sysfs=.*/uhid/" 2>/dev/null || echo "0")
+    fi
 
-    # Check if Steam is running (native or Flatpak)
-    if pgrep -x steam >/dev/null \
-        || pgrep -f '^/app/bin/steam$' >/dev/null \
-        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null; then
+    # Method 2: Fallback to /dev/input/js* if method 1 fails
+    if [ "$real_controllers" -eq 0 ]; then
+        count=$(ls /dev/input/js* 2>/dev/null | wc -l)
+    else
+        count=$real_controllers
+    fi
+
+    # Method 3: Final fallback to sysfs
+    if [ "$count" -eq 0 ]; then
+        count=$(ls /sys/class/input/js* 2>/dev/null | wc -l)
+    fi
+
+    # Check if Steam is running (native or Flatpak) - expanded patterns for Bazzite/SteamOS
+    if pgrep -x steam >/dev/null 2>&1 \
+        || pgrep -f '/steam$' >/dev/null 2>&1 \
+        || pgrep -f 'ubuntu12_32/steam' >/dev/null 2>&1 \
+        || pgrep -f '^/app/bin/steam$' >/dev/null 2>&1 \
+        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null 2>&1; then
         steam_running=1
     fi
 
-    # Halve count if Steam is running (Steam Input creates duplicates)
-    if [ "$steam_running" -eq 1 ]; then
+    # Only halve if we used fallback methods (not the uhid filtering method)
+    # The uhid method already filters out Steam duplicates
+    if [ "$steam_running" -eq 1 ] && [ "$real_controllers" -eq 0 ]; then
         count=$(( (count + 1) / 2 ))
     fi
 
@@ -290,6 +313,7 @@ getControllerCount() {
     [ "$count" -gt 4 ] && count=4
     [ "$count" -lt 1 ] && count=1
 
+    echo "[Debug] Controller detection: real=$real_controllers, total=$count, steam=$steam_running" >&2
     echo "$count"
 }
 
@@ -359,7 +383,16 @@ launchGames() {
 # Steam Deck Detection
 # =============================================================================
 
-# Returns 0 if running on Steam Deck in Game Mode
+# Returns 0 if running in Steam Deck Game Mode or equivalent (Bazzite, ChimeraOS, etc.)
+# This determines whether we need a nested Plasma session for proper window management
+#
+# We need a nested session when:
+#   - Running in gamescope (no traditional window manager)
+#   - Running in Steam's game mode without a full desktop
+#
+# We DON'T need a nested session when:
+#   - Running in a full KDE/GNOME desktop (even if Steam Big Picture is running)
+#   - User switched from game mode to desktop mode
 isSteamDeckGameMode() {
     local dmi_file="/sys/class/dmi/id/product_name"
     local dmi_contents=""
@@ -368,23 +401,35 @@ isSteamDeckGameMode() {
         dmi_contents="$(cat "$dmi_file" 2>/dev/null)"
     fi
 
+    # Check 1: Running in gamescope session (Steam Deck Game Mode or Bazzite Game Mode)
+    # This is the most reliable indicator - gamescope IS game mode
+    if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] || [ "$XDG_CURRENT_DESKTOP" = "gamescope" ]; then
+        echo "[Debug] Detected gamescope session" >&2
+        return 0
+    fi
+
+    # Check 2: Running in KDE/other full desktop - this is DESKTOP mode, not game mode
+    # Even if launched from startplasma-steamos, if we're in KDE, we have window management
+    if [ -n "$DISPLAY" ] && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
+        echo "[Debug] Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)" >&2
+        return 1
+    fi
+
+    # Check 3: Steam Deck hardware with gamepadui (and not in desktop mode)
     if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ]; then
-            return 0
-        fi
-        if pgrep -af 'steam' | grep -q '\-gamepadui'; then
-            return 0
-        fi
-    else
-        # Fallback checks
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] && [ "$USER" = "deck" ]; then
-            return 0
-        fi
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "KDE" ] && [ "$USER" = "deck" ]; then
+        if pgrep -af 'steam' | grep -q -- '-gamepadui'; then
+            echo "[Debug] Detected Steam Deck with gamepadui" >&2
             return 0
         fi
     fi
 
+    # Check 4: No display at all - likely running in pure game mode
+    if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+        echo "[Debug] No display - assuming game mode" >&2
+        return 0
+    fi
+
+    echo "[Debug] Desktop mode detected (default fallback)" >&2
     return 1
 }
 
@@ -402,6 +447,14 @@ trap cleanup_autostart EXIT
 # MAIN ENTRY POINT
 # =============================================================================
 
+# Enable debug output with SPLITSCREEN_DEBUG=1
+if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
+    echo "[Debug] === Minecraft Splitscreen Launcher ===" >&2
+    echo "[Debug] Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)" >&2
+    echo "[Debug] Instances: $INSTANCES_DIR" >&2
+    echo "[Debug] Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY" >&2
+fi
+
 if isSteamDeckGameMode; then
     if [ "$1" = launchFromPlasma ]; then
         # Inside nested Plasma session
@@ -415,11 +468,17 @@ if isSteamDeckGameMode; then
 else
     # Desktop mode: launch directly
     numberOfControllers=$(getControllerCount)
+    echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
+
     for player in $(seq 1 $numberOfControllers); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
+        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
         launchGame "latestUpdate-$player" "P$player"
     done
+
+    echo "[Info] All instances launched. Waiting for games to exit..."
     wait
+    echo "[Info] All games have exited."
 fi
 LAUNCHER_SCRIPT_EOF
 
