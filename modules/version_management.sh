@@ -1,13 +1,57 @@
 #!/bin/bash
 # =============================================================================
-# VERSION MANAGEMENT MODULE
+# @file        version_management.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+#
+# @description
+#   Minecraft and Fabric version selection and detection functions.
+#   Implements intelligent version selection based on required mod compatibility,
+#   querying APIs to verify that both essential splitscreen mods (Controllable
+#   and Splitscreen Support) are available for each version.
+#
+#   Key features:
+#   - Dynamic version compatibility checking via Modrinth/CurseForge APIs
+#   - Multi-stage version matching (exact → major.minor → wildcard)
+#   - Interactive version selection with fallback recommendations
+#   - Fabric loader version detection from official API
+#
+# @dependencies
+#   - utilities.sh (for print_progress, print_success, print_warning, print_error, print_info, print_header)
+#   - curl (for API requests)
+#   - jq (for JSON parsing)
+#   - openssl (for CurseForge API token decryption)
+#
+# @global_outputs
+#   - MC_VERSION: Selected Minecraft version
+#   - FABRIC_VERSION: Detected Fabric loader version
+#
+# @exports
+#   Functions:
+#     - get_supported_minecraft_versions : Get list of compatible MC versions
+#     - check_mod_version_compatibility  : Check single mod/version compatibility
+#     - fallback_dependencies            : Hardcoded dependency fallbacks
+#     - get_minecraft_version            : Interactive version selection
+#     - get_fabric_version               : Fetch latest Fabric loader version
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
-# Minecraft and Fabric version selection and detection functions
-# Intelligent version selection based on required mod compatibility
 
-# get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for Controllable and Splitscreen Support to find compatible versions
-# Returns: Array of supported Minecraft versions in descending order (newest first)
+# =============================================================================
+# VERSION COMPATIBILITY CHECKING
+# =============================================================================
+
+# @function    get_supported_minecraft_versions
+# @description Check what Minecraft versions support both required splitscreen mods
+#              (Controllable and Splitscreen Support). Queries APIs to find compatible versions.
+# @stdout      Array of supported Minecraft versions in descending order (newest first)
+# @stderr      Progress and status messages
+# @return      0 if versions found, 1 if none found or API error
 get_supported_minecraft_versions() {
     print_progress "Checking supported Minecraft versions for essential splitscreen mods..." >&2
 
@@ -67,13 +111,14 @@ get_supported_minecraft_versions() {
     printf '%s\n' "${supported_versions[@]}"
 }
 
-# check_mod_version_compatibility: Check if a specific mod supports a specific MC version
-# This is a lightweight version check that doesn't add mods to arrays
-# Parameters:
-#   $1 - mod_id: Mod ID (Modrinth project ID or CurseForge project ID)
-#   $2 - platform: "modrinth" or "curseforge"
-#   $3 - mc_version: Minecraft version to check (e.g. "1.21.3")
-# Returns: 0 if compatible, 1 if not compatible
+# @function    check_mod_version_compatibility
+# @description Check if a specific mod supports a specific Minecraft version.
+#              Lightweight version check that doesn't add mods to arrays.
+#              Uses multi-stage version matching for flexible compatibility.
+# @param       $1 - mod_id: Mod ID (Modrinth project ID or CurseForge project ID)
+# @param       $2 - platform: "modrinth" or "curseforge"
+# @param       $3 - mc_version: Minecraft version to check (e.g., "1.21.3")
+# @return      0 if compatible, 1 if not compatible or API error
 check_mod_version_compatibility() {
     local mod_id="$1"
     local platform="$2"
@@ -249,7 +294,16 @@ check_mod_version_compatibility() {
     return 1  # Not compatible
 }
 
-# Add fallback dependencies for critical mods when API calls fail
+# =============================================================================
+# FALLBACK DATA
+# =============================================================================
+
+# @function    fallback_dependencies
+# @description Provide hardcoded dependency information for critical mods when API calls fail.
+# @param       $1 - mod_id: The mod ID to look up
+# @param       $2 - platform: "modrinth" or "curseforge"
+# @stdout      Space-separated list of dependency mod IDs, or empty string
+# @return      0 always
 fallback_dependencies() {
     local mod_id="$1"
     local platform="$2"
@@ -273,8 +327,16 @@ fallback_dependencies() {
     esac
 }
 
-# get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support both Controllable and Splitscreen Support mods
+# =============================================================================
+# USER INTERACTION
+# =============================================================================
+
+# @function    get_minecraft_version
+# @description Interactive Minecraft version selection with intelligent compatibility checking.
+#              Only offers versions that support both Controllable and Splitscreen Support mods.
+# @global      MC_VERSION - (output) Set to selected Minecraft version
+# @stdin       User input from /dev/tty (for curl | bash compatibility)
+# @return      0 on success, exits on failure to determine versions
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
 
@@ -380,8 +442,15 @@ get_minecraft_version() {
     print_info "Selected Minecraft version: $MC_VERSION"
 }
 
-# get_fabric_version: Fetch the latest Fabric loader version from official API
-# Fabric loader provides the mod loading framework for Minecraft
+# =============================================================================
+# FABRIC VERSION DETECTION
+# =============================================================================
+
+# @function    get_fabric_version
+# @description Fetch the latest Fabric loader version from official Fabric Meta API.
+#              Fabric loader provides the mod loading framework for Minecraft.
+# @global      FABRIC_VERSION - (output) Set to detected Fabric version
+# @return      0 always (uses fallback on API failure)
 get_fabric_version() {
     print_progress "Detecting latest Fabric loader version..."
 

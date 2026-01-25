@@ -1,27 +1,60 @@
 #!/bin/bash
 # =============================================================================
-# Launcher Script Generator Module
-# =============================================================================
-# Version: 2.0.0
-# Last Modified: 2026-01-23
-# Source: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+# @file        launcher_script_generator.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
-# This module generates the minecraftSplitscreen.sh launcher script with
-# the correct paths baked in based on the detected launcher configuration.
+# @description
+#   Generates the minecraftSplitscreen.sh launcher script with correct paths
+#   baked in based on the detected launcher configuration. The generated script
+#   handles Steam Deck Game Mode detection, controller counting, splitscreen
+#   configuration, and instance launching.
+#
+#   Key features:
+#   - Template-based script generation with placeholder replacement
+#   - Support for both AppImage and Flatpak launchers
+#   - Steam Deck Game Mode detection with nested Plasma session
+#   - Controller detection with Steam Input duplicate handling
+#   - Per-instance splitscreen.properties configuration
+#
+# @dependencies
+#   - git (for commit hash embedding, optional)
+#   - sed (for placeholder replacement)
+#
+# @exports
+#   Functions:
+#     - generate_splitscreen_launcher : Main generation function
+#     - verify_generated_script       : Validation utility
+#     - print_generation_config       : Debug/info utility
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
 
 # =============================================================================
-# Main Generator Function
+# MAIN GENERATOR FUNCTION
 # =============================================================================
 
-# Generate the splitscreen launcher script
-# Arguments:
-#   $1 = Output path for the generated script
-#   $2 = Launcher name ("PollyMC" or "PrismLauncher")
-#   $3 = Launcher type ("appimage" or "flatpak")
-#   $4 = Launcher executable (full path or flatpak command)
-#   $5 = Launcher data directory
-#   $6 = Instances directory
+# @function    generate_splitscreen_launcher
+# @description Generate the minecraftSplitscreen.sh launcher script with
+#              configuration values baked in via placeholder replacement.
+# @param       $1 - output_path: Path for the generated script
+# @param       $2 - launcher_name: "PollyMC" or "PrismLauncher"
+# @param       $3 - launcher_type: "appimage" or "flatpak"
+# @param       $4 - launcher_exec: Full path or flatpak command
+# @param       $5 - launcher_dir: Launcher data directory
+# @param       $6 - instances_dir: Instances directory path
+# @global      SCRIPT_VERSION - (input, optional) Version string for embedding
+# @global      REPO_URL - (input, optional) Repository URL for embedding
+# @return      0 on success
+# @example
+#   generate_splitscreen_launcher "/path/to/script.sh" "PollyMC" "flatpak" \
+#       "flatpak run org.fn2006.PollyMC" "/home/user/.var/app/org.fn2006.PollyMC/data/PollyMC" \
+#       "/home/user/.var/app/org.fn2006.PollyMC/data/PollyMC/instances"
 generate_splitscreen_launcher() {
     local output_path="$1"
     local launcher_name="$2"
@@ -410,12 +443,16 @@ LAUNCHER_SCRIPT_EOF
 }
 
 # =============================================================================
-# Utility Functions
+# UTILITY FUNCTIONS
 # =============================================================================
 
-# Verify a generated launcher script is valid
-# Arguments:
-#   $1 = Path to the generated script
+# @function    verify_generated_script
+# @description Verify that a generated launcher script is valid.
+#              Checks existence, permissions, placeholder replacement, and syntax.
+# @param       $1 - script_path: Path to the generated script
+# @return      0 if valid, 1 if invalid
+# @example
+#   if verify_generated_script "/path/to/script.sh"; then echo "Valid"; fi
 verify_generated_script() {
     local script_path="$1"
 
@@ -445,8 +482,12 @@ verify_generated_script() {
     return 0
 }
 
-# Print the configuration that would be used for generation
-# Arguments: same as generate_splitscreen_launcher
+# @function    print_generation_config
+# @description Print the configuration that would be used for script generation.
+#              Useful for debugging and verification.
+# @param       $1-$6 - Same as generate_splitscreen_launcher
+# @stdout      Formatted configuration summary
+# @return      0 always
 print_generation_config() {
     local output_path="$1"
     local launcher_name="$2"

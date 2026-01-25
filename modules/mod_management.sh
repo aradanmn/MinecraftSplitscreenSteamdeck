@@ -1,12 +1,75 @@
 #!/bin/bash
 # =============================================================================
-# MOD MANAGEMENT MODULE
+# @file        mod_management.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+#
+# @description
+#   Comprehensive mod compatibility checking, dependency resolution, and user
+#   selection interface for Minecraft Fabric mods. Supports dual-platform
+#   integration with both Modrinth and CurseForge APIs.
+#
+#   Key features:
+#   - Multi-stage version matching (exact -> major.minor -> wildcard -> fallback)
+#   - Automatic dependency resolution with recursive fetching
+#   - Interactive mod selection with range support (e.g., "1-5", "1 3 5")
+#   - CurseForge API authentication via encrypted token
+#   - External dependency fetching for mods not in initial list
+#
+# @dependencies
+#   - utilities.sh (for print_header, print_success, print_warning, print_error, print_info, print_progress)
+#   - curl (for API requests)
+#   - jq (for JSON parsing)
+#   - openssl (for CurseForge API token decryption)
+#
+# @global_inputs
+#   - MC_VERSION: Target Minecraft version (e.g., "1.21.3")
+#   - MODS[]: Array of mod definitions in format "ModName|platform|mod_id"
+#   - REQUIRED_SPLITSCREEN_MODS[]: Array of mod names that must always be installed
+#
+# @global_outputs
+#   - SUPPORTED_MODS[]: Array of compatible mod names
+#   - MOD_DESCRIPTIONS[]: Array of mod descriptions (parallel to SUPPORTED_MODS)
+#   - MOD_URLS[]: Array of download URLs (parallel to SUPPORTED_MODS)
+#   - MOD_IDS[]: Array of mod IDs (parallel to SUPPORTED_MODS)
+#   - MOD_TYPES[]: Array of platform types "modrinth"|"curseforge" (parallel to SUPPORTED_MODS)
+#   - MOD_DEPENDENCIES[]: Array of space-separated dependency IDs (parallel to SUPPORTED_MODS)
+#   - FINAL_MOD_INDEXES[]: Array of indexes into SUPPORTED_MODS for selected mods
+#
+# @exports
+#   Functions:
+#     - check_mod_compatibility : Check all mods for MC version compatibility
+#     - check_modrinth_mod      : Check single Modrinth mod compatibility
+#     - check_curseforge_mod    : Check single CurseForge mod compatibility
+#     - resolve_all_dependencies: Resolve dependencies for all selected mods
+#     - select_user_mods        : Interactive mod selection interface
+#     - fetch_and_add_external_mod : Fetch and add external dependency mod
+#     - get_curseforge_download_url: Get download URL for CurseForge mod
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation with dual-platform support
 # =============================================================================
-# Mod compatibility checking, dependency resolution, and user selection functions
-# Handles both Modrinth and CurseForge platforms
 
-# check_mod_compatibility: Main coordination function for mod compatibility checking
-# Iterates through all mods and delegates to platform-specific checkers
+# =============================================================================
+# MOD COMPATIBILITY CHECKING
+# =============================================================================
+
+# @function    check_mod_compatibility
+# @description Main coordination function for mod compatibility checking.
+#              Iterates through all mods in the MODS array and delegates to
+#              platform-specific checkers (Modrinth or CurseForge).
+# @global      MODS - (input) Array of mod definitions "ModName|platform|mod_id"
+# @global      MC_VERSION - (input) Target Minecraft version
+# @global      SUPPORTED_MODS - (output) Populated with compatible mod names
+# @return      0 always (individual mod failures are non-fatal)
+# @example
+#   MC_VERSION="1.21.3"
+#   MODS=("Fabric API|modrinth|P7dR8mSH" "Controllable|curseforge|317269")
+#   check_mod_compatibility
 check_mod_compatibility() {
     print_header "🔍 CHECKING MOD COMPATIBILITY"
     print_progress "Checking mod compatibility for Minecraft $MC_VERSION..."
@@ -33,9 +96,24 @@ check_mod_compatibility() {
     print_info "Found $supported_count compatible mods for Minecraft $MC_VERSION"
 }
 
-# check_modrinth_mod: Check if a Modrinth mod is compatible with target MC version
-# Modrinth is the preferred platform - it has better API and more reliable data
-# This function implements complex version matching logic to handle various version formats
+# @function    check_modrinth_mod
+# @description Check if a Modrinth mod is compatible with the target Minecraft version.
+#              Modrinth is the preferred platform due to better API and more reliable data.
+#              Implements multi-stage version matching:
+#                Stage 1: Exact version match (e.g., "1.21.3")
+#                Stage 2: Major.minor match (e.g., "1.21", "1.21.x", "1.21.0")
+#                Stage 3: Advanced pattern matching with comprehensive version range support
+# @param       $1 - mod_name: Human-readable mod name for display
+# @param       $2 - mod_id: Modrinth project ID (e.g., "P7dR8mSH" for Fabric API)
+# @global      MC_VERSION - (input) Target Minecraft version
+# @global      SUPPORTED_MODS - (output) Appended with mod name if compatible
+# @global      MOD_URLS - (output) Appended with download URL if compatible
+# @global      MOD_IDS - (output) Appended with mod ID if compatible
+# @global      MOD_TYPES - (output) Appended with "modrinth" if compatible
+# @global      MOD_DEPENDENCIES - (output) Appended with dependency IDs if compatible
+# @return      0 if compatible version found, 1 if not compatible or API error
+# @example
+#   check_modrinth_mod "Fabric API" "P7dR8mSH"
 check_modrinth_mod() {
     local mod_name="$1"     # Human-readable mod name
     local mod_id="$2"       # Modrinth project ID (e.g., "P7dR8mSH" for Fabric API)
@@ -235,9 +313,22 @@ check_modrinth_mod() {
     fi
 }
 
-# check_curseforge_mod: Check CurseForge mod compatibility with encrypted API access
-# CurseForge requires API key authentication and has more restrictive access
-# API token is encrypted and stored in the GitHub repository for security
+# @function    check_curseforge_mod
+# @description Check CurseForge mod compatibility with encrypted API access.
+#              CurseForge requires API key authentication with more restrictive access.
+#              The API token is encrypted (AES-256-CBC) and stored in the repository.
+# @param       $1 - mod_name: Human-readable mod name for display
+# @param       $2 - cf_project_id: CurseForge project ID (numeric)
+# @global      MC_VERSION - (input) Target Minecraft version
+# @global      SUPPORTED_MODS - (output) Appended with mod name if compatible
+# @global      MOD_URLS - (output) Appended with download URL if compatible
+# @global      MOD_IDS - (output) Appended with mod ID if compatible
+# @global      MOD_TYPES - (output) Appended with "curseforge" if compatible
+# @global      MOD_DEPENDENCIES - (output) Appended with dependency IDs if compatible
+# @return      0 if compatible version found, 1 if not compatible or API error
+# @note        Uses modLoaderType=4 filter for Fabric mods
+# @example
+#   check_curseforge_mod "Controllable" "317269"
 check_curseforge_mod() {
     local mod_name="$1"           # Human-readable mod name
     local cf_project_id="$2"      # CurseForge project ID (numeric)
@@ -368,9 +459,22 @@ check_curseforge_mod() {
     fi
 }
 
-# resolve_all_dependencies: Main function to automatically resolve all mod dependencies
-# This function builds a complete dependency tree and ensures all required mods are included
-# Parameters: None (operates on FINAL_MOD_INDEXES global array)
+# =============================================================================
+# DEPENDENCY RESOLUTION
+# =============================================================================
+
+# @function    resolve_all_dependencies
+# @description Main function to automatically resolve all mod dependencies.
+#              Builds a complete dependency tree and ensures all required mods
+#              are included. Uses single-pass resolution to avoid infinite loops.
+# @global      FINAL_MOD_INDEXES - (input/output) Array of selected mod indexes
+# @global      MOD_IDS - (input) Array of mod IDs
+# @global      MOD_TYPES - (input) Array of platform types
+# @global      SUPPORTED_MODS - (input/output) May be extended with external deps
+# @return      0 always
+# @example
+#   FINAL_MOD_INDEXES=(0 1 2)
+#   resolve_all_dependencies
 resolve_all_dependencies() {
     print_header "🔗 AUTOMATIC DEPENDENCY RESOLUTION"
     print_progress "Automatically resolving mod dependencies..."
@@ -491,11 +595,15 @@ resolve_all_dependencies() {
     print_info "Added $added_count dependencies ($initial_mod_count → $updated_mod_count total mods)"
 }
 
-# resolve_mod_dependencies: Resolve dependencies for a specific mod
-# Fetches dependency information from Modrinth or CurseForge API based on mod type
-# Parameters:
-#   $1 - mod_id: The mod ID to resolve dependencies for
-# Returns: Space-separated list of dependency mod IDs
+# @function    resolve_mod_dependencies
+# @description Resolve dependencies for a specific mod by routing to the
+#              appropriate platform-specific resolver based on mod type.
+# @param       $1 - mod_id: The mod ID to resolve dependencies for
+# @global      MOD_IDS - (input) Array of mod IDs to find the mod
+# @global      MOD_TYPES - (input) Array of platform types
+# @global      SUPPORTED_MODS - (input) Array of mod names for logging
+# @stdout      Space-separated list of dependency mod IDs
+# @return      0 if dependencies found, 1 if mod not found or unknown type
 resolve_mod_dependencies() {
     local mod_id="$1"
 
@@ -529,12 +637,13 @@ resolve_mod_dependencies() {
     esac
 }
 
-# resolve_modrinth_dependencies: Get dependencies from Modrinth API
-# Uses the same version matching logic as mod compatibility checking but focused on dependencies
-# Parameters:
-#   $1 - mod_id: Modrinth project ID
-#   $2 - mod_name: Human-readable mod name for logging
-# Returns: Space-separated list of required dependency mod IDs
+# @function    resolve_modrinth_dependencies
+# @description Get dependencies from Modrinth API using version matching logic.
+# @param       $1 - mod_id: Modrinth project ID
+# @param       $2 - mod_name: Human-readable mod name for logging
+# @global      MC_VERSION - (input) Target Minecraft version for filtering
+# @stdout      Space-separated list of required dependency project IDs
+# @return      0 if API call successful, 1 on error
 resolve_modrinth_dependencies() {
     local mod_id="$1"
     local mod_name="$2"
@@ -594,12 +703,14 @@ resolve_modrinth_dependencies() {
     fi
 }
 
-# resolve_curseforge_dependencies: Get dependencies from CurseForge API
-# Similar to Modrinth resolver but uses CurseForge API structure and authentication
-# Parameters:
-#   $1 - mod_id: CurseForge project ID (numeric)
-#   $2 - mod_name: Human-readable mod name for logging
-# Returns: Space-separated list of required dependency mod IDs
+# @function    resolve_curseforge_dependencies
+# @description Get dependencies from CurseForge API with authentication.
+# @param       $1 - mod_id: CurseForge project ID (numeric)
+# @param       $2 - mod_name: Human-readable mod name for logging
+# @global      MC_VERSION - (input) Target Minecraft version for filtering
+# @stdout      Space-separated list of required dependency mod IDs
+# @return      0 if API call successful, 1 on error
+# @note        relationType == 3 means "required dependency" in CurseForge API
 resolve_curseforge_dependencies() {
     local mod_id="$1"
     local mod_name="$2"
@@ -681,11 +792,13 @@ resolve_curseforge_dependencies() {
     fi
 }
 
-# resolve_modrinth_dependencies_api: Get dependencies from Modrinth API
-# Fetches the project data from Modrinth and extracts required dependencies
-# Parameters:
-#   $1 - mod_id: The Modrinth project ID or slug
-# Returns: Space-separated list of dependency mod IDs
+# @function    resolve_modrinth_dependencies_api
+# @description Get dependencies from Modrinth API with fallback support.
+#              Uses temporary files to handle large API responses.
+# @param       $1 - mod_id: The Modrinth project ID or slug
+# @global      MC_VERSION - (input) Target Minecraft version for filtering
+# @stdout      Space-separated list of dependency mod IDs
+# @return      0 always (returns empty string on failure)
 resolve_modrinth_dependencies_api() {
     local mod_id="$1"
     local dependencies=""
@@ -760,11 +873,13 @@ resolve_modrinth_dependencies_api() {
     echo "$dependencies"
 }
 
-# resolve_curseforge_dependencies_api: Get dependencies from CurseForge API
-# Fetches the mod data from CurseForge and extracts required dependencies
-# Parameters:
-#   $1 - mod_id: The CurseForge project ID (numeric)
-# Returns: Space-separated list of dependency mod IDs
+# @function    resolve_curseforge_dependencies_api
+# @description Get dependencies from CurseForge API with authentication.
+#              Includes hardcoded fallbacks for critical mods.
+# @param       $1 - mod_id: The CurseForge project ID (numeric)
+# @global      MC_VERSION - (input) Target Minecraft version for filtering
+# @stdout      Space-separated list of dependency mod IDs
+# @return      0 on success, 1 on authentication failure
 resolve_curseforge_dependencies_api() {
     local mod_id="$1"
     local dependencies=""
@@ -896,12 +1011,23 @@ resolve_curseforge_dependencies_api() {
     echo "$dependencies"
 }
 
-# fetch_and_add_external_mod: Fetch external mod data and add to mod arrays
-# Downloads mod information from APIs and adds it to our internal mod arrays
-# Parameters:
-#   $1 - mod_id: The external mod ID
-#   $2 - mod_type: The platform type (modrinth/curseforge)
-# Returns: 0 if successful, 1 if failed
+# =============================================================================
+# EXTERNAL MOD FETCHING
+# =============================================================================
+
+# @function    fetch_and_add_external_mod
+# @description Fetch external mod data from APIs and add to internal mod arrays.
+#              Used for dependencies not in the initial mod list.
+# @param       $1 - mod_id: The external mod ID
+# @param       $2 - mod_type: The platform type ("modrinth" or "curseforge")
+# @global      SUPPORTED_MODS - (output) Appended with mod name
+# @global      MOD_DESCRIPTIONS - (output) Appended with mod description
+# @global      MOD_IDS - (output) Appended with mod ID
+# @global      MOD_TYPES - (output) Appended with platform type
+# @global      MOD_URLS - (output) Appended with download URL
+# @global      MOD_DEPENDENCIES - (output) Appended with empty string
+# @global      FINAL_MOD_INDEXES - (output) Appended with new mod index
+# @return      0 if successful, 1 if failed
 fetch_and_add_external_mod() {
     local ext_mod_id="$1"
     local ext_mod_type="$2"
@@ -1059,11 +1185,13 @@ fetch_and_add_external_mod() {
     fi
 }
 
-# get_curseforge_download_url: Get download URL for CurseForge mod
-# Uses CurseForge API to find compatible mod file and return download URL
-# Parameters:
-#   $1 - mod_id: The CurseForge project ID (numeric)
-# Returns: Download URL for the compatible mod file, or empty string if not found
+# @function    get_curseforge_download_url
+# @description Get download URL for CurseForge mod using authenticated API.
+#              Tries multiple version matching strategies.
+# @param       $1 - mod_id: The CurseForge project ID (numeric)
+# @global      MC_VERSION - (input) Target Minecraft version for filtering
+# @stdout      Download URL for the compatible mod file, or empty string
+# @return      0 on success, 1 on authentication failure
 get_curseforge_download_url() {
     local mod_id="$1"
     local download_url=""
@@ -1167,9 +1295,19 @@ get_curseforge_download_url() {
     echo "$download_url"
 }
 
-# select_user_mods: Interactive mod selection with intelligent categorization
-# Separates framework mods (auto-installed) from user-selectable mods
-# Handles dependency resolution and ensures required splitscreen mods are included
+# =============================================================================
+# USER INTERACTION
+# =============================================================================
+
+# @function    select_user_mods
+# @description Interactive mod selection interface with intelligent categorization.
+#              Separates framework mods (auto-installed) from user-selectable mods.
+#              Supports individual numbers and ranges (e.g., "1 3 5" or "1-5").
+# @global      SUPPORTED_MODS - (input) Array of compatible mod names
+# @global      REQUIRED_SPLITSCREEN_MODS - (input) Mods that must always be installed
+# @global      FINAL_MOD_INDEXES - (output) Populated with selected mod indexes
+# @stdin       User input from /dev/tty (for curl | bash compatibility)
+# @return      0 always (exits on no compatible mods)
 select_user_mods() {
     print_header "🎯 MOD SELECTION"
 
@@ -1322,7 +1460,17 @@ select_user_mods() {
     print_success "Final mod list prepared: $final_count mods selected"
 }
 
-# add_mod_dependencies: Add dependencies for a specific mod
+# @function    add_mod_dependencies
+# @description Add dependencies for a specific mod to the final selection.
+#              Handles special cases like Controllable needing Framework.
+# @param       $1 - mod_idx: Index into SUPPORTED_MODS array
+# @param       $2 - added_ref: Name reference to associative array tracking added mods
+# @global      SUPPORTED_MODS - (input) Array of mod names
+# @global      MOD_DEPENDENCIES - (input) Array of dependency strings
+# @global      MOD_IDS - (input) Array of mod IDs
+# @global      MODS - (input) Original mod definitions array
+# @global      FINAL_MOD_INDEXES - (output) Appended with dependency indexes
+# @return      0 always
 add_mod_dependencies() {
     local mod_idx="$1"
     local -n added_ref="$2"

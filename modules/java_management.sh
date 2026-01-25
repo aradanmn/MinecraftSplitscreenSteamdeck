@@ -1,26 +1,71 @@
 #!/bin/bash
 # =============================================================================
-# JAVA MANAGEMENT MODULE
+# @file        java_management.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+#
+# @description
+#   Automatic Java detection, installation, and management for Minecraft.
+#   Determines the correct Java version required for any Minecraft version
+#   by querying Mojang's API or using fallback version mappings.
+#
+#   Key features:
+#   - Automatic Java version detection from Mojang API
+#   - Fallback mappings: 1.21+ → Java 21, 1.18-1.20 → Java 17, 1.17 → Java 16, older → Java 8
+#   - User-space installation to ~/.local/jdk/ (no root required)
+#   - Multi-version coexistence support
+#   - Automatic environment variable configuration
+#
+# @dependencies
+#   - utilities.sh (for print_header, print_success, print_warning, print_error, print_info, print_progress)
+#   - curl (for Mojang API requests)
+#   - jq (for JSON parsing)
+#   - git (for downloading JDK installer)
+#
+# @global_outputs
+#   - JAVA_PATH: Path to the detected/installed Java executable
+#
+# @exports
+#   Functions:
+#     - get_required_java_version : Determine Java version for MC version
+#     - download_and_run_jdk_installer : Install Java automatically
+#     - find_java_installation : Search for existing Java installation
+#     - detect_and_install_java : Main function - find or install Java
+#     - detect_java : Legacy alias for detect_and_install_java
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
-# Automatic Java detection, installation and management functions
 
-# get_required_java_version: Determine the required Java version for a Minecraft version
-# Fetches version manifest from Mojang API to get the official Java requirements
-# Parameters:
-#   $1 - mc_version: Minecraft version (e.g., "1.21.3")
-# Returns: Java version number (e.g., "21", "17", "8") or exits on error
+# =============================================================================
+# JAVA VERSION DETECTION
+# =============================================================================
+
+# @function    get_required_java_version
+# @description Determine the required Java version for a Minecraft version.
+#              Queries Mojang's version manifest API for official requirements,
+#              falling back to hardcoded mappings if API unavailable.
+# @param       $1 - mc_version: Minecraft version (e.g., "1.21.3")
+# @stdout      Java version number (e.g., "21", "17", "8")
+# @return      0 on success, 1 if mc_version is empty
+# @example
+#   required_java=$(get_required_java_version "1.21.3")  # Returns "21"
 get_required_java_version() {
     local mc_version="$1"
-    
+
     if [[ -z "$mc_version" ]]; then
         return 1
     fi
-    
+
     # Get version manifest from Mojang API (silent)
     local manifest_url="https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
     local manifest_json
     manifest_json=$(curl -s "$manifest_url" 2>/dev/null)
-    
+
     if [[ -z "$manifest_json" ]]; then
         # Fallback logic based on known Minecraft Java requirements
         if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
@@ -36,11 +81,11 @@ get_required_java_version() {
         fi
         return 0
     fi
-    
+
     # Extract the version-specific manifest URL
     local version_url
     version_url=$(echo "$manifest_json" | jq -r --arg v "$mc_version" '.versions[] | select(.id == $v) | .url' 2>/dev/null)
-    
+
     if [[ -z "$version_url" || "$version_url" == "null" ]]; then
         # Use same fallback logic as above
         if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
@@ -56,11 +101,11 @@ get_required_java_version() {
         fi
         return 0
     fi
-    
+
     # Fetch the specific version manifest (silent)
     local version_json
     version_json=$(curl -s "$version_url" 2>/dev/null)
-    
+
     if [[ -z "$version_json" ]]; then
         # Fallback logic
         if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
@@ -76,11 +121,11 @@ get_required_java_version() {
         fi
         return 0
     fi
-    
+
     # Extract Java version requirement from the manifest
     local java_version
     java_version=$(echo "$version_json" | jq -r '.javaVersion.majorVersion // empty' 2>/dev/null)
-    
+
     if [[ -n "$java_version" && "$java_version" != "null" ]]; then
         echo "$java_version"
     else
@@ -99,21 +144,29 @@ get_required_java_version() {
     fi
 }
 
-# download_and_run_jdk_installer: Download and execute the automatic JDK installer
-# Downloads the JDK installer from the GitHub repository and runs it automatically
-# Parameters:
-#   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
+# =============================================================================
+# JAVA INSTALLATION
+# =============================================================================
+
+# @function    download_and_run_jdk_installer
+# @description Download and execute the automatic JDK installer from GitHub.
+#              Installs Java to ~/.local/jdk/ without requiring root access.
+# @param       $1 - required_version: Required Java major version (e.g., "21", "17", "8")
+# @env         JDK_VERSION - Set to required_version for automated installation
+# @return      0 on successful installation, 1 on failure
+# @example
+#   download_and_run_jdk_installer "21"
 download_and_run_jdk_installer() {
     local required_version="$1"
     local temp_dir
     temp_dir=$(mktemp -d)
     local original_dir="$PWD"
-    
+
     if [[ -z "$temp_dir" ]]; then
         print_error "Failed to create temporary directory for JDK installer"
         return 1
     fi
-    
+
     # Check if git is available
     if ! command -v git >/dev/null 2>&1; then
         print_error "Git is required to download the JDK installer but is not installed"
@@ -121,15 +174,15 @@ download_and_run_jdk_installer() {
         rm -rf "$temp_dir"
         return 1
     fi
-    
+
     cd "$temp_dir" || {
         print_error "Failed to enter temporary directory"
         rm -rf "$temp_dir"
         return 1
     }
-    
+
     print_progress "Downloading automatic JDK installer..."
-    
+
     # Clone the JDK installer repository
     if ! git clone --quiet https://github.com/FlyingEwok/install-jdk-on-steam-deck.git 2>/dev/null; then
         print_error "Failed to download JDK installer from GitHub"
@@ -138,16 +191,16 @@ download_and_run_jdk_installer() {
         rm -rf "$temp_dir"
         return 1
     fi
-    
+
     # Make the install script executable
     chmod +x install-jdk-on-steam-deck/scripts/install-jdk.sh
-    
+
     print_info "Running automatic JDK $required_version installer..."
     print_info "This will install Java $required_version to ~/.local/jdk/ (no root access required)"
-    
+
     # Set environment variable to install specific version automatically
     export JDK_VERSION="$required_version"
-    
+
     # Run the installer in automated mode
     if ./install-jdk-on-steam-deck/scripts/install-jdk.sh; then
         print_success "Java $required_version installed successfully!"
@@ -162,15 +215,22 @@ download_and_run_jdk_installer() {
     fi
 }
 
-# find_java_installation: Find a Java installation of the specified version
-# Searches both system locations and the automatic installer location
-# Parameters:
-#   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
-# Returns: Path to Java executable or empty string if not found
+# =============================================================================
+# JAVA DETECTION
+# =============================================================================
+
+# @function    find_java_installation
+# @description Find an existing Java installation of the specified version.
+#              Search order: JAVA_N_HOME env vars → ~/.local/jdk/ → system paths → PATH
+# @param       $1 - required_version: Required Java major version (e.g., "21", "17", "8")
+# @stdout      Path to Java executable, or empty string if not found
+# @return      0 if found, implicit failure if not found (empty stdout)
+# @example
+#   java_path=$(find_java_installation "21")
 find_java_installation() {
     local required_version="$1"
     local java_path=""
-    
+
     # First, check the automatic installer location (~/.local/jdk)
     local jdk_home_var="JAVA_${required_version}_HOME"
     if [[ -n "${!jdk_home_var:-}" && -x "${!jdk_home_var}/bin/java" ]]; then
@@ -178,7 +238,7 @@ find_java_installation() {
         echo "$java_path"
         return 0
     fi
-    
+
     # Check ~/.local/jdk directory directly (in case env vars aren't loaded)
     if [[ -d "$HOME/.local/jdk" ]]; then
         for jdk_dir in "$HOME/.local/jdk"/*/; do
@@ -226,7 +286,7 @@ find_java_installation() {
             fi
         done
     fi
-    
+
     # Check system locations if not found in ~/.local/jdk
     if [[ -z "$java_path" ]]; then
         case "$required_version" in
@@ -289,7 +349,7 @@ find_java_installation() {
                 ;;
         esac
     fi
-    
+
     # Check system default java and validate version
     if [[ -z "$java_path" ]] && command -v java >/dev/null 2>&1; then
         local version_output
@@ -327,42 +387,53 @@ find_java_installation() {
                 ;;
         esac
     fi
-    
+
     echo "$java_path"
 }
 
-# detect_and_install_java: Find required Java version and install if needed
-# This function automatically detects the required Java version, searches for it,
-# and installs it automatically if not found. No user interaction required.
-# Must be called after MC_VERSION is set
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+# @function    detect_and_install_java
+# @description Main function to find required Java version and install if needed.
+#              Automatically detects requirements, searches for existing installation,
+#              and installs if not found. No user interaction required.
+# @global      MC_VERSION - (input) Must be set before calling
+# @global      JAVA_PATH - (output) Set to path of Java executable
+# @return      0 on success, exits on failure
+# @example
+#   MC_VERSION="1.21.3"
+#   detect_and_install_java
+#   echo "Java at: $JAVA_PATH"
 detect_and_install_java() {
     if [[ -z "${MC_VERSION:-}" ]]; then
         print_error "MC_VERSION must be set before calling detect_and_install_java"
         exit 1
     fi
-    
+
     print_header "☕ AUTOMATIC JAVA SETUP"
-    
+
     # Get the required Java version for this Minecraft version
     print_progress "Checking Java requirements for Minecraft $MC_VERSION..."
     local required_java_version
     required_java_version=$(get_required_java_version "$MC_VERSION")
-    
+
     print_info "Minecraft $MC_VERSION requires Java $required_java_version"
-    
+
     # Search for existing Java installation
     print_progress "Searching for Java $required_java_version installation..."
-    
+
     # Source the profile to get any existing Java environment variables
     [[ -f ~/.profile ]] && source ~/.profile 2>/dev/null || true
-    
+
     JAVA_PATH=$(find_java_installation "$required_java_version")
-    
+
     if [[ -n "$JAVA_PATH" ]]; then
         # Validate that the found Java is actually the correct version
         local java_version_output
         java_version_output=$("$JAVA_PATH" -version 2>&1)
-        
+
         # Verify version matches requirement
         local version_matches=false
         case "$required_java_version" in
@@ -397,7 +468,7 @@ detect_and_install_java() {
                 fi
                 ;;
         esac
-        
+
         if [[ "$version_matches" == true ]]; then
             print_success "Found compatible Java $required_java_version at: $JAVA_PATH"
             local java_version_line
@@ -409,7 +480,7 @@ detect_and_install_java() {
             JAVA_PATH=""  # Clear invalid path
         fi
     fi
-    
+
     # Java not found or wrong version - install automatically
     print_warning "Java $required_java_version not found on system"
     print_info "Automatically installing Java $required_java_version using Steam Deck JDK installer..."
@@ -418,15 +489,15 @@ detect_and_install_java() {
     print_info "  • Installs to ~/.local/jdk/ (no root access needed)"
     print_info "  • Supports multiple Java versions side-by-side"
     print_info "  • Sets up proper environment variables automatically"
-    
+
     # Attempt automatic installation
     if download_and_run_jdk_installer "$required_java_version"; then
         # Source the updated profile to load new environment variables
         [[ -f ~/.profile ]] && source ~/.profile 2>/dev/null || true
-        
+
         # Try to find the newly installed Java
         JAVA_PATH=$(find_java_installation "$required_java_version")
-        
+
         if [[ -n "$JAVA_PATH" ]]; then
             print_success "Java $required_java_version automatically installed and configured!"
             local java_version_output
@@ -470,7 +541,9 @@ detect_and_install_java() {
     fi
 }
 
-# Legacy function name for backward compatibility
+# @function    detect_java
+# @description Legacy alias for detect_and_install_java (backward compatibility).
+# @see         detect_and_install_java
 detect_java() {
     detect_and_install_java
 }

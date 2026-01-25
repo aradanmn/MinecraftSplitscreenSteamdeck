@@ -1,18 +1,43 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Steam Integration Module
-# =============================================================================
+# @file        steam_integration.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
-# This module handles the integration of Minecraft Splitscreen launcher with
-# Steam, providing native Steam library integration, Big Picture mode support,
-# and Steam Deck Game Mode integration.
+# @description
+#   Handles the integration of Minecraft Splitscreen launcher with Steam,
+#   providing native Steam library integration, Big Picture mode support,
+#   and Steam Deck Game Mode integration.
 #
-# Functions provided:
-# - setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
+#   Key features:
+#   - Automatic Steam shortcut creation via shortcuts.vdf modification
+#   - SteamGridDB artwork download for professional appearance
+#   - Duplicate shortcut detection and prevention
+#   - Safe Steam shutdown/restart procedure
+#   - Steam Deck-aware process management
 #
+# @dependencies
+#   - utilities.sh (for print_header, print_success, print_warning, print_error, print_info, print_progress)
+#   - path_configuration.sh (for ACTIVE_LAUNCHER_SCRIPT, ACTIVE_DATA_DIR, ACTIVE_LAUNCHER)
+#   - curl (for downloading Steam integration script)
+#   - python3 (for running add-to-steam.py)
+#
+# @exports
+#   Functions:
+#     - setup_steam_integration : Main function to add launcher to Steam
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
 
-# setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
+# @function    setup_steam_integration
+# @description Add Minecraft Splitscreen launcher to Steam library.
+#              Handles Steam shutdown, shortcut creation via Python script,
+#              artwork download from SteamGridDB, and Steam restart.
 #
 # STEAM INTEGRATION BENEFITS:
 # - Launch directly from Steam's game library interface
@@ -35,6 +60,14 @@
 # - Creates backup before modifications
 # - Uses official Steam binary format handling
 # - Handles multiple Steam installation types (native, Flatpak)
+#
+# @global      ACTIVE_LAUNCHER_SCRIPT - (input) Path to the launcher script
+# @global      ACTIVE_DATA_DIR - (input) Launcher data directory
+# @global      ACTIVE_LAUNCHER - (input) Name of active launcher
+# @global      REPO_RAW_URL - (input, optional) Repository raw content URL
+# @global      REPO_BRANCH - (input, optional) Repository branch name
+# @stdin       User confirmation from /dev/tty (for curl | bash compatibility)
+# @return      0 on success or skip, 1 if ACTIVE_LAUNCHER_SCRIPT not set
 setup_steam_integration() {
     print_header "🎯 STEAM INTEGRATION SETUP"
 

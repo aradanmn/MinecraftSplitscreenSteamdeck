@@ -1,18 +1,51 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Main Workflow Module
-# =============================================================================
+# @file        main_workflow.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
-# This module contains the main orchestration logic for the complete splitscreen
-# installation process. It coordinates all the other modules and provides
-# comprehensive status reporting and user guidance.
+# @description
+#   Main orchestration module for the complete splitscreen installation process.
+#   Coordinates all other modules and provides comprehensive status reporting
+#   and user guidance throughout the installation.
 #
-# Functions provided:
-# - main: Primary function that orchestrates the complete installation process
+#   The module implements a 10-phase installation workflow:
+#   1. Workspace Setup → 2. Core Setup → 3. Version Detection →
+#   4. Account Setup → 5. Mod Compatibility → 6. User Selection →
+#   7. Instance Creation → 8. Launcher Optimization →
+#   9. System Integration → 10. Completion Report
 #
+# @dependencies
+#   - All other modules (sourced by install-minecraft-splitscreen.sh)
+#   - path_configuration.sh (for configure_launcher_paths, finalize_launcher_paths)
+#   - launcher_setup.sh (for download_prism_launcher, verify_prism_cli)
+#   - version_management.sh (for get_minecraft_version, get_fabric_version)
+#   - java_management.sh (for detect_java)
+#   - lwjgl_management.sh (for get_lwjgl_version)
+#   - mod_management.sh (for check_mod_compatibility, select_user_mods)
+#   - instance_creation.sh (for create_instances)
+#   - pollymc_setup.sh (for setup_pollymc)
+#   - launcher_script_generator.sh (for generate_splitscreen_launcher)
+#   - steam_integration.sh (for setup_steam_integration)
+#   - desktop_launcher.sh (for create_desktop_launcher)
+#   - utilities.sh (for print_* functions, merge_accounts_json)
+#
+# @exports
+#   Functions:
+#     - main                    : Primary orchestration function
+#     - generate_launcher_script: Generate minecraftSplitscreen.sh
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
 
-# main: Primary function that orchestrates the complete splitscreen installation process
+# @function    main
+# @description Primary function that orchestrates the complete splitscreen
+#              installation process. Coordinates all modules in sequence.
 #
 # INSTALLATION WORKFLOW:
 # 1. WORKSPACE SETUP: Create directories and initialize environment
@@ -37,6 +70,12 @@
 # - PrismLauncher: CLI automation for reliable instance creation with proper Fabric setup
 # - PollyMC: Offline-friendly gameplay launcher without forced authentication
 # - Smart cleanup: Removes PrismLauncher after successful PollyMC setup to save space
+#
+# @global      Multiple globals from path_configuration.sh (ACTIVE_*, CREATION_*)
+# @global      MC_VERSION - (output) Set by get_minecraft_version
+# @global      JAVA_PATH - (output) Set by detect_java
+# @global      MISSING_MODS - (input) Array of mods that couldn't be installed
+# @return      0 on successful completion
 main() {
     print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
     print_info "Advanced installation system with smart launcher detection"
@@ -371,16 +410,25 @@ main() {
 # LAUNCHER SCRIPT GENERATION FUNCTION
 # =============================================================================
 
-# generate_launcher_script: Generate the minecraftSplitscreen.sh launcher with correct paths
-#
-# This function uses the centralized path configuration from path_configuration.sh
-# to generate a customized launcher script with the correct paths baked in.
+# @function    generate_launcher_script
+# @description Generate the minecraftSplitscreen.sh launcher with correct paths.
+#              Uses centralized path configuration to generate a customized
+#              launcher script with correct paths baked in.
 #
 # The generated script will:
 # - Have version metadata embedded (version, commit, generation date)
 # - Use the correct launcher executable path
 # - Use the correct instances directory
 # - Work for both AppImage and Flatpak installations
+#
+# @global      ACTIVE_LAUNCHER - (input) Name of active launcher
+# @global      ACTIVE_LAUNCHER_TYPE - (input) Type (appimage/flatpak)
+# @global      ACTIVE_EXECUTABLE - (input) Path to launcher executable
+# @global      ACTIVE_DATA_DIR - (input) Launcher data directory
+# @global      ACTIVE_INSTANCES_DIR - (input) Instances directory
+# @global      ACTIVE_LAUNCHER_SCRIPT - (input) Output path for generated script
+# @global      GENERATED_LAUNCHER_SCRIPT - (output) Set to output path on success
+# @return      0 on success, 1 on failure
 generate_launcher_script() {
     print_header "🔧 GENERATING SPLITSCREEN LAUNCHER SCRIPT"
 

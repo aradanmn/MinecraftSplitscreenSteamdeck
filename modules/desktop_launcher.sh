@@ -1,18 +1,42 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Desktop Launcher Module
-# =============================================================================
+# @file        desktop_launcher.sh
+# @version     2.0.0
+# @date        2026-01-25
+# @author      Minecraft Splitscreen Steam Deck Project
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
-# This module handles the creation of native desktop launchers and application
-# menu integration for the Minecraft Splitscreen launcher. Provides seamless
-# integration with Linux desktop environments.
+# @description
+#   Creates native desktop launchers and application menu integration for the
+#   Minecraft Splitscreen launcher. Provides seamless integration with Linux
+#   desktop environments following freedesktop.org Desktop Entry Specification.
 #
-# Functions provided:
-# - create_desktop_launcher: Generate .desktop file for system integration
+#   Key features:
+#   - .desktop file generation for all Linux desktop environments
+#   - Application menu integration via ~/.local/share/applications/
+#   - Desktop shortcut creation
+#   - SteamGridDB icon download with fallback hierarchy
+#   - Desktop database update for immediate availability
 #
+# @dependencies
+#   - utilities.sh (for print_header, print_success, print_warning, print_error, print_info, print_progress)
+#   - wget (for icon download)
+#   - path_configuration.sh (for ACTIVE_LAUNCHER_SCRIPT, ACTIVE_INSTANCES_DIR, ACTIVE_LAUNCHER)
+#
+# @exports
+#   Functions:
+#     - create_desktop_launcher : Main function to create desktop integration
+#
+# @changelog
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
 
-# create_desktop_launcher: Generate .desktop file for system integration
+# @function    create_desktop_launcher
+# @description Generate .desktop file for system integration with Linux desktops.
+#              Creates both a desktop shortcut and application menu entry.
+#              Downloads custom icon from SteamGridDB with intelligent fallbacks.
 #
 # DESKTOP LAUNCHER BENEFITS:
 # - Native desktop environment integration (GNOME, KDE, XFCE, etc.)
@@ -31,6 +55,12 @@
 # DESKTOP FILE LOCATIONS:
 # - Desktop shortcut: ~/Desktop/MinecraftSplitscreen.desktop
 # - System integration: ~/.local/share/applications/MinecraftSplitscreen.desktop
+#
+# @global      ACTIVE_LAUNCHER_SCRIPT - (input) Path to the launcher script
+# @global      ACTIVE_INSTANCES_DIR - (input) Path to instances directory for icon fallback
+# @global      ACTIVE_LAUNCHER - (input) Name of active launcher for comments
+# @stdin       User confirmation from /dev/tty (for curl | bash compatibility)
+# @return      0 on success or skip, 1 if ACTIVE_LAUNCHER_SCRIPT not set
 create_desktop_launcher() {
     print_header "🖥️ DESKTOP LAUNCHER SETUP"
 
