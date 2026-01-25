@@ -3,7 +3,7 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.2.0
+# @version     2.2.1
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
@@ -37,6 +37,7 @@
 #     - PRISM_EXECUTABLE        : Path or command to run PrismLauncher
 #
 # @changelog
+#   2.2.1 (2026-01-25) - Fix: Only create directories after successful download
 #   2.2.0 (2026-01-25) - Use PREFER_FLATPAK from path_configuration instead of calling should_prefer_flatpak()
 #   2.1.0 (2026-01-24) - Added Flatpak preference for immutable OS, arch detection
 #   2.0.0 (2026-01-23) - Refactored to use centralized path configuration
@@ -126,8 +127,6 @@ download_prism_launcher() {
     # Priority 4: Download AppImage
     print_progress "No existing PrismLauncher found - downloading AppImage..."
 
-    mkdir -p "$PRISM_APPIMAGE_DATA_DIR"
-
     # Query GitHub API for latest release matching system architecture
     local prism_url
     local arch
@@ -142,7 +141,19 @@ download_prism_launcher() {
         exit 1
     fi
 
-    wget -O "$PRISM_APPIMAGE_PATH" "$prism_url"
+    # Download to temp location first, only create directory on success
+    local temp_appimage
+    temp_appimage=$(mktemp)
+
+    if ! wget -q -O "$temp_appimage" "$prism_url"; then
+        print_error "Failed to download PrismLauncher AppImage."
+        rm -f "$temp_appimage" 2>/dev/null
+        exit 1
+    fi
+
+    # Download successful - now create directory and move file
+    mkdir -p "$PRISM_APPIMAGE_DATA_DIR"
+    mv "$temp_appimage" "$PRISM_APPIMAGE_PATH"
     chmod +x "$PRISM_APPIMAGE_PATH"
 
     set_creation_launcher_prismlauncher "appimage" "$PRISM_APPIMAGE_PATH"

@@ -3,7 +3,7 @@
 # POLLYMC SETUP MODULE
 # =============================================================================
 # @file        pollymc_setup.sh
-# @version     1.3.0
+# @version     1.3.1
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
@@ -39,6 +39,7 @@
 #     - cleanup_prism_launcher : Remove PrismLauncher after successful setup
 #
 # @changelog
+#   1.3.1 (2026-01-25) - Fix: Only create directories after successful download/install
 #   1.3.0 (2026-01-25) - Added Flatpak installation for immutable OS using PREFER_FLATPAK
 #   1.2.0 (2026-01-24) - Added proper fallback handling, empty dir cleanup
 #   1.1.0 (2026-01-23) - Added instance migration with options.txt preservation
@@ -133,31 +134,34 @@ setup_pollymc() {
     # Priority 4: Download AppImage (fallback for traditional OS or if Flatpak install failed)
     if [[ -z "$pollymc_type" ]]; then
         print_progress "No existing PollyMC found - downloading AppImage..."
-        pollymc_type="appimage"
-        pollymc_data_dir="$POLLYMC_APPIMAGE_DATA_DIR"
-
-        mkdir -p "$pollymc_data_dir"
 
         local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
         print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
 
+        # Download to temp location first, only create directory on success
+        local temp_appimage
+        temp_appimage=$(mktemp)
+
         # Download with fallback handling
-        if ! wget -O "$POLLYMC_APPIMAGE_PATH" "$pollymc_url"; then
+        if ! wget -q -O "$temp_appimage" "$pollymc_url"; then
             print_warning "PollyMC download failed - continuing with PrismLauncher as primary launcher"
             print_info "   This is not a critical error - PrismLauncher works fine for splitscreen"
-            rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
-            rmdir "$pollymc_data_dir" 2>/dev/null
+            rm -f "$temp_appimage" 2>/dev/null
             return 0
         fi
 
         # Verify downloaded file is valid
-        if [[ ! -s "$POLLYMC_APPIMAGE_PATH" ]] || file "$POLLYMC_APPIMAGE_PATH" | grep -q "HTML\|text"; then
+        if [[ ! -s "$temp_appimage" ]] || file "$temp_appimage" | grep -q "HTML\|text"; then
             print_warning "PollyMC download produced invalid file - continuing with PrismLauncher"
-            rm -f "$POLLYMC_APPIMAGE_PATH" 2>/dev/null
-            rmdir "$pollymc_data_dir" 2>/dev/null
+            rm -f "$temp_appimage" 2>/dev/null
             return 0
         fi
 
+        # Download successful - now create directory and move file
+        pollymc_type="appimage"
+        pollymc_data_dir="$POLLYMC_APPIMAGE_DATA_DIR"
+        mkdir -p "$pollymc_data_dir"
+        mv "$temp_appimage" "$POLLYMC_APPIMAGE_PATH"
         chmod +x "$POLLYMC_APPIMAGE_PATH"
         pollymc_executable="$POLLYMC_APPIMAGE_PATH"
         print_success "PollyMC AppImage downloaded and configured successfully"

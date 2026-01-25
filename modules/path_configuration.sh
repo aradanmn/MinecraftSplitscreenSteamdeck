@@ -3,7 +3,7 @@
 # PATH CONFIGURATION MODULE - SINGLE SOURCE OF TRUTH
 # =============================================================================
 # @file        path_configuration.sh
-# @version     1.2.0
+# @version     1.2.1
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
@@ -70,6 +70,7 @@
 #     - print_path_configuration        : Debug print all paths
 #
 # @changelog
+#   1.2.1 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
 #   1.2.0 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
 #   1.1.1 (2026-01-25) - Prefer Flatpak over AppImage on immutable OS (Bazzite, SteamOS, etc.)
 #   1.1.0 (2026-01-24) - Added revert_to_prismlauncher function
@@ -368,13 +369,9 @@ configure_launcher_paths() {
         print_warning "No launcher detected - will configure after download"
     fi
 
-    # Ensure directories exist
-    if [[ -n "$CREATION_DATA_DIR" ]]; then
-        mkdir -p "$CREATION_INSTANCES_DIR"
-    fi
-    if [[ -n "$ACTIVE_DATA_DIR" ]]; then
-        mkdir -p "$ACTIVE_INSTANCES_DIR"
-    fi
+    # NOTE: Directories are NOT created here during detection phase.
+    # They are created later by launcher_setup.sh and pollymc_setup.sh
+    # only after successful installation/download to avoid empty directories.
 }
 
 # =============================================================================
