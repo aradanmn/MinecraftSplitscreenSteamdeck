@@ -3,7 +3,7 @@
 # POLLYMC SETUP MODULE
 # =============================================================================
 # @file        pollymc_setup.sh
-# @version     1.3.1
+# @version     1.3.2
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
@@ -39,6 +39,7 @@
 #     - cleanup_prism_launcher : Remove PrismLauncher after successful setup
 #
 # @changelog
+#   1.3.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level (for Bazzite/SteamOS)
 #   1.3.1 (2026-01-25) - Fix: Only create directories after successful download/install
 #   1.3.0 (2026-01-25) - Added Flatpak installation for immutable OS using PREFER_FLATPAK
 #   1.2.0 (2026-01-24) - Added proper fallback handling, empty dir cleanup
@@ -107,15 +108,27 @@ setup_pollymc() {
         if command -v flatpak &>/dev/null; then
             print_progress "Installing PollyMC via Flatpak..."
 
-            # Ensure Flathub repo is available
-            if ! flatpak remote-list | grep -q flathub; then
-                print_progress "Adding Flathub repository..."
-                flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+            local flatpak_installed=false
+
+            # Try system-level install first (works on Bazzite/SteamOS where Flathub is system-only)
+            if flatpak install -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
+                flatpak_installed=true
+                print_success "PollyMC Flatpak installed (system)"
+            else
+                # Fall back to user-level install
+                # First ensure Flathub repo is available for user
+                if ! flatpak remote-list --user 2>/dev/null | grep -q flathub; then
+                    print_progress "Adding Flathub repository for user..."
+                    flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+                fi
+
+                if flatpak install --user -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
+                    flatpak_installed=true
+                    print_success "PollyMC Flatpak installed (user)"
+                fi
             fi
 
-            # Install PollyMC Flatpak (user installation to avoid root)
-            if flatpak install --user -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
-                print_success "PollyMC Flatpak installed successfully"
+            if [[ "$flatpak_installed" == true ]]; then
                 pollymc_type="flatpak"
                 pollymc_data_dir="$POLLYMC_FLATPAK_DATA_DIR"
                 pollymc_executable="flatpak run $POLLYMC_FLATPAK_ID"

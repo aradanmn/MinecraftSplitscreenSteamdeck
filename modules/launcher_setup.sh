@@ -3,7 +3,7 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.2.1
+# @version     2.2.2
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
@@ -37,6 +37,7 @@
 #     - PRISM_EXECUTABLE        : Path or command to run PrismLauncher
 #
 # @changelog
+#   2.2.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level (for Bazzite/SteamOS)
 #   2.2.1 (2026-01-25) - Fix: Only create directories after successful download
 #   2.2.0 (2026-01-25) - Use PREFER_FLATPAK from path_configuration instead of calling should_prefer_flatpak()
 #   2.1.0 (2026-01-24) - Added Flatpak preference for immutable OS, arch detection
@@ -94,16 +95,28 @@ download_prism_launcher() {
         if command -v flatpak &>/dev/null; then
             print_progress "Installing PrismLauncher via Flatpak..."
 
-            # Ensure Flathub repo is available
-            if ! flatpak remote-list | grep -q flathub; then
-                print_progress "Adding Flathub repository..."
-                flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+            local flatpak_installed=false
+
+            # Try system-level install first (works on Bazzite/SteamOS where Flathub is system-only)
+            # This may prompt for authentication on some systems
+            if flatpak install -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
+                flatpak_installed=true
+                print_success "PrismLauncher Flatpak installed (system)"
+            else
+                # Fall back to user-level install
+                # First ensure Flathub repo is available for user
+                if ! flatpak remote-list --user 2>/dev/null | grep -q flathub; then
+                    print_progress "Adding Flathub repository for user..."
+                    flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+                fi
+
+                if flatpak install --user -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
+                    flatpak_installed=true
+                    print_success "PrismLauncher Flatpak installed (user)"
+                fi
             fi
 
-            # Install PrismLauncher Flatpak (user installation to avoid root)
-            if flatpak install --user -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
-                print_success "PrismLauncher Flatpak installed successfully"
-
+            if [[ "$flatpak_installed" == true ]]; then
                 mkdir -p "$PRISM_FLATPAK_DATA_DIR/instances"
                 set_creation_launcher_prismlauncher "flatpak" "flatpak run $PRISM_FLATPAK_ID"
                 print_info "   → Using Flatpak data directory: $PRISM_FLATPAK_DATA_DIR"
