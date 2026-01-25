@@ -3,8 +3,8 @@
 # PATH CONFIGURATION MODULE - SINGLE SOURCE OF TRUTH
 # =============================================================================
 # @file        path_configuration.sh
-# @version     1.1.0
-# @date        2026-01-24
+# @version     1.2.0
+# @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -20,7 +20,7 @@
 #
 # @dependencies
 #   - flatpak (optional, for Flatpak detection)
-#   - utilities.sh (for print_* functions)
+#   - utilities.sh (for print_* functions, should_prefer_flatpak)
 #
 # @exports
 #   Constants:
@@ -34,6 +34,8 @@
 #     - POLLYMC_APPIMAGE_PATH     : Path to PollyMC AppImage
 #
 #   Variables (set by configure_launcher_paths):
+#     - PREFER_FLATPAK            : Whether to prefer Flatpak over AppImage (true/false)
+#     - IMMUTABLE_OS_DETECTED     : Whether running on immutable OS (true/false)
 #     - ACTIVE_LAUNCHER           : Active launcher name ("prismlauncher"/"pollymc")
 #     - ACTIVE_LAUNCHER_TYPE      : Active launcher type ("appimage"/"flatpak")
 #     - ACTIVE_DATA_DIR           : Active launcher data directory
@@ -68,6 +70,8 @@
 #     - print_path_configuration        : Debug print all paths
 #
 # @changelog
+#   1.2.0 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
+#   1.1.1 (2026-01-25) - Prefer Flatpak over AppImage on immutable OS (Bazzite, SteamOS, etc.)
 #   1.1.0 (2026-01-24) - Added revert_to_prismlauncher function
 #   1.0.0 (2026-01-23) - Initial version with centralized path management
 # =============================================================================
@@ -92,6 +96,18 @@ readonly POLLYMC_FLATPAK_DATA_DIR="$HOME/.var/app/${POLLYMC_FLATPAK_ID}/data/Pol
 # AppImage executable locations
 readonly PRISM_APPIMAGE_PATH="$PRISM_APPIMAGE_DATA_DIR/PrismLauncher.AppImage"
 readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-x86_64.AppImage"
+
+# =============================================================================
+# SYSTEM DETECTION VARIABLES
+# =============================================================================
+# These are set once by configure_launcher_paths() and used by all modules
+
+# Whether to prefer Flatpak installations over AppImage
+# Set based on OS type detection (immutable OS = prefer Flatpak)
+PREFER_FLATPAK=false
+
+# Whether an immutable OS was detected
+IMMUTABLE_OS_DETECTED=false
 
 # =============================================================================
 # ACTIVE CONFIGURATION VARIABLES
@@ -151,7 +167,10 @@ is_appimage_available() {
 # @function    detect_prismlauncher
 # @description Detects if PrismLauncher is installed (AppImage or Flatpak).
 #              Sets PRISM_TYPE, PRISM_DATA_DIR, and PRISM_EXECUTABLE variables.
+#              Uses PREFER_FLATPAK (set by configure_launcher_paths) to determine
+#              check order: Flatpak first on immutable OS, AppImage first otherwise.
 # @param       None
+# @global      PREFER_FLATPAK   - (input) Whether to prefer Flatpak
 # @global      PRISM_DETECTED   - (output) Set to true/false
 # @global      PRISM_TYPE       - (output) "appimage" or "flatpak"
 # @global      PRISM_DATA_DIR   - (output) Path to data directory
@@ -164,22 +183,41 @@ detect_prismlauncher() {
     PRISM_DATA_DIR=""
     PRISM_EXECUTABLE=""
 
-    # Check AppImage first (preferred for CLI capabilities)
-    if is_appimage_available "$PRISM_APPIMAGE_PATH"; then
-        PRISM_TYPE="appimage"
-        PRISM_DATA_DIR="$PRISM_APPIMAGE_DATA_DIR"
-        PRISM_EXECUTABLE="$PRISM_APPIMAGE_PATH"
-        print_info "detected app.image prism launcher"
-        return 0
-    fi
+    # Check order depends on PREFER_FLATPAK (set during system detection)
+    if [[ "$PREFER_FLATPAK" == true ]]; then
+        # Immutable OS: Check Flatpak first, then AppImage
+        if is_flatpak_installed "$PRISM_FLATPAK_ID"; then
+            PRISM_TYPE="flatpak"
+            PRISM_DATA_DIR="$PRISM_FLATPAK_DATA_DIR"
+            PRISM_EXECUTABLE="flatpak run $PRISM_FLATPAK_ID"
+            print_info "Detected Flatpak PrismLauncher (preferred)"
+            return 0
+        fi
 
-    # Check Flatpak
-    if is_flatpak_installed "$PRISM_FLATPAK_ID"; then
-        PRISM_TYPE="flatpak"
-        PRISM_DATA_DIR="$PRISM_FLATPAK_DATA_DIR"
-        PRISM_EXECUTABLE="flatpak run $PRISM_FLATPAK_ID"
-        print_info "detected flatpak prism launcher"
-        return 0
+        if is_appimage_available "$PRISM_APPIMAGE_PATH"; then
+            PRISM_TYPE="appimage"
+            PRISM_DATA_DIR="$PRISM_APPIMAGE_DATA_DIR"
+            PRISM_EXECUTABLE="$PRISM_APPIMAGE_PATH"
+            print_info "Detected AppImage PrismLauncher (fallback)"
+            return 0
+        fi
+    else
+        # Traditional OS: Check AppImage first, then Flatpak
+        if is_appimage_available "$PRISM_APPIMAGE_PATH"; then
+            PRISM_TYPE="appimage"
+            PRISM_DATA_DIR="$PRISM_APPIMAGE_DATA_DIR"
+            PRISM_EXECUTABLE="$PRISM_APPIMAGE_PATH"
+            print_info "Detected AppImage PrismLauncher (preferred)"
+            return 0
+        fi
+
+        if is_flatpak_installed "$PRISM_FLATPAK_ID"; then
+            PRISM_TYPE="flatpak"
+            PRISM_DATA_DIR="$PRISM_FLATPAK_DATA_DIR"
+            PRISM_EXECUTABLE="flatpak run $PRISM_FLATPAK_ID"
+            print_info "Detected Flatpak PrismLauncher (fallback)"
+            return 0
+        fi
     fi
 
     return 1
@@ -189,7 +227,10 @@ detect_prismlauncher() {
 # @function    detect_pollymc
 # @description Detects if PollyMC is installed (AppImage or Flatpak).
 #              Sets POLLYMC_TYPE, POLLYMC_DATA_DIR, and POLLYMC_EXECUTABLE.
+#              Uses PREFER_FLATPAK (set by configure_launcher_paths) to determine
+#              check order: Flatpak first on immutable OS, AppImage first otherwise.
 # @param       None
+# @global      PREFER_FLATPAK     - (input) Whether to prefer Flatpak
 # @global      POLLYMC_DETECTED   - (output) Set to true/false
 # @global      POLLYMC_TYPE       - (output) "appimage" or "flatpak"
 # @global      POLLYMC_DATA_DIR   - (output) Path to data directory
@@ -202,22 +243,41 @@ detect_pollymc() {
     POLLYMC_DATA_DIR=""
     POLLYMC_EXECUTABLE=""
 
-    # Check AppImage first (preferred)
-    if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
-        POLLYMC_TYPE="appimage"
-        POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
-        POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
-        print_info "detected appimage pollymc launcher"
-        return 0
-    fi
+    # Check order depends on PREFER_FLATPAK (set during system detection)
+    if [[ "$PREFER_FLATPAK" == true ]]; then
+        # Immutable OS: Check Flatpak first, then AppImage
+        if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
+            POLLYMC_TYPE="flatpak"
+            POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
+            POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
+            print_info "Detected Flatpak PollyMC (preferred)"
+            return 0
+        fi
 
-    # Check Flatpak
-    if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
-        POLLYMC_TYPE="flatpak"
-        POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
-        POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
-        print_info "detected flatpak pollymc launcher"
-        return 0
+        if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
+            POLLYMC_TYPE="appimage"
+            POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
+            POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
+            print_info "Detected AppImage PollyMC (fallback)"
+            return 0
+        fi
+    else
+        # Traditional OS: Check AppImage first, then Flatpak
+        if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
+            POLLYMC_TYPE="appimage"
+            POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
+            POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
+            print_info "Detected AppImage PollyMC (preferred)"
+            return 0
+        fi
+
+        if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
+            POLLYMC_TYPE="flatpak"
+            POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
+            POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
+            print_info "Detected Flatpak PollyMC (fallback)"
+            return 0
+        fi
     fi
 
     return 1
@@ -244,6 +304,28 @@ detect_pollymc() {
 # -----------------------------------------------------------------------------
 configure_launcher_paths() {
     print_header "DETECTING LAUNCHER CONFIGURATION"
+
+    # =========================================================================
+    # SYSTEM TYPE DETECTION (MUST BE FIRST)
+    # =========================================================================
+    # Detect if we're on an immutable OS and set PREFER_FLATPAK accordingly.
+    # This decision is made ONCE here and used by all subsequent modules.
+
+    if is_immutable_os; then
+        IMMUTABLE_OS_DETECTED=true
+        PREFER_FLATPAK=true
+        print_info "Detected immutable OS: ${IMMUTABLE_OS_NAME:-unknown}"
+        print_info "Flatpak installations will be preferred over AppImage"
+    else
+        IMMUTABLE_OS_DETECTED=false
+        PREFER_FLATPAK=false
+        print_info "Traditional Linux system detected"
+        print_info "AppImage installations will be preferred"
+    fi
+
+    # =========================================================================
+    # LAUNCHER DETECTION
+    # =========================================================================
 
     # Determine creation launcher (PrismLauncher preferred for CLI instance creation)
     if detect_prismlauncher; then

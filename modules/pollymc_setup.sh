@@ -3,8 +3,8 @@
 # POLLYMC SETUP MODULE
 # =============================================================================
 # @file        pollymc_setup.sh
-# @version     1.2.0
-# @date        2026-01-24
+# @version     1.3.0
+# @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,7 +30,7 @@
 #   - jq (optional, for account merging)
 #   - file (for download validation)
 #   - utilities.sh (for print_* functions, merge_accounts_json)
-#   - path_configuration.sh (for path constants and setters)
+#   - path_configuration.sh (for path constants, setters, and PREFER_FLATPAK)
 #
 # @exports
 #   Functions:
@@ -39,6 +39,7 @@
 #     - cleanup_prism_launcher : Remove PrismLauncher after successful setup
 #
 # @changelog
+#   1.3.0 (2026-01-25) - Added Flatpak installation for immutable OS using PREFER_FLATPAK
 #   1.2.0 (2026-01-24) - Added proper fallback handling, empty dir cleanup
 #   1.1.0 (2026-01-23) - Added instance migration with options.txt preservation
 #   1.0.0 (2026-01-22) - Initial version
@@ -61,6 +62,7 @@
 #              Falls back to PrismLauncher if any step fails.
 #
 # @param       None
+# @global      PREFER_FLATPAK          - (input) Whether to prefer Flatpak (from path_configuration)
 # @global      POLLYMC_FLATPAK_ID      - (input) PollyMC Flatpak ID
 # @global      POLLYMC_APPIMAGE_PATH   - (input) Expected AppImage location
 # @global      CREATION_INSTANCES_DIR  - (input) Source instances directory
@@ -96,8 +98,40 @@ setup_pollymc() {
         pollymc_executable="$POLLYMC_APPIMAGE_PATH"
         print_info "   -> Using existing AppImage: $POLLYMC_APPIMAGE_PATH"
 
-    # Priority 3: Download AppImage (fallback)
-    else
+    # Priority 3 (immutable OS only): Install Flatpak if preferred
+    # PREFER_FLATPAK is set by configure_launcher_paths() in path_configuration.sh
+    elif [[ "$PREFER_FLATPAK" == true ]]; then
+        print_info "Immutable OS detected - preferring Flatpak installation for PollyMC"
+
+        if command -v flatpak &>/dev/null; then
+            print_progress "Installing PollyMC via Flatpak..."
+
+            # Ensure Flathub repo is available
+            if ! flatpak remote-list | grep -q flathub; then
+                print_progress "Adding Flathub repository..."
+                flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+            fi
+
+            # Install PollyMC Flatpak (user installation to avoid root)
+            if flatpak install --user -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
+                print_success "PollyMC Flatpak installed successfully"
+                pollymc_type="flatpak"
+                pollymc_data_dir="$POLLYMC_FLATPAK_DATA_DIR"
+                pollymc_executable="flatpak run $POLLYMC_FLATPAK_ID"
+
+                mkdir -p "$pollymc_data_dir/instances"
+                print_info "   -> Using Flatpak data directory: $pollymc_data_dir"
+            else
+                print_warning "PollyMC Flatpak installation failed - falling back to AppImage download"
+                # Fall through to AppImage download below
+            fi
+        else
+            print_warning "Flatpak not available - falling back to AppImage download"
+        fi
+    fi
+
+    # Priority 4: Download AppImage (fallback for traditional OS or if Flatpak install failed)
+    if [[ -z "$pollymc_type" ]]; then
         print_progress "No existing PollyMC found - downloading AppImage..."
         pollymc_type="appimage"
         pollymc_data_dir="$POLLYMC_APPIMAGE_DATA_DIR"

@@ -3,8 +3,8 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.1.0
-# @date        2026-01-24
+# @version     2.2.0
+# @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -23,8 +23,8 @@
 #   - jq (for JSON parsing)
 #   - wget (for downloading AppImage)
 #   - flatpak (optional, for Flatpak installation)
-#   - utilities.sh (for print_* functions, should_prefer_flatpak)
-#   - path_configuration.sh (for path constants and setters)
+#   - utilities.sh (for print_* functions)
+#   - path_configuration.sh (for path constants, setters, and PREFER_FLATPAK)
 #
 # @exports
 #   Functions:
@@ -37,6 +37,7 @@
 #     - PRISM_EXECUTABLE        : Path or command to run PrismLauncher
 #
 # @changelog
+#   2.2.0 (2026-01-25) - Use PREFER_FLATPAK from path_configuration instead of calling should_prefer_flatpak()
 #   2.1.0 (2026-01-24) - Added Flatpak preference for immutable OS, arch detection
 #   2.0.0 (2026-01-23) - Refactored to use centralized path configuration
 #   1.0.0 (2026-01-22) - Initial version
@@ -63,6 +64,7 @@ PRISM_EXECUTABLE=""
 #              3) Download AppImage from GitHub
 #
 # @param       None
+# @global      PREFER_FLATPAK         - (input) Whether to prefer Flatpak (from path_configuration)
 # @global      PRISM_FLATPAK_ID       - (input) Flatpak application ID
 # @global      PRISM_FLATPAK_DATA_DIR - (input) Flatpak data directory
 # @global      PRISM_APPIMAGE_PATH    - (input) Expected AppImage location
@@ -83,9 +85,10 @@ download_prism_launcher() {
         return 0
     fi
 
-    # Priority 2 (immutable OS only): Install Flatpak if on immutable system
-    if should_prefer_flatpak; then
-        print_info "Detected immutable OS ($IMMUTABLE_OS_NAME) - preferring Flatpak installation"
+    # Priority 2 (immutable OS only): Install Flatpak if preferred
+    # PREFER_FLATPAK is set by configure_launcher_paths() in path_configuration.sh
+    if [[ "$PREFER_FLATPAK" == true ]]; then
+        print_info "Immutable OS detected - preferring Flatpak installation"
 
         if command -v flatpak &>/dev/null; then
             print_progress "Installing PrismLauncher via Flatpak..."
@@ -120,7 +123,7 @@ download_prism_launcher() {
         return 0
     fi
 
-    # Priority 3: Download AppImage
+    # Priority 4: Download AppImage
     print_progress "No existing PrismLauncher found - downloading AppImage..."
 
     mkdir -p "$PRISM_APPIMAGE_DATA_DIR"
