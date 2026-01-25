@@ -25,6 +25,20 @@
 # No additional setup, Java installation, token files, or module downloads required - just run this script.
 # Modules are downloaded temporarily and automatically cleaned up when the script completes.
 #
+# Usage:
+#   # Standard (uses default repository: aradanmn/MinecraftSplitscreenSteamdeck, branch: main)
+#   curl -fsSL https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh | bash
+#
+#   # From a fork or different branch (auto-detects from URL via environment variable)
+#   URL="https://raw.githubusercontent.com/OWNER/REPO/BRANCH/install-minecraft-splitscreen.sh"
+#   INSTALLER_SOURCE_URL="$URL" curl -fsSL "$URL" | bash
+#
+#   # From a fork or different branch (via argument)
+#   curl -fsSL URL | bash -s -- --source-url URL
+#
+#   # Local execution (auto-detects from git remote and current branch)
+#   ./install-minecraft-splitscreen.sh
+#
 # =============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -64,11 +78,92 @@ fi
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
-# Repository information - these are the bootstrap values used for downloading
-# Once version_info.sh is loaded, REPO_MODULES_URL will be available
-readonly BOOTSTRAP_REPO_OWNER="aradanmn"
-readonly BOOTSTRAP_REPO_NAME="MinecraftSplitscreenSteamdeck"
-readonly BOOTSTRAP_REPO_BRANCH="main"
+# =============================================================================
+# REPOSITORY CONFIGURATION
+# =============================================================================
+# Default values - used when running locally or when URL parsing fails
+DEFAULT_REPO_OWNER="aradanmn"
+DEFAULT_REPO_NAME="MinecraftSplitscreenSteamdeck"
+DEFAULT_REPO_BRANCH="main"
+
+# Initialize with defaults
+BOOTSTRAP_REPO_OWNER="$DEFAULT_REPO_OWNER"
+BOOTSTRAP_REPO_NAME="$DEFAULT_REPO_NAME"
+BOOTSTRAP_REPO_BRANCH="$DEFAULT_REPO_BRANCH"
+
+# @function parse_github_raw_url
+# @description Extracts owner, repo, and branch from a GitHub raw URL
+# @param $1 - GitHub raw URL (e.g., https://raw.githubusercontent.com/owner/repo/branch/path)
+# @return Sets BOOTSTRAP_REPO_OWNER, BOOTSTRAP_REPO_NAME, BOOTSTRAP_REPO_BRANCH
+parse_github_raw_url() {
+    local url="$1"
+
+    # Pattern: https://raw.githubusercontent.com/OWNER/REPO/BRANCH/...
+    if [[ "$url" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/ ]]; then
+        BOOTSTRAP_REPO_OWNER="${BASH_REMATCH[1]}"
+        BOOTSTRAP_REPO_NAME="${BASH_REMATCH[2]}"
+        BOOTSTRAP_REPO_BRANCH="${BASH_REMATCH[3]}"
+        return 0
+    fi
+
+    return 1
+}
+
+# @function detect_source_url
+# @description Attempts to detect the URL used to download this script
+# @return Sets repository variables if URL can be determined
+detect_source_url() {
+    # Method 1: Check for --source-url argument
+    # Usage: curl URL | bash -s -- --source-url URL
+    local i=1
+    for arg in "$@"; do
+        if [[ "$arg" == "--source-url" ]]; then
+            local next_idx=$((i + 1))
+            local url="${!next_idx:-}"
+            if [[ -n "$url" ]] && parse_github_raw_url "$url"; then
+                echo "📍 Source URL provided via argument"
+                return 0
+            fi
+        fi
+        ((i++))
+    done
+
+    # Method 2: Check INSTALLER_SOURCE_URL environment variable
+    # Usage: INSTALLER_SOURCE_URL=URL curl URL | bash
+    if [[ -n "${INSTALLER_SOURCE_URL:-}" ]]; then
+        if parse_github_raw_url "$INSTALLER_SOURCE_URL"; then
+            echo "📍 Source URL provided via INSTALLER_SOURCE_URL environment variable"
+            return 0
+        fi
+    fi
+
+    # Method 3: If running from a git repo, detect from git remote
+    if [[ -d "$SCRIPT_DIR/.git" ]] || git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null 2>&1; then
+        local remote_url
+        remote_url=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)
+
+        if [[ -n "$remote_url" ]]; then
+            # Parse git@github.com:owner/repo.git or https://github.com/owner/repo.git
+            if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+                BOOTSTRAP_REPO_OWNER="${BASH_REMATCH[1]}"
+                BOOTSTRAP_REPO_NAME="${BASH_REMATCH[2]}"
+                # Get current branch
+                BOOTSTRAP_REPO_BRANCH=$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || echo "$DEFAULT_REPO_BRANCH")
+                echo "📍 Detected repository from local git: $BOOTSTRAP_REPO_OWNER/$BOOTSTRAP_REPO_NAME ($BOOTSTRAP_REPO_BRANCH)"
+                return 0
+            fi
+        fi
+    fi
+
+    # Fall back to defaults
+    echo "📍 Using default repository: $DEFAULT_REPO_OWNER/$DEFAULT_REPO_NAME ($DEFAULT_REPO_BRANCH)"
+    return 0
+}
+
+# Detect source URL and set repository variables
+detect_source_url "$@"
+
+# Build the modules URL from detected/default values
 readonly BOOTSTRAP_REPO_MODULES_URL="https://raw.githubusercontent.com/${BOOTSTRAP_REPO_OWNER}/${BOOTSTRAP_REPO_NAME}/${BOOTSTRAP_REPO_BRANCH}/modules"
 
 # List of required module files (order matters for dependencies)
