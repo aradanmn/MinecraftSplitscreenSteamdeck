@@ -58,8 +58,21 @@ cleanup() {
     fi
 }
 
-# Set up trap to cleanup on script exit (normal or error)
-trap cleanup EXIT INT TERM
+# Handler for interrupt signals (Ctrl+C, TERM)
+interrupt_handler() {
+    echo ""
+    echo "❌ Installation cancelled by user"
+    cleanup
+    # Exit with 128 + signal number (standard convention)
+    # SIGINT=2, SIGTERM=15
+    exit 130
+}
+
+# Set up traps:
+# - EXIT: cleanup on normal exit or error
+# - INT/TERM: cleanup AND exit immediately (for Ctrl+C)
+trap cleanup EXIT
+trap interrupt_handler INT TERM
 
 # =============================================================================
 # MODULE DOWNLOADING AND LOADING
