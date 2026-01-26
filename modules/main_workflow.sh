@@ -77,9 +77,13 @@
 # @global      MISSING_MODS - (input) Array of mods that couldn't be installed
 # @return      0 on successful completion
 main() {
+    # Initialize logging FIRST (before any print_* calls)
+    init_logging "install"
+
     print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
     print_info "Advanced installation system with smart launcher detection"
     print_info "Strategy: Detect available launchers → Create instances → Generate launcher script"
+    print_info "Log file: $(get_log_file)"
     echo ""
 
     # =============================================================================
@@ -400,6 +404,8 @@ main() {
     echo "2. Launch using any of the methods above"
     echo "3. The system will automatically detect controller count and launch appropriate instances"
     echo "4. Each player gets their own screen and can play independently"
+    echo ""
+    echo "📋 Log file: $(get_log_file)"
     echo ""
     echo "For troubleshooting or updates, visit:"
     echo "${REPO_URL:-https://github.com/aradanmn/MinecraftSplitscreenSteamdeck}"

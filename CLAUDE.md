@@ -314,33 +314,20 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 ### Issue #1: Centralized User Input Handling for curl | bash Mode (HIGH PRIORITY)
 **Problem:** When running via `curl | bash`, stdin is consumed by the script download, breaking interactive prompts. The PollyMC Flatpak detection on SteamOS prompts for user choice but can't receive input.
 
-**Current State:** Some input handling exists scattered across modules, but it's inconsistent.
+**Status:** Functions added, modules need refactoring
 
-**Solution:** Create a centralized `prompt_user()` function in `utilities.sh` that:
-- Detects if stdin is available (TTY check)
-- If not available, reopens `/dev/tty` for user input
-- Provides consistent timeout and default value handling
-- All modules should use this single function for any user prompts
+**Functions Added to utilities.sh:**
+- `prompt_user(prompt, default, timeout)` - Works with curl | bash by reopening /dev/tty
+- `prompt_yes_no(question, default)` - Simplified yes/no prompts
 
-**Files to modify:** `modules/utilities.sh`, then refactor all modules that prompt users
+**Remaining Work:** Refactor all modules to use these functions instead of raw `read` commands:
+- `modules/pollymc_setup.sh` - PollyMC Flatpak detection prompt
+- `modules/version_management.sh` - Minecraft version selection
+- `modules/mod_management.sh` - Mod selection prompts
+- `modules/steam_integration.sh` - "Add to Steam?" prompt
+- `modules/desktop_launcher.sh` - "Create desktop launcher?" prompt
 
-**Pattern to implement:**
-```bash
-prompt_user() {
-    local prompt="$1"
-    local default="$2"
-    local timeout="${3:-30}"
-    local response
-
-    # Reopen tty if stdin is not a terminal (curl | bash case)
-    if [[ ! -t 0 ]]; then
-        exec < /dev/tty || { echo "$default"; return; }
-    fi
-
-    read -t "$timeout" -p "$prompt" response || response="$default"
-    echo "${response:-$default}"
-}
-```
+**Files to modify:** All modules that currently use `read` for user input
 
 ---
 
@@ -358,39 +345,25 @@ prompt_user() {
 
 ---
 
-### Issue #3: Logging System (MEDIUM PRIORITY)
-**Problem:** Debugging issues across multiple machines (Bazzite, SteamOS, etc.) is difficult without logs. User must set up dev environment on each machine.
+### Issue #3: Logging System ✅ IMPLEMENTED
+**Problem:** Debugging issues across multiple machines (Bazzite, SteamOS, etc.) is difficult without logs.
 
-**Current State:** No persistent logging - output only goes to terminal.
-
-**Solution:** Implement logging in both installer and launcher:
+**Solution Implemented:**
 - **Log location:** `~/.local/share/MinecraftSplitscreen/logs/`
 - **Installer log:** `install-YYYY-MM-DD-HHMMSS.log`
 - **Launcher log:** `launcher-YYYY-MM-DD-HHMMSS.log`
-- Keep last N logs (e.g., 10) to prevent disk fill
-- Log should include: timestamp, system info, all operations, errors, and final status
-- Add `log()` function to utilities.sh that both prints and logs
+- Auto-rotation: keeps last 10 logs per type
+- System info logged at startup (OS, kernel, environment, tools)
 
-**Files to modify:**
-- `modules/utilities.sh` - add logging functions
-- `modules/main_workflow.sh` - initialize logging
-- `modules/launcher_script_generator.sh` - add logging to generated script
+**Key Design Decision:** Print functions auto-log (no separate log calls needed)
+- `print_success()`, `print_error()`, etc. all automatically write to log
+- `log()` is for debug-only info that shouldn't clutter terminal
+- Cleaner code with no duplicate logging statements
 
-**Pattern to implement:**
-```bash
-LOG_FILE=""
-init_logging() {
-    local log_dir="$HOME/.local/share/MinecraftSplitscreen/logs"
-    mkdir -p "$log_dir"
-    LOG_FILE="$log_dir/install-$(date +%Y-%m-%d-%H%M%S).log"
-    # Rotate old logs, keep last 10
-}
-log() {
-    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
-    echo "$message" >> "$LOG_FILE"
-    echo "$*"  # Also print to terminal
-}
-```
+**Files modified:**
+- `modules/utilities.sh` - logging infrastructure, print_* auto-log
+- `modules/main_workflow.sh` - init_logging() call, log file display
+- `modules/launcher_script_generator.sh` - log_info/log_error/log_warning in generated script
 
 ---
 
@@ -417,11 +390,11 @@ log() {
 
 ---
 
-### Implementation Order (Recommended)
-1. **Issue #3 (Logging)** - Start here. Makes debugging all other issues easier.
-2. **Issue #1 (User Input)** - Critical for curl | bash usability
-3. **Issue #2 (Controller Detection)** - Improves Steam Deck UX
-4. **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+### Implementation Order
+1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
+2. 🔄 **Issue #1 (User Input)** - Functions added, need to refactor modules to use them
+3. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
+4. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
 
 ## Useful Debugging
 

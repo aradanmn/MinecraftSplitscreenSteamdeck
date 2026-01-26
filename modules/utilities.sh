@@ -3,16 +3,19 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     1.1.0
-# @date        2026-01-24
+# @version     1.2.0
+# @date        2026-01-26
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
 # @description
 #   Core utility functions for the Minecraft Splitscreen installer.
-#   Provides consistent output formatting, system detection, and account
-#   management functionality used by all other modules.
+#   Provides logging, output formatting, user input handling, system detection,
+#   and account management functionality used by all other modules.
+#
+#   LOGGING: All print_* functions automatically log to file. The log() function
+#   is for debug info that shouldn't clutter the terminal.
 #
 # @dependencies
 #   - jq (optional, for JSON merging - falls back to overwrite if missing)
@@ -21,24 +24,174 @@
 #
 # @exports
 #   Functions:
+#     - init_logging            : Initialize logging system (call first in main)
+#     - log                     : Write debug info to log only (not terminal)
+#     - get_log_file            : Get current log file path
+#     - prompt_user             : Get user input (works with curl | bash)
+#     - prompt_yes_no           : Simplified yes/no prompts
 #     - get_prism_executable    : Locate PrismLauncher executable
 #     - is_immutable_os         : Detect immutable Linux distributions
 #     - should_prefer_flatpak   : Determine preferred package format
-#     - print_header            : Display section headers
-#     - print_success           : Display success messages
-#     - print_warning           : Display warning messages
-#     - print_error             : Display error messages
-#     - print_info              : Display info messages
-#     - print_progress          : Display progress messages
+#     - print_header            : Display section headers (auto-logs)
+#     - print_success           : Display success messages (auto-logs)
+#     - print_warning           : Display warning messages (auto-logs)
+#     - print_error             : Display error messages (auto-logs)
+#     - print_info              : Display info messages (auto-logs)
+#     - print_progress          : Display progress messages (auto-logs)
 #     - merge_accounts_json     : Merge Minecraft account configurations
 #
 #   Variables:
+#     - LOG_FILE                : Current log file path (set by init_logging)
+#     - LOG_DIR                 : Log directory path
 #     - IMMUTABLE_OS_NAME       : Set by is_immutable_os() with detected OS name
 #
 # @changelog
+#   1.2.0 (2026-01-26) - Added logging system, prompt_user for curl|bash support
 #   1.1.0 (2026-01-24) - Added immutable OS detection and Flatpak preference
 #   1.0.0 (2026-01-23) - Initial version with print functions and account merging
 # =============================================================================
+
+# =============================================================================
+# LOGGING SYSTEM
+# =============================================================================
+# Logging is automatic - all print_* functions log to file.
+# Use log() directly only for debug info that shouldn't show in terminal.
+
+LOG_FILE=""
+LOG_DIR="$HOME/.local/share/MinecraftSplitscreen/logs"
+LOG_MAX_FILES=10
+
+# -----------------------------------------------------------------------------
+# @function    init_logging
+# @description Initialize logging. Creates log directory, rotates old logs,
+#              and logs system info. Call at the start of main().
+# @param       $1 - Log type: "install" or "launcher" (default: "install")
+# -----------------------------------------------------------------------------
+init_logging() {
+    local log_type="${1:-install}"
+    local timestamp
+    timestamp=$(date +%Y-%m-%d-%H%M%S)
+
+    mkdir -p "$LOG_DIR" 2>/dev/null || {
+        LOG_DIR="/tmp/MinecraftSplitscreen/logs"
+        mkdir -p "$LOG_DIR"
+    }
+
+    LOG_FILE="$LOG_DIR/${log_type}-${timestamp}.log"
+
+    # Rotate old logs (keep last N)
+    local count=0
+    while IFS= read -r file; do
+        count=$((count + 1))
+        [[ $count -gt $LOG_MAX_FILES ]] && rm -f "$file" 2>/dev/null
+    done < <(ls -t "$LOG_DIR"/${log_type}-*.log 2>/dev/null)
+
+    # Write log header
+    {
+        echo "================================================================================"
+        echo "Minecraft Splitscreen ${log_type^} Log"
+        echo "Started: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo "================================================================================"
+        echo ""
+        echo "=== SYSTEM INFO ==="
+        echo "User: $(whoami)"
+        echo "Hostname: $(hostname 2>/dev/null || echo 'unknown')"
+        [[ -f /etc/os-release ]] && grep -E '^(PRETTY_NAME|ID)=' /etc/os-release 2>/dev/null
+        echo "Kernel: $(uname -r 2>/dev/null)"
+        echo "Arch: $(uname -m 2>/dev/null)"
+        echo ""
+        echo "=== ENVIRONMENT ==="
+        echo "DISPLAY: ${DISPLAY:-not set}"
+        echo "XDG_SESSION_TYPE: ${XDG_SESSION_TYPE:-not set}"
+        echo "STEAM_DECK: ${STEAM_DECK:-not set}"
+        echo ""
+        echo "================================================================================"
+        echo ""
+    } >> "$LOG_FILE" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# @function    log
+# @description Write debug info to log file ONLY (not terminal). Use for
+#              verbose details that help debugging but clutter the screen.
+# -----------------------------------------------------------------------------
+log() {
+    [[ -n "$LOG_FILE" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# @function    get_log_file
+# @description Returns the current log file path.
+# -----------------------------------------------------------------------------
+get_log_file() {
+    echo "$LOG_FILE"
+}
+
+# =============================================================================
+# USER INPUT HANDLING
+# =============================================================================
+# These functions work both in normal execution AND curl | bash mode.
+
+# -----------------------------------------------------------------------------
+# @function    prompt_user
+# @description Get user input. Works with curl | bash by reopening /dev/tty.
+# @param       $1 - Prompt text
+# @param       $2 - Default value
+# @param       $3 - Timeout in seconds (default: 30, 0 for none)
+# @stdout      User's response (or default)
+# -----------------------------------------------------------------------------
+prompt_user() {
+    local prompt="$1"
+    local default="${2:-}"
+    local timeout="${3:-30}"
+    local response saved_stdin
+
+    log "PROMPT: $prompt (default: $default, timeout: ${timeout}s)"
+
+    # Reopen /dev/tty if stdin isn't a terminal (curl | bash case)
+    if [[ ! -t 0 ]]; then
+        if [[ -e /dev/tty ]]; then
+            exec {saved_stdin}<&0
+            exec 0</dev/tty
+            log "Reopened /dev/tty for input"
+        else
+            log "No /dev/tty available, using default"
+            echo "$default"
+            return 1
+        fi
+    fi
+
+    if [[ "$timeout" -gt 0 ]]; then
+        read -r -t "$timeout" -p "$prompt" response || { echo ""; response="$default"; }
+    else
+        read -r -p "$prompt" response
+    fi
+
+    # Restore stdin if changed
+    [[ -n "${saved_stdin:-}" ]] && { exec 0<&"$saved_stdin"; exec {saved_stdin}<&-; }
+
+    response="${response:-$default}"
+    log "USER INPUT: $response"
+    echo "$response"
+}
+
+# -----------------------------------------------------------------------------
+# @function    prompt_yes_no
+# @description Simple yes/no prompt.
+# @param       $1 - Question
+# @param       $2 - Default: "y" or "n" (default: "n")
+# @return      0 if yes, 1 if no
+# -----------------------------------------------------------------------------
+prompt_yes_no() {
+    local question="$1"
+    local default="${2:-n}"
+    local prompt_text response
+
+    [[ "${default,,}" == "y" ]] && prompt_text="$question [Y/n]: " || prompt_text="$question [y/N]: "
+    response=$(prompt_user "$prompt_text" "$default" 30)
+
+    [[ "${response,,}" =~ ^y(es)?$ ]] && return 0 || return 1
+}
 
 # =============================================================================
 # PRISMLAUNCHER EXECUTABLE DETECTION
@@ -196,61 +349,67 @@ print_header() {
     echo "=========================================="
     echo "$1"
     echo "=========================================="
+    log "========== $1 =========="
 }
 
 # -----------------------------------------------------------------------------
 # @function    print_success
-# @description Displays a success message with green checkmark emoji.
+# @description Displays a success message with green checkmark emoji. Auto-logs.
 # @param       $1 - Success message text
 # @stdout      Formatted success message
 # @return      0 always
 # -----------------------------------------------------------------------------
 print_success() {
     echo "✅ $1"
+    log "SUCCESS: $1"
 }
 
 # -----------------------------------------------------------------------------
 # @function    print_warning
-# @description Displays a warning message with yellow warning emoji.
+# @description Displays a warning message with yellow warning emoji. Auto-logs.
 # @param       $1 - Warning message text
 # @stdout      Formatted warning message
 # @return      0 always
 # -----------------------------------------------------------------------------
 print_warning() {
     echo "⚠️  $1"
+    log "WARNING: $1"
 }
 
 # -----------------------------------------------------------------------------
 # @function    print_error
-# @description Displays an error message with red X emoji to stderr.
+# @description Displays an error message with red X emoji to stderr. Auto-logs.
 # @param       $1 - Error message text
 # @stderr      Formatted error message
 # @return      0 always
 # -----------------------------------------------------------------------------
 print_error() {
     echo "❌ $1" >&2
+    log "ERROR: $1"
 }
 
 # -----------------------------------------------------------------------------
 # @function    print_info
-# @description Displays an informational message with lightbulb emoji.
+# @description Displays an informational message with lightbulb emoji. Auto-logs.
 # @param       $1 - Info message text
 # @stdout      Formatted info message
 # @return      0 always
 # -----------------------------------------------------------------------------
 print_info() {
     echo "💡 $1"
+    log "INFO: $1"
 }
 
 # -----------------------------------------------------------------------------
 # @function    print_progress
-# @description Displays a progress/in-progress message with spinner emoji.
+# @description Displays a progress/in-progress message with spinner emoji. Auto-logs.
 # @param       $1 - Progress message text
 # @stdout      Formatted progress message
 # @return      0 always
 # -----------------------------------------------------------------------------
 print_progress() {
     echo "🔄 $1"
+    log "PROGRESS: $1"
 }
 
 # =============================================================================
