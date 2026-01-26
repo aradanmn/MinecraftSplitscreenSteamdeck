@@ -123,6 +123,28 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 export target=/tmp
 
 # =============================================================================
+# LOGGING (prints to terminal AND logs to file)
+# =============================================================================
+
+LOG_DIR="$HOME/.local/share/MinecraftSplitscreen/logs"
+LOG_FILE=""
+
+_init_log() {
+    mkdir -p "$LOG_DIR" 2>/dev/null || { LOG_DIR="/tmp/MinecraftSplitscreen/logs"; mkdir -p "$LOG_DIR"; }
+    LOG_FILE="$LOG_DIR/launcher-$(date +%Y-%m-%d-%H%M%S).log"
+    # Rotate old logs (keep last 10)
+    local c=0; while IFS= read -r f; do c=$((c+1)); [[ $c -gt 10 ]] && rm -f "$f"; done < <(ls -t "$LOG_DIR"/launcher-*.log 2>/dev/null)
+    { echo "=== Minecraft Splitscreen Launcher ==="; echo "Started: $(date)"; echo ""; } >> "$LOG_FILE"
+}
+
+log() { [[ -n "$LOG_FILE" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE" 2>/dev/null; }
+log_info() { echo "[Info] $*"; log "INFO: $*"; }
+log_error() { echo "[Error] $*" >&2; log "ERROR: $*"; }
+log_warning() { echo "[Warning] $*"; log "WARNING: $*"; }
+
+_init_log
+
+# =============================================================================
 # Launcher Validation
 # =============================================================================
 
@@ -151,9 +173,9 @@ validate_launcher() {
     fi
 
     if [[ "$launcher_available" == false ]]; then
-        echo "[Error] $LAUNCHER_NAME not found!" >&2
-        echo "[Error] Expected: $LAUNCHER_EXEC" >&2
-        echo "[Error] Please re-run the Minecraft Splitscreen installer." >&2
+        log_error "$LAUNCHER_NAME not found!"
+        log_error "Expected: $LAUNCHER_EXEC"
+        log_error "Please re-run the Minecraft Splitscreen installer."
         return 1
     fi
 
@@ -165,7 +187,8 @@ if ! validate_launcher; then
     exit 1
 fi
 
-echo "[Info] Using $LAUNCHER_NAME ($LAUNCHER_TYPE) for splitscreen gameplay"
+log_info "Using $LAUNCHER_NAME ($LAUNCHER_TYPE) for splitscreen gameplay"
+log_info "Log file: $LOG_FILE"
 
 # =============================================================================
 # Nested Plasma Session (Steam Deck Game Mode)
@@ -222,7 +245,7 @@ launchGame() {
         kde-inhibit --power --screenSaver --colorCorrect --notifications \
             $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
     else
-        echo "[Warning] kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
+        log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
         $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
     fi
 
@@ -247,7 +270,7 @@ hidePanels() {
             sleep 1
         fi
     else
-        echo "[Info] plasmashell not found. Skipping KDE panel hiding."
+        log_info "plasmashell not found. Skipping KDE panel hiding."
     fi
 }
 
@@ -257,7 +280,7 @@ restorePanels() {
         nohup plasmashell >/dev/null 2>&1 &
         sleep 2
     else
-        echo "[Info] plasmashell not found. Skipping KDE panel restore."
+        log_info "plasmashell not found. Skipping KDE panel restore."
     fi
 }
 
@@ -497,7 +520,7 @@ LAUNCHER_SCRIPT_EOF
     # Make executable
     chmod +x "$output_path"
 
-    echo "[Info] Generated launcher script: $output_path"
+    print_success "Generated launcher script: $output_path"
     return 0
 }
 
@@ -516,28 +539,28 @@ verify_generated_script() {
     local script_path="$1"
 
     if [[ ! -f "$script_path" ]]; then
-        echo "[Error] Generated script not found: $script_path" >&2
+        print_error "Generated script not found: $script_path"
         return 1
     fi
 
     if [[ ! -x "$script_path" ]]; then
-        echo "[Error] Generated script is not executable: $script_path" >&2
+        print_error "Generated script is not executable: $script_path"
         return 1
     fi
 
     # Check for placeholder remnants
     if grep -q '__LAUNCHER_' "$script_path"; then
-        echo "[Error] Generated script contains unreplaced placeholders" >&2
+        print_error "Generated script contains unreplaced placeholders"
         return 1
     fi
 
     # Basic syntax check
     if ! bash -n "$script_path" 2>/dev/null; then
-        echo "[Error] Generated script has syntax errors" >&2
+        print_error "Generated script has syntax errors"
         return 1
     fi
 
-    echo "[Info] Generated script verified: $script_path"
+    print_success "Generated script verified: $script_path"
     return 0
 }
 
