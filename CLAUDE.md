@@ -309,6 +309,120 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 1. Steam Deck controller handling without system-wide disable
 2. Pre-configuring controllers within Controllable mod
 
+## Active Development Backlog
+
+### Issue #1: Centralized User Input Handling for curl | bash Mode (HIGH PRIORITY)
+**Problem:** When running via `curl | bash`, stdin is consumed by the script download, breaking interactive prompts. The PollyMC Flatpak detection on SteamOS prompts for user choice but can't receive input.
+
+**Current State:** Some input handling exists scattered across modules, but it's inconsistent.
+
+**Solution:** Create a centralized `prompt_user()` function in `utilities.sh` that:
+- Detects if stdin is available (TTY check)
+- If not available, reopens `/dev/tty` for user input
+- Provides consistent timeout and default value handling
+- All modules should use this single function for any user prompts
+
+**Files to modify:** `modules/utilities.sh`, then refactor all modules that prompt users
+
+**Pattern to implement:**
+```bash
+prompt_user() {
+    local prompt="$1"
+    local default="$2"
+    local timeout="${3:-30}"
+    local response
+
+    # Reopen tty if stdin is not a terminal (curl | bash case)
+    if [[ ! -t 0 ]]; then
+        exec < /dev/tty || { echo "$default"; return; }
+    fi
+
+    read -t "$timeout" -p "$prompt" response || response="$default"
+    echo "${response:-$default}"
+}
+```
+
+---
+
+### Issue #2: Steam Deck Virtual Controller Detection (MEDIUM PRIORITY)
+**Problem:** When launching on Steam Deck without external controllers, the script detects the Steam virtual controller, filters it out, and then stops because no "real" controllers remain.
+
+**Current State:** The launcher script correctly filters Steam virtual controllers but doesn't handle the case where that's the ONLY controller available.
+
+**Solution:** Modify controller detection logic to:
+- If on Steam Deck AND only Steam virtual controller detected AND no external controllers → allow using Steam Deck as Player 1
+- Provide a fallback "keyboard only" mode or prompt user
+- Consider: Steam Deck's built-in controls should count as 1 player
+
+**Files to modify:** `modules/launcher_script_generator.sh` (the generated script template)
+
+---
+
+### Issue #3: Logging System (MEDIUM PRIORITY)
+**Problem:** Debugging issues across multiple machines (Bazzite, SteamOS, etc.) is difficult without logs. User must set up dev environment on each machine.
+
+**Current State:** No persistent logging - output only goes to terminal.
+
+**Solution:** Implement logging in both installer and launcher:
+- **Log location:** `~/.local/share/MinecraftSplitscreen/logs/`
+- **Installer log:** `install-YYYY-MM-DD-HHMMSS.log`
+- **Launcher log:** `launcher-YYYY-MM-DD-HHMMSS.log`
+- Keep last N logs (e.g., 10) to prevent disk fill
+- Log should include: timestamp, system info, all operations, errors, and final status
+- Add `log()` function to utilities.sh that both prints and logs
+
+**Files to modify:**
+- `modules/utilities.sh` - add logging functions
+- `modules/main_workflow.sh` - initialize logging
+- `modules/launcher_script_generator.sh` - add logging to generated script
+
+**Pattern to implement:**
+```bash
+LOG_FILE=""
+init_logging() {
+    local log_dir="$HOME/.local/share/MinecraftSplitscreen/logs"
+    mkdir -p "$log_dir"
+    LOG_FILE="$log_dir/install-$(date +%Y-%m-%d-%H%M%S).log"
+    # Rotate old logs, keep last 10
+}
+log() {
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$message" >> "$LOG_FILE"
+    echo "$*"  # Also print to terminal
+}
+```
+
+---
+
+### Issue #4: Minecraft New Versioning System (LOW PRIORITY - Future)
+**Problem:** Minecraft is switching to a new version numbering system (announced at minecraft.net/en-us/article/minecraft-new-version-numbering-system).
+
+**Current State:** Version parsing assumes `1.X.Y` format throughout codebase.
+
+**Research Needed:**
+- Fetch and document the new versioning scheme details
+- Identify when this takes effect
+- Likely format change from `1.21.x` to something like `25.1` (year-based?)
+
+**Files likely affected:**
+- `modules/version_management.sh` - version parsing and comparison
+- `modules/java_management.sh` - Java version mapping
+- `modules/lwjgl_management.sh` - LWJGL version mapping
+- `modules/mod_management.sh` - mod compatibility matching
+
+**Solution approach:**
+- Create version parsing functions that handle both old and new formats
+- Maintain backward compatibility for existing `1.x.x` versions
+- Add detection for which format a version string uses
+
+---
+
+### Implementation Order (Recommended)
+1. **Issue #3 (Logging)** - Start here. Makes debugging all other issues easier.
+2. **Issue #1 (User Input)** - Critical for curl | bash usability
+3. **Issue #2 (Controller Detection)** - Improves Steam Deck UX
+4. **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+
 ## Useful Debugging
 
 ```bash
