@@ -382,10 +382,8 @@ get_minecraft_version() {
     echo "  Or directly type a Minecraft version (e.g., 1.21.3)"
 
     local user_choice
-    # Read from /dev/tty to handle curl | bash piping
-    # Print prompt separately since read -p writes to stderr which may not display properly
-    printf "Your choice [latest]: "
-    read user_choice </dev/tty 2>/dev/null || user_choice=""
+    # Use centralized prompt function that handles curl | bash piping
+    user_choice=$(prompt_user "Your choice [latest]: " "latest" 60)
 
     if [[ -z "$user_choice" || "$user_choice" == "latest" ]]; then
         # Use latest supported version
@@ -401,8 +399,7 @@ get_minecraft_version() {
     elif [[ "$user_choice" == "custom" ]]; then
         # User wants to enter a custom version
         local custom_version
-        printf "Enter custom Minecraft version (e.g., 1.21.3): "
-        read custom_version </dev/tty 2>/dev/null || custom_version=""
+        custom_version=$(prompt_user "Enter custom Minecraft version (e.g., 1.21.3): " "" 60)
         if [[ -n "$custom_version" ]]; then
             MC_VERSION="$custom_version"
             print_warning "Using custom version: $MC_VERSION"

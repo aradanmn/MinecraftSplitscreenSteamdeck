@@ -311,23 +311,21 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 
 ## Active Development Backlog
 
-### Issue #1: Centralized User Input Handling for curl | bash Mode (HIGH PRIORITY)
+### Issue #1: Centralized User Input Handling for curl | bash Mode ✅ IMPLEMENTED
 **Problem:** When running via `curl | bash`, stdin is consumed by the script download, breaking interactive prompts. The PollyMC Flatpak detection on SteamOS prompts for user choice but can't receive input.
 
-**Status:** Functions added, modules need refactoring
+**Solution Implemented:**
+- **Utility functions in `utilities.sh`:**
+  - `prompt_user(prompt, default, timeout)` - Works with curl | bash by reopening /dev/tty
+  - `prompt_yes_no(question, default)` - Simplified yes/no prompts with automatic logging
 
-**Functions Added to utilities.sh:**
-- `prompt_user(prompt, default, timeout)` - Works with curl | bash by reopening /dev/tty
-- `prompt_yes_no(question, default)` - Simplified yes/no prompts
+**Modules Refactored:**
+- `modules/version_management.sh` - Minecraft version selection (2 prompts)
+- `modules/mod_management.sh` - Mod selection prompt
+- `modules/steam_integration.sh` - "Add to Steam?" prompt (now uses `prompt_yes_no`)
+- `modules/desktop_launcher.sh` - "Create desktop launcher?" prompt (now uses `prompt_yes_no`)
 
-**Remaining Work:** Refactor all modules to use these functions instead of raw `read` commands:
-- `modules/pollymc_setup.sh` - PollyMC Flatpak detection prompt
-- `modules/version_management.sh` - Minecraft version selection
-- `modules/mod_management.sh` - Mod selection prompts
-- `modules/steam_integration.sh` - "Add to Steam?" prompt
-- `modules/desktop_launcher.sh` - "Create desktop launcher?" prompt
-
-**Files to modify:** All modules that currently use `read` for user input
+**Note:** `modules/pollymc_setup.sh` was checked and contains no user prompts (contrary to original assumption)
 
 ---
 
@@ -392,7 +390,7 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 
 ### Implementation Order
 1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
-2. 🔄 **Issue #1 (User Input)** - Functions added, need to refactor modules to use them
+2. ✅ **Issue #1 (User Input)** - DONE. All modules refactored to use `prompt_user()` and `prompt_yes_no()`.
 3. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
 4. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
 
