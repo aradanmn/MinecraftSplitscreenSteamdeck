@@ -81,12 +81,8 @@ setup_steam_integration() {
     print_info "Steam integration adds Minecraft Splitscreen to your Steam library."
     print_info "Benefits: Easy access from Steam, Big Picture mode support, Steam Deck Game Mode integration"
     echo ""
-    local add_to_steam
-    # Read from /dev/tty to handle curl | bash piping
-    # Print prompt separately since read -p writes to stderr which may not display properly
-    printf "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: "
-    read add_to_steam </dev/tty 2>/dev/null || add_to_steam=""
-    if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
+    # Use centralized prompt function that handles curl | bash piping
+    if prompt_yes_no "Do you want to add Minecraft Splitscreen launcher to Steam?" "n"; then
 
         # =============================================================================
         # LAUNCHER PATH DETECTION AND CONFIGURATION
