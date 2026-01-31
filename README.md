@@ -41,9 +41,20 @@ The system automatically repositions windows based on player count:
 
 **Steam Deck Game Mode**: Restarts instances with new positions (the splitscreen mod only reads configuration at startup).
 
-### Requirements for Dynamic Mode
+### Optional Packages (Recommended but Not Required)
 
-For the best experience, install these optional packages:
+**Dynamic mode works without any extra packages!** However, for the best experience:
+
+| Package | Benefit | Without It |
+|---------|---------|------------|
+| `inotify-tools` | Instant controller detection | 2-second polling delay |
+| `xdotool`/`wmctrl` | Smooth window repositioning | Brief restart when layout changes |
+| `libnotify` | Desktop notifications | Silent operation |
+
+The installer detects available tools and shows you what's enabled at the end of installation.
+
+<details>
+<summary>📦 Installation commands (click to expand)</summary>
 
 ```bash
 # Debian/Ubuntu
@@ -54,11 +65,14 @@ sudo dnf install inotify-tools xdotool wmctrl libnotify
 
 # Arch
 sudo pacman -S inotify-tools xdotool wmctrl libnotify
+
+# openSUSE
+sudo zypper install inotify-tools xdotool wmctrl libnotify-tools
 ```
 
-- `inotify-tools`: Efficient controller hotplug detection (falls back to polling if unavailable)
-- `xdotool`/`wmctrl`: Smooth window repositioning on X11
-- `libnotify`: Desktop notifications when players join/leave
+**Immutable distros (SteamOS, Bazzite, Silverblue)**: Use your distro's package layering system or Flatpak equivalents where available.
+
+</details>
 
 ### Limitations
 

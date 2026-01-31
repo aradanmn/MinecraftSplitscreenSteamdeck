@@ -32,6 +32,8 @@
 #     - get_prism_executable    : Locate PrismLauncher executable
 #     - is_immutable_os         : Detect immutable Linux distributions
 #     - should_prefer_flatpak   : Determine preferred package format
+#     - check_dynamic_mode_dependencies : Check optional dynamic mode tools
+#     - show_dynamic_mode_install_hints : Show package install commands
 #     - print_header            : Display section headers (auto-logs)
 #     - print_success           : Display success messages (auto-logs)
 #     - print_warning           : Display warning messages (auto-logs)
@@ -44,8 +46,12 @@
 #     - LOG_FILE                : Current log file path (set by init_logging)
 #     - LOG_DIR                 : Log directory path
 #     - IMMUTABLE_OS_NAME       : Set by is_immutable_os() with detected OS name
+#     - DYNAMIC_HAS_INOTIFY     : Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_WINDOW_TOOLS: Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_NOTIFY      : Set by check_dynamic_mode_dependencies()
 #
 # @changelog
+#   1.3.0 (2026-01-31) - Added dynamic mode dependency detection and install hints
 #   1.2.0 (2026-01-26) - Added logging system, prompt_user for curl|bash support
 #   1.1.0 (2026-01-24) - Added immutable OS detection and Flatpak preference
 #   1.0.0 (2026-01-23) - Initial version with print functions and account merging
@@ -410,6 +416,68 @@ print_info() {
 print_progress() {
     echo "🔄 $1"
     log "PROGRESS: $1"
+}
+
+# =============================================================================
+# DYNAMIC MODE DEPENDENCY DETECTION
+# =============================================================================
+
+# Exported variables for dependency status
+DYNAMIC_HAS_INOTIFY="false"
+DYNAMIC_HAS_WINDOW_TOOLS="false"
+DYNAMIC_HAS_NOTIFY="false"
+
+# -----------------------------------------------------------------------------
+# @function    check_dynamic_mode_dependencies
+# @description Check for optional tools that enhance dynamic splitscreen mode.
+#              Sets global variables indicating which tools are available.
+#              All tools have fallbacks, so dynamic mode works without them.
+# @global      DYNAMIC_HAS_INOTIFY - (output) true if inotifywait available
+# @global      DYNAMIC_HAS_WINDOW_TOOLS - (output) true if xdotool/wmctrl available
+# @global      DYNAMIC_HAS_NOTIFY - (output) true if notify-send available
+# -----------------------------------------------------------------------------
+check_dynamic_mode_dependencies() {
+    DYNAMIC_HAS_INOTIFY="false"
+    DYNAMIC_HAS_WINDOW_TOOLS="false"
+    DYNAMIC_HAS_NOTIFY="false"
+
+    command -v inotifywait >/dev/null 2>&1 && DYNAMIC_HAS_INOTIFY="true"
+    { command -v xdotool >/dev/null 2>&1 || command -v wmctrl >/dev/null 2>&1; } && DYNAMIC_HAS_WINDOW_TOOLS="true"
+    command -v notify-send >/dev/null 2>&1 && DYNAMIC_HAS_NOTIFY="true"
+
+    export DYNAMIC_HAS_INOTIFY
+    export DYNAMIC_HAS_WINDOW_TOOLS
+    export DYNAMIC_HAS_NOTIFY
+
+    log "Dynamic mode dependencies: inotify=$DYNAMIC_HAS_INOTIFY, window_tools=$DYNAMIC_HAS_WINDOW_TOOLS, notify=$DYNAMIC_HAS_NOTIFY"
+}
+
+# -----------------------------------------------------------------------------
+# @function    show_dynamic_mode_install_hints
+# @description Show package manager commands to install optional dynamic mode
+#              tools. Only shown on non-immutable distros where package install
+#              is possible.
+# @stdout      Package manager command for the detected distro
+# -----------------------------------------------------------------------------
+show_dynamic_mode_install_hints() {
+    # On immutable OS, users need distro-specific methods
+    if is_immutable_os; then
+        print_info "On $IMMUTABLE_OS_NAME - optional tools require distro-specific installation"
+        return
+    fi
+
+    # Detect package manager and show relevant command
+    if command -v apt >/dev/null 2>&1; then
+        echo "  sudo apt install inotify-tools xdotool wmctrl libnotify-bin"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "  sudo dnf install inotify-tools xdotool wmctrl libnotify"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "  sudo pacman -S inotify-tools xdotool wmctrl libnotify"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "  sudo zypper install inotify-tools xdotool wmctrl libnotify-tools"
+    else
+        echo "  Install: inotify-tools, xdotool or wmctrl, libnotify"
+    fi
 }
 
 # =============================================================================

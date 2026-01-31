@@ -289,6 +289,50 @@ main() {
     echo ""
 
     # =============================================================================
+    # DYNAMIC SPLITSCREEN MODE STATUS
+    # =============================================================================
+
+    check_dynamic_mode_dependencies
+
+    echo "🔄 DYNAMIC SPLITSCREEN MODE (v3.0.0):"
+    echo ""
+
+    if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]] && [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
+        print_success "All optional tools detected - full dynamic mode available!"
+        echo "   • Instant controller detection"
+        echo "   • Smooth window repositioning"
+        if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
+            echo "   • Desktop notifications enabled"
+        fi
+    else
+        print_info "Dynamic mode available with fallbacks:"
+        echo ""
+
+        if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]]; then
+            echo "   ✅ Controller detection: instant (inotifywait)"
+        else
+            echo "   ⚡ Controller detection: polling every 2 seconds"
+        fi
+
+        if [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
+            echo "   ✅ Window repositioning: smooth (xdotool/wmctrl)"
+        else
+            echo "   ⚡ Window repositioning: restart instances when layout changes"
+        fi
+
+        if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
+            echo "   ✅ Notifications: enabled"
+        else
+            echo "   ⚡ Notifications: disabled (silent operation)"
+        fi
+
+        echo ""
+        print_info "To enable all features, install optional packages:"
+        show_dynamic_mode_install_hints
+    fi
+    echo ""
+
+    # =============================================================================
     # USER GUIDANCE AND LAUNCH INSTRUCTIONS
     # =============================================================================
 
