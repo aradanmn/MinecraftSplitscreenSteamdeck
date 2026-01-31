@@ -519,6 +519,196 @@ markInstanceStopped() {
 }
 
 # =============================================================================
+# Window Repositioning (Dynamic Splitscreen)
+# =============================================================================
+# Functions to reposition Minecraft windows when player count changes.
+# Uses xdotool/wmctrl on X11, falls back to restarting instances in Game Mode.
+
+# Check if external window management is available
+# Returns: 0 if available (X11 with tools), 1 if not
+canUseExternalWindowManagement() {
+    # Must have a display
+    if [ -z "$DISPLAY" ]; then
+        return 1
+    fi
+
+    # Not available in gamescope/Game Mode
+    if isSteamDeckGameMode; then
+        return 1
+    fi
+
+    # Check for window management tools
+    if command -v xdotool >/dev/null 2>&1 || command -v wmctrl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Get window ID for a Minecraft instance by PID
+# Arguments:
+#   $1 = process PID
+# Outputs: window ID or empty string
+getWindowIdForPid() {
+    local pid=$1
+    local window_id=""
+
+    if command -v xdotool >/dev/null 2>&1; then
+        # xdotool can search by PID - wait briefly for window to appear
+        sleep 0.5
+        window_id=$(xdotool search --pid "$pid" 2>/dev/null | head -1)
+    elif command -v wmctrl >/dev/null 2>&1; then
+        # wmctrl needs window list parsing
+        window_id=$(wmctrl -lp 2>/dev/null | awk -v pid="$pid" '$3 == pid {print $1; exit}')
+    fi
+
+    echo "$window_id"
+}
+
+# Move and resize a window
+# Arguments:
+#   $1 = window_id, $2 = x, $3 = y, $4 = width, $5 = height
+moveResizeWindow() {
+    local window_id=$1
+    local x=$2 y=$3 width=$4 height=$5
+
+    if [ -z "$window_id" ]; then
+        return 1
+    fi
+
+    if command -v xdotool >/dev/null 2>&1; then
+        xdotool windowmove "$window_id" "$x" "$y" 2>/dev/null
+        xdotool windowsize "$window_id" "$width" "$height" 2>/dev/null
+    elif command -v wmctrl >/dev/null 2>&1; then
+        wmctrl -i -r "$window_id" -e "0,$x,$y,$width,$height" 2>/dev/null
+    fi
+}
+
+# Get screen dimensions
+# Outputs: "width height" (e.g., "1920 1080")
+getScreenDimensions() {
+    local width=1920
+    local height=1080
+
+    if command -v xdpyinfo >/dev/null 2>&1 && [ -n "$DISPLAY" ]; then
+        local dims
+        dims=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+        if [ -n "$dims" ]; then
+            width=$(echo "$dims" | cut -dx -f1)
+            height=$(echo "$dims" | cut -dx -f2)
+        fi
+    fi
+
+    echo "$width $height"
+}
+
+# Calculate window geometry for external positioning
+# Arguments:
+#   $1 = slot (1-4), $2 = total_players, $3 = screen_width, $4 = screen_height
+# Outputs: "x y width height"
+calculateWindowPosition() {
+    local slot=$1
+    local total_players=$2
+    local screen_width=$3
+    local screen_height=$4
+
+    case "$total_players" in
+        1)
+            echo "0 0 $screen_width $screen_height"
+            ;;
+        2)
+            local half_height=$((screen_height / 2))
+            case "$slot" in
+                1) echo "0 0 $screen_width $half_height" ;;
+                2) echo "0 $half_height $screen_width $half_height" ;;
+            esac
+            ;;
+        3|4)
+            local half_width=$((screen_width / 2))
+            local half_height=$((screen_height / 2))
+            case "$slot" in
+                1) echo "0 0 $half_width $half_height" ;;
+                2) echo "$half_width 0 $half_width $half_height" ;;
+                3) echo "0 $half_height $half_width $half_height" ;;
+                4) echo "$half_width $half_height $half_width $half_height" ;;
+            esac
+            ;;
+    esac
+}
+
+# Reposition all active windows for new player count
+# Arguments:
+#   $1 = new total player count
+repositionAllWindows() {
+    local new_total=$1
+    local screen_width screen_height
+
+    read -r screen_width screen_height < <(getScreenDimensions)
+
+    if canUseExternalWindowManagement; then
+        log_info "Repositioning windows via xdotool/wmctrl for $new_total players"
+
+        local slot_num=0
+        for i in 1 2 3 4; do
+            local idx=$((i - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                slot_num=$((slot_num + 1))
+                local pid="${INSTANCE_PIDS[$idx]}"
+                local window_id
+                window_id=$(getWindowIdForPid "$pid")
+
+                if [ -n "$window_id" ]; then
+                    local x y w h
+                    read -r x y w h < <(calculateWindowPosition "$slot_num" "$new_total" "$screen_width" "$screen_height")
+                    moveResizeWindow "$window_id" "$x" "$y" "$w" "$h"
+                    log "Repositioned window for slot $i to ${x},${y} ${w}x${h}"
+                else
+                    log_warning "Could not find window for instance $i (PID: $pid)"
+                fi
+            fi
+        done
+    else
+        log_warning "External window management not available"
+        log_info "Updating splitscreen.properties and restarting instances"
+        repositionWithRestart "$new_total"
+    fi
+}
+
+# Reposition by restarting instances (Game Mode fallback)
+# Arguments:
+#   $1 = new total player count
+repositionWithRestart() {
+    local new_total=$1
+
+    log_info "Restarting instances for $new_total-player layout"
+
+    # Stop all instances
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            local pid="${INSTANCE_PIDS[$idx]}"
+            if [ -n "$pid" ]; then
+                log "Stopping instance $i for repositioning"
+                kill "$pid" 2>/dev/null || true
+            fi
+        fi
+    done
+
+    # Wait for all to exit
+    sleep 2
+
+    # Relaunch active instances with new positions
+    local slot_num=0
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            slot_num=$((slot_num + 1))
+            launchInstanceForSlot "$i" "$new_total"
+        fi
+    done
+}
+
+# =============================================================================
 # Splitscreen Configuration
 # =============================================================================
 
