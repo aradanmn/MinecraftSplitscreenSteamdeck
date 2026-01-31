@@ -119,6 +119,23 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 # END GENERATED CONFIGURATION
 # =============================================================================
 
+# =============================================================================
+# DYNAMIC SPLITSCREEN STATE (Rev 3.0.0)
+# =============================================================================
+# These variables track the state of dynamic splitscreen sessions where
+# players can join and leave mid-game.
+
+declare -a INSTANCE_PIDS=("" "" "" "")     # PID for each player slot (index 0-3)
+declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
+CURRENT_PLAYER_COUNT=0                      # Number of active players
+DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
+CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
+CONTROLLER_PIPE=""                          # Path to named pipe for controller events
+
+# =============================================================================
+# END DYNAMIC SPLITSCREEN STATE
+# =============================================================================
+
 # Temporary directory for intermediate files
 export target=/tmp
 
@@ -338,6 +355,87 @@ getControllerCount() {
 
     echo "[Debug] Controller detection: real=$real_controllers, total=$count, steam=$steam_running" >&2
     echo "$count"
+}
+
+# =============================================================================
+# Controller Hotplug Monitoring (Dynamic Splitscreen)
+# =============================================================================
+# These functions enable real-time monitoring of controller connections
+# and disconnections for dynamic player join/leave functionality.
+
+# Monitor controller connections/disconnections
+# Writes "CONTROLLER_CHANGE:<count>" to stdout when changes detected
+# Uses inotifywait for efficiency, falls back to polling if unavailable
+monitorControllers() {
+    local last_count
+    last_count=$(getControllerCount)
+
+    # Prefer inotifywait (event-driven, efficient)
+    if command -v inotifywait >/dev/null 2>&1; then
+        log "Using inotifywait for controller monitoring"
+        inotifywait -m -q -e create -e delete /dev/input/ 2>/dev/null | while read -r _ action file; do
+            if [[ "$file" =~ ^js[0-9]+$ ]]; then
+                sleep 0.5  # Debounce rapid events
+                local new_count
+                new_count=$(getControllerCount)
+                if [ "$new_count" != "$last_count" ]; then
+                    echo "CONTROLLER_CHANGE:$new_count"
+                    last_count=$new_count
+                fi
+            fi
+        done
+    else
+        # Fallback: poll every 2 seconds
+        log "inotifywait not available, using polling for controller monitoring"
+        while true; do
+            sleep 2
+            local new_count
+            new_count=$(getControllerCount)
+            if [ "$new_count" != "$last_count" ]; then
+                echo "CONTROLLER_CHANGE:$new_count"
+                last_count=$new_count
+            fi
+        done
+    fi
+}
+
+# Start controller monitoring in background
+# Creates a named pipe for IPC and spawns monitor subprocess
+startControllerMonitor() {
+    # Create a named pipe for communication
+    CONTROLLER_PIPE="/tmp/mc-splitscreen-$$"
+    rm -f "$CONTROLLER_PIPE" 2>/dev/null
+    mkfifo "$CONTROLLER_PIPE" 2>/dev/null || {
+        log_warning "Failed to create named pipe, controller monitoring disabled"
+        return 1
+    }
+
+    # Start monitor in background, writing to pipe
+    monitorControllers > "$CONTROLLER_PIPE" &
+    CONTROLLER_MONITOR_PID=$!
+
+    # Open pipe for reading on fd 3
+    exec 3< "$CONTROLLER_PIPE"
+
+    log_info "Controller monitor started (PID: $CONTROLLER_MONITOR_PID)"
+    return 0
+}
+
+# Stop controller monitoring and clean up resources
+stopControllerMonitor() {
+    if [ -n "$CONTROLLER_MONITOR_PID" ]; then
+        kill "$CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        wait "$CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        CONTROLLER_MONITOR_PID=""
+        log "Controller monitor stopped"
+    fi
+
+    # Close fd 3 and clean up pipe
+    exec 3<&- 2>/dev/null || true
+    if [ -n "$CONTROLLER_PIPE" ]; then
+        rm -f "$CONTROLLER_PIPE" 2>/dev/null || true
+        CONTROLLER_PIPE=""
+    fi
 }
 
 # =============================================================================
