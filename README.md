@@ -18,6 +18,54 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - **Automatic Dependency Resolution:** Uses live API calls to discover and install all mod dependencies without manual maintenance
 - **Smart Cleanup:** Automatically removes temporary files and directories after successful setup
 
+## Dynamic Splitscreen Mode (v3.0.0)
+
+Version 3.0.0 introduces **Dynamic Splitscreen** - players can now join and leave mid-session without everyone needing to start at the same time.
+
+### How It Works
+
+1. **Launch the game** - Choose "Dynamic" mode when prompted (or press 2)
+2. **Start playing** - The first controller detected launches Player 1 in fullscreen
+3. **Players join** - When a new controller connects, a new Minecraft instance launches and all windows reposition automatically
+4. **Players leave** - When a player quits Minecraft, remaining windows expand to use the available space
+5. **Session ends** - When all players have exited, the launcher closes
+
+### Window Repositioning
+
+The system automatically repositions windows based on player count:
+- **1 player**: Fullscreen
+- **2 players**: Top/Bottom split
+- **3-4 players**: Quad split (2x2 grid)
+
+**Desktop Mode (X11)**: Uses `xdotool` or `wmctrl` for smooth, non-disruptive window repositioning.
+
+**Steam Deck Game Mode**: Restarts instances with new positions (the splitscreen mod only reads configuration at startup).
+
+### Requirements for Dynamic Mode
+
+For the best experience, install these optional packages:
+
+```bash
+# Debian/Ubuntu
+sudo apt install inotify-tools xdotool wmctrl libnotify-bin
+
+# Fedora
+sudo dnf install inotify-tools xdotool wmctrl libnotify
+
+# Arch
+sudo pacman -S inotify-tools xdotool wmctrl libnotify
+```
+
+- `inotify-tools`: Efficient controller hotplug detection (falls back to polling if unavailable)
+- `xdotool`/`wmctrl`: Smooth window repositioning on X11
+- `libnotify`: Desktop notifications when players join/leave
+
+### Limitations
+
+- **Wayland**: External window management may not work on pure Wayland; XWayland apps typically work
+- **Game Mode**: Window repositioning requires restarting instances (brief interruption)
+- **Maximum 4 players**: Hardware and mod limitation
+
 ## Requirements
 - Linux (Steam Deck or any modern distro)
 - Internet connection for initial setup
@@ -226,6 +274,10 @@ Select your new Minecraft version when prompted. The installer will:
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
 
 ## Recent Improvements
+- ✅ **Dynamic Splitscreen (v3.0.0)**: Players can join and leave mid-session - no need for everyone to start at the same time
+- ✅ **Controller Hotplug**: Real-time detection of controller connections/disconnections
+- ✅ **Automatic Window Repositioning**: Windows automatically resize when player count changes
+- ✅ **Desktop Notifications**: Get notified when players join or leave
 - ✅ **Auto-Generated Launcher Script**: The splitscreen launcher is now generated at install time with correct paths baked in - no more hardcoded paths
 - ✅ **Flatpak Support**: Works with both Flatpak and AppImage installations of PollyMC and PrismLauncher
 - ✅ **Smart Launcher Detection**: Automatically detects existing launcher installations and uses them instead of downloading new ones

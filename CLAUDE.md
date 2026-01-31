@@ -6,7 +6,7 @@ This document provides essential context for AI assistants working on this codeb
 
 **Minecraft Splitscreen Steam Deck & Linux Installer** - An automated installer for setting up splitscreen Minecraft (1-4 players) on Steam Deck and Linux systems.
 
-**Version:** 2.0.0
+**Version:** 3.0.0
 **Repository:** https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 **License:** MIT
 
@@ -388,11 +388,36 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 
 ---
 
+### Issue #5: Dynamic Splitscreen Mode (v3.0.0) ✅ IMPLEMENTED
+**Feature:** Players can join and leave mid-session without coordinating start times.
+
+**Technical Implementation:**
+- Controller monitoring via `inotifywait` with polling fallback
+- Process tracking with PID arrays for 4 instance slots
+- External window repositioning via `xdotool`/`wmctrl` on X11
+- Instance restart fallback for Game Mode (gamescope)
+- Event loop architecture in generated launcher script
+- Mode selection UI (static vs dynamic) at launch
+
+**Files modified:**
+- `modules/launcher_script_generator.sh` - Major changes (dynamic mode logic, event handlers, window repositioning)
+- `modules/version_info.sh` - Version bump to 3.0.0
+- All module headers - Version update to 3.0.0
+- `README.md` - Feature documentation
+
+**Optional dependencies for best experience:**
+- `inotify-tools` - Efficient controller hotplug detection
+- `xdotool`/`wmctrl` - Smooth window repositioning on X11
+- `libnotify` - Desktop notifications when players join/leave
+
+---
+
 ### Implementation Order
 1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
 2. ✅ **Issue #1 (User Input)** - DONE. All modules refactored to use `prompt_user()` and `prompt_yes_no()`.
-3. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
-4. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+3. ✅ **Issue #5 (Dynamic Splitscreen)** - DONE. Players can join/leave mid-session.
+4. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
+5. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
 
 ## Useful Debugging
 
