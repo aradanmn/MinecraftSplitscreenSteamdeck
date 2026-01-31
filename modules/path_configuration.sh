@@ -3,7 +3,7 @@
 # PATH CONFIGURATION MODULE - SINGLE SOURCE OF TRUTH
 # =============================================================================
 # @file        path_configuration.sh
-# @version     1.2.1
+# @version     3.0.0
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT

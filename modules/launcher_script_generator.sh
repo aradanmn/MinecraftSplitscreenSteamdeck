@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     2.0.0
+# @version     3.0.0
 # @date        2026-01-25
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -512,7 +512,7 @@ LAUNCHER_SCRIPT_EOF
     sed -i "s|__LAUNCHER_EXEC__|${launcher_exec}|g" "$output_path"
     sed -i "s|__LAUNCHER_DIR__|${launcher_dir}|g" "$output_path"
     sed -i "s|__INSTANCES_DIR__|${instances_dir}|g" "$output_path"
-    sed -i "s|__SCRIPT_VERSION__|${SCRIPT_VERSION:-2.0.0}|g" "$output_path"
+    sed -i "s|__SCRIPT_VERSION__|${SCRIPT_VERSION:-3.0.0}|g" "$output_path"
     sed -i "s|__COMMIT_HASH__|${commit_hash}|g" "$output_path"
     sed -i "s|__GENERATION_DATE__|${generation_date}|g" "$output_path"
     sed -i "s|__REPO_URL__|${REPO_URL:-https://github.com/aradanmn/MinecraftSplitscreenSteamdeck}|g" "$output_path"
@@ -585,6 +585,6 @@ print_generation_config() {
     echo "Executable:   $launcher_exec"
     echo "Data Dir:     $launcher_dir"
     echo "Instances:    $instances_dir"
-    echo "Version:      ${SCRIPT_VERSION:-2.0.0}"
+    echo "Version:      ${SCRIPT_VERSION:-3.0.0}"
     echo "=========================================="
 }

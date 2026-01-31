@@ -3,7 +3,7 @@
 # VERSION INFORMATION MODULE
 # =============================================================================
 # @file        version_info.sh
-# @version     2.0.0
+# @version     3.0.0
 # @date        2026-01-24
 # @author      aradanmn
 # @license     MIT
@@ -36,6 +36,7 @@
 #     - verify_repo_source     : Verify running from expected repo
 #
 # @changelog
+#   3.0.0 (2026-01-31) - Dynamic splitscreen: players can join/leave mid-session
 #   2.0.0 (2026-01-24) - Updated for modular installer architecture
 #   1.0.0 (2026-01-22) - Initial version
 # =============================================================================
@@ -45,7 +46,7 @@
 # =============================================================================
 
 # Script version - update this when making releases
-readonly SCRIPT_VERSION="2.0.0"
+readonly SCRIPT_VERSION="3.0.0"
 
 # Repository information
 readonly REPO_OWNER="aradanmn"

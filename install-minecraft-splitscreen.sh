@@ -2,7 +2,7 @@
 # =============================================================================
 # Minecraft Splitscreen Steam Deck Installer - MODULAR VERSION
 # =============================================================================
-# Version: 2.0.0 (commit: auto-populated at runtime)
+# Version: 3.0.0 (commit: auto-populated at runtime)
 # Last Modified: 2026-01-23
 # Source: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #

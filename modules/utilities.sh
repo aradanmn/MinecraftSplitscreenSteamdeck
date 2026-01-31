@@ -3,7 +3,7 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     1.2.0
+# @version     3.0.0
 # @date        2026-01-26
 # @author      aradanmn
 # @license     MIT

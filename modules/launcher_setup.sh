@@ -3,7 +3,7 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.2.2
+# @version     3.0.0
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT

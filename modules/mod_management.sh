@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        mod_management.sh
-# @version     2.0.0
+# @version     3.0.0
 # @date        2026-01-25
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT

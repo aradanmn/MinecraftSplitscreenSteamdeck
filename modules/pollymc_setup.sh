@@ -3,7 +3,7 @@
 # POLLYMC SETUP MODULE
 # =============================================================================
 # @file        pollymc_setup.sh
-# @version     1.3.2
+# @version     3.0.0
 # @date        2026-01-25
 # @author      aradanmn
 # @license     MIT
