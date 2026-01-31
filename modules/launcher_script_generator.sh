@@ -439,6 +439,86 @@ stopControllerMonitor() {
 }
 
 # =============================================================================
+# Instance Lifecycle Management (Dynamic Splitscreen)
+# =============================================================================
+# Functions to track and manage individual Minecraft instance processes
+# for dynamic join/leave functionality.
+
+# Launch a single instance for a player slot
+# Arguments:
+#   $1 = slot number (1-4)
+#   $2 = total players for layout calculation
+launchInstanceForSlot() {
+    local slot=$1
+    local total_players=$2
+    local idx=$((slot - 1))
+
+    # Configure splitscreen position using existing function
+    setSplitscreenModeForPlayer "$slot" "$total_players"
+
+    # Launch the game in background
+    launchGame "latestUpdate-$slot" "P$slot" &
+    local pid=$!
+
+    # Track the instance
+    INSTANCE_PIDS[$idx]=$pid
+    INSTANCE_ACTIVE[$idx]=1
+
+    log_info "Launched instance $slot (PID: $pid) in $total_players-player layout"
+}
+
+# Check if an instance is still running
+# Arguments:
+#   $1 = slot number (1-4)
+# Returns: 0 if running, 1 if not
+isInstanceRunning() {
+    local slot=$1
+    local idx=$((slot - 1))
+    local pid="${INSTANCE_PIDS[$idx]}"
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Get next available slot (1-4)
+# Outputs: slot number, or empty string if all full
+getNextAvailableSlot() {
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "0" ]; then
+            echo "$i"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+# Count currently active instances
+# Outputs: number of active instances (0-4)
+countActiveInstances() {
+    local count=0
+    for i in 0 1 2 3; do
+        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ]; then
+            count=$((count + 1))
+        fi
+    done
+    echo "$count"
+}
+
+# Mark an instance as stopped (called when instance exits)
+# Arguments:
+#   $1 = slot number (1-4)
+markInstanceStopped() {
+    local slot=$1
+    local idx=$((slot - 1))
+    INSTANCE_PIDS[$idx]=""
+    INSTANCE_ACTIVE[$idx]=0
+    log "Instance $slot marked as stopped"
+}
+
+# =============================================================================
 # Splitscreen Configuration
 # =============================================================================
 
