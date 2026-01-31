@@ -14,3 +14,4 @@
 !token.enc
 !modules/
 !modules/**
+!PLAN-*.md
