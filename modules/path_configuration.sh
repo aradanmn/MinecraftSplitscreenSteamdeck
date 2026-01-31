@@ -94,9 +94,25 @@ readonly POLLYMC_APPIMAGE_DATA_DIR="$HOME/.local/share/PollyMC"
 readonly PRISM_FLATPAK_DATA_DIR="$HOME/.var/app/${PRISM_FLATPAK_ID}/data/PrismLauncher"
 readonly POLLYMC_FLATPAK_DATA_DIR="$HOME/.var/app/${POLLYMC_FLATPAK_ID}/data/PollyMC"
 
+# Detect system architecture for AppImage filenames
+# Maps uname -m output to PollyMC release naming convention
+_SYSTEM_ARCH=$(uname -m)
+case "$_SYSTEM_ARCH" in
+    x86_64)
+        _POLLYMC_ARCH_SUFFIX="x86_64"
+        ;;
+    aarch64|arm64)
+        _POLLYMC_ARCH_SUFFIX="arm64"
+        ;;
+    *)
+        # Fallback to x86_64 for unknown architectures
+        _POLLYMC_ARCH_SUFFIX="x86_64"
+        ;;
+esac
+
 # AppImage executable locations
 readonly PRISM_APPIMAGE_PATH="$PRISM_APPIMAGE_DATA_DIR/PrismLauncher.AppImage"
-readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-x86_64.AppImage"
+readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-${_POLLYMC_ARCH_SUFFIX}.AppImage"
 
 # =============================================================================
 # SYSTEM DETECTION VARIABLES

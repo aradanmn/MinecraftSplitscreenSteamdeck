@@ -148,7 +148,23 @@ setup_pollymc() {
     if [[ -z "$pollymc_type" ]]; then
         print_progress "No existing PollyMC found - downloading AppImage..."
 
-        local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
+        # Detect system architecture for correct AppImage download
+        local arch arch_suffix
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)
+                arch_suffix="x86_64"
+                ;;
+            aarch64|arm64)
+                arch_suffix="arm64"
+                ;;
+            *)
+                print_warning "Unknown architecture: $arch - trying x86_64"
+                arch_suffix="x86_64"
+                ;;
+        esac
+
+        local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-${arch_suffix}.AppImage"
         print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
 
         # Download to temp location first, only create directory on success
