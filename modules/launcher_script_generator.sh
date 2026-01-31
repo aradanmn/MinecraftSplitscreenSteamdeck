@@ -750,6 +750,170 @@ setSplitscreenModeForPlayer() {
 }
 
 # =============================================================================
+# Dynamic Splitscreen Event Handlers (Rev 3.0.0)
+# =============================================================================
+# Event handlers for dynamic player join/leave functionality.
+
+# Show desktop notification (if available)
+# Arguments:
+#   $1 = title, $2 = message
+showNotification() {
+    local title="$1"
+    local message="$2"
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Minecraft Splitscreen" "$title" "$message" 2>/dev/null || true
+    fi
+}
+
+# Handle controller count change event
+# Arguments:
+#   $1 = new controller count
+handleControllerChange() {
+    local new_controller_count=$1
+    local current_active
+    current_active=$(countActiveInstances)
+
+    log_info "Controller change: $new_controller_count controllers (currently $current_active active)"
+
+    # Add new instances if controllers increased and we have room
+    while [ "$current_active" -lt "$new_controller_count" ] && [ "$current_active" -lt 4 ]; do
+        local slot
+        slot=$(getNextAvailableSlot)
+        if [ -n "$slot" ]; then
+            local new_total=$((current_active + 1))
+            log_info "Player $new_total joining (slot $slot)"
+            showNotification "Player Joined" "Player $new_total is joining the game"
+
+            # Update ALL windows for new layout FIRST
+            if [ "$current_active" -gt 0 ]; then
+                repositionAllWindows "$new_total"
+            fi
+
+            # Launch the new instance
+            launchInstanceForSlot "$slot" "$new_total"
+            current_active=$new_total
+        else
+            break
+        fi
+    done
+
+    CURRENT_PLAYER_COUNT=$current_active
+}
+
+# Check for and handle exited instances
+# Called periodically to detect when players quit
+checkForExitedInstances() {
+    local any_exited=0
+
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            if ! isInstanceRunning "$i"; then
+                log_info "Player $i has exited"
+                showNotification "Player Left" "Player $i has left the game"
+                markInstanceStopped "$i"
+                any_exited=1
+            fi
+        fi
+    done
+
+    if [ "$any_exited" = "1" ]; then
+        local remaining
+        remaining=$(countActiveInstances)
+        CURRENT_PLAYER_COUNT=$remaining
+
+        if [ "$remaining" -gt 0 ]; then
+            log_info "Repositioning for $remaining remaining players"
+            repositionAllWindows "$remaining"
+        fi
+    fi
+}
+
+# =============================================================================
+# Dynamic Splitscreen Mode (Rev 3.0.0)
+# =============================================================================
+# Main loop for dynamic player join/leave mode.
+
+# Run dynamic splitscreen mode - players can join/leave mid-session
+runDynamicSplitscreen() {
+    log_info "Starting dynamic splitscreen mode"
+    DYNAMIC_MODE=1
+    local instances_ever_launched=0
+
+    hidePanels
+
+    # Start controller monitoring
+    if ! startControllerMonitor; then
+        log_error "Failed to start controller monitor, falling back to static mode"
+        runStaticSplitscreen
+        return
+    fi
+
+    # Initial launch based on current controllers
+    local initial_count
+    initial_count=$(getControllerCount)
+    if [ "$initial_count" -gt 0 ]; then
+        handleControllerChange "$initial_count"
+        instances_ever_launched=1
+    else
+        log_info "No controllers detected. Waiting for controller connection..."
+        showNotification "Waiting for Controllers" "Connect a controller to start playing"
+    fi
+
+    # Main event loop
+    while true; do
+        # Check for controller events (non-blocking read with timeout)
+        if read -t 1 -u 3 event 2>/dev/null; then
+            if [[ "$event" =~ ^CONTROLLER_CHANGE:([0-9]+)$ ]]; then
+                handleControllerChange "${BASH_REMATCH[1]}"
+                instances_ever_launched=1
+            fi
+        fi
+
+        # Check for exited instances
+        checkForExitedInstances
+
+        # Exit if all players have left (and at least one ever played)
+        local active
+        active=$(countActiveInstances)
+        if [ "$active" -eq 0 ] && [ "$instances_ever_launched" = "1" ]; then
+            log_info "All players have exited. Ending session."
+            break
+        fi
+    done
+
+    # Cleanup
+    stopControllerMonitor
+    restorePanels
+    log_info "Dynamic splitscreen session ended"
+}
+
+# Run static splitscreen mode (original behavior)
+runStaticSplitscreen() {
+    log_info "Starting static splitscreen mode"
+    DYNAMIC_MODE=0
+
+    hidePanels
+
+    local numberOfControllers
+    numberOfControllers=$(getControllerCount)
+
+    echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
+
+    for player in $(seq 1 "$numberOfControllers"); do
+        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
+        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
+        launchGame "latestUpdate-$player" "P$player"
+    done
+
+    echo "[Info] All instances launched. Waiting for games to exit..."
+    wait
+    restorePanels
+    echo "[Info] All games have exited."
+}
+
+# =============================================================================
 # Main Game Launch Logic
 # =============================================================================
 
@@ -840,36 +1004,66 @@ trap cleanup_autostart EXIT
 
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
-    echo "[Debug] === Minecraft Splitscreen Launcher ===" >&2
+    echo "[Debug] === Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ===" >&2
     echo "[Debug] Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)" >&2
     echo "[Debug] Instances: $INSTANCES_DIR" >&2
     echo "[Debug] Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY" >&2
 fi
 
+# Mode selection (skip if launched with argument)
+LAUNCH_MODE="${1:-}"
+
+# Handle special arguments
+if [ "$LAUNCH_MODE" != "launchFromPlasma" ] && [ "$LAUNCH_MODE" != "static" ] && [ "$LAUNCH_MODE" != "dynamic" ]; then
+    # Interactive mode selection
+    echo ""
+    echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+    echo ""
+    echo "Launch Modes:"
+    echo "  1. Static  - Launch based on current controllers (original behavior)"
+    echo "  2. Dynamic - Players can join/leave during session [NEW in v3.0]"
+    echo ""
+    read -t 15 -p "Select mode [1]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
+    mode_choice=${mode_choice:-1}
+
+    case "$mode_choice" in
+        2|dynamic|d) LAUNCH_MODE="dynamic" ;;
+        *) LAUNCH_MODE="static" ;;
+    esac
+    echo ""
+fi
+
 if isSteamDeckGameMode; then
-    if [ "$1" = launchFromPlasma ]; then
-        # Inside nested Plasma session
+    if [ "$1" = "launchFromPlasma" ]; then
+        # Inside nested Plasma session - check for stored mode
         rm -f ~/.config/autostart/minecraft-launch.desktop
-        launchGames
+
+        # Read stored mode from temp file (set by outer invocation)
+        stored_mode=""
+        if [ -f "/tmp/mc-splitscreen-mode" ]; then
+            stored_mode=$(cat "/tmp/mc-splitscreen-mode" 2>/dev/null)
+            rm -f "/tmp/mc-splitscreen-mode"
+        fi
+
+        if [ "$stored_mode" = "dynamic" ]; then
+            runDynamicSplitscreen
+        else
+            launchGames
+        fi
+
         qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
     else
-        # Start nested session
+        # Store mode for nested session and start it
+        echo "$LAUNCH_MODE" > "/tmp/mc-splitscreen-mode"
         nestedPlasma
     fi
 else
-    # Desktop mode: launch directly
-    numberOfControllers=$(getControllerCount)
-    echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
-
-    for player in $(seq 1 $numberOfControllers); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
-        launchGame "latestUpdate-$player" "P$player"
-    done
-
-    echo "[Info] All instances launched. Waiting for games to exit..."
-    wait
-    echo "[Info] All games have exited."
+    # Desktop mode: launch directly with selected mode
+    if [ "$LAUNCH_MODE" = "dynamic" ]; then
+        runDynamicSplitscreen
+    else
+        runStaticSplitscreen
+    fi
 fi
 LAUNCHER_SCRIPT_EOF
 
