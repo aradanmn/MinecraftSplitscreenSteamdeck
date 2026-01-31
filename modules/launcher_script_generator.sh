@@ -285,11 +285,39 @@ restorePanels() {
 }
 
 # =============================================================================
+# Hardware Detection
+# =============================================================================
+
+# Check if running on Steam Deck hardware
+# Returns 0 (true) if Steam Deck hardware detected, 1 (false) otherwise
+isSteamDeckHardware() {
+    local dmi_file="/sys/class/dmi/id/product_name"
+    if [ -f "$dmi_file" ]; then
+        local product_name
+        product_name=$(cat "$dmi_file" 2>/dev/null)
+        if echo "$product_name" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Check if Steam virtual controller is present
+# Returns 0 (true) if Steam Virtual Gamepad detected
+hasSteamVirtualController() {
+    if grep -q "Steam Virtual Gamepad" /proc/bus/input/devices 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# =============================================================================
 # Controller Detection
 # =============================================================================
 
-# Detect the number of controllers (1-4)
+# Detect the number of controllers (0-4)
 # Handles Steam Input device duplication when Steam is running
+# Returns 0 if no controllers found (keyboard-only mode possible)
 getControllerCount() {
     local count=0
     local steam_running=0
@@ -332,12 +360,78 @@ getControllerCount() {
         count=$(( (count + 1) / 2 ))
     fi
 
-    # Clamp between 1 and 4
+    # Special case: Steam Deck with no external controllers
+    # If on Steam Deck AND count is 0 AND Steam virtual controller detected,
+    # count the Steam Deck's built-in controls as 1 player
+    if [ "$count" -eq 0 ] && isSteamDeckHardware && hasSteamVirtualController; then
+        count=1
+        echo "[Debug] Steam Deck built-in controls detected as Player 1" >&2
+    fi
+
+    # Clamp to maximum of 4 (no minimum - allow 0 for keyboard-only mode)
     [ "$count" -gt 4 ] && count=4
-    [ "$count" -lt 1 ] && count=1
 
     echo "[Debug] Controller detection: real=$real_controllers, total=$count, steam=$steam_running" >&2
     echo "$count"
+}
+
+# Prompt user for controller mode when no controllers detected
+# Returns: player count (1 for keyboard mode, 0 to wait/exit)
+promptControllerMode() {
+    echo ""
+    echo "=========================================="
+    echo "  No controllers detected!"
+    echo "=========================================="
+    echo ""
+    echo "Options:"
+    echo "  1. Launch with keyboard only (1 player)"
+    echo "  2. Wait for controller connection"
+    echo "  3. Exit"
+    echo ""
+
+    # Try to read from /dev/tty for interactive input
+    local choice=""
+    if [ -t 0 ]; then
+        read -r -p "Your choice [1-3]: " choice
+    elif [ -e /dev/tty ]; then
+        read -r -p "Your choice [1-3]: " choice < /dev/tty
+    else
+        echo "[Warning] No interactive terminal available, defaulting to keyboard mode"
+        choice="1"
+    fi
+
+    case "$choice" in
+        1)
+            echo "[Info] Launching in keyboard-only mode (1 player)"
+            log_info "User selected keyboard-only mode"
+            echo "1"
+            ;;
+        2)
+            echo "[Info] Waiting for controller connection..."
+            echo "[Info] Connect a controller and press Enter to continue, or Ctrl+C to exit"
+            log_info "User waiting for controller connection"
+            if [ -t 0 ]; then
+                read -r
+            elif [ -e /dev/tty ]; then
+                read -r < /dev/tty
+            fi
+            # Re-detect controllers after waiting
+            local new_count
+            new_count=$(getControllerCount)
+            if [ "$new_count" -eq 0 ]; then
+                echo "[Warning] Still no controllers detected. Launching in keyboard mode."
+                echo "1"
+            else
+                echo "[Info] Detected $new_count controller(s)"
+                echo "$new_count"
+            fi
+            ;;
+        3|*)
+            echo "[Info] Exiting..."
+            log_info "User chose to exit"
+            echo "0"
+            ;;
+    esac
 }
 
 # =============================================================================
@@ -491,6 +585,16 @@ if isSteamDeckGameMode; then
 else
     # Desktop mode: launch directly
     numberOfControllers=$(getControllerCount)
+
+    # Handle 0 controllers - prompt user for options
+    if [ "$numberOfControllers" -eq 0 ]; then
+        numberOfControllers=$(promptControllerMode)
+        # If user chose to exit (returned 0), exit gracefully
+        if [ "$numberOfControllers" -eq 0 ]; then
+            exit 0
+        fi
+    fi
+
     echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
 
     for player in $(seq 1 $numberOfControllers); do
