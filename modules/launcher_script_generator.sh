@@ -329,8 +329,10 @@ getControllerCount() {
     if [ -f /proc/bus/input/devices ]; then
         # Count unique physical controllers by looking at the Handlers line with "js"
         # and filtering by Sysfs path - uhid devices are real, virtual/input are Steam duplicates
+        # Note: grep -c exits with 1 when count is 0, so we capture output and default if empty
         real_controllers=$(grep -B5 "Handlers=.*js[0-9]" /proc/bus/input/devices 2>/dev/null | \
-            grep -c "Sysfs=.*/uhid/" 2>/dev/null || echo "0")
+            grep -c "Sysfs=.*/uhid/" 2>/dev/null) || true
+        real_controllers=${real_controllers:-0}
     fi
 
     # Method 2: Fallback to /dev/input/js* if method 1 fails
