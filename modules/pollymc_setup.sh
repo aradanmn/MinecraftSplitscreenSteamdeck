@@ -111,7 +111,9 @@ setup_pollymc() {
             local flatpak_installed=false
 
             # Try system-level install first (works on Bazzite/SteamOS where Flathub is system-only)
-            if flatpak install -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
+            # Use --system explicitly to avoid flatpak's remote selection prompt when both system
+            # and user flathub remotes exist
+            if flatpak install --system -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
                 flatpak_installed=true
                 print_success "PollyMC Flatpak installed (system)"
             else

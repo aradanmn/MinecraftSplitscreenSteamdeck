@@ -98,8 +98,9 @@ download_prism_launcher() {
             local flatpak_installed=false
 
             # Try system-level install first (works on Bazzite/SteamOS where Flathub is system-only)
-            # This may prompt for authentication on some systems
-            if flatpak install -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
+            # Use --system explicitly to avoid flatpak's remote selection prompt when both system
+            # and user flathub remotes exist. This may prompt for authentication on some systems.
+            if flatpak install --system -y flathub "$PRISM_FLATPAK_ID" 2>/dev/null; then
                 flatpak_installed=true
                 print_success "PrismLauncher Flatpak installed (system)"
             else
