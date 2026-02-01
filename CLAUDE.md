@@ -388,11 +388,45 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 
 ---
 
+### Issue #6: Detect Previous Installation (MEDIUM PRIORITY)
+**Problem:** When users run the installer multiple times, it starts fresh each time without recognizing existing installations. Users may want to update mods, change Minecraft version, or modify their setup without full reinstallation.
+
+**Desired Behavior:**
+- Detect if splitscreen instances already exist (check for `latestUpdate-1` through `latestUpdate-4`)
+- Detect existing launcher script (`minecraftSplitscreen.sh`)
+- If previous installation found, prompt user with options:
+  1. **Update** - Keep same Minecraft version, update mods to latest compatible
+  2. **Change Version** - Select new Minecraft version, reinstall mods
+  3. **Reconfigure** - Change mod selection (add/remove mods)
+  4. **Fresh Install** - Delete existing and start over
+  5. **Cancel** - Exit without changes
+
+**Detection Points:**
+- `$ACTIVE_DATA_DIR/instances/latestUpdate-1/` exists
+- `$ACTIVE_DATA_DIR/minecraftSplitscreen.sh` exists
+- Read existing `instance.cfg` to get current Minecraft version
+- Read existing mods folder to get current mod list
+
+**Files to modify:**
+- `modules/main_workflow.sh` - Add detection at start of `run_installation()`
+- `modules/utilities.sh` - Add `detect_existing_installation()` function
+- Potentially new module: `modules/update_management.sh` for update logic
+
+**Considerations:**
+- Preserve user's Microsoft account if they added one
+- Preserve any custom JVM arguments
+- Handle partial installations gracefully
+- Log what was detected and what action was taken
+
+---
+
 ### Implementation Order
 1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
 2. ✅ **Issue #1 (User Input)** - DONE. All modules refactored to use `prompt_user()` and `prompt_yes_no()`.
-3. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
-4. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+3. ✅ **Issue #5 (Dynamic Splitscreen)** - DONE. Players can join/leave mid-session.
+4. ⏳ **Issue #6 (Previous Installation Detection)** - Improves repeat user experience
+5. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
+6. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
 
 ## Useful Debugging
 
