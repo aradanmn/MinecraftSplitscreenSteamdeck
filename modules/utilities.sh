@@ -3,8 +3,8 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     2.1.1
-# @date        2026-01-31
+# @version     2.1.2
+# @date        2026-02-01
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -52,6 +52,7 @@
 #     - IMMUTABLE_OS_NAME       : Set by is_immutable_os() with detected OS name
 #
 # @changelog
+#   2.1.2 (2026-02-01) - Fix: prompt_user echo to stderr so timeout newline isn't captured
 #   2.1.1 (2026-01-31) - Fix: Improved timeout logging clarity (TIMEOUT vs USER INPUT)
 #   2.1.0 (2026-01-31) - Added version parsing utilities for new MC version format
 #   2.0.1 (2026-01-26) - Added logging system, prompt_user for curl|bash support
@@ -173,7 +174,7 @@ prompt_user() {
     local timed_out=false
     if [[ "$timeout" -gt 0 ]]; then
         if ! read -r -t "$timeout" -p "$prompt" response; then
-            echo ""  # New line after timeout
+            echo "" >&2  # New line after timeout (stderr, not captured by command substitution)
             timed_out=true
             response="$default"
         fi
