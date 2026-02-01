@@ -3,8 +3,8 @@
 # PATH CONFIGURATION MODULE - SINGLE SOURCE OF TRUTH
 # =============================================================================
 # @file        path_configuration.sh
-# @version     1.2.1
-# @date        2026-01-25
+# @version     2.1.0
+# @date        2026-01-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -70,8 +70,10 @@
 #     - print_path_configuration        : Debug print all paths
 #
 # @changelog
-#   1.2.1 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
-#   1.2.0 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
+#   2.1.0 (2026-01-31) - Added architecture detection for PollyMC AppImage (x86_64/arm64)
+#   2.0.2 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
+#   2.0.1 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
+#   2.0.0 (2026-01-25) - Rebased to 2.x for fork; added comprehensive JSDoc documentation
 #   1.1.1 (2026-01-25) - Prefer Flatpak over AppImage on immutable OS (Bazzite, SteamOS, etc.)
 #   1.1.0 (2026-01-24) - Added revert_to_prismlauncher function
 #   1.0.0 (2026-01-23) - Initial version with centralized path management

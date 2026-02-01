@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        main_workflow.sh
-# @version     2.0.0
-# @date        2026-01-25
+# @version     2.1.0
+# @date        2026-01-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -39,6 +39,8 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   2.1.0 (2026-01-31) - Added version display in startup header
+#   2.0.1 (2026-01-26) - Added init_logging() call at startup
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================

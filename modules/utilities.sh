@@ -3,7 +3,7 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     1.3.0
+# @version     2.1.1
 # @date        2026-01-31
 # @author      aradanmn
 # @license     MIT
@@ -52,8 +52,10 @@
 #     - IMMUTABLE_OS_NAME       : Set by is_immutable_os() with detected OS name
 #
 # @changelog
-#   1.3.0 (2026-01-31) - Added version parsing utilities for new MC version format
-#   1.2.0 (2026-01-26) - Added logging system, prompt_user for curl|bash support
+#   2.1.1 (2026-01-31) - Fix: Improved timeout logging clarity (TIMEOUT vs USER INPUT)
+#   2.1.0 (2026-01-31) - Added version parsing utilities for new MC version format
+#   2.0.1 (2026-01-26) - Added logging system, prompt_user for curl|bash support
+#   2.0.0 (2026-01-25) - Rebased to 2.x for fork; added comprehensive JSDoc documentation
 #   1.1.0 (2026-01-24) - Added immutable OS detection and Flatpak preference
 #   1.0.0 (2026-01-23) - Initial version with print functions and account merging
 # =============================================================================

@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        lwjgl_management.sh
-# @version     2.0.0
-# @date        2026-01-25
+# @version     2.0.1
+# @date        2026-01-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -35,6 +35,7 @@
 #     - validate_lwjgl_version   : Version format validation
 #
 # @changelog
+#   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================

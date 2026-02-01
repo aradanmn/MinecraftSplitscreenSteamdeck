@@ -3,8 +3,8 @@
 # VERSION INFORMATION MODULE
 # =============================================================================
 # @file        version_info.sh
-# @version     2.0.0
-# @date        2026-01-24
+# @version     2.1.0
+# @date        2026-01-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -36,6 +36,7 @@
 #     - verify_repo_source     : Verify running from expected repo
 #
 # @changelog
+#   2.1.0 (2026-01-31) - Updated SCRIPT_VERSION to 2.1.0 for rev2 release
 #   2.0.0 (2026-01-24) - Updated for modular installer architecture
 #   1.0.0 (2026-01-22) - Initial version
 # =============================================================================

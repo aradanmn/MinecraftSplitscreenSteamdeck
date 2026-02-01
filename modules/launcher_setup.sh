@@ -3,8 +3,8 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.2.2
-# @date        2026-01-25
+# @version     2.2.3
+# @date        2026-01-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -37,9 +37,10 @@
 #     - PRISM_EXECUTABLE        : Path or command to run PrismLauncher
 #
 # @changelog
-#   2.2.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level (for Bazzite/SteamOS)
+#   2.2.3 (2026-01-31) - Fix: Add --system flag to avoid flatpak remote selection prompt
+#   2.2.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level
 #   2.2.1 (2026-01-25) - Fix: Only create directories after successful download
-#   2.2.0 (2026-01-25) - Use PREFER_FLATPAK from path_configuration instead of calling should_prefer_flatpak()
+#   2.2.0 (2026-01-25) - Use PREFER_FLATPAK from path_configuration
 #   2.1.0 (2026-01-24) - Added Flatpak preference for immutable OS, arch detection
 #   2.0.0 (2026-01-23) - Refactored to use centralized path configuration
 #   1.0.0 (2026-01-22) - Initial version

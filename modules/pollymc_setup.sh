@@ -3,8 +3,8 @@
 # POLLYMC SETUP MODULE
 # =============================================================================
 # @file        pollymc_setup.sh
-# @version     1.3.2
-# @date        2026-01-25
+# @version     2.1.0
+# @date        2026-01-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -39,9 +39,11 @@
 #     - cleanup_prism_launcher : Remove PrismLauncher after successful setup
 #
 # @changelog
-#   1.3.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level (for Bazzite/SteamOS)
-#   1.3.1 (2026-01-25) - Fix: Only create directories after successful download/install
-#   1.3.0 (2026-01-25) - Added Flatpak installation for immutable OS using PREFER_FLATPAK
+#   2.1.0 (2026-01-31) - Added architecture-aware AppImage download (x86_64/arm64)
+#   2.0.3 (2026-01-31) - Fix: Add --system flag to avoid flatpak remote selection prompt
+#   2.0.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level
+#   2.0.1 (2026-01-25) - Fix: Only create directories after successful download/install
+#   2.0.0 (2026-01-25) - Rebased to 2.x for fork; added Flatpak installation for immutable OS
 #   1.2.0 (2026-01-24) - Added proper fallback handling, empty dir cleanup
 #   1.1.0 (2026-01-23) - Added instance migration with options.txt preservation
 #   1.0.0 (2026-01-22) - Initial version

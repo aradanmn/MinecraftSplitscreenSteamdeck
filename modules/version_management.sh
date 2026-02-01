@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        version_management.sh
-# @version     2.0.0
-# @date        2026-01-25
+# @version     2.0.1
+# @date        2026-01-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -38,6 +38,7 @@
 #     - get_fabric_version               : Fetch latest Fabric loader version
 #
 # @changelog
+#   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================

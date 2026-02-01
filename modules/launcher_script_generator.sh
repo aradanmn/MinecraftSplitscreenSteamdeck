@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     2.0.0
-# @date        2026-01-25
+# @version     2.1.0
+# @date        2026-01-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,11 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
+#   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
+#   2.0.3 (2026-01-31) - Fix: Add log_debug() function, debug output now logged to file
+#   2.0.2 (2026-01-31) - Fix: grep -c exit code causing "0\n0" controller count
+#   2.0.1 (2026-01-26) - Added logging system, improved controller/game mode detection
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
