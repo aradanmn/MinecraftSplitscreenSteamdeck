@@ -141,6 +141,7 @@ log() { [[ -n "$LOG_FILE" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE" 2
 log_info() { echo "[Info] $*"; log "INFO: $*"; }
 log_error() { echo "[Error] $*" >&2; log "ERROR: $*"; }
 log_warning() { echo "[Warning] $*"; log "WARNING: $*"; }
+log_debug() { echo "[Debug] $*" >&2; log "DEBUG: $*"; }
 
 _init_log
 
@@ -362,18 +363,26 @@ getControllerCount() {
         count=$(( (count + 1) / 2 ))
     fi
 
+    # Special case: Steam Deck hardware without Steam running
+    # The Steam Deck's built-in controls show up as 2 js devices (gamepad + touchpads/motion)
+    # but it's really just 1 physical controller
+    if isSteamDeckHardware && [ "$steam_running" -eq 0 ] && [ "$count" -gt 1 ]; then
+        log_debug "Steam Deck hardware detected without Steam - treating as 1 controller (was $count)"
+        count=1
+    fi
+
     # Special case: Steam Deck with no external controllers
     # If on Steam Deck AND count is 0 AND Steam virtual controller detected,
     # count the Steam Deck's built-in controls as 1 player
     if [ "$count" -eq 0 ] && isSteamDeckHardware && hasSteamVirtualController; then
         count=1
-        echo "[Debug] Steam Deck built-in controls detected as Player 1" >&2
+        log_debug "Steam Deck built-in controls detected as Player 1"
     fi
 
     # Clamp to maximum of 4 (no minimum - allow 0 for keyboard-only mode)
     [ "$count" -gt 4 ] && count=4
 
-    echo "[Debug] Controller detection: real=$real_controllers, total=$count, steam=$steam_running" >&2
+    log_debug "Controller detection: real=$real_controllers, total=$count, steam=$steam_running"
     echo "$count"
 }
 
@@ -523,32 +532,32 @@ isSteamDeckGameMode() {
     # Check 1: Running in gamescope session (Steam Deck Game Mode or Bazzite Game Mode)
     # This is the most reliable indicator - gamescope IS game mode
     if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] || [ "$XDG_CURRENT_DESKTOP" = "gamescope" ]; then
-        echo "[Debug] Detected gamescope session" >&2
+        log_debug "Detected gamescope session"
         return 0
     fi
 
     # Check 2: Running in KDE/other full desktop - this is DESKTOP mode, not game mode
     # Even if launched from startplasma-steamos, if we're in KDE, we have window management
     if [ -n "$DISPLAY" ] && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
-        echo "[Debug] Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)" >&2
+        log_debug "Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)"
         return 1
     fi
 
     # Check 3: Steam Deck hardware with gamepadui (and not in desktop mode)
     if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
         if pgrep -af 'steam' | grep -q -- '-gamepadui'; then
-            echo "[Debug] Detected Steam Deck with gamepadui" >&2
+            log_debug "Detected Steam Deck with gamepadui"
             return 0
         fi
     fi
 
     # Check 4: No display at all - likely running in pure game mode
     if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
-        echo "[Debug] No display - assuming game mode" >&2
+        log_debug "No display - assuming game mode"
         return 0
     fi
 
-    echo "[Debug] Desktop mode detected (default fallback)" >&2
+    log_debug "Desktop mode detected (default fallback)"
     return 1
 }
 
@@ -568,10 +577,10 @@ trap cleanup_autostart EXIT
 
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
-    echo "[Debug] === Minecraft Splitscreen Launcher ===" >&2
-    echo "[Debug] Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)" >&2
-    echo "[Debug] Instances: $INSTANCES_DIR" >&2
-    echo "[Debug] Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY" >&2
+    log_debug "=== Minecraft Splitscreen Launcher ==="
+    log_debug "Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)"
+    log_debug "Instances: $INSTANCES_DIR"
+    log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
 fi
 
 if isSteamDeckGameMode; then
