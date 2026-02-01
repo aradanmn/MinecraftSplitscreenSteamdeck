@@ -291,12 +291,13 @@ restorePanels() {
 
 # Check if running on Steam Deck hardware
 # Returns 0 (true) if Steam Deck hardware detected, 1 (false) otherwise
+# Codenames: Jupiter = Steam Deck LCD, Galileo = Steam Deck OLED
 isSteamDeckHardware() {
     local dmi_file="/sys/class/dmi/id/product_name"
     if [ -f "$dmi_file" ]; then
         local product_name
         product_name=$(cat "$dmi_file" 2>/dev/null)
-        if echo "$product_name" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
+        if echo "$product_name" | grep -Ei 'Steam Deck|Jupiter|Galileo' >/dev/null; then
             return 0
         fi
     fi
@@ -544,7 +545,8 @@ isSteamDeckGameMode() {
     fi
 
     # Check 3: Steam Deck hardware with gamepadui (and not in desktop mode)
-    if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
+    # Codenames: Jupiter = Steam Deck LCD, Galileo = Steam Deck OLED
+    if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter|Galileo' >/dev/null; then
         if pgrep -af 'steam' | grep -q -- '-gamepadui'; then
             log_debug "Detected Steam Deck with gamepadui"
             return 0
