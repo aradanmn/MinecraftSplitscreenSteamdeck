@@ -6,7 +6,7 @@ This document provides essential context for AI assistants working on this codeb
 
 **Minecraft Splitscreen Steam Deck & Linux Installer** - An automated installer for setting up splitscreen Minecraft (1-4 players) on Steam Deck and Linux systems.
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Repository:** https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 **License:** MIT
 
@@ -133,6 +133,35 @@ All modules use this header format:
 # - VARIABLE1
 # - function1()
 ```
+
+### Versioning Convention (IMPORTANT)
+
+**When modifying any module file, you MUST update its version number and changelog.**
+
+Version format: `Major.Minor.Patch` (e.g., `2.1.0`)
+
+| Component | When to Increment | Example |
+|-----------|-------------------|---------|
+| **Major** | Breaking changes, complete rewrites, new major release | 1.x.x → 2.0.0 |
+| **Minor** | New features, significant improvements | 2.0.x → 2.1.0 |
+| **Patch** | Bug fixes, small changes | 2.1.0 → 2.1.1 |
+
+**Version history:**
+- `1.x.x` = Original flyingEwok era
+- `2.x.x` = aradanmn fork (current)
+- `3.x.x` = Reserved for future major release (e.g., dynamic splitscreen)
+
+**Update checklist when modifying a file:**
+1. Increment `@version` tag appropriately
+2. Update `@date` to current date
+3. Add changelog entry with version, date, and description:
+   ```bash
+   # @changelog
+   #   2.1.1 (2026-01-31) - Fix: Description of the bug fix
+   #   2.1.0 (2026-01-30) - Added new feature X
+   ```
+
+**Global version:** `SCRIPT_VERSION` in `version_info.sh` should match the highest module version for releases.
 
 ### Print Functions (from utilities.sh)
 
