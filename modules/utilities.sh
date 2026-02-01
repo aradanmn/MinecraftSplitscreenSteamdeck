@@ -168,8 +168,13 @@ prompt_user() {
         fi
     fi
 
+    local timed_out=false
     if [[ "$timeout" -gt 0 ]]; then
-        read -r -t "$timeout" -p "$prompt" response || { echo ""; response="$default"; }
+        if ! read -r -t "$timeout" -p "$prompt" response; then
+            echo ""  # New line after timeout
+            timed_out=true
+            response="$default"
+        fi
     else
         read -r -p "$prompt" response
     fi
@@ -178,7 +183,11 @@ prompt_user() {
     [[ -n "${saved_stdin:-}" ]] && { exec 0<&"$saved_stdin"; exec {saved_stdin}<&-; }
 
     response="${response:-$default}"
-    log "USER INPUT: $response"
+    if [[ "$timed_out" == true ]]; then
+        log "TIMEOUT after ${timeout}s - using default: $response"
+    else
+        log "USER INPUT: $response"
+    fi
     echo "$response"
 }
 

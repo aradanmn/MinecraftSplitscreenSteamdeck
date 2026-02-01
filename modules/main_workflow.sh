@@ -80,7 +80,7 @@ main() {
     # Initialize logging FIRST (before any print_* calls)
     init_logging "install"
 
-    print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
+    print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER v${SCRIPT_VERSION} 🎮"
     print_info "Advanced installation system with smart launcher detection"
     print_info "Strategy: Detect available launchers → Create instances → Generate launcher script"
     print_info "Log file: $(get_log_file)"

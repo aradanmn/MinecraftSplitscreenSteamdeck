@@ -45,7 +45,7 @@
 # =============================================================================
 
 # Script version - update this when making releases
-readonly SCRIPT_VERSION="2.0.0"
+readonly SCRIPT_VERSION="3.0.0"
 
 # Repository information
 readonly REPO_OWNER="aradanmn"
