@@ -329,15 +329,37 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 
 ---
 
-### Issue #2: Steam Deck Virtual Controller Detection (MEDIUM PRIORITY)
-**Problem:** When launching on Steam Deck without external controllers, the script detects the Steam virtual controller, filters it out, and then stops because no "real" controllers remain.
+### Issue #2: Steam Deck Controller Issues (MEDIUM PRIORITY)
 
-**Current State:** The launcher script correctly filters Steam virtual controllers but doesn't handle the case where that's the ONLY controller available.
+**Problem A: No Controllers Detected**
+When launching on Steam Deck without external controllers, the script detects the Steam virtual controller, filters it out, and then stops because no "real" controllers remain.
 
-**Solution:** Modify controller detection logic to:
-- If on Steam Deck AND only Steam virtual controller detected AND no external controllers → allow using Steam Deck as Player 1
-- Provide a fallback "keyboard only" mode or prompt user
-- Consider: Steam Deck's built-in controls should count as 1 player
+**Problem B: Double Button Presses in Desktop Mode**
+When Steam is running in Desktop Mode, the Steam Deck's physical controls AND Steam's virtual controller BOTH send input to the game, causing every button press to register twice.
+
+**Root Cause:** Steam Input creates virtual controller devices that mirror physical inputs. In Desktop Mode with Steam running:
+- Physical controller → `/dev/input/js0` → game
+- Steam virtual controller → `/dev/input/js1` → game (duplicate!)
+
+**Current State:** The launcher script tries to filter Steam virtual controllers but:
+1. Doesn't handle when virtual controller is the ONLY option
+2. Doesn't prevent double-input when both physical AND virtual are active
+
+**Solution Approaches:**
+
+*For Problem A (no controllers):*
+- If on Steam Deck AND only Steam virtual controller detected → allow using it as Player 1
+- Provide "keyboard only" fallback mode
+
+*For Problem B (double presses):*
+1. **User-side fix:** Disable Steam Input per-game in Steam properties
+2. **Script-side detection:** Warn user when both physical and virtual detected
+3. **Script-side fix:** Before launching, advise user to either:
+   - Launch from Game Mode (Steam handles this correctly there)
+   - Disable Steam Input for Minecraft in Steam settings
+   - Close Steam before launching (if not using Steam integration)
+
+**Controllable Mod Note:** The Controllable mod has device selection settings. Users may be able to manually select only the physical controller there. Worth documenting.
 
 **Files to modify:** `modules/launcher_script_generator.sh` (the generated script template)
 
@@ -401,22 +423,55 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
   4. **Fresh Install** - Delete existing and start over
   5. **Cancel** - Exit without changes
 
-**Detection Points:**
-- `$ACTIVE_DATA_DIR/instances/latestUpdate-1/` exists
-- `$ACTIVE_DATA_DIR/minecraftSplitscreen.sh` exists
-- Read existing `instance.cfg` to get current Minecraft version
-- Read existing mods folder to get current mod list
+**Detection Method: Config File**
+Save installation config to: `~/.local/share/MinecraftSplitscreen/install-config.json`
+
+```json
+{
+  "version": "3.0.0",
+  "installed_at": "2026-01-31T19:18:01Z",
+  "updated_at": "2026-01-31T19:18:01Z",
+  "minecraft_version": "1.21.4",
+  "fabric_version": "0.16.10",
+  "launcher": {
+    "type": "pollymc",
+    "install_type": "flatpak",
+    "data_dir": "/home/deck/.var/app/org.fn2006.PollyMC/data/PollyMC"
+  },
+  "mods": {
+    "selected": ["fabric-api", "controllable", "worldhost", "cloth-config"],
+    "versions": {
+      "fabric-api": "0.92.1",
+      "controllable": "1.2.3"
+    }
+  },
+  "instances": ["latestUpdate-1", "latestUpdate-2", "latestUpdate-3", "latestUpdate-4"],
+  "options": {
+    "steam_integration": true,
+    "desktop_shortcut": true,
+    "dynamic_mode_available": true
+  }
+}
+```
+
+**Benefits:**
+- Single file to check for previous installation
+- Contains all selections without parsing instance files
+- Easy to read/write with `jq`
+- Version field allows migration if format changes
+- `updated_at` tracks when last modified
 
 **Files to modify:**
 - `modules/main_workflow.sh` - Add detection at start of `run_installation()`
-- `modules/utilities.sh` - Add `detect_existing_installation()` function
+- `modules/utilities.sh` - Add `detect_existing_installation()` and `save_install_config()` functions
 - Potentially new module: `modules/update_management.sh` for update logic
 
 **Considerations:**
 - Preserve user's Microsoft account if they added one
 - Preserve any custom JVM arguments
-- Handle partial installations gracefully
+- Handle partial installations gracefully (config exists but instances missing)
 - Log what was detected and what action was taken
+- Use `jq` for JSON parsing (already a dependency)
 
 ---
 
