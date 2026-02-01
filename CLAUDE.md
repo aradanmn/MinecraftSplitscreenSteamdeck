@@ -23,6 +23,7 @@ After successful setup, PrismLauncher files are cleaned up, leaving only PollyMC
 ```
 /
 ├── install-minecraft-splitscreen.sh    # Main entry point (386 lines)
+├── cleanup-minecraft-splitscreen.sh    # Uninstaller script (removes all components)
 ├── add-to-steam.py                     # Python script for Steam integration
 ├── accounts.json                       # Pre-configured offline accounts (P1-P4)
 ├── token.enc                           # Encrypted CurseForge API token
@@ -314,6 +315,7 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `install-minecraft-splitscreen.sh` | ~386 | Entry point, module loader |
+| `cleanup-minecraft-splitscreen.sh` | ~490 | Uninstaller (removes all components) |
 | `modules/path_configuration.sh` | ~600+ | Path management (CRITICAL) |
 | `modules/mod_management.sh` | ~1900 | Mod compatibility (largest) |
 | `modules/main_workflow.sh` | ~1300 | Main orchestration |
@@ -332,6 +334,59 @@ The installer generates `minecraftSplitscreen.sh` at runtime with:
 8. **Launcher Optimization** - PollyMC setup, PrismLauncher cleanup
 9. **System Integration** - Steam, desktop shortcuts
 10. **Completion Report** - Summary with paths and usage
+
+## Cleanup Script
+
+The `cleanup-minecraft-splitscreen.sh` script removes all components installed by the installer:
+
+```bash
+# Preview what would be removed (dry-run mode)
+./cleanup-minecraft-splitscreen.sh --dry-run
+
+# Clean everything except Java (default)
+./cleanup-minecraft-splitscreen.sh
+
+# Clean everything including Java, no prompts
+./cleanup-minecraft-splitscreen.sh --remove-java --force
+
+# Remote cleanup via SSH
+ssh deck@steamdeck './cleanup-minecraft-splitscreen.sh --force'
+```
+
+**What it removes:**
+- PollyMC data and AppImage (`~/.local/share/PollyMC`)
+- PollyMC Flatpak data (`~/.var/app/org.fn2006.PollyMC`)
+- PrismLauncher data and AppImage (`~/.local/share/PrismLauncher`)
+- PrismLauncher Flatpak data (`~/.var/app/org.prismlauncher.PrismLauncher`)
+- Flatpak applications (PollyMC, PrismLauncher)
+- Desktop shortcuts and app menu entries
+- Installer logs (`~/.local/share/MinecraftSplitscreen`)
+
+**What it preserves by default:**
+- Java installations (`~/.local/jdk/`) - use `--remove-java` to delete
+
+**Note:** Steam shortcuts (non-Steam games) must be removed manually in Steam.
+
+## Known Issues
+
+### SSH + curl | bash Causes Script Crash
+
+**Problem:** When running the installer via `curl | bash` over SSH, the script crashes at interactive prompts (exit code 139/SIGSEGV).
+
+**Root Cause:** The `prompt_user` function tries to read from `/dev/tty` for `curl | bash` compatibility, but this fails in certain SSH configurations.
+
+**Workaround:** Download the script first, then run it directly:
+
+```bash
+# Instead of: curl -fsSL URL | bash
+
+# Do this:
+curl -fsSL https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh -o /tmp/install.sh
+chmod +x /tmp/install.sh
+INSTALLER_SOURCE_URL=https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh /tmp/install.sh
+```
+
+**Status:** Affects remote SSH testing. Local execution works fine.
 
 ## TODO Items (from README)
 

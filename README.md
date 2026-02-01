@@ -199,6 +199,37 @@ Select your new Minecraft version when prompted. The installer will:
    - Preserve all your existing worlds
 
 ## Uninstall
+
+### Automatic Cleanup (Recommended)
+
+Use the cleanup script to remove all installed components:
+
+```bash
+# Download and run the cleanup script
+curl -fsSL https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/cleanup-minecraft-splitscreen.sh -o cleanup.sh
+chmod +x cleanup.sh
+
+# Preview what will be removed (dry-run mode)
+./cleanup.sh --dry-run
+
+# Run the cleanup (preserves Java installations by default)
+./cleanup.sh
+
+# To also remove Java installations
+./cleanup.sh --remove-java
+```
+
+The cleanup script removes:
+- PollyMC and PrismLauncher data directories (AppImage and Flatpak)
+- Flatpak applications (PollyMC, PrismLauncher)
+- Desktop shortcuts and app menu entries
+- Installer logs
+
+**Note:** Steam shortcuts must be removed manually: Steam > Library > Right-click 'Minecraft Splitscreen' > Manage > Remove non-Steam game
+
+### Manual Uninstall
+
+If you prefer manual removal:
 - **AppImage installations:** Delete the PollyMC folder: `rm -rf ~/.local/share/PollyMC`
 - **Flatpak installations:** Delete the PollyMC data: `rm -rf ~/.var/app/org.fn2006.PollyMC/data/PollyMC`
 - Remove any desktop or Steam shortcuts you created.
@@ -226,6 +257,11 @@ Select your new Minecraft version when prompted. The installer will:
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
 
 ## Recent Improvements
+- ✅ **Cleanup Script**: New `cleanup-minecraft-splitscreen.sh` removes all installed components with dry-run preview mode
+- ✅ **Comprehensive Logging**: All operations logged to `~/.local/share/MinecraftSplitscreen/logs/` for easier troubleshooting
+- ✅ **Steam Deck OLED Support**: Properly detects both Steam Deck LCD (Jupiter) and OLED (Galileo) models
+- ✅ **Architecture-Aware Downloads**: Automatically downloads correct AppImage for x86_64 or ARM64 systems
+- ✅ **Improved Timeout Handling**: Clear indication of user input vs timeout defaults in prompts
 - ✅ **Auto-Generated Launcher Script**: The splitscreen launcher is now generated at install time with correct paths baked in - no more hardcoded paths
 - ✅ **Flatpak Support**: Works with both Flatpak and AppImage installations of PollyMC and PrismLauncher
 - ✅ **Smart Launcher Detection**: Automatically detects existing launcher installations and uses them instead of downloading new ones
