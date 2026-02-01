@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     2.1.0
-# @date        2026-01-31
+# @version     2.1.1
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
 #   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
 #   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
 #   2.0.3 (2026-01-31) - Fix: Add log_debug() function, debug output now logged to file
@@ -392,61 +393,142 @@ getControllerCount() {
     echo "$count"
 }
 
-# Prompt user for controller mode when no controllers detected
-# Returns: player count (1 for keyboard mode, 0 to wait/exit)
-promptControllerMode() {
-    echo ""
-    echo "=========================================="
-    echo "  No controllers detected!"
-    echo "=========================================="
-    echo ""
-    echo "Options:"
-    echo "  1. Launch with keyboard only (1 player)"
-    echo "  2. Wait for controller connection"
-    echo "  3. Exit"
-    echo ""
+# Check if keyboard and mouse are available (for desktop mode)
+# Returns: 0 if keyboard detected, 1 otherwise
+hasKeyboardInput() {
+    # Check for keyboard devices in /proc/bus/input/devices
+    if [ -f /proc/bus/input/devices ]; then
+        if grep -q "keyboard" /proc/bus/input/devices 2>/dev/null; then
+            return 0
+        fi
+    fi
+    # Fallback: check for common keyboard device paths
+    if [ -e /dev/input/by-path/*-kbd ] 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
 
-    # Try to read from /dev/tty for interactive input
+# Check if mouse is available
+# Returns: 0 if mouse detected, 1 otherwise
+hasMouseInput() {
+    # Check for mouse device
+    if [ -e /dev/input/mice ] && [ -r /dev/input/mice ]; then
+        return 0
+    fi
+    # Fallback: check for mouse in input devices
+    if [ -f /proc/bus/input/devices ]; then
+        if grep -qi "mouse" /proc/bus/input/devices 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Prompt user for input mode when no controllers detected
+# Returns: player count (1 for keyboard mode, 0 to exit)
+# All status messages go to stderr, only the count goes to stdout
+promptControllerMode() {
+    local has_keyboard=false
+    local has_mouse=false
+
+    # Detect available input devices
+    if hasKeyboardInput; then
+        has_keyboard=true
+    fi
+    if hasMouseInput; then
+        has_mouse=true
+    fi
+
+    echo "" >&2
+    echo "==========================================" >&2
+    echo "  No game controllers detected!" >&2
+    echo "==========================================" >&2
+    echo "" >&2
+
+    # Show detected input devices
+    if [ "$has_keyboard" = true ] && [ "$has_mouse" = true ]; then
+        echo "  Detected: Keyboard + Mouse" >&2
+    elif [ "$has_keyboard" = true ]; then
+        echo "  Detected: Keyboard only" >&2
+    else
+        echo "  Detected: No standard input devices" >&2
+    fi
+    echo "" >&2
+
+    echo "Options:" >&2
+    if [ "$has_keyboard" = true ]; then
+        echo "  1. Launch with keyboard/mouse (1 player)" >&2
+    else
+        echo "  1. Launch anyway (1 player)" >&2
+    fi
+    echo "  2. Wait for controller connection" >&2
+    echo "  3. Exit" >&2
+    echo "" >&2
+
+    # Try to read from terminal - test if /dev/tty can actually be opened
     local choice=""
     if [ -t 0 ]; then
         read -r -p "Your choice [1-3]: " choice
-    elif [ -e /dev/tty ]; then
-        read -r -p "Your choice [1-3]: " choice < /dev/tty
+    elif [ -e /dev/tty ] && [ -r /dev/tty ]; then
+        # Test if we can actually read from /dev/tty
+        if exec 3</dev/tty 2>/dev/null; then
+            exec 3<&-  # Close the test fd
+            read -r -p "Your choice [1-3]: " choice < /dev/tty 2>/dev/null || choice="1"
+        else
+            echo "[Warning] Cannot open terminal, defaulting to keyboard mode" >&2
+            choice="1"
+        fi
     else
-        echo "[Warning] No interactive terminal available, defaulting to keyboard mode"
+        echo "[Warning] No interactive terminal available, defaulting to keyboard mode" >&2
         choice="1"
     fi
 
     case "$choice" in
         1)
-            echo "[Info] Launching in keyboard-only mode (1 player)"
-            log_info "User selected keyboard-only mode"
+            if [ "$has_keyboard" = true ]; then
+                echo "[Info] Launching with keyboard/mouse (1 player)" >&2
+                log "INFO: User selected keyboard/mouse mode"
+            else
+                echo "[Info] Launching in single-player mode" >&2
+                log "INFO: User selected single-player mode (no input devices detected)"
+            fi
             echo "1"
             ;;
         2)
-            echo "[Info] Waiting for controller connection..."
-            echo "[Info] Connect a controller and press Enter to continue, or Ctrl+C to exit"
-            log_info "User waiting for controller connection"
+            echo "[Info] Waiting for controller connection..." >&2
+            echo "[Info] Connect a controller and press Enter to continue, or Ctrl+C to exit" >&2
+            log "INFO: User waiting for controller connection"
+            # Wait for user input
             if [ -t 0 ]; then
                 read -r
-            elif [ -e /dev/tty ]; then
-                read -r < /dev/tty
+            elif [ -e /dev/tty ] && [ -r /dev/tty ]; then
+                read -r < /dev/tty 2>/dev/null || true
+            else
+                echo "[Warning] Cannot wait without terminal, continuing..." >&2
+                sleep 5
             fi
             # Re-detect controllers after waiting
             local new_count
             new_count=$(getControllerCount)
             if [ "$new_count" -eq 0 ]; then
-                echo "[Warning] Still no controllers detected. Launching in keyboard mode."
+                echo "[Warning] Still no controllers detected. Launching with keyboard/mouse." >&2
                 echo "1"
             else
-                echo "[Info] Detected $new_count controller(s)"
+                echo "[Info] Detected $new_count controller(s)" >&2
                 echo "$new_count"
             fi
             ;;
-        3|*)
-            echo "[Info] Exiting..."
-            log_info "User chose to exit"
+        3)
+            echo "[Info] Exiting..." >&2
+            log "INFO: User chose to exit"
             echo "0"
+            ;;
+        *)
+            # Invalid input - default to keyboard mode
+            echo "[Warning] Invalid choice '$choice', defaulting to keyboard mode" >&2
+            log "INFO: Invalid choice, defaulting to keyboard mode"
+            echo "1"
             ;;
     esac
 }
@@ -613,7 +695,7 @@ else
         fi
     fi
 
-    echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
+    echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
 
     for player in $(seq 1 $numberOfControllers); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
