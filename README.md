@@ -22,7 +22,6 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - Linux (Steam Deck or any modern distro)
 - Internet connection for initial setup
 - **Java** (automatically installed if not present - no manual setup required)
-- *Steam Deck users: For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. See [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller).*
 
 ## Installation Process
 The installer uses an **optimized hybrid approach** combining the strengths of two different launchers:
@@ -140,11 +139,13 @@ This hybrid approach ensures reliable automated installation while providing the
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
 
-5. **Steam Deck only - Install Steam Deck controller auto-disable (required):**
+5. **Steam Deck only - Optional: Install Steam Deck controller auto-disable:**
+
+   The launcher script now automatically handles Steam Deck controller detection in most cases. However, if you want to use the Steam Deck's built-in controls AND external controllers simultaneously (e.g., Steam Deck as P1, external controller as P2), you may need this tool:
    ```sh
    curl -sSL https://raw.githubusercontent.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller/main/curl_install.sh | bash
    ```
-   This automatically disables the built-in Steam Deck controller when external controllers are connected, which is essential for proper splitscreen controller counting. **This step is only needed on Steam Deck.**
+   See [Steam Deck Controller Handling](#steam-deck-controller-handling) for details on automatic controller detection.
 
 ## Technical Details
 - **Mod Compatibility:** Uses both Modrinth and CurseForge APIs with Fabric filtering (`modLoaderType=4` for CurseForge, `.loaders[] == "fabric"` for Modrinth)
@@ -152,11 +153,33 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Error Recovery:** Enhanced error handling with automatic fallbacks and manual creation options
 - **Memory Optimization:** Configured for splitscreen performance (3GB max, 512MB min per instance)
 
+## Steam Deck Controller Handling
+
+The launcher script includes intelligent controller detection that handles most Steam Deck scenarios automatically:
+
+**Automatic Features:**
+- **Steam Virtual Controller Detection:** Identifies and properly counts Steam's virtual gamepad devices
+- **Physical Controller Filtering:** Uses uhid-based detection to distinguish real controllers from virtual duplicates
+- **Steam Input Duplicate Handling:** Automatically adjusts controller count when Steam is running to avoid double-counting
+- **Steam Deck Built-in Controls:** Recognizes when the Steam Deck's controls are the only input available (counts as 1 player)
+- **Keyboard/Mouse Fallback:** When no controllers are detected, offers to launch in keyboard/mouse mode
+
+**When No Controllers Detected:**
+
+The launcher will prompt with three options:
+1. Launch with keyboard/mouse (1 player)
+2. Wait for controller connection
+3. Exit
+
+**When You May Still Need the Auto-Disable Tool:**
+
+If you want to use the Steam Deck's built-in controls as Player 1 AND connect external controllers for additional players simultaneously, you may need [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) to prevent input conflicts.
+
 ## Usage
 - Launch the game from Steam, your desktop menu, or the generated desktop shortcut.
 - The script will detect controllers and launch the correct number of Minecraft instances.
 - On Steam Deck Game Mode, it will use a nested KDE session for best compatibility.
-- **Steam Deck users:** For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. Use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) to automate this process.
+- **Steam Deck users:** The launcher automatically detects Steam's virtual controllers and handles them correctly. If no controllers are detected, you'll be offered the option to play with keyboard/mouse or wait for a controller connection.
 
 ## Installation Locations
 
@@ -239,7 +262,7 @@ If you prefer manual removal:
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
 - Uses [PollyMC](https://github.com/fn2006/PollyMC) for gameplay and [PrismLauncher](https://github.com/PrismLauncher/PrismLauncher) for instance creation.
 - Steam Deck Java installation script by [FlyingEwok](https://github.com/FlyingEwok/install-jdk-on-steam-deck) - provides seamless Java installation for Steam Deck's read-only filesystem with automatic version detection.
-- Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
+- Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - optional tool for advanced use cases where you want to use Steam Deck's built-in controls alongside external controllers simultaneously.
 
 ## Technical Improvements
 - **Launcher Detection Module:** Automatically detects AppImage and Flatpak installations with appropriate path handling for each
@@ -253,10 +276,12 @@ If you prefer manual removal:
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
 ## TODO
-- **Figure out a way to handle steam deck controller without needing to disable it for the whole system** - Find a method to selectively disable the Steam Deck controller only for splitscreen sessions while keeping it available for other games, and somehow figure out how to use Steam Deck controller with other controllers at the same time, as well as have the usecase with no Steam Deck controller at all and just the external controllers
+- ✅ ~~**Steam Deck controller handling**~~ - Basic handling is now implemented: detects virtual controllers, supports keyboard/mouse fallback, handles Steam Deck without external controllers. See [Steam Deck Controller Handling](#steam-deck-controller-handling).
+- **Steam Deck + external controllers simultaneously** - Remaining challenge: allowing the Steam Deck's built-in controls to count as Player 1 while external controllers count as additional players (e.g., Steam Deck = P1, external controller = P2). Currently requires [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) for this use case.
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
 
 ## Recent Improvements
+- ✅ **Smart Steam Deck Controller Handling**: Automatic detection of Steam virtual controllers, keyboard/mouse fallback, and proper handling of Steam Deck without external controllers - no longer requires external tools for most use cases
 - ✅ **Cleanup Script**: New `cleanup-minecraft-splitscreen.sh` removes all installed components with dry-run preview mode
 - ✅ **Comprehensive Logging**: All operations logged to `~/.local/share/MinecraftSplitscreen/logs/` for easier troubleshooting
 - ✅ **Steam Deck OLED Support**: Properly detects both Steam Deck LCD (Jupiter) and OLED (Galileo) models
