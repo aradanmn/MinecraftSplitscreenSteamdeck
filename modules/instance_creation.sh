@@ -497,8 +497,9 @@ EOF
                 fi
             fi
 
-            # Debug: Save API response to a persistent file for examination
-            local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
+            # Debug: Save API response to a temp file for examination
+            local debug_file
+            debug_file=$(mktemp -t "mod_${mod_name// /_}_${mod_id}_api_response_XXXXXX.json")
 
             # More robust way to write the data
             if [[ -n "$resolve_data" ]]; then

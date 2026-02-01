@@ -119,8 +119,8 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 # END GENERATED CONFIGURATION
 # =============================================================================
 
-# Temporary directory for intermediate files
-export target=/tmp
+# Temporary directory for intermediate files (respects TMPDIR if set)
+export target="${TMPDIR:-/tmp}"
 
 # =============================================================================
 # LOGGING (prints to terminal AND logs to file)

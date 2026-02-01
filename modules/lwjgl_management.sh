@@ -67,7 +67,8 @@ get_lwjgl_version() {
 
     # First try to get LWJGL version from Fabric Meta API
     local fabric_game_url="https://meta.fabricmc.net/v2/versions/game"
-    local temp_file="/tmp/fabric_versions_$$.json"
+    local temp_file
+    temp_file=$(mktemp)
 
     if command -v wget >/dev/null 2>&1; then
         if wget -q -O "$temp_file" "$fabric_game_url" 2>/dev/null; then
