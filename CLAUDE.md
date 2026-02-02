@@ -494,27 +494,57 @@ When Steam is running in Desktop Mode, the Steam Deck's physical controls AND St
 
 ---
 
-### Issue #5: Dynamic Splitscreen Mode (v3.0.0) ✅ IMPLEMENTED
+### Issue #5: Dynamic Splitscreen Mode (v3.0.0) ✅ CODE COMPLETE - NEEDS TESTING
 **Feature:** Players can join and leave mid-session without coordinating start times.
 
+**Status:** All code implemented in `launcher_script_generator.sh`. Ready for real-world testing.
+
+**CLI Arguments (v3.0.1):**
+```bash
+minecraftSplitscreen.sh                  # Interactive mode selection
+minecraftSplitscreen.sh --mode=static    # Skip prompt, use static mode
+minecraftSplitscreen.sh --mode=dynamic   # Skip prompt, use dynamic mode
+minecraftSplitscreen.sh --help           # Show usage information
+```
+
 **Technical Implementation:**
-- Controller monitoring via `inotifywait` with polling fallback
-- Process tracking with PID arrays for 4 instance slots
-- External window repositioning via `xdotool`/`wmctrl` on X11
+- Controller monitoring via `inotifywait` with polling fallback (lines 554-632)
+- Process tracking with PID arrays for 4 instance slots (lines 635-712)
+- External window repositioning via `xdotool`/`wmctrl` on X11 (lines 715-943)
 - Instance restart fallback for Game Mode (gamescope)
-- Event loop architecture in generated launcher script
-- Mode selection UI (static vs dynamic) at launch
+- Event loop architecture with join/leave handlers (lines 946-1083)
+- Mode selection UI (static vs dynamic) at launch (lines 1217-1235)
+- CLI argument parsing for non-interactive use (lines 1205-1280)
+- Zero-controller handling merged from rev2 (promptControllerMode)
+
+**Key Functions in Generated Launcher:**
+- `runDynamicSplitscreen()` - Main event loop
+- `runStaticSplitscreen()` - Original behavior (with rev2 fixes)
+- `startControllerMonitor()` / `stopControllerMonitor()` - IPC via named pipes
+- `handleControllerChange()` - Add/remove players
+- `repositionAllWindows()` - Adjust layout when player count changes
+- `launchInstanceForSlot()` / `stopInstance()` - Instance lifecycle
 
 **Files modified:**
-- `modules/launcher_script_generator.sh` - Major changes (dynamic mode logic, event handlers, window repositioning)
+- `modules/launcher_script_generator.sh` - Major rewrite (~1300 lines, dynamic mode logic)
+- `modules/utilities.sh` - `check_dynamic_mode_dependencies()`, `show_dynamic_mode_install_hints()`
 - `modules/version_info.sh` - Version bump to 3.0.0
 - All module headers - Version update to 3.0.0
 - `README.md` - Feature documentation
 
 **Optional dependencies for best experience:**
-- `inotify-tools` - Efficient controller hotplug detection
-- `xdotool`/`wmctrl` - Smooth window repositioning on X11
-- `libnotify` - Desktop notifications when players join/leave
+- `inotify-tools` - Efficient controller hotplug detection (without: 2-second polling)
+- `xdotool`/`wmctrl` - Smooth window repositioning on X11 (without: instances restart)
+- `libnotify` - Desktop notifications when players join/leave (without: silent)
+
+**Testing Checklist (Not Yet Done):**
+- [ ] Steam Deck Game Mode with dynamic player join/leave
+- [ ] Steam Deck Desktop Mode with X11 window repositioning
+- [ ] Linux desktop with inotifywait hotplug detection
+- [ ] Fallback behavior without optional tools
+- [ ] Mode selection timeout defaults correctly
+- [ ] CLI arguments: `--mode=static`, `--mode=dynamic`, `--help`
+- [ ] Installer completion summary shows dependency status
 
 ---
 

@@ -31,6 +31,8 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
+#   3.0.0 (2026-02-01) - Dynamic splitscreen mode, controller hotplug, window repositioning
 #   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
 #   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
 #   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
@@ -1206,6 +1208,32 @@ trap cleanup_autostart EXIT
 # MAIN ENTRY POINT
 # =============================================================================
 
+# Show help/usage
+show_help() {
+    echo "Minecraft Splitscreen Launcher v__SCRIPT_VERSION__"
+    echo ""
+    echo "Usage: $(basename "$0") [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --mode=static    Launch with fixed player count (original behavior)"
+    echo "  --mode=dynamic   Launch with dynamic join/leave support [NEW in v3.0]"
+    echo "  --help, -h       Show this help message"
+    echo ""
+    echo "Shorthand:"
+    echo "  static           Same as --mode=static"
+    echo "  dynamic          Same as --mode=dynamic"
+    echo ""
+    echo "Environment Variables:"
+    echo "  SPLITSCREEN_DEBUG=1    Enable debug output"
+    echo ""
+    echo "Examples:"
+    echo "  $(basename "$0")                   # Interactive mode selection"
+    echo "  $(basename "$0") --mode=dynamic    # Start dynamic mode directly"
+    echo "  $(basename "$0") static            # Start static mode directly"
+    echo ""
+    exit 0
+}
+
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
     log_debug "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
@@ -1214,18 +1242,35 @@ if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
     log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
 fi
 
-# Mode selection (skip if launched with argument)
-LAUNCH_MODE="${1:-}"
+# Parse command line arguments
+LAUNCH_MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            show_help
+            ;;
+        --mode=static|static)
+            LAUNCH_MODE="static"
+            ;;
+        --mode=dynamic|dynamic)
+            LAUNCH_MODE="dynamic"
+            ;;
+        launchFromPlasma)
+            LAUNCH_MODE="launchFromPlasma"
+            ;;
+    esac
+done
 
-# Handle special arguments
-if [ "$LAUNCH_MODE" != "launchFromPlasma" ] && [ "$LAUNCH_MODE" != "static" ] && [ "$LAUNCH_MODE" != "dynamic" ]; then
-    # Interactive mode selection
+# Interactive mode selection if no mode specified
+if [ -z "$LAUNCH_MODE" ]; then
     echo ""
     echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
     echo ""
     echo "Launch Modes:"
     echo "  1. Static  - Launch based on current controllers (original behavior)"
     echo "  2. Dynamic - Players can join/leave during session [NEW in v3.0]"
+    echo ""
+    echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
     echo ""
     read -t 15 -p "Select mode [1]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
     mode_choice=${mode_choice:-1}
@@ -1238,7 +1283,7 @@ if [ "$LAUNCH_MODE" != "launchFromPlasma" ] && [ "$LAUNCH_MODE" != "static" ] &&
 fi
 
 if isSteamDeckGameMode; then
-    if [ "$1" = "launchFromPlasma" ]; then
+    if [ "$LAUNCH_MODE" = "launchFromPlasma" ]; then
         # Inside nested Plasma session - check for stored mode
         rm -f ~/.config/autostart/minecraft-launch.desktop
 

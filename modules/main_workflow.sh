@@ -39,6 +39,8 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   3.0.1 (2026-02-01) - Updated launch instructions to show CLI arguments
+#   3.0.0 (2026-02-01) - Added dynamic mode dependency check and status display
 #   2.1.0 (2026-01-31) - Added version display in startup header
 #   2.0.1 (2026-01-26) - Added init_logging() call at startup
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
@@ -347,8 +349,10 @@ main() {
 
     # PRIMARY LAUNCH METHOD: Direct script execution
     echo "1. 🔧 DIRECT LAUNCH (Recommended):"
-    echo "   Command: $ACTIVE_LAUNCHER_SCRIPT"
-    echo "   Description: ${ACTIVE_LAUNCHER^}-based splitscreen with automatic controller detection"
+    echo "   Interactive:  $ACTIVE_LAUNCHER_SCRIPT"
+    echo "   Static mode:  $ACTIVE_LAUNCHER_SCRIPT --mode=static"
+    echo "   Dynamic mode: $ACTIVE_LAUNCHER_SCRIPT --mode=dynamic"
+    echo "   Help:         $ACTIVE_LAUNCHER_SCRIPT --help"
     echo ""
 
     # ALTERNATIVE LAUNCH METHODS: Other integration options
