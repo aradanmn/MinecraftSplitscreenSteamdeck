@@ -2,7 +2,7 @@
 # =============================================================================
 # @file        lwjgl_management.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -35,6 +35,7 @@
 #     - validate_lwjgl_version   : Version format validation
 #
 # @changelog
+#   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
@@ -67,7 +68,8 @@ get_lwjgl_version() {
 
     # First try to get LWJGL version from Fabric Meta API
     local fabric_game_url="https://meta.fabricmc.net/v2/versions/game"
-    local temp_file="/tmp/fabric_versions_$$.json"
+    local temp_file
+    temp_file=$(mktemp)
 
     if command -v wget >/dev/null 2>&1; then
         if wget -q -O "$temp_file" "$fabric_game_url" 2>/dev/null; then
@@ -111,34 +113,20 @@ get_lwjgl_version() {
 # =============================================================================
 
 # @function    get_lwjgl_version_by_mapping
-# @description Map Minecraft version to LWJGL version using hardcoded mappings.
-#              Based on official Minecraft release data.
-# @param       $1 - mc_version: Minecraft version (e.g., "1.21.3")
+# @description Map Minecraft version to LWJGL version using centralized utilities.
+#              Supports both legacy (1.X.Y) and year-based (YY.X) version formats.
+# @param       $1 - mc_version: Minecraft version (e.g., "1.21.3" or "25.1")
 # @stdout      Appropriate LWJGL version string
 # @return      0 always
 # @see         https://minecraft.wiki/w/Tutorials/Update_LWJGL
 # @example
 #   lwjgl=$(get_lwjgl_version_by_mapping "1.21.3")  # Returns "3.3.3"
+#   lwjgl=$(get_lwjgl_version_by_mapping "25.1")    # Returns "3.3.3"
 get_lwjgl_version_by_mapping() {
     local mc_version="$1"
 
-    # LWJGL version mapping based on Minecraft releases
-    # Source: https://minecraft.wiki/w/Tutorials/Update_LWJGL
-    if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-        echo "3.3.3"  # MC 1.21+ uses LWJGL 3.3.3
-    elif [[ "$mc_version" =~ ^1\.(19|20)(\.|$) ]]; then
-        echo "3.3.1"  # MC 1.19-1.20 uses LWJGL 3.3.1
-    elif [[ "$mc_version" =~ ^1\.18(\.|$) ]]; then
-        echo "3.2.2"  # MC 1.18 uses LWJGL 3.2.2
-    elif [[ "$mc_version" =~ ^1\.(16|17)(\.|$) ]]; then
-        echo "3.2.1"  # MC 1.16-1.17 uses LWJGL 3.2.1
-    elif [[ "$mc_version" =~ ^1\.(14|15)(\.|$) ]]; then
-        echo "3.1.6"  # MC 1.14-1.15 uses LWJGL 3.1.6
-    elif [[ "$mc_version" =~ ^1\.13(\.|$) ]]; then
-        echo "3.1.2"  # MC 1.13 uses LWJGL 3.1.2
-    else
-        echo "3.3.3"  # Default to latest for unknown versions
-    fi
+    # Use centralized version utility that handles both legacy and year-based formats
+    get_lwjgl_version_for_mc "$mc_version"
 }
 
 # =============================================================================

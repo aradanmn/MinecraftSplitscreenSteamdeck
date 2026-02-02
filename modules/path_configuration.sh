@@ -4,7 +4,7 @@
 # =============================================================================
 # @file        path_configuration.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -70,8 +70,10 @@
 #     - print_path_configuration        : Debug print all paths
 #
 # @changelog
-#   1.2.1 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
-#   1.2.0 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
+#   2.1.0 (2026-01-31) - Added architecture detection for PollyMC AppImage (x86_64/arm64)
+#   2.0.2 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
+#   2.0.1 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
+#   2.0.0 (2026-01-25) - Rebased to 2.x for fork; added comprehensive JSDoc documentation
 #   1.1.1 (2026-01-25) - Prefer Flatpak over AppImage on immutable OS (Bazzite, SteamOS, etc.)
 #   1.1.0 (2026-01-24) - Added revert_to_prismlauncher function
 #   1.0.0 (2026-01-23) - Initial version with centralized path management
@@ -94,9 +96,25 @@ readonly POLLYMC_APPIMAGE_DATA_DIR="$HOME/.local/share/PollyMC"
 readonly PRISM_FLATPAK_DATA_DIR="$HOME/.var/app/${PRISM_FLATPAK_ID}/data/PrismLauncher"
 readonly POLLYMC_FLATPAK_DATA_DIR="$HOME/.var/app/${POLLYMC_FLATPAK_ID}/data/PollyMC"
 
+# Detect system architecture for AppImage filenames
+# Maps uname -m output to PollyMC release naming convention
+_SYSTEM_ARCH=$(uname -m)
+case "$_SYSTEM_ARCH" in
+    x86_64)
+        _POLLYMC_ARCH_SUFFIX="x86_64"
+        ;;
+    aarch64|arm64)
+        _POLLYMC_ARCH_SUFFIX="arm64"
+        ;;
+    *)
+        # Fallback to x86_64 for unknown architectures
+        _POLLYMC_ARCH_SUFFIX="x86_64"
+        ;;
+esac
+
 # AppImage executable locations
 readonly PRISM_APPIMAGE_PATH="$PRISM_APPIMAGE_DATA_DIR/PrismLauncher.AppImage"
-readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-x86_64.AppImage"
+readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-${_POLLYMC_ARCH_SUFFIX}.AppImage"
 
 # =============================================================================
 # SYSTEM DETECTION VARIABLES

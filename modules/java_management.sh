@@ -48,7 +48,7 @@
 # @function    get_required_java_version
 # @description Determine the required Java version for a Minecraft version.
 #              Queries Mojang's version manifest API for official requirements,
-#              falling back to hardcoded mappings if API unavailable.
+#              falling back to version utilities if API unavailable.
 # @param       $1 - mc_version: Minecraft version (e.g., "1.21.3")
 # @stdout      Java version number (e.g., "21", "17", "8")
 # @return      0 on success, 1 if mc_version is empty
@@ -67,18 +67,8 @@ get_required_java_version() {
     manifest_json=$(curl -s "$manifest_url" 2>/dev/null)
 
     if [[ -z "$manifest_json" ]]; then
-        # Fallback logic based on known Minecraft Java requirements
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"  # 1.21+ requires Java 21
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"  # 1.18-1.20 requires Java 17
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"  # 1.17 requires Java 16
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"   # 1.13-1.16 works with Java 8
-        else
-            echo "8"   # Older versions (1.12 and below) require Java 8
-        fi
+        # Use centralized version utility for fallback
+        get_java_version_for_mc "$mc_version"
         return 0
     fi
 
@@ -87,18 +77,8 @@ get_required_java_version() {
     version_url=$(echo "$manifest_json" | jq -r --arg v "$mc_version" '.versions[] | select(.id == $v) | .url' 2>/dev/null)
 
     if [[ -z "$version_url" || "$version_url" == "null" ]]; then
-        # Use same fallback logic as above
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        # Use centralized version utility for fallback
+        get_java_version_for_mc "$mc_version"
         return 0
     fi
 
@@ -107,18 +87,8 @@ get_required_java_version() {
     version_json=$(curl -s "$version_url" 2>/dev/null)
 
     if [[ -z "$version_json" ]]; then
-        # Fallback logic
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        # Use centralized version utility for fallback
+        get_java_version_for_mc "$mc_version"
         return 0
     fi
 
@@ -129,18 +99,8 @@ get_required_java_version() {
     if [[ -n "$java_version" && "$java_version" != "null" ]]; then
         echo "$java_version"
     else
-        # Fallback logic
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        # Use centralized version utility for fallback
+        get_java_version_for_mc "$mc_version"
     fi
 }
 

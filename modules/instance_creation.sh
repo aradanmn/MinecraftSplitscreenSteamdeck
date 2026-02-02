@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================================
 # @file instance_creation.sh
-# @version 3.0.0
-# @date 2026-01-24
-# @author FlyingEwok
-# @license MIT
-# @repository https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck
+# @version     3.0.0
+# @date        2026-02-01
+# @author      aradanmn (forked from FlyingEwok)
+# @license     MIT
+# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
 # @description
 #   Instance Creation Module for Minecraft Splitscreen Steam Deck Installer.
@@ -35,9 +35,10 @@
 #   - handle_instance_update(): Handle updating an existing instance
 #
 # @changelog
-#   2026-01-24 - Added comprehensive documentation
-#   2026-01-23 - Added instance update handling with settings preservation
-#   2026-01-22 - Initial implementation with CLI and manual creation methods
+#   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp for debug files
+#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   1.0.1 (2026-01-23) - Added instance update handling with settings preservation
+#   1.0.0 (2026-01-22) - Initial implementation with CLI and manual creation methods
 # =============================================================================
 
 # =============================================================================
@@ -497,8 +498,9 @@ EOF
                 fi
             fi
 
-            # Debug: Save API response to a persistent file for examination
-            local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
+            # Debug: Save API response to a temp file for examination
+            local debug_file
+            debug_file=$(mktemp -t "mod_${mod_name// /_}_${mod_id}_api_response_XXXXXX.json")
 
             # More robust way to write the data
             if [[ -n "$resolve_data" ]]; then

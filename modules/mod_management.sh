@@ -2,7 +2,7 @@
 # =============================================================================
 # @file        mod_management.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -50,6 +50,7 @@
 #     - get_curseforge_download_url: Get download URL for CurseForge mod
 #
 # @changelog
+#   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation with dual-platform support
 # =============================================================================
@@ -158,16 +159,16 @@ check_modrinth_mod() {
     # BUT ONLY if no specific patch version exists that's higher than what we're looking for
     if [[ -z "$file_url" || "$file_url" == "null" ]]; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(get_version_series "$MC_VERSION")  # Extract "1.21" from "1.21.3" or "25.1" from "25.1.2"
 
         # Before trying major.minor match, check if this version is higher than existing patch versions
         # This prevents matching 1.21 when looking for 1.21.6 if the highest patch version is only 1.21.5
         local mc_patch_version
-        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        mc_patch_version=$(get_version_patch "$MC_VERSION")
         local should_try_fallback=true
 
         # If we have a patch version (e.g. 1.21.6), check if it's higher than any available versions
-        if [[ -n "$mc_patch_version" ]]; then
+        if [[ "$mc_patch_version" -gt 0 ]]; then
             # Check if there's a standalone major.minor version (e.g., "1.21" without patch)
             local has_standalone_major_minor=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
                 .[] | select(.game_versions[] == $major_minor and (.loaders[] == "fabric")) | .version_number' 2>/dev/null | head -n1)
@@ -225,17 +226,17 @@ check_modrinth_mod() {
     if [[ -z "$file_url" || "$file_url" == "null" ]]; then
         dep_ids=""   # Reset dependencies
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+        mc_major_minor=$(get_version_series "$MC_VERSION")
         local mc_major_minor_x="$mc_major_minor.x"
         local mc_major_minor_0="$mc_major_minor.0"
 
         # Apply the same fallback safety check as in STAGE 2
         local mc_patch_version
-        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        mc_patch_version=$(get_version_patch "$MC_VERSION")
         local should_try_stage3_fallback=true
 
         # If we have a patch version, check if it's higher than any available versions
-        if [[ -n "$mc_patch_version" ]]; then
+        if [[ "$mc_patch_version" -gt 0 ]]; then
             # Check if there's a standalone major.minor version (e.g., "1.21" without patch)
             local has_standalone_major_minor=$(printf "%s" "$version_json" | jq -r --arg major_minor "$mc_major_minor" '
                 .[] | select(.game_versions[] == $major_minor and (.loaders[] == "fabric")) | .version_number' 2>/dev/null | head -n1)
@@ -411,7 +412,7 @@ check_curseforge_mod() {
     # Version compatibility checking for CurseForge mods
     # Uses same versioning logic as Modrinth but with CurseForge API structure
     local mc_major_minor
-    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    mc_major_minor=$(get_version_series "$MC_VERSION")
     local mc_major_minor_x="$mc_major_minor.x"
     local mc_major_minor_0="$mc_major_minor.0"
 
@@ -670,7 +671,7 @@ resolve_modrinth_dependencies() {
 
     # Use the same version matching logic as mod compatibility checking
     local mc_major_minor
-    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    mc_major_minor=$(get_version_series "$MC_VERSION")
 
     # Try exact version match first
     local dep_ids
@@ -766,7 +767,7 @@ resolve_curseforge_dependencies() {
 
     # Extract dependencies using CurseForge API structure
     local mc_major_minor
-    mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+    mc_major_minor=$(get_version_series "$MC_VERSION")
     local mc_major_minor_x="$mc_major_minor.x"
     local mc_major_minor_0="$mc_major_minor.0"
 
@@ -840,7 +841,7 @@ resolve_modrinth_dependencies_api() {
     # Use simpler approach: find fabric versions for our Minecraft version
     if command -v jq >/dev/null 2>&1; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(get_version_series "$MC_VERSION")  # Extract "1.21" from "1.21.3" or "25.1" from "25.1.2"
 
         # Simple jq filter to get dependencies from compatible fabric versions with strict matching
         # Use temporary file to avoid command line length limits
@@ -955,7 +956,7 @@ resolve_curseforge_dependencies_api() {
         if [[ -s "$files_temp" ]]; then
             # Find the most recent compatible file
             local mc_major_minor
-            mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+            mc_major_minor=$(get_version_series "$MC_VERSION")
 
             # Extract file ID from the most recent compatible file with strict version matching
             local file_id=$(jq -r --arg v "$MC_VERSION" --arg mmv "$mc_major_minor" '.data[] | select(.gameVersions[] == $v or .gameVersions[] == $mmv or .gameVersions[] == ($mmv + ".x") or .gameVersions[] == ($mmv + ".0")) | .id' "$files_temp" 2>/dev/null | head -n1)
@@ -1255,7 +1256,7 @@ get_curseforge_download_url() {
     # Parse response and find compatible file
     if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+        mc_major_minor=$(get_version_series "$MC_VERSION")
 
         # Try exact version match first
         download_url=$(jq -r --arg v "$MC_VERSION" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
@@ -1274,7 +1275,7 @@ get_curseforge_download_url() {
         # Try limited previous patch version (more restrictive than prefix matching)
         if [[ -z "$download_url" || "$download_url" == "null" ]]; then
             local mc_patch_version
-            mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+            mc_patch_version=$(get_version_patch "$MC_VERSION")
             if [[ -n "$mc_patch_version" && $mc_patch_version -gt 0 ]]; then
                 # Try one patch version down (e.g., if looking for 1.21.6, try 1.21.5)
                 local prev_patch=$((mc_patch_version - 1))

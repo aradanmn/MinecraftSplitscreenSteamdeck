@@ -2,7 +2,7 @@
 # =============================================================================
 # @file        main_workflow.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -39,6 +39,8 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   2.1.0 (2026-01-31) - Added version display in startup header
+#   2.0.1 (2026-01-26) - Added init_logging() call at startup
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
@@ -80,7 +82,7 @@ main() {
     # Initialize logging FIRST (before any print_* calls)
     init_logging "install"
 
-    print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
+    print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER v${SCRIPT_VERSION} 🎮"
     print_info "Advanced installation system with smart launcher detection"
     print_info "Strategy: Detect available launchers → Create instances → Generate launcher script"
     print_info "Log file: $(get_log_file)"

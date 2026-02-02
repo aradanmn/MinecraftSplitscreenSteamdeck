@@ -2,7 +2,7 @@
 # =============================================================================
 # @file        steam_integration.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - setup_steam_integration : Main function to add launcher to Steam
 #
 # @changelog
+#   2.0.1 (2026-01-26) - Refactored to use centralized prompt_yes_no function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================

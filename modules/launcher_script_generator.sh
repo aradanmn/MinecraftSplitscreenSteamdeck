@@ -2,7 +2,7 @@
 # =============================================================================
 # @file        launcher_script_generator.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,12 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
+#   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
+#   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
+#   2.0.3 (2026-01-31) - Fix: Add log_debug() function, debug output now logged to file
+#   2.0.2 (2026-01-31) - Fix: grep -c exit code causing "0\n0" controller count
+#   2.0.1 (2026-01-26) - Added logging system, improved controller/game mode detection
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
@@ -136,8 +142,8 @@ CONTROLLER_PIPE=""                          # Path to named pipe for controller 
 # END DYNAMIC SPLITSCREEN STATE
 # =============================================================================
 
-# Temporary directory for intermediate files
-export target=/tmp
+# Temporary directory for intermediate files (respects TMPDIR if set)
+export target="${TMPDIR:-/tmp}"
 
 # =============================================================================
 # LOGGING (prints to terminal AND logs to file)
@@ -158,6 +164,7 @@ log() { [[ -n "$LOG_FILE" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE" 2
 log_info() { echo "[Info] $*"; log "INFO: $*"; }
 log_error() { echo "[Error] $*" >&2; log "ERROR: $*"; }
 log_warning() { echo "[Warning] $*"; log "WARNING: $*"; }
+log_debug() { echo "[Debug] $*" >&2; log "DEBUG: $*"; }
 
 _init_log
 
@@ -302,11 +309,40 @@ restorePanels() {
 }
 
 # =============================================================================
+# Hardware Detection
+# =============================================================================
+
+# Check if running on Steam Deck hardware
+# Returns 0 (true) if Steam Deck hardware detected, 1 (false) otherwise
+# Codenames: Jupiter = Steam Deck LCD, Galileo = Steam Deck OLED
+isSteamDeckHardware() {
+    local dmi_file="/sys/class/dmi/id/product_name"
+    if [ -f "$dmi_file" ]; then
+        local product_name
+        product_name=$(cat "$dmi_file" 2>/dev/null)
+        if echo "$product_name" | grep -Ei 'Steam Deck|Jupiter|Galileo' >/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Check if Steam virtual controller is present
+# Returns 0 (true) if Steam Virtual Gamepad detected
+hasSteamVirtualController() {
+    if grep -q "Steam Virtual Gamepad" /proc/bus/input/devices 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# =============================================================================
 # Controller Detection
 # =============================================================================
 
-# Detect the number of controllers (1-4)
+# Detect the number of controllers (0-4)
 # Handles Steam Input device duplication when Steam is running
+# Returns 0 if no controllers found (keyboard-only mode possible)
 getControllerCount() {
     local count=0
     local steam_running=0
@@ -318,8 +354,10 @@ getControllerCount() {
     if [ -f /proc/bus/input/devices ]; then
         # Count unique physical controllers by looking at the Handlers line with "js"
         # and filtering by Sysfs path - uhid devices are real, virtual/input are Steam duplicates
+        # Note: grep -c exits with 1 when count is 0, so we capture output and default if empty
         real_controllers=$(grep -B5 "Handlers=.*js[0-9]" /proc/bus/input/devices 2>/dev/null | \
-            grep -c "Sysfs=.*/uhid/" 2>/dev/null || echo "0")
+            grep -c "Sysfs=.*/uhid/" 2>/dev/null) || true
+        real_controllers=${real_controllers:-0}
     fi
 
     # Method 2: Fallback to /dev/input/js* if method 1 fails
@@ -349,12 +387,167 @@ getControllerCount() {
         count=$(( (count + 1) / 2 ))
     fi
 
-    # Clamp between 1 and 4
-    [ "$count" -gt 4 ] && count=4
-    [ "$count" -lt 1 ] && count=1
+    # Special case: Steam Deck hardware without Steam running
+    # The Steam Deck's built-in controls show up as 2 js devices (gamepad + touchpads/motion)
+    # but it's really just 1 physical controller
+    if isSteamDeckHardware && [ "$steam_running" -eq 0 ] && [ "$count" -gt 1 ]; then
+        log_debug "Steam Deck hardware detected without Steam - treating as 1 controller (was $count)"
+        count=1
+    fi
 
-    echo "[Debug] Controller detection: real=$real_controllers, total=$count, steam=$steam_running" >&2
+    # Special case: Steam Deck with no external controllers
+    # If on Steam Deck AND count is 0 AND Steam virtual controller detected,
+    # count the Steam Deck's built-in controls as 1 player
+    if [ "$count" -eq 0 ] && isSteamDeckHardware && hasSteamVirtualController; then
+        count=1
+        log_debug "Steam Deck built-in controls detected as Player 1"
+    fi
+
+    # Clamp to maximum of 4 (no minimum - allow 0 for keyboard-only mode)
+    [ "$count" -gt 4 ] && count=4
+
+    log_debug "Controller detection: real=$real_controllers, total=$count, steam=$steam_running"
     echo "$count"
+}
+
+# Check if keyboard and mouse are available (for desktop mode)
+# Returns: 0 if keyboard detected, 1 otherwise
+hasKeyboardInput() {
+    # Check for keyboard devices in /proc/bus/input/devices
+    if [ -f /proc/bus/input/devices ]; then
+        if grep -q "keyboard" /proc/bus/input/devices 2>/dev/null; then
+            return 0
+        fi
+    fi
+    # Fallback: check for common keyboard device paths
+    if [ -e /dev/input/by-path/*-kbd ] 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Check if mouse is available
+# Returns: 0 if mouse detected, 1 otherwise
+hasMouseInput() {
+    # Check for mouse device
+    if [ -e /dev/input/mice ] && [ -r /dev/input/mice ]; then
+        return 0
+    fi
+    # Fallback: check for mouse in input devices
+    if [ -f /proc/bus/input/devices ]; then
+        if grep -qi "mouse" /proc/bus/input/devices 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Prompt user for input mode when no controllers detected
+# Returns: player count (1 for keyboard mode, 0 to exit)
+# All status messages go to stderr, only the count goes to stdout
+promptControllerMode() {
+    local has_keyboard=false
+    local has_mouse=false
+
+    # Detect available input devices
+    if hasKeyboardInput; then
+        has_keyboard=true
+    fi
+    if hasMouseInput; then
+        has_mouse=true
+    fi
+
+    echo "" >&2
+    echo "==========================================" >&2
+    echo "  No game controllers detected!" >&2
+    echo "==========================================" >&2
+    echo "" >&2
+
+    # Show detected input devices
+    if [ "$has_keyboard" = true ] && [ "$has_mouse" = true ]; then
+        echo "  Detected: Keyboard + Mouse" >&2
+    elif [ "$has_keyboard" = true ]; then
+        echo "  Detected: Keyboard only" >&2
+    else
+        echo "  Detected: No standard input devices" >&2
+    fi
+    echo "" >&2
+
+    echo "Options:" >&2
+    if [ "$has_keyboard" = true ]; then
+        echo "  1. Launch with keyboard/mouse (1 player)" >&2
+    else
+        echo "  1. Launch anyway (1 player)" >&2
+    fi
+    echo "  2. Wait for controller connection" >&2
+    echo "  3. Exit" >&2
+    echo "" >&2
+
+    # Try to read from terminal - test if /dev/tty can actually be opened
+    local choice=""
+    if [ -t 0 ]; then
+        read -r -p "Your choice [1-3]: " choice
+    elif [ -e /dev/tty ] && [ -r /dev/tty ]; then
+        # Test if we can actually read from /dev/tty
+        if exec 3</dev/tty 2>/dev/null; then
+            exec 3<&-  # Close the test fd
+            read -r -p "Your choice [1-3]: " choice < /dev/tty 2>/dev/null || choice="1"
+        else
+            echo "[Warning] Cannot open terminal, defaulting to keyboard mode" >&2
+            choice="1"
+        fi
+    else
+        echo "[Warning] No interactive terminal available, defaulting to keyboard mode" >&2
+        choice="1"
+    fi
+
+    case "$choice" in
+        1)
+            if [ "$has_keyboard" = true ]; then
+                echo "[Info] Launching with keyboard/mouse (1 player)" >&2
+                log "INFO: User selected keyboard/mouse mode"
+            else
+                echo "[Info] Launching in single-player mode" >&2
+                log "INFO: User selected single-player mode (no input devices detected)"
+            fi
+            echo "1"
+            ;;
+        2)
+            echo "[Info] Waiting for controller connection..." >&2
+            echo "[Info] Connect a controller and press Enter to continue, or Ctrl+C to exit" >&2
+            log "INFO: User waiting for controller connection"
+            # Wait for user input
+            if [ -t 0 ]; then
+                read -r
+            elif [ -e /dev/tty ] && [ -r /dev/tty ]; then
+                read -r < /dev/tty 2>/dev/null || true
+            else
+                echo "[Warning] Cannot wait without terminal, continuing..." >&2
+                sleep 5
+            fi
+            # Re-detect controllers after waiting
+            local new_count
+            new_count=$(getControllerCount)
+            if [ "$new_count" -eq 0 ]; then
+                echo "[Warning] Still no controllers detected. Launching with keyboard/mouse." >&2
+                echo "1"
+            else
+                echo "[Info] Detected $new_count controller(s)" >&2
+                echo "$new_count"
+            fi
+            ;;
+        3)
+            echo "[Info] Exiting..." >&2
+            log "INFO: User chose to exit"
+            echo "0"
+            ;;
+        *)
+            # Invalid input - default to keyboard mode
+            echo "[Warning] Invalid choice '$choice', defaulting to keyboard mode" >&2
+            log "INFO: Invalid choice, defaulting to keyboard mode"
+            echo "1"
+            ;;
+    esac
 }
 
 # =============================================================================
@@ -899,7 +1092,17 @@ runStaticSplitscreen() {
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
 
-    echo "[Info] Detected $numberOfControllers controller(s), launching splitscreen instances..."
+    # Handle 0 controllers - prompt user for options
+    if [ "$numberOfControllers" -eq 0 ]; then
+        numberOfControllers=$(promptControllerMode)
+        # If user chose to exit (returned 0), exit gracefully
+        if [ "$numberOfControllers" -eq 0 ]; then
+            restorePanels
+            exit 0
+        fi
+    fi
+
+    echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
 
     for player in $(seq 1 "$numberOfControllers"); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
@@ -959,32 +1162,33 @@ isSteamDeckGameMode() {
     # Check 1: Running in gamescope session (Steam Deck Game Mode or Bazzite Game Mode)
     # This is the most reliable indicator - gamescope IS game mode
     if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] || [ "$XDG_CURRENT_DESKTOP" = "gamescope" ]; then
-        echo "[Debug] Detected gamescope session" >&2
+        log_debug "Detected gamescope session"
         return 0
     fi
 
     # Check 2: Running in KDE/other full desktop - this is DESKTOP mode, not game mode
     # Even if launched from startplasma-steamos, if we're in KDE, we have window management
     if [ -n "$DISPLAY" ] && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
-        echo "[Debug] Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)" >&2
+        log_debug "Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)"
         return 1
     fi
 
     # Check 3: Steam Deck hardware with gamepadui (and not in desktop mode)
-    if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
+    # Codenames: Jupiter = Steam Deck LCD, Galileo = Steam Deck OLED
+    if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter|Galileo' >/dev/null; then
         if pgrep -af 'steam' | grep -q -- '-gamepadui'; then
-            echo "[Debug] Detected Steam Deck with gamepadui" >&2
+            log_debug "Detected Steam Deck with gamepadui"
             return 0
         fi
     fi
 
     # Check 4: No display at all - likely running in pure game mode
     if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
-        echo "[Debug] No display - assuming game mode" >&2
+        log_debug "No display - assuming game mode"
         return 0
     fi
 
-    echo "[Debug] Desktop mode detected (default fallback)" >&2
+    log_debug "Desktop mode detected (default fallback)"
     return 1
 }
 
@@ -1004,10 +1208,10 @@ trap cleanup_autostart EXIT
 
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
-    echo "[Debug] === Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ===" >&2
-    echo "[Debug] Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)" >&2
-    echo "[Debug] Instances: $INSTANCES_DIR" >&2
-    echo "[Debug] Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY" >&2
+    log_debug "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+    log_debug "Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)"
+    log_debug "Instances: $INSTANCES_DIR"
+    log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
 fi
 
 # Mode selection (skip if launched with argument)

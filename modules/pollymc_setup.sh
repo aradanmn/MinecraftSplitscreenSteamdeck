@@ -4,7 +4,7 @@
 # =============================================================================
 # @file        pollymc_setup.sh
 # @version     3.0.0
-# @date        2026-01-25
+# @date        2026-02-01
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -39,9 +39,11 @@
 #     - cleanup_prism_launcher : Remove PrismLauncher after successful setup
 #
 # @changelog
-#   1.3.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level (for Bazzite/SteamOS)
-#   1.3.1 (2026-01-25) - Fix: Only create directories after successful download/install
-#   1.3.0 (2026-01-25) - Added Flatpak installation for immutable OS using PREFER_FLATPAK
+#   2.1.0 (2026-01-31) - Added architecture-aware AppImage download (x86_64/arm64)
+#   2.0.3 (2026-01-31) - Fix: Add --system flag to avoid flatpak remote selection prompt
+#   2.0.2 (2026-01-25) - Fix: Try system-level Flatpak install first, then user-level
+#   2.0.1 (2026-01-25) - Fix: Only create directories after successful download/install
+#   2.0.0 (2026-01-25) - Rebased to 2.x for fork; added Flatpak installation for immutable OS
 #   1.2.0 (2026-01-24) - Added proper fallback handling, empty dir cleanup
 #   1.1.0 (2026-01-23) - Added instance migration with options.txt preservation
 #   1.0.0 (2026-01-22) - Initial version
@@ -111,7 +113,9 @@ setup_pollymc() {
             local flatpak_installed=false
 
             # Try system-level install first (works on Bazzite/SteamOS where Flathub is system-only)
-            if flatpak install -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
+            # Use --system explicitly to avoid flatpak's remote selection prompt when both system
+            # and user flathub remotes exist
+            if flatpak install --system -y flathub "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
                 flatpak_installed=true
                 print_success "PollyMC Flatpak installed (system)"
             else
@@ -148,7 +152,23 @@ setup_pollymc() {
     if [[ -z "$pollymc_type" ]]; then
         print_progress "No existing PollyMC found - downloading AppImage..."
 
-        local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
+        # Detect system architecture for correct AppImage download
+        local arch arch_suffix
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)
+                arch_suffix="x86_64"
+                ;;
+            aarch64|arm64)
+                arch_suffix="arm64"
+                ;;
+            *)
+                print_warning "Unknown architecture: $arch - trying x86_64"
+                arch_suffix="x86_64"
+                ;;
+        esac
+
+        local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-${arch_suffix}.AppImage"
         print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
 
         # Download to temp location first, only create directory on success
