@@ -1204,30 +1204,43 @@ handleControllerChange() {
 
     log_info "Controller change: $new_controller_count controllers (currently $current_active active)"
 
-    # Add new instances if controllers increased and we have room
-    while [ "$current_active" -lt "$new_controller_count" ] && [ "$current_active" -lt 4 ]; do
-        local slot
-        slot=$(getNextAvailableSlot)
-        if [ -n "$slot" ]; then
-            local new_total=$((current_active + 1))
-            log_info "Player $new_total joining (slot $slot)"
-            showNotification "Player Joined" "Player $new_total is joining the game"
+    # If controllers increased, stop all running instances and relaunch with new layout
+    # The Splitscreen mod handles window positioning via splitscreen.properties on startup.
+    # External window repositioning (KWin/xdotool) conflicts with the mod's resize handler,
+    # causing StackOverflowError from infinite reposition callbacks.
+    if [ "$new_controller_count" -gt "$current_active" ] && [ "$current_active" -lt 4 ]; then
+        local new_total=$new_controller_count
+        [ "$new_total" -gt 4 ] && new_total=4
 
-            # Wait for previous instance to finish GPU initialization before launching next
-            # This prevents GPU contention crashes (AMD driver: "Can't getDevice() before initialized")
-            if [ "$current_active" -gt 0 ]; then
-                log_info "Waiting 10 seconds for instance $current_active to initialize GPU..."
-                sleep 10
-                repositionAllWindows "$new_total"
-            fi
+        log_info "Scaling up: $current_active -> $new_total players"
 
-            # Launch the new instance
-            launchInstanceForSlot "$slot" "$new_total"
-            current_active=$new_total
-        else
-            break
+        # Stop all currently running instances
+        if [ "$current_active" -gt 0 ]; then
+            log_info "Stopping $current_active running instance(s) for layout change"
+            for i in 1 2 3 4; do
+                local idx=$((i - 1))
+                if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                    stopInstance "$i"
+                fi
+            done
+            sleep 2
         fi
-    done
+
+        # Relaunch all instances with correct splitscreen.properties
+        local launch_count=0
+        for slot in $(seq 1 $new_total); do
+            showNotification "Player Joined" "Player $slot is joining the game"
+            setSplitscreenModeForPlayer "$slot" "$new_total"
+            if [ "$launch_count" -gt 0 ]; then
+                log_info "Waiting 10 seconds for instance $((slot - 1)) to initialize GPU..."
+                sleep 10
+            fi
+            launchInstanceForSlot "$slot" "$new_total"
+            launch_count=$((launch_count + 1))
+        done
+
+        current_active=$new_total
+    fi
 
     CURRENT_PLAYER_COUNT=$current_active
 }
@@ -1256,7 +1269,28 @@ checkForExitedInstances() {
 
         if [ "$remaining" -gt 0 ]; then
             log_info "Repositioning for $remaining remaining players"
-            repositionAllWindows "$remaining"
+            # Stop all remaining instances and relaunch with updated layout
+            # (Splitscreen mod handles positioning via splitscreen.properties on startup)
+            local -a was_active_slots=()
+            for i in 1 2 3 4; do
+                local idx=$((i - 1))
+                if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                    was_active_slots+=("$i")
+                    stopInstance "$i"
+                fi
+            done
+            sleep 2
+
+            local new_slot=0
+            for old_slot in "${was_active_slots[@]}"; do
+                new_slot=$((new_slot + 1))
+                setSplitscreenModeForPlayer "$old_slot" "$remaining"
+                if [ "$new_slot" -gt 1 ]; then
+                    log_info "Waiting 10 seconds for GPU initialization..."
+                    sleep 10
+                fi
+                launchInstanceForSlot "$old_slot" "$remaining"
+            done
         fi
     fi
 }
