@@ -690,7 +690,9 @@ launchInstanceForSlot() {
     setSplitscreenModeForPlayer "$slot" "$total_players"
 
     # Launch the game in background — returns immediately
-    launchGame "latestUpdate-$slot" "P$slot" &
+    # Subshell must clear the EXIT trap to prevent cleanup_exit from running
+    # when the wrapper process (flatpak/kde-inhibit) exits
+    ( trap - EXIT INT TERM; launchGame "latestUpdate-$slot" "P$slot" ) &
     local wrapper_pid=$!
 
     # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
