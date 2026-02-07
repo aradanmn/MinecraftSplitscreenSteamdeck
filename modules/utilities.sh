@@ -3,8 +3,8 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.1
+# @date        2026-02-07
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -52,11 +52,13 @@
 #     - LOG_FILE                : Current log file path (set by init_logging)
 #     - LOG_DIR                 : Log directory path
 #     - IMMUTABLE_OS_NAME       : Set by is_immutable_os() with detected OS name
-#     - DYNAMIC_HAS_INOTIFY     : Set by check_dynamic_mode_dependencies()
-#     - DYNAMIC_HAS_WINDOW_TOOLS: Set by check_dynamic_mode_dependencies()
-#     - DYNAMIC_HAS_NOTIFY      : Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_INOTIFY       : Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_WINDOW_TOOLS  : Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_KWIN_SCRIPTING: Set by check_dynamic_mode_dependencies()
+#     - DYNAMIC_HAS_NOTIFY        : Set by check_dynamic_mode_dependencies()
 #
 # @changelog
+#   3.0.1 (2026-02-07) - Added KWin scripting detection (DYNAMIC_HAS_KWIN_SCRIPTING)
 #   3.0.0 (2026-02-01) - Dynamic splitscreen: players can join/leave mid-session
 #   2.1.2 (2026-02-01) - Fix: prompt_user echo to stderr so timeout newline isn't captured
 #   2.1.1 (2026-01-31) - Fix: Improved timeout logging clarity (TIMEOUT vs USER INPUT)
@@ -444,6 +446,7 @@ print_progress() {
 # Exported variables for dependency status
 DYNAMIC_HAS_INOTIFY="false"
 DYNAMIC_HAS_WINDOW_TOOLS="false"
+DYNAMIC_HAS_KWIN_SCRIPTING="false"
 DYNAMIC_HAS_NOTIFY="false"
 
 # -----------------------------------------------------------------------------
@@ -453,22 +456,27 @@ DYNAMIC_HAS_NOTIFY="false"
 #              All tools have fallbacks, so dynamic mode works without them.
 # @global      DYNAMIC_HAS_INOTIFY - (output) true if inotifywait available
 # @global      DYNAMIC_HAS_WINDOW_TOOLS - (output) true if xdotool/wmctrl available
+# @global      DYNAMIC_HAS_KWIN_SCRIPTING - (output) true if qdbus available (KWin scripting)
 # @global      DYNAMIC_HAS_NOTIFY - (output) true if notify-send available
 # -----------------------------------------------------------------------------
 check_dynamic_mode_dependencies() {
     DYNAMIC_HAS_INOTIFY="false"
     DYNAMIC_HAS_WINDOW_TOOLS="false"
+    DYNAMIC_HAS_KWIN_SCRIPTING="false"
     DYNAMIC_HAS_NOTIFY="false"
 
     command -v inotifywait >/dev/null 2>&1 && DYNAMIC_HAS_INOTIFY="true"
     { command -v xdotool >/dev/null 2>&1 || command -v wmctrl >/dev/null 2>&1; } && DYNAMIC_HAS_WINDOW_TOOLS="true"
+    # Check for qdbus/qdbus6 (KWin scripting for Wayland-native window management)
+    { command -v qdbus >/dev/null 2>&1 || command -v qdbus6 >/dev/null 2>&1; } && DYNAMIC_HAS_KWIN_SCRIPTING="true"
     command -v notify-send >/dev/null 2>&1 && DYNAMIC_HAS_NOTIFY="true"
 
     export DYNAMIC_HAS_INOTIFY
     export DYNAMIC_HAS_WINDOW_TOOLS
+    export DYNAMIC_HAS_KWIN_SCRIPTING
     export DYNAMIC_HAS_NOTIFY
 
-    log "Dynamic mode dependencies: inotify=$DYNAMIC_HAS_INOTIFY, window_tools=$DYNAMIC_HAS_WINDOW_TOOLS, notify=$DYNAMIC_HAS_NOTIFY"
+    log "Dynamic mode dependencies: inotify=$DYNAMIC_HAS_INOTIFY, window_tools=$DYNAMIC_HAS_WINDOW_TOOLS, kwin=$DYNAMIC_HAS_KWIN_SCRIPTING, notify=$DYNAMIC_HAS_NOTIFY"
 }
 
 # -----------------------------------------------------------------------------

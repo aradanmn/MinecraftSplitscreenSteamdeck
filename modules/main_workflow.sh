@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        main_workflow.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.2
+# @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -39,6 +39,7 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   3.0.2 (2026-02-07) - Updated dynamic mode summary to show KWin scripting status
 #   3.0.1 (2026-02-01) - Updated launch instructions to show CLI arguments
 #   3.0.0 (2026-02-01) - Added dynamic mode dependency check and status display
 #   2.1.0 (2026-01-31) - Added version display in startup header
@@ -301,10 +302,16 @@ main() {
     echo "🔄 DYNAMIC SPLITSCREEN MODE (v3.0.0):"
     echo ""
 
-    if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]] && [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
+    local has_all_tools="true"
+
+    if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]] && { [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]] || [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; }; then
         print_success "All optional tools detected - full dynamic mode available!"
         echo "   • Instant controller detection"
-        echo "   • Smooth window repositioning"
+        if [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]]; then
+            echo "   • Window repositioning: KWin scripting (Wayland-native)"
+        else
+            echo "   • Window repositioning: xdotool/wmctrl (X11)"
+        fi
         if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
             echo "   • Desktop notifications enabled"
         fi
@@ -316,12 +323,16 @@ main() {
             echo "   ✅ Controller detection: instant (inotifywait)"
         else
             echo "   ⚡ Controller detection: polling every 2 seconds"
+            has_all_tools="false"
         fi
 
-        if [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
-            echo "   ✅ Window repositioning: smooth (xdotool/wmctrl)"
+        if [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]]; then
+            echo "   ✅ Window repositioning: KWin scripting (Wayland-native)"
+        elif [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
+            echo "   ✅ Window repositioning: xdotool/wmctrl (X11)"
         else
             echo "   ⚡ Window repositioning: restart instances when layout changes"
+            has_all_tools="false"
         fi
 
         if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
@@ -330,9 +341,11 @@ main() {
             echo "   ⚡ Notifications: disabled (silent operation)"
         fi
 
-        echo ""
-        print_info "To enable all features, install optional packages:"
-        show_dynamic_mode_install_hints
+        if [[ "$has_all_tools" == "false" ]]; then
+            echo ""
+            print_info "To enable all features, install optional packages:"
+            show_dynamic_mode_install_hints
+        fi
     fi
     echo ""
 

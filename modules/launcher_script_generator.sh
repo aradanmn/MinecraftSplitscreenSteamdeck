@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.4
+# @version     3.0.5
 # @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
 #   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
 #   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
 #   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
@@ -149,6 +150,13 @@ CONTROLLER_PIPE=""                          # Path to named pipe for controller 
 # =============================================================================
 # END DYNAMIC SPLITSCREEN STATE
 # =============================================================================
+
+# Ensure D-Bus session bus is available (needed for KWin scripting)
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    if [ -S "/run/user/$(id -u)/bus" ]; then
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+    fi
+fi
 
 # Temporary directory for intermediate files (respects TMPDIR if set)
 export target="${TMPDIR:-/tmp}"
@@ -802,7 +810,7 @@ stopInstance() {
 # Window Repositioning (Dynamic Splitscreen)
 # =============================================================================
 # Functions to reposition Minecraft windows when player count changes.
-# Uses xdotool/wmctrl on X11, falls back to restarting instances in Game Mode.
+# Priority: KWin scripting (Wayland) > xdotool/wmctrl (X11) > restart instances.
 
 # Check if external window management is available
 # Returns: 0 if available (X11 with tools), 1 if not
@@ -817,8 +825,35 @@ canUseExternalWindowManagement() {
         return 1
     fi
 
-    # Check for window management tools
+    # On Wayland, don't use xdotool/wmctrl - causes display crashes
+    # KWin scripting is checked separately via canUseKWinScripting()
+    if [ -n "$WAYLAND_DISPLAY" ]; then
+        return 1
+    fi
+
+    # Check for window management tools (X11 only)
     if command -v xdotool >/dev/null 2>&1 || command -v wmctrl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Check if KWin scripting is available (Wayland-native window management)
+# Returns: 0 if available (qdbus + KWin running), 1 if not
+canUseKWinScripting() {
+    # Need qdbus (or qdbus6) and KWin running
+    local qdbus_cmd=""
+    if command -v qdbus6 >/dev/null 2>&1; then
+        qdbus_cmd="qdbus6"
+    elif command -v qdbus >/dev/null 2>&1; then
+        qdbus_cmd="qdbus"
+    else
+        return 1
+    fi
+
+    # Verify KWin Scripting D-Bus interface is accessible
+    if $qdbus_cmd org.kde.KWin /Scripting 2>/dev/null | grep -q loadScript; then
         return 0
     fi
 
@@ -882,6 +917,109 @@ getScreenDimensions() {
     echo "$width $height"
 }
 
+# Reposition windows using KWin scripting (Wayland-native)
+# Arguments:
+#   $1 = new total player count
+repositionWindowsKWin() {
+    local new_total=$1
+    local script_file="/tmp/mc-splitscreen-position-$$.js"
+
+    # Build PID array and slot mapping for active instances
+    local pid_list=""
+    local slot_num=0
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            slot_num=$((slot_num + 1))
+            local pid="${INSTANCE_PIDS[$idx]}"
+            if [ -n "$pid_list" ]; then
+                pid_list="${pid_list},${pid}"
+            else
+                pid_list="${pid}"
+            fi
+        fi
+    done
+
+    if [ -z "$pid_list" ]; then
+        log_warning "No active instance PIDs for KWin repositioning"
+        return 1
+    fi
+
+    # Generate KWin JavaScript with embedded PIDs and layout
+    cat > "$script_file" << 'KWINSCRIPTEOF'
+(function() {
+    var pids = [__MC_PIDS__];
+    var total = __MC_TOTAL__;
+
+    // Layout definitions as fractions of screen: {x, y, w, h}
+    var layouts = {
+        1: [ {x:0, y:0, w:1, h:1} ],
+        2: [ {x:0, y:0, w:1, h:0.5}, {x:0, y:0.5, w:1, h:0.5} ],
+        3: [ {x:0, y:0, w:0.5, h:0.5}, {x:0.5, y:0, w:0.5, h:0.5}, {x:0, y:0.5, w:0.5, h:0.5} ],
+        4: [ {x:0, y:0, w:0.5, h:0.5}, {x:0.5, y:0, w:0.5, h:0.5}, {x:0, y:0.5, w:0.5, h:0.5}, {x:0.5, y:0.5, w:0.5, h:0.5} ]
+    };
+
+    var positions = layouts[total];
+    if (!positions) return;
+
+    // Find windows matching our PIDs
+    var windows = workspace.windowList();
+    var matched = [];
+    for (var p = 0; p < pids.length; p++) {
+        for (var i = 0; i < windows.length; i++) {
+            if (windows[i].pid === pids[p]) {
+                matched.push(windows[i]);
+                break;
+            }
+        }
+    }
+
+    if (matched.length === 0) return;
+
+    // Get screen work area from first matched window
+    var screen = workspace.clientArea(0, matched[0]);  // 0 = MaximizeArea
+
+    for (var m = 0; m < matched.length && m < positions.length; m++) {
+        var pos = positions[m];
+        var win = matched[m];
+        var rect = win.frameGeometry;
+        rect.x = screen.x + Math.round(pos.x * screen.width);
+        rect.y = screen.y + Math.round(pos.y * screen.height);
+        rect.width = Math.round(pos.w * screen.width);
+        rect.height = Math.round(pos.h * screen.height);
+        win.frameGeometry = rect;
+    }
+})();
+KWINSCRIPTEOF
+
+    # Replace placeholders with actual values
+    sed -i "s/__MC_PIDS__/${pid_list}/g" "$script_file"
+    sed -i "s/__MC_TOTAL__/${new_total}/g" "$script_file"
+
+    # Determine qdbus command
+    local qdbus_cmd="qdbus"
+    command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+
+    # Load, run, unload via D-Bus
+    local script_name="mc-splitscreen-$$"
+    local script_id
+    script_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$script_file" "$script_name" 2>/dev/null)
+
+    if [ -n "$script_id" ]; then
+        $qdbus_cmd org.kde.KWin "/Scripting/Script${script_id}" run 2>/dev/null
+        sleep 0.3
+        $qdbus_cmd org.kde.KWin /Scripting unloadScript "$script_name" 2>/dev/null
+        log_info "KWin script executed (ID: $script_id) for $new_total-player layout"
+    else
+        log_warning "Failed to load KWin script"
+        rm -f "$script_file"
+        return 1
+    fi
+
+    rm -f "$script_file"
+    return 0
+}
+
 # Calculate window geometry for external positioning
 # Arguments:
 #   $1 = slot (1-4), $2 = total_players, $3 = screen_width, $4 = screen_height
@@ -921,12 +1059,19 @@ calculateWindowPosition() {
 #   $1 = new total player count
 repositionAllWindows() {
     local new_total=$1
-    local screen_width screen_height
 
-    read -r screen_width screen_height < <(getScreenDimensions)
-
-    if canUseExternalWindowManagement; then
+    if canUseKWinScripting; then
+        # KWin scripting: Wayland-native, preferred on KDE Plasma
+        log_info "Repositioning windows via KWin scripting for $new_total players"
+        if ! repositionWindowsKWin "$new_total"; then
+            log_warning "KWin scripting failed, falling back to restart"
+            repositionWithRestart "$new_total"
+        fi
+    elif canUseExternalWindowManagement; then
+        # xdotool/wmctrl: X11 fallback for non-KDE environments
         log_info "Repositioning windows via xdotool/wmctrl for $new_total players"
+        local screen_width screen_height
+        read -r screen_width screen_height < <(getScreenDimensions)
 
         local slot_num=0
         for i in 1 2 3 4; do
@@ -948,8 +1093,8 @@ repositionAllWindows() {
             fi
         done
     else
-        log_warning "External window management not available"
-        log_info "Updating splitscreen.properties and restarting instances"
+        # Universal fallback: restart instances with new layout
+        log_warning "No window management available, restarting instances"
         repositionWithRestart "$new_total"
     fi
 }
@@ -1438,12 +1583,40 @@ else
     fi
 
     # Return focus to Steam if it was running
-    if pgrep -x steam >/dev/null 2>&1 && command -v xdotool >/dev/null 2>&1; then
+    if pgrep -x steam >/dev/null 2>&1; then
         sleep 1
-        steam_wid=$(xdotool search --name "Steam" 2>/dev/null | head -1)
-        if [ -n "$steam_wid" ]; then
-            xdotool windowactivate "$steam_wid" 2>/dev/null || true
-            log_info "Returned focus to Steam"
+        if canUseKWinScripting; then
+            # KWin-native: activate Steam window via scripting
+            local steam_focus_script="/tmp/mc-steam-focus-$$.js"
+            cat > "$steam_focus_script" << 'STEAMFOCUSEOF'
+(function() {
+    var windows = workspace.windowList();
+    for (var i = 0; i < windows.length; i++) {
+        if (windows[i].caption.indexOf("Steam") !== -1) {
+            workspace.activeWindow = windows[i];
+            break;
+        }
+    }
+})();
+STEAMFOCUSEOF
+            local qdbus_cmd="qdbus"
+            command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+            local sf_id
+            sf_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$steam_focus_script" "mc-steam-focus-$$" 2>/dev/null)
+            if [ -n "$sf_id" ]; then
+                $qdbus_cmd org.kde.KWin "/Scripting/Script${sf_id}" run 2>/dev/null
+                sleep 0.2
+                $qdbus_cmd org.kde.KWin /Scripting unloadScript "mc-steam-focus-$$" 2>/dev/null
+                log_info "Returned focus to Steam via KWin"
+            fi
+            rm -f "$steam_focus_script"
+        elif command -v xdotool >/dev/null 2>&1 && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+            # X11 fallback
+            steam_wid=$(xdotool search --name "Steam" 2>/dev/null | head -1)
+            if [ -n "$steam_wid" ]; then
+                xdotool windowactivate "$steam_wid" 2>/dev/null || true
+                log_info "Returned focus to Steam via xdotool"
+            fi
         fi
     fi
 fi
