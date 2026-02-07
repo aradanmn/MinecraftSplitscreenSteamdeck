@@ -147,6 +147,7 @@ DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
 CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
 CONTROLLER_PIPE=""                          # Path to named pipe for controller events
+MAIN_PID=$$                                 # Track main process PID for cleanup guard
 
 # =============================================================================
 # END DYNAMIC SPLITSCREEN STATE
@@ -1467,8 +1468,14 @@ killAllInstances() {
     pkill -f "kde-inhibit.*$LAUNCHER_NAME" 2>/dev/null || true
 }
 
-# Comprehensive cleanup on script exit
+# Comprehensive cleanup on script exit — only runs in main process
+# Subshells (controller monitor, background launches) inherit the trap
+# but must NOT run cleanup or they'll kill the main process's instances
 cleanup_exit() {
+    # Guard: only run cleanup in the main process
+    if [ "$$" != "$MAIN_PID" ]; then
+        return
+    fi
     killAllInstances
     stopControllerMonitor 2>/dev/null || true
     restorePanels 2>/dev/null || true
