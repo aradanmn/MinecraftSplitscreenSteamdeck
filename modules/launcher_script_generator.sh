@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.2
+# @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
 #   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
 #   3.0.0 (2026-02-01) - Dynamic splitscreen mode, controller hotplug, window repositioning
 #   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
@@ -135,6 +136,8 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 
 declare -a INSTANCE_PIDS=("" "" "" "")     # PID for each player slot (index 0-3)
 declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
+declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhibit or flatpak)
+declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
 CURRENT_PLAYER_COUNT=0                      # Number of active players
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
@@ -269,13 +272,11 @@ launchGame() {
 
     if command -v kde-inhibit >/dev/null 2>&1; then
         kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
+            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
     else
         log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
-        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
+        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
     fi
-
-    sleep 10  # Give time for the instance to start
 }
 
 # =============================================================================
@@ -651,15 +652,17 @@ launchInstanceForSlot() {
     # Configure splitscreen position using existing function
     setSplitscreenModeForPlayer "$slot" "$total_players"
 
-    # Launch the game in background
+    # Launch the game in background — returns immediately
     launchGame "latestUpdate-$slot" "P$slot" &
-    local pid=$!
+    local wrapper_pid=$!
 
-    # Track the instance
-    INSTANCE_PIDS[$idx]=$pid
+    # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
+    INSTANCE_PIDS[$idx]=$wrapper_pid
+    INSTANCE_WRAPPER_PIDS[$idx]=$wrapper_pid
     INSTANCE_ACTIVE[$idx]=1
+    INSTANCE_JAVA_RESOLVED[$idx]=0
 
-    log_info "Launched instance $slot (PID: $pid) in $total_players-player layout"
+    log_info "Launched instance $slot (wrapper PID: $wrapper_pid) in $total_players-player layout"
 }
 
 # Check if an instance is still running
@@ -671,9 +674,35 @@ isInstanceRunning() {
     local idx=$((slot - 1))
     local pid="${INSTANCE_PIDS[$idx]}"
 
+    # Try to resolve actual Java PID if not yet done
+    if [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "0" ]; then
+        local java_pid
+        java_pid=$(pgrep -f "java.*instances/latestUpdate-${slot}/" 2>/dev/null | head -1)
+        if [ -n "$java_pid" ]; then
+            INSTANCE_PIDS[$idx]=$java_pid
+            INSTANCE_JAVA_RESOLVED[$idx]=1
+            log_debug "Resolved Java PID for slot $slot: $java_pid"
+        fi
+    fi
+
+    pid="${INSTANCE_PIDS[$idx]}"
+
+    # Check if the tracked process is alive
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         return 0
     fi
+
+    # If Java PID was resolved and is dead, instance truly exited
+    if [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "1" ]; then
+        return 1
+    fi
+
+    # Java not yet resolved — check if wrapper is still alive (still starting up)
+    local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
+    if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+        return 0
+    fi
+
     return 1
 }
 
@@ -709,8 +738,38 @@ markInstanceStopped() {
     local slot=$1
     local idx=$((slot - 1))
     INSTANCE_PIDS[$idx]=""
+    INSTANCE_WRAPPER_PIDS[$idx]=""
     INSTANCE_ACTIVE[$idx]=0
+    INSTANCE_JAVA_RESOLVED[$idx]=0
     log "Instance $slot marked as stopped"
+}
+
+# Stop a specific instance, killing Java and wrapper processes
+# Arguments:
+#   $1 = slot number (1-4)
+stopInstance() {
+    local slot=$1
+    local idx=$((slot - 1))
+    local pid="${INSTANCE_PIDS[$idx]}"
+    local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
+
+    # Kill Java process (graceful then force)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        sleep 2
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    fi
+
+    # Kill wrapper (kde-inhibit / flatpak) and reap zombie
+    if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+        kill "$wrapper_pid" 2>/dev/null
+        wait "$wrapper_pid" 2>/dev/null || true
+    fi
+
+    # Catch any remaining processes for this specific instance
+    pkill -f "java.*instances/latestUpdate-${slot}/" 2>/dev/null || true
+
+    markInstanceStopped "$slot"
 }
 
 # =============================================================================
@@ -877,27 +936,23 @@ repositionWithRestart() {
 
     log_info "Restarting instances for $new_total-player layout"
 
-    # Stop all instances
+    # Track which slots were active before stopping
+    local -a was_active=(0 0 0 0)
     for i in 1 2 3 4; do
         local idx=$((i - 1))
         if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
-            local pid="${INSTANCE_PIDS[$idx]}"
-            if [ -n "$pid" ]; then
-                log "Stopping instance $i for repositioning"
-                kill "$pid" 2>/dev/null || true
-            fi
+            was_active[$idx]=1
+            stopInstance "$i"
         fi
     done
 
     # Wait for all to exit
     sleep 2
 
-    # Relaunch active instances with new positions
-    local slot_num=0
+    # Relaunch previously active instances with new positions
     for i in 1 2 3 4; do
         local idx=$((i - 1))
-        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
-            slot_num=$((slot_num + 1))
+        if [ "${was_active[$idx]}" = "1" ]; then
             launchInstanceForSlot "$i" "$new_total"
         fi
     done
@@ -1109,7 +1164,7 @@ runStaticSplitscreen() {
     for player in $(seq 1 "$numberOfControllers"); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
         echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
-        launchGame "latestUpdate-$player" "P$player"
+        launchGame "latestUpdate-$player" "P$player" &
     done
 
     echo "[Info] All instances launched. Waiting for games to exit..."
@@ -1198,11 +1253,30 @@ isSteamDeckGameMode() {
 # Cleanup
 # =============================================================================
 
-# Remove autostart file on script exit
-cleanup_autostart() {
-    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+# Stop all running Minecraft instances
+killAllInstances() {
+    log_info "Stopping all Minecraft instances..."
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            stopInstance "$i"
+        fi
+    done
+    # Final sweep for any stragglers (use INSTANCES_DIR for specificity)
+    pkill -f "java.*${INSTANCES_DIR}/latestUpdate" 2>/dev/null || true
+    pkill -f "kde-inhibit.*$LAUNCHER_NAME" 2>/dev/null || true
 }
-trap cleanup_autostart EXIT
+
+# Comprehensive cleanup on script exit
+cleanup_exit() {
+    killAllInstances
+    stopControllerMonitor 2>/dev/null || true
+    restorePanels 2>/dev/null || true
+    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+    rm -f "/tmp/mc-splitscreen-mode"
+    log_info "Cleanup complete"
+}
+trap cleanup_exit EXIT INT TERM
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -1312,6 +1386,16 @@ else
         runDynamicSplitscreen
     else
         runStaticSplitscreen
+    fi
+
+    # Return focus to Steam if it was running
+    if pgrep -x steam >/dev/null 2>&1 && command -v xdotool >/dev/null 2>&1; then
+        sleep 1
+        steam_wid=$(xdotool search --name "Steam" 2>/dev/null | head -1)
+        if [ -n "$steam_wid" ]; then
+            xdotool windowactivate "$steam_wid" 2>/dev/null || true
+            log_info "Returned focus to Steam"
+        fi
     fi
 fi
 LAUNCHER_SCRIPT_EOF
