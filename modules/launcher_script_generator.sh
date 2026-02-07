@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.2
+# @version     3.0.3
 # @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
 #   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
 #   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
 #   3.0.0 (2026-02-01) - Dynamic splitscreen mode, controller hotplug, window repositioning
@@ -1012,7 +1013,7 @@ showNotification() {
     local message="$2"
 
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -a "Minecraft Splitscreen" "$title" "$message" 2>/dev/null || true
+        notify-send -a "Minecraft Splitscreen" "$title" "$message" 2>/dev/null &
     fi
 }
 
