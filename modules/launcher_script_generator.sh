@@ -1709,7 +1709,21 @@ if isSteamDeckGameMode; then
     fi
 else
     # Desktop mode: launch directly with selected mode
-    if [ "$LAUNCH_MODE" = "dynamic" ]; then
+    # Handle launchFromPlasma case: nested Plasma session ended up in desktop mode
+    # (isSteamDeckGameMode returns false because KDE is now running)
+    if [ "$LAUNCH_MODE" = "launchFromPlasma" ]; then
+        rm -f ~/.config/autostart/minecraft-launch.desktop
+        stored_mode=""
+        if [ -f "/tmp/mc-splitscreen-mode" ]; then
+            stored_mode=$(cat "/tmp/mc-splitscreen-mode" 2>/dev/null)
+            rm -f "/tmp/mc-splitscreen-mode"
+        fi
+        if [ "$stored_mode" = "dynamic" ]; then
+            runDynamicSplitscreen
+        else
+            runStaticSplitscreen
+        fi
+    elif [ "$LAUNCH_MODE" = "dynamic" ]; then
         runDynamicSplitscreen
     else
         runStaticSplitscreen
@@ -1720,7 +1734,7 @@ else
         sleep 1
         if canUseKWinScripting; then
             # KWin-native: activate Steam window via scripting
-            local steam_focus_script="/tmp/mc-steam-focus-$$.js"
+            steam_focus_script="/tmp/mc-steam-focus-$$.js"
             cat > "$steam_focus_script" << 'STEAMFOCUSEOF'
 (function() {
     var windows = workspace.windowList();
@@ -1732,9 +1746,8 @@ else
     }
 })();
 STEAMFOCUSEOF
-            local qdbus_cmd="qdbus"
+            qdbus_cmd="qdbus"
             command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
-            local sf_id
             sf_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$steam_focus_script" "mc-steam-focus-$$" 2>/dev/null)
             if [ -n "$sf_id" ]; then
                 $qdbus_cmd org.kde.KWin "/Scripting/Script${sf_id}" run 2>/dev/null
