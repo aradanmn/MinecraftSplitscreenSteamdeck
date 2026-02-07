@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.3
+# @version     3.0.4
 # @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
 #   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
 #   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
 #   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
@@ -141,6 +142,7 @@ declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhi
 declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
 CURRENT_PLAYER_COUNT=0                      # Number of active players
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
+HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
 CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
 CONTROLLER_PIPE=""                          # Path to named pipe for controller events
 
@@ -331,6 +333,22 @@ isSteamDeckHardware() {
     return 1
 }
 
+# Check if Steam Deck is docked (external display connected)
+# Returns 0 (true) if an external display is connected via DisplayPort
+# Uses glob for robustness across Steam Deck hardware revisions (LCD/OLED)
+isSteamDeckDocked() {
+    local dp_status
+    for dp_path in /sys/class/drm/card*-DP-*/status; do
+        if [ -f "$dp_path" ]; then
+            dp_status=$(cat "$dp_path" 2>/dev/null)
+            if [ "$dp_status" = "connected" ]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 # Check if Steam virtual controller is present
 # Returns 0 (true) if Steam Virtual Gamepad detected
 hasSteamVirtualController() {
@@ -348,6 +366,13 @@ hasSteamVirtualController() {
 # Handles Steam Input device duplication when Steam is running
 # Returns 0 if no controllers found (keyboard-only mode possible)
 getControllerCount() {
+    # Handheld mode: always report exactly 1 controller (Steam Deck built-in)
+    if [ "${HANDHELD_MODE:-0}" = "1" ]; then
+        log_debug "Controller detection: handheld mode, reporting 1 controller"
+        echo "1"
+        return 0
+    fi
+
     local count=0
     local steam_running=0
     local real_controllers=0
@@ -1306,6 +1331,8 @@ show_help() {
     echo "  $(basename "$0") --mode=dynamic    # Start dynamic mode directly"
     echo "  $(basename "$0") static            # Start static mode directly"
     echo ""
+    echo "Steam Deck: Handheld = single player. Dock to a TV for splitscreen."
+    echo ""
     exit 0
 }
 
@@ -1315,6 +1342,13 @@ if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
     log_debug "Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)"
     log_debug "Instances: $INSTANCES_DIR"
     log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
+    if isSteamDeckHardware; then
+        if isSteamDeckDocked; then
+            log_debug "Steam Deck: DOCKED (external display connected)"
+        else
+            log_debug "Steam Deck: HANDHELD (internal display only)"
+        fi
+    fi
 fi
 
 # Parse command line arguments
@@ -1335,6 +1369,20 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Steam Deck handheld mode: single player, no splitscreen
+if [ -z "$LAUNCH_MODE" ] || [ "$LAUNCH_MODE" != "launchFromPlasma" ]; then
+    if isSteamDeckHardware && ! isSteamDeckDocked; then
+        log_info "Steam Deck handheld mode detected (no external display)"
+        log_info "Running single-player mode with built-in controls"
+        echo ""
+        echo "=== Steam Deck Handheld Mode ==="
+        echo "Single-player mode (dock to a TV for splitscreen)"
+        echo ""
+        LAUNCH_MODE="static"
+        HANDHELD_MODE=1
+    fi
+fi
 
 # Interactive mode selection if no mode specified
 if [ -z "$LAUNCH_MODE" ]; then
