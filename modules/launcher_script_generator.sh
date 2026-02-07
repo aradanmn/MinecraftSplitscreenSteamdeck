@@ -1523,13 +1523,13 @@ killAllInstances() {
     pkill -f "kde-inhibit.*$LAUNCHER_NAME" 2>/dev/null || true
 }
 
-# Comprehensive cleanup on script exit — only runs in main process
-# Subshells (controller monitor, background launches) inherit the trap
-# but must NOT run cleanup or they'll kill the main process's instances
+# Comprehensive cleanup on script exit
 cleanup_exit() {
+    local exit_code=$?
+    log_info "cleanup_exit triggered (exit_code=$exit_code, PID=$$, BASHPID=${BASHPID:-unknown}, MAIN_PID=$MAIN_PID)"
     # Guard: only run cleanup in the main process
-    # Use BASHPID (actual process PID) not $$ (always parent PID even in subshells)
     if [ "${BASHPID:-$$}" != "$MAIN_PID" ]; then
+        log_debug "Skipping cleanup — not main process"
         return
     fi
     killAllInstances
