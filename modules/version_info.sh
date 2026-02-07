@@ -3,7 +3,7 @@
 # VERSION INFORMATION MODULE
 # =============================================================================
 # @file        version_info.sh
-# @version     3.0.5
+# @version     3.0.6
 # @date        2026-02-07
 # @author      aradanmn
 # @license     MIT
@@ -48,7 +48,7 @@
 # =============================================================================
 
 # Script version - update this when making releases
-readonly SCRIPT_VERSION="3.0.5"
+readonly SCRIPT_VERSION="3.0.6"
 
 # Repository information
 readonly REPO_OWNER="aradanmn"

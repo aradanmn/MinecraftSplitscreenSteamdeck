@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.5
+# @version     3.0.6
 # @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
 #   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
 #   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
 #   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
@@ -982,6 +983,10 @@ repositionWindowsKWin() {
     for (var m = 0; m < matched.length && m < positions.length; m++) {
         var pos = positions[m];
         var win = matched[m];
+        // Remove window decorations for borderless splitscreen
+        win.noBorder = true;
+        // Take out of fullscreen if the window manager thinks it's fullscreen
+        if (win.fullScreen) win.fullScreen = false;
         var rect = win.frameGeometry;
         rect.x = screen.x + Math.round(pos.x * screen.width);
         rect.y = screen.y + Math.round(pos.y * screen.height);
@@ -1141,9 +1146,14 @@ repositionWithRestart() {
 # =============================================================================
 
 # Write splitscreen.properties for a player instance
+# Always uses FULLSCREEN mode to avoid Splitscreen mod's Wayland StackOverflowError.
+# The mod's non-FULLSCREEN modes (TOP, BOTTOM, etc.) call glfwSetWindowMonitor() which
+# triggers an infinite recursion via onResolutionChange -> repositionWindow on Wayland.
+# FULLSCREEN mode only sets this.fullscreen=true (no GLFW calls), so it's safe.
+# Window positioning is handled externally by KWin scripting.
 # Arguments:
 #   $1 = Player number (1-4)
-#   $2 = Total number of controllers/players
+#   $2 = Total number of controllers/players (unused, kept for API compatibility)
 setSplitscreenModeForPlayer() {
     local player=$1
     local numberOfControllers=$2
@@ -1151,28 +1161,8 @@ setSplitscreenModeForPlayer() {
 
     mkdir -p "$(dirname "$config_path")"
 
-    local mode="FULLSCREEN"
-    case "$numberOfControllers" in
-        1)
-            mode="FULLSCREEN"
-            ;;
-        2)
-            if [ "$player" = 1 ]; then mode="TOP"; else mode="BOTTOM"; fi
-            ;;
-        3)
-            if [ "$player" = 1 ]; then mode="TOP"
-            elif [ "$player" = 2 ]; then mode="BOTTOM_LEFT"
-            else mode="BOTTOM_RIGHT"; fi
-            ;;
-        4)
-            if [ "$player" = 1 ]; then mode="TOP_LEFT"
-            elif [ "$player" = 2 ]; then mode="TOP_RIGHT"
-            elif [ "$player" = 3 ]; then mode="BOTTOM_LEFT"
-            else mode="BOTTOM_RIGHT"; fi
-            ;;
-    esac
-
-    echo -e "gap=1\nmode=$mode" > "$config_path"
+    # Always FULLSCREEN — KWin handles actual window positioning
+    echo -e "gap=0\nmode=FULLSCREEN" > "$config_path"
     sync
     sleep 0.5
 }
@@ -1195,6 +1185,8 @@ showNotification() {
 }
 
 # Handle controller count change event
+# With FULLSCREEN mode, the Splitscreen mod doesn't manage windows (no GLFW calls),
+# so we can freely add instances and reposition via KWin without crashes.
 # Arguments:
 #   $1 = new controller count
 handleControllerChange() {
@@ -1204,54 +1196,32 @@ handleControllerChange() {
 
     log_info "Controller change: $new_controller_count controllers (currently $current_active active)"
 
-    # If controllers increased, stop all running instances and relaunch with new layout
-    # The Splitscreen mod handles window positioning via splitscreen.properties on startup.
-    # External window repositioning (KWin/xdotool) conflicts with the mod's resize handler,
-    # causing StackOverflowError from infinite reposition callbacks.
+    # If controllers increased, launch new instances and reposition all via KWin
     if [ "$new_controller_count" -gt "$current_active" ] && [ "$current_active" -lt 4 ]; then
         local new_total=$new_controller_count
         [ "$new_total" -gt 4 ] && new_total=4
 
         log_info "Scaling up: $current_active -> $new_total players"
 
-        # Stop all currently running instances
-        if [ "$current_active" -gt 0 ]; then
-            log_info "Stopping $current_active running instance(s) for layout change"
-            for i in 1 2 3 4; do
-                local idx=$((i - 1))
-                if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
-                    stopInstance "$i"
-                fi
-            done
-            sleep 2
-        fi
-
-        # Launch all instances in FULLSCREEN mode first (avoids Splitscreen mod
-        # StackOverflow bug on Wayland where non-fullscreen modes trigger infinite
-        # reposition callbacks during startup). KWin repositions after loading.
-        local launch_count=0
+        # Launch only the NEW instances (keep existing ones running)
         for slot in $(seq 1 $new_total); do
-            showNotification "Player Joined" "Player $slot is joining the game"
-            # Force FULLSCREEN during startup to avoid mod crash
-            local config_path="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
-            mkdir -p "$(dirname "$config_path")"
-            echo -e "gap=1\nmode=FULLSCREEN" > "$config_path"
-            if [ "$launch_count" -gt 0 ]; then
-                log_info "Waiting 10 seconds for instance $((slot - 1)) to initialize GPU..."
-                sleep 10
+            local idx=$((slot - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" != "1" ]; then
+                showNotification "Player Joined" "Player $slot is joining the game"
+                setSplitscreenModeForPlayer "$slot" "$new_total"
+                if [ "$current_active" -gt 0 ]; then
+                    log_info "Waiting 10 seconds for GPU initialization..."
+                    sleep 10
+                fi
+                launchInstanceForSlot "$slot" "$new_total"
+                current_active=$((current_active + 1))
             fi
-            launchInstanceForSlot "$slot" "$new_total"
-            launch_count=$((launch_count + 1))
         done
 
-        # Wait for instances to finish loading, then reposition via KWin
-        if [ "$new_total" -gt 1 ]; then
-            log_info "Waiting 15 seconds for instances to finish loading before repositioning..."
-            sleep 15
-            repositionAllWindows "$new_total"
-        fi
-
-        current_active=$new_total
+        # Wait for new instance(s) to finish loading, then reposition ALL via KWin
+        log_info "Waiting 15 seconds for new instance(s) to load before repositioning..."
+        sleep 15
+        repositionAllWindows "$new_total"
     fi
 
     CURRENT_PLAYER_COUNT=$current_active
@@ -1280,39 +1250,10 @@ checkForExitedInstances() {
         CURRENT_PLAYER_COUNT=$remaining
 
         if [ "$remaining" -gt 0 ]; then
-            log_info "Repositioning for $remaining remaining players"
-            # Stop all remaining instances and relaunch with updated layout
-            # (Splitscreen mod handles positioning via splitscreen.properties on startup)
-            local -a was_active_slots=()
-            for i in 1 2 3 4; do
-                local idx=$((i - 1))
-                if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
-                    was_active_slots+=("$i")
-                    stopInstance "$i"
-                fi
-            done
-            sleep 2
-
-            local launch_count=0
-            for old_slot in "${was_active_slots[@]}"; do
-                # Force FULLSCREEN during startup to avoid Splitscreen mod crash
-                local config_path="$INSTANCES_DIR/latestUpdate-${old_slot}/.minecraft/config/splitscreen.properties"
-                mkdir -p "$(dirname "$config_path")"
-                echo -e "gap=1\nmode=FULLSCREEN" > "$config_path"
-                if [ "$launch_count" -gt 0 ]; then
-                    log_info "Waiting 10 seconds for GPU initialization..."
-                    sleep 10
-                fi
-                launchInstanceForSlot "$old_slot" "$remaining"
-                launch_count=$((launch_count + 1))
-            done
-
-            # Wait for instances to load, then reposition via KWin
-            if [ "$remaining" -gt 1 ]; then
-                log_info "Waiting 15 seconds for instances to finish loading before repositioning..."
-                sleep 15
-                repositionAllWindows "$remaining"
-            fi
+            log_info "Repositioning $remaining remaining player(s) via KWin"
+            # Just reposition remaining windows — no restart needed since all
+            # instances run in FULLSCREEN mode (mod won't fight the resize)
+            repositionAllWindows "$remaining"
         fi
     fi
 }
@@ -1399,10 +1340,20 @@ runStaticSplitscreen() {
     echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
 
     for player in $(seq 1 "$numberOfControllers"); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
         echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
-        launchGame "latestUpdate-$player" "P$player" &
+        if [ "$player" -gt 1 ]; then
+            log_info "Waiting 10 seconds for instance $((player - 1)) to initialize GPU..."
+            sleep 10
+        fi
+        launchInstanceForSlot "$player" "$numberOfControllers"
     done
+
+    # Reposition windows via KWin after all instances are launched
+    if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
+        log_info "Waiting 15 seconds for instances to load before KWin repositioning..."
+        sleep 15
+        repositionAllWindows "$numberOfControllers"
+    fi
 
     echo "[Info] All instances launched. Waiting for games to exit..."
     wait
@@ -1430,6 +1381,13 @@ launchGames() {
         fi
         launchGame "latestUpdate-$player" "P$player"
     done
+
+    # Reposition windows via KWin after all instances are launched
+    if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
+        log_info "Waiting 15 seconds for instances to load before KWin repositioning..."
+        sleep 15
+        repositionAllWindows "$numberOfControllers"
+    fi
 
     wait
     restorePanels
