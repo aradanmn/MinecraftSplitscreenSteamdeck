@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.6
+# @version     3.0.7
 # @date        2026-02-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
 #   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
 #   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
 #   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
@@ -984,10 +985,17 @@ repositionWindowsKWin() {
     fi
 
     # Generate KWin JavaScript with embedded PIDs and layout
+    # KDE 6 KWin scripting API notes:
+    #   - workspace.windowList() replaces clientList() from KDE 5
+    #   - frameGeometry must be cloned via Object.assign() before modification
+    #   - win.tile must be cleared to prevent tiling system from overriding geometry
+    #   - console.log() output goes to journalctl (journalctl --user -t kwin_scripting)
     cat > "$script_file" << 'KWINSCRIPTEOF'
 (function() {
     var pids = [__MC_PIDS__];
     var total = __MC_TOTAL__;
+
+    console.log("MC-Splitscreen: Starting reposition for " + total + " players, PIDs: [" + pids.join(",") + "]");
 
     // Layout definitions as fractions of screen: {x, y, w, h}
     var layouts = {
@@ -998,23 +1006,32 @@ repositionWindowsKWin() {
     };
 
     var positions = layouts[total];
-    if (!positions) return;
+    if (!positions) { console.log("MC-Splitscreen: No layout for total=" + total); return; }
 
     // Find windows matching our PIDs
     var windows = workspace.windowList();
+    console.log("MC-Splitscreen: Found " + windows.length + " total windows");
+
     var matched = [];
     for (var p = 0; p < pids.length; p++) {
+        var found = false;
         for (var i = 0; i < windows.length; i++) {
             if (windows[i].pid === pids[p]) {
                 matched.push(windows[i]);
+                console.log("MC-Splitscreen: PID " + pids[p] + " matched window: '" + (windows[i].caption || "unknown") + "'");
+                found = true;
                 break;
             }
+        }
+        if (!found) {
+            console.log("MC-Splitscreen: PID " + pids[p] + " NOT found in any window");
         }
     }
 
     // Fallback: if PID matching found fewer windows than expected,
     // try matching by window caption containing "Minecraft"
     if (matched.length < total) {
+        console.log("MC-Splitscreen: PID match got " + matched.length + "/" + total + ", trying title fallback");
         var mcWindows = [];
         for (var i = 0; i < windows.length; i++) {
             var cap = windows[i].caption || "";
@@ -1024,7 +1041,10 @@ repositionWindowsKWin() {
                 for (var m = 0; m < matched.length; m++) {
                     if (matched[m] === windows[i]) { already = true; break; }
                 }
-                if (!already) mcWindows.push(windows[i]);
+                if (!already) {
+                    mcWindows.push(windows[i]);
+                    console.log("MC-Splitscreen: Title fallback found: '" + cap + "' (PID " + windows[i].pid + ")");
+                }
             }
         }
         // Add title-matched windows to fill remaining slots
@@ -1033,25 +1053,36 @@ repositionWindowsKWin() {
         }
     }
 
-    if (matched.length === 0) return;
+    console.log("MC-Splitscreen: Total matched: " + matched.length + " windows for " + total + " players");
+    if (matched.length === 0) { console.log("MC-Splitscreen: No windows matched, aborting"); return; }
 
     // Get screen work area from first matched window
     var screen = workspace.clientArea(0, matched[0]);  // 0 = MaximizeArea
+    console.log("MC-Splitscreen: Screen area: " + screen.x + "," + screen.y + " " + screen.width + "x" + screen.height);
 
     for (var m = 0; m < matched.length && m < positions.length; m++) {
         var pos = positions[m];
         var win = matched[m];
+
+        // Clear tiling to prevent KWin tiling system from overriding geometry
+        if (win.tile) win.tile = null;
         // Remove window decorations for borderless splitscreen
         win.noBorder = true;
         // Take out of fullscreen if the window manager thinks it's fullscreen
         if (win.fullScreen) win.fullScreen = false;
-        var rect = win.frameGeometry;
+
+        // KDE 6: Must clone geometry object — mutating in-place doesn't trigger updates
+        var rect = Object.assign({}, win.frameGeometry);
         rect.x = screen.x + Math.round(pos.x * screen.width);
         rect.y = screen.y + Math.round(pos.y * screen.height);
         rect.width = Math.round(pos.w * screen.width);
         rect.height = Math.round(pos.h * screen.height);
         win.frameGeometry = rect;
+
+        console.log("MC-Splitscreen: Window " + m + " -> " + rect.x + "," + rect.y + " " + rect.width + "x" + rect.height);
     }
+
+    console.log("MC-Splitscreen: Reposition complete");
 })();
 KWINSCRIPTEOF
 
@@ -1070,8 +1101,16 @@ KWINSCRIPTEOF
 
     if [ -n "$script_id" ]; then
         $qdbus_cmd org.kde.KWin "/Scripting/Script${script_id}" run 2>/dev/null
-        sleep 0.3
+        sleep 0.5
         $qdbus_cmd org.kde.KWin /Scripting unloadScript "$script_name" 2>/dev/null
+        # Capture KWin script debug output from journal
+        local kwin_output
+        kwin_output=$(journalctl --user -t kwin_scripting --since "5 seconds ago" --no-pager 2>/dev/null | grep "MC-Splitscreen" || true)
+        if [ -n "$kwin_output" ]; then
+            while IFS= read -r line; do
+                log_debug "KWin JS: $line"
+            done <<< "$kwin_output"
+        fi
         log_info "KWin script executed (ID: $script_id) for $new_total-player layout"
     else
         log_warning "Failed to load KWin script"
