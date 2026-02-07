@@ -1121,10 +1121,17 @@ repositionWithRestart() {
     sleep 2
 
     # Relaunch previously active instances with new positions
+    local launch_count=0
     for i in 1 2 3 4; do
         local idx=$((i - 1))
         if [ "${was_active[$idx]}" = "1" ]; then
+            # Stagger launches to avoid GPU contention
+            if [ "$launch_count" -gt 0 ]; then
+                log_info "Waiting 10 seconds for GPU initialization..."
+                sleep 10
+            fi
             launchInstanceForSlot "$i" "$new_total"
+            launch_count=$((launch_count + 1))
         fi
     done
 }
@@ -1206,8 +1213,11 @@ handleControllerChange() {
             log_info "Player $new_total joining (slot $slot)"
             showNotification "Player Joined" "Player $new_total is joining the game"
 
-            # Update ALL windows for new layout FIRST
+            # Wait for previous instance to finish GPU initialization before launching next
+            # This prevents GPU contention crashes (AMD driver: "Can't getDevice() before initialized")
             if [ "$current_active" -gt 0 ]; then
+                log_info "Waiting 10 seconds for instance $current_active to initialize GPU..."
+                sleep 10
                 repositionAllWindows "$new_total"
             fi
 
@@ -1357,6 +1367,11 @@ launchGames() {
 
     for player in $(seq 1 $numberOfControllers); do
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
+        # Wait for previous instance to finish GPU initialization
+        if [ "$player" -gt 1 ]; then
+            log_info "Waiting 10 seconds for instance $((player - 1)) to initialize GPU..."
+            sleep 10
+        fi
         launchGame "latestUpdate-$player" "P$player"
     done
 
