@@ -1226,11 +1226,16 @@ handleControllerChange() {
             sleep 2
         fi
 
-        # Relaunch all instances with correct splitscreen.properties
+        # Launch all instances in FULLSCREEN mode first (avoids Splitscreen mod
+        # StackOverflow bug on Wayland where non-fullscreen modes trigger infinite
+        # reposition callbacks during startup). KWin repositions after loading.
         local launch_count=0
         for slot in $(seq 1 $new_total); do
             showNotification "Player Joined" "Player $slot is joining the game"
-            setSplitscreenModeForPlayer "$slot" "$new_total"
+            # Force FULLSCREEN during startup to avoid mod crash
+            local config_path="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
+            mkdir -p "$(dirname "$config_path")"
+            echo -e "gap=1\nmode=FULLSCREEN" > "$config_path"
             if [ "$launch_count" -gt 0 ]; then
                 log_info "Waiting 10 seconds for instance $((slot - 1)) to initialize GPU..."
                 sleep 10
@@ -1238,6 +1243,13 @@ handleControllerChange() {
             launchInstanceForSlot "$slot" "$new_total"
             launch_count=$((launch_count + 1))
         done
+
+        # Wait for instances to finish loading, then reposition via KWin
+        if [ "$new_total" -gt 1 ]; then
+            log_info "Waiting 15 seconds for instances to finish loading before repositioning..."
+            sleep 15
+            repositionAllWindows "$new_total"
+        fi
 
         current_active=$new_total
     fi
@@ -1281,16 +1293,26 @@ checkForExitedInstances() {
             done
             sleep 2
 
-            local new_slot=0
+            local launch_count=0
             for old_slot in "${was_active_slots[@]}"; do
-                new_slot=$((new_slot + 1))
-                setSplitscreenModeForPlayer "$old_slot" "$remaining"
-                if [ "$new_slot" -gt 1 ]; then
+                # Force FULLSCREEN during startup to avoid Splitscreen mod crash
+                local config_path="$INSTANCES_DIR/latestUpdate-${old_slot}/.minecraft/config/splitscreen.properties"
+                mkdir -p "$(dirname "$config_path")"
+                echo -e "gap=1\nmode=FULLSCREEN" > "$config_path"
+                if [ "$launch_count" -gt 0 ]; then
                     log_info "Waiting 10 seconds for GPU initialization..."
                     sleep 10
                 fi
                 launchInstanceForSlot "$old_slot" "$remaining"
+                launch_count=$((launch_count + 1))
             done
+
+            # Wait for instances to load, then reposition via KWin
+            if [ "$remaining" -gt 1 ]; then
+                log_info "Waiting 15 seconds for instances to finish loading before repositioning..."
+                sleep 15
+                repositionAllWindows "$remaining"
+            fi
         fi
     fi
 }
