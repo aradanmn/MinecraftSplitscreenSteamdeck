@@ -142,6 +142,7 @@ declare -a INSTANCE_PIDS=("" "" "" "")     # PID for each player slot (index 0-3
 declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
 declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhibit or flatpak)
 declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
+declare -a INSTANCE_LAUNCH_TIME=(0 0 0 0)       # epoch seconds when instance was launched
 CURRENT_PLAYER_COUNT=0                      # Number of active players
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
@@ -697,6 +698,7 @@ launchInstanceForSlot() {
     INSTANCE_WRAPPER_PIDS[$idx]=$wrapper_pid
     INSTANCE_ACTIVE[$idx]=1
     INSTANCE_JAVA_RESOLVED[$idx]=0
+    INSTANCE_LAUNCH_TIME[$idx]=$(date +%s)
 
     log_info "Launched instance $slot (wrapper PID: $wrapper_pid) in $total_players-player layout"
 }
@@ -739,6 +741,20 @@ isInstanceRunning() {
         return 0
     fi
 
+    # Grace period: if launched recently, assume still starting up
+    # The flatpak wrapper exits before Java starts, creating a gap where
+    # neither wrapper nor Java PID is alive. Give 60s for Java to appear.
+    local launch_time="${INSTANCE_LAUNCH_TIME[$idx]}"
+    if [ -n "$launch_time" ] && [ "$launch_time" -gt 0 ]; then
+        local now
+        now=$(date +%s)
+        local elapsed=$((now - launch_time))
+        if [ "$elapsed" -lt 60 ]; then
+            log_debug "Instance $slot: wrapper dead, Java not yet found, but only ${elapsed}s since launch — assuming still starting"
+            return 0
+        fi
+    fi
+
     return 1
 }
 
@@ -777,6 +793,7 @@ markInstanceStopped() {
     INSTANCE_WRAPPER_PIDS[$idx]=""
     INSTANCE_ACTIVE[$idx]=0
     INSTANCE_JAVA_RESOLVED[$idx]=0
+    INSTANCE_LAUNCH_TIME[$idx]=0
     log "Instance $slot marked as stopped"
 }
 
@@ -926,6 +943,21 @@ repositionWindowsKWin() {
     local new_total=$1
     local script_file="/tmp/mc-splitscreen-position-$$.js"
 
+    # Force-resolve Java PIDs before building the list
+    # The wrapper PIDs (flatpak/kde-inhibit) don't own the KWin windows — Java does
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ] && [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "0" ]; then
+            local java_pid
+            java_pid=$(pgrep -f "java.*instances/latestUpdate-${i}/" 2>/dev/null | head -1)
+            if [ -n "$java_pid" ]; then
+                INSTANCE_PIDS[$idx]=$java_pid
+                INSTANCE_JAVA_RESOLVED[$idx]=1
+                log_debug "Pre-reposition: resolved Java PID for slot $i: $java_pid"
+            fi
+        fi
+    done
+
     # Build PID array and slot mapping for active instances
     local pid_list=""
     local slot_num=0
@@ -941,6 +973,8 @@ repositionWindowsKWin() {
             fi
         fi
     done
+
+    log_debug "KWin reposition: PIDs=[$pid_list], total=$new_total"
 
     if [ -z "$pid_list" ]; then
         log_warning "No active instance PIDs for KWin repositioning"
@@ -973,6 +1007,27 @@ repositionWindowsKWin() {
                 matched.push(windows[i]);
                 break;
             }
+        }
+    }
+
+    // Fallback: if PID matching found fewer windows than expected,
+    // try matching by window caption containing "Minecraft"
+    if (matched.length < total) {
+        var mcWindows = [];
+        for (var i = 0; i < windows.length; i++) {
+            var cap = windows[i].caption || "";
+            if (cap.indexOf("Minecraft") !== -1) {
+                // Check not already matched
+                var already = false;
+                for (var m = 0; m < matched.length; m++) {
+                    if (matched[m] === windows[i]) { already = true; break; }
+                }
+                if (!already) mcWindows.push(windows[i]);
+            }
+        }
+        // Add title-matched windows to fill remaining slots
+        for (var j = 0; j < mcWindows.length && matched.length < total; j++) {
+            matched.push(mcWindows[j]);
         }
     }
 
@@ -1473,7 +1528,8 @@ killAllInstances() {
 # but must NOT run cleanup or they'll kill the main process's instances
 cleanup_exit() {
     # Guard: only run cleanup in the main process
-    if [ "$$" != "$MAIN_PID" ]; then
+    # Use BASHPID (actual process PID) not $$ (always parent PID even in subshells)
+    if [ "${BASHPID:-$$}" != "$MAIN_PID" ]; then
         return
     fi
     killAllInstances
