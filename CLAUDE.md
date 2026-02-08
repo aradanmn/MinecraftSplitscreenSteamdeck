@@ -613,13 +613,61 @@ Save installation config to: `~/.local/share/MinecraftSplitscreen/install-config
 
 ---
 
+### Issue #7: PollyMC is Dead - Find Replacement or Remove (HIGH PRIORITY)
+**Problem:** PollyMC project is completely gone as of 2026-02-07:
+- `pollymc.org` does not resolve
+- GitHub repo `fn2006/PollyMC` returns 404
+- Flatpak install fails, AppImage download fails
+
+**Impact:** The entire hybrid launcher strategy (PrismLauncher for creation, PollyMC for offline gameplay) is broken. The installer correctly falls back to PrismLauncher as sole launcher, but PrismLauncher **requires a Microsoft account** to launch Minecraft — eliminating the offline/no-license-verification gameplay that PollyMC provided.
+
+**Current Behavior:** Installer works fine with PrismLauncher only, but users must manually log into a Microsoft account via PrismLauncher GUI before gameplay works.
+
+**Solution Approaches:**
+1. **Accept PrismLauncher-only** - Remove all PollyMC code, document MS account requirement
+2. **Find PollyMC alternative** - Research other offline-friendly launchers (e.g., UltimMC, HMCL, etc.)
+3. **Automate MS account login** - Add OAuth device flow during install so users can log in without GUI
+
+**Files affected:**
+- `modules/pollymc_setup.sh` - Entire module may be removed or replaced
+- `modules/path_configuration.sh` - Remove PollyMC path logic
+- `modules/main_workflow.sh` - Remove PollyMC setup phase
+- `README.md` - Update documentation
+
+---
+
+### Issue #8: Microsoft Account Setup During Installation (MEDIUM PRIORITY)
+**Problem:** After installation, users must manually open PrismLauncher GUI and log into their Microsoft account before Minecraft can launch. This is a poor UX especially on Steam Deck where switching to Desktop Mode is required.
+
+**Desired Behavior:** During installation, prompt the user to authenticate their Microsoft account via OAuth device code flow (open URL + enter code), so the account is ready when installation completes.
+
+**Research Needed:**
+- PrismLauncher account storage format (`accounts.json`)
+- Microsoft OAuth device code flow for Minecraft Java Edition
+- Token format needed by PrismLauncher (Xbox Live → XSTS → Minecraft tokens)
+- Whether tokens can be injected into PrismLauncher's accounts.json
+
+**Solution Approach:**
+- Implement OAuth device code flow: user visits `microsoft.com/devicelogin` and enters a code
+- Exchange tokens: MS Auth → Xbox Live → XSTS → Minecraft
+- Write valid token data to PrismLauncher's `accounts.json`
+- Works over SSH/headless since it only needs a browser on any device
+
+**Files to modify:**
+- `modules/main_workflow.sh` - Add account setup phase
+- New utility functions in `modules/utilities.sh` or new module `modules/account_setup.sh`
+
+---
+
 ### Implementation Order
 1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
 2. ✅ **Issue #1 (User Input)** - DONE. All modules refactored to use `prompt_user()` and `prompt_yes_no()`.
 3. ✅ **Issue #5 (Dynamic Splitscreen)** - DONE. Players can join/leave mid-session.
-4. ⏳ **Issue #6 (Previous Installation Detection)** - Improves repeat user experience
-5. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
-6. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+4. ⏳ **Issue #7 (PollyMC Dead)** - Remove PollyMC code, accept PrismLauncher-only
+5. ⏳ **Issue #8 (MS Account During Install)** - OAuth device flow for headless auth
+6. ⏳ **Issue #6 (Previous Installation Detection)** - Improves repeat user experience
+7. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
+8. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
 
 ## Useful Debugging
 

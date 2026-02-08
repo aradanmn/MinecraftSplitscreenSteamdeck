@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.7
-# @date        2026-02-07
+# @version     3.0.8
+# @date        2026-02-08
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
 #   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
 #   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
 #   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
@@ -188,6 +189,29 @@ log_debug() { echo "[Debug] $*" >&2; log "DEBUG: $*"; }
 
 _init_log
 
+# Import desktop session environment when launched from SSH or headless context.
+# SSH sessions lack DISPLAY/WAYLAND_DISPLAY, causing false "game mode" detection.
+# If kwin_wayland is running, a desktop session exists — import its env vars so
+# the script detects desktop mode correctly and doesn't launch a broken nested Plasma.
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    _kde_pid=$(pgrep -u "$(id -u)" kwin_wayland 2>/dev/null | head -1)
+    if [ -n "$_kde_pid" ] && [ -r "/proc/$_kde_pid/environ" ]; then
+        log_info "No display vars but kwin_wayland running (PID $_kde_pid) — importing session environment"
+        while IFS= read -r -d '' _envline; do
+            _key="${_envline%%=*}"
+            _val="${_envline#*=}"
+            case "$_key" in
+                WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP)
+                    export "$_key=$_val"
+                    log_debug "Imported $_key=$_val"
+                    ;;
+            esac
+        done < "/proc/$_kde_pid/environ"
+        unset _envline _key _val
+    fi
+    unset _kde_pid
+fi
+
 # =============================================================================
 # Launcher Validation
 # =============================================================================
@@ -298,9 +322,18 @@ launchGame() {
 # KDE Panel Management
 # =============================================================================
 
-# Hide KDE panels by killing plasmashell
+# Hide KDE panels for splitscreen.
+# When KWin scripting is available, we use FullArea (covers panels) in the
+# repositioning JS, so panels are simply covered — no need to kill plasmashell.
+# This prevents the desktop from being lost if the script crashes.
 hidePanels() {
+    if canUseKWinScripting 2>/dev/null; then
+        log_info "KWin scripting available — panels covered by FullArea geometry, not killed"
+        return 0
+    fi
+    # Fallback for non-KWin environments: kill plasmashell (legacy behavior)
     if command -v plasmashell >/dev/null 2>&1; then
+        log_warning "No KWin scripting — killing plasmashell (risky fallback)"
         pkill plasmashell
         sleep 1
         if pgrep -u "$USER" plasmashell >/dev/null; then
@@ -316,11 +349,20 @@ hidePanels() {
     fi
 }
 
-# Restore KDE panels by restarting plasmashell
+# Restore KDE panels.
+# If KWin scripting was used, panels were never killed — nothing to restore.
 restorePanels() {
+    if canUseKWinScripting 2>/dev/null; then
+        log_info "KWin scripting was used — panels were never killed, nothing to restore"
+        return 0
+    fi
+    # Fallback: restart plasmashell if it was killed
     if command -v plasmashell >/dev/null 2>&1; then
-        nohup plasmashell >/dev/null 2>&1 &
-        sleep 2
+        if ! pgrep -u "$USER" plasmashell >/dev/null; then
+            log_info "Restarting plasmashell..."
+            nohup plasmashell >/dev/null 2>&1 &
+            sleep 2
+        fi
     else
         log_info "plasmashell not found. Skipping KDE panel restore."
     fi
@@ -1057,7 +1099,7 @@ repositionWindowsKWin() {
     if (matched.length === 0) { console.log("MC-Splitscreen: No windows matched, aborting"); return; }
 
     // Get screen work area from first matched window
-    var screen = workspace.clientArea(0, matched[0]);  // 0 = MaximizeArea
+    var screen = workspace.clientArea(2, matched[0]);  // 2 = FullArea (covers panels)
     console.log("MC-Splitscreen: Screen area: " + screen.x + "," + screen.y + " " + screen.width + "x" + screen.height);
 
     for (var m = 0; m < matched.length && m < positions.length; m++) {
@@ -1522,7 +1564,8 @@ isSteamDeckGameMode() {
 
     # Check 2: Running in KDE/other full desktop - this is DESKTOP mode, not game mode
     # Even if launched from startplasma-steamos, if we're in KDE, we have window management
-    if [ -n "$DISPLAY" ] && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
+    # Check both DISPLAY (X11/Xwayland) and WAYLAND_DISPLAY (pure Wayland sessions)
+    if { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; } && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
         log_debug "Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)"
         return 1
     fi
