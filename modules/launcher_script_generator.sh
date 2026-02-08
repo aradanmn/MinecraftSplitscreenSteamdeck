@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.8
+# @version     3.0.9
 # @date        2026-02-08
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
 #   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
 #   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
 #   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
@@ -309,6 +310,61 @@ EOF
 # =============================================================================
 # Game Launching
 # =============================================================================
+
+# Pre-start the launcher so it's ready to accept instance launch commands.
+# PrismLauncher ignores -l commands received while still initializing.
+# This starts the launcher in the background and waits for it to be ready.
+LAUNCHER_PREWARMED=0
+prewarmLauncher() {
+    if [ "$LAUNCHER_PREWARMED" = "1" ]; then
+        return 0
+    fi
+
+    log_info "Pre-starting $LAUNCHER_NAME to ensure it's ready for launch commands..."
+
+    # Start launcher without -l flag — just opens the main window
+    $LAUNCHER_EXEC &
+    local launcher_pid=$!
+    disown $launcher_pid 2>/dev/null || true
+
+    # Wait for PrismLauncher to finish initializing (up to 30 seconds)
+    local waited=0
+    local max_wait=30
+    while [ $waited -lt $max_wait ]; do
+        sleep 1
+        waited=$((waited + 1))
+
+        # Check if a Java process from PrismLauncher's managed instances exists
+        # OR if the PrismLauncher GUI has fully loaded (process is stable and responsive)
+        # We detect readiness by checking if the launcher's QLocalServer socket exists
+        local socket_path=""
+        if [ "$LAUNCHER_TYPE" = "flatpak" ]; then
+            socket_path=$(find /tmp/.flatpak-org.prismlauncher.PrismLauncher*/tmp/ -name "PrismLauncher-*" -type s 2>/dev/null | head -1)
+            if [ -z "$socket_path" ]; then
+                socket_path=$(find /run/user/$(id -u)/ -name "PrismLauncher*" -type s 2>/dev/null | head -1)
+            fi
+        else
+            socket_path=$(find /tmp/ -name "PrismLauncher-*" -type s 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$socket_path" ]; then
+            log_info "$LAUNCHER_NAME ready after ${waited}s (IPC socket: $socket_path)"
+            LAUNCHER_PREWARMED=1
+            return 0
+        fi
+
+        # Fallback: if we can't find a socket, just wait a reasonable time
+        if [ $waited -ge 10 ]; then
+            log_info "$LAUNCHER_NAME assumed ready after ${waited}s (no IPC socket found, using timeout)"
+            LAUNCHER_PREWARMED=1
+            return 0
+        fi
+    done
+
+    log_warning "$LAUNCHER_NAME may not be fully ready after ${max_wait}s — proceeding anyway"
+    LAUNCHER_PREWARMED=1
+    return 0
+}
 
 # Launch a single Minecraft instance with KDE inhibition
 # Arguments:
@@ -1419,6 +1475,9 @@ runDynamicSplitscreen() {
 
     hidePanels
 
+    # Pre-start the launcher so it's ready to accept instance launch commands
+    prewarmLauncher
+
     # Start controller monitoring
     if ! startControllerMonitor; then
         log_error "Failed to start controller monitor, falling back to static mode"
@@ -1471,6 +1530,9 @@ runStaticSplitscreen() {
     DYNAMIC_MODE=0
 
     hidePanels
+
+    # Pre-start the launcher so it's ready to accept instance launch commands
+    prewarmLauncher
 
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
