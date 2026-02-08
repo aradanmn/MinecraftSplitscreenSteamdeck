@@ -191,25 +191,34 @@ _init_log
 
 # Import desktop session environment when launched from SSH or headless context.
 # SSH sessions lack DISPLAY/WAYLAND_DISPLAY, causing false "game mode" detection.
-# If kwin_wayland is running, a desktop session exists — import its env vars so
-# the script detects desktop mode correctly and doesn't launch a broken nested Plasma.
+# If a KDE desktop is running, import its env vars so the script detects desktop mode.
+# NOTE: kwin_wayland (the compositor) does NOT have WAYLAND_DISPLAY in its own env —
+# it creates that for child processes. So we check plasmashell first (has both
+# DISPLAY and WAYLAND_DISPLAY), then fall back to kwin_wayland for other vars.
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-    _kde_pid=$(pgrep -u "$(id -u)" kwin_wayland 2>/dev/null | head -1)
-    if [ -n "$_kde_pid" ] && [ -r "/proc/$_kde_pid/environ" ]; then
-        log_info "No display vars but kwin_wayland running (PID $_kde_pid) — importing session environment"
+    # Try plasmashell first (has WAYLAND_DISPLAY and DISPLAY)
+    _session_pid=$(pgrep -u "$(id -u)" plasmashell 2>/dev/null | head -1)
+    _source="plasmashell"
+    # Fall back to kwin_wayland if plasmashell not found
+    if [ -z "$_session_pid" ]; then
+        _session_pid=$(pgrep -u "$(id -u)" kwin_wayland 2>/dev/null | head -1)
+        _source="kwin_wayland"
+    fi
+    if [ -n "$_session_pid" ] && [ -r "/proc/$_session_pid/environ" ]; then
+        log_info "No display vars but $_source running (PID $_session_pid) — importing session environment"
         while IFS= read -r -d '' _envline; do
             _key="${_envline%%=*}"
             _val="${_envline#*=}"
             case "$_key" in
-                WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP)
+                WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|XDG_SESSION_TYPE)
                     export "$_key=$_val"
                     log_debug "Imported $_key=$_val"
                     ;;
             esac
-        done < "/proc/$_kde_pid/environ"
+        done < "/proc/$_session_pid/environ"
         unset _envline _key _val
     fi
-    unset _kde_pid
+    unset _session_pid _source
 fi
 
 # =============================================================================
