@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.9
+# @version     3.0.10
 # @date        2026-02-08
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.10 (2026-02-08) - Change: Make dynamic mode the default (was static)
 #   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
 #   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
 #   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
@@ -1783,16 +1784,16 @@ if [ -z "$LAUNCH_MODE" ]; then
     echo ""
     echo "Launch Modes:"
     echo "  1. Static  - Launch based on current controllers (original behavior)"
-    echo "  2. Dynamic - Players can join/leave during session [NEW in v3.0]"
+    echo "  2. Dynamic - Players can join/leave during session [DEFAULT]"
     echo ""
     echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
     echo ""
-    read -t 15 -p "Select mode [1]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
-    mode_choice=${mode_choice:-1}
+    read -t 15 -p "Select mode [2]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
+    mode_choice=${mode_choice:-2}
 
     case "$mode_choice" in
-        2|dynamic|d) LAUNCH_MODE="dynamic" ;;
-        *) LAUNCH_MODE="static" ;;
+        1|static|s) LAUNCH_MODE="static" ;;
+        *) LAUNCH_MODE="dynamic" ;;
     esac
     echo ""
 fi
