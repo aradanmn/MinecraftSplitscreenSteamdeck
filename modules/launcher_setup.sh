@@ -3,8 +3,8 @@
 # LAUNCHER SETUP MODULE
 # =============================================================================
 # @file        launcher_setup.sh
-# @version     2.2.3
-# @date        2026-01-31
+# @version     3.0.0
+# @date        2026-02-01
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck

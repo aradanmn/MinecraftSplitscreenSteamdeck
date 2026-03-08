@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file instance_creation.sh
-# @version     2.0.1
-# @date        2026-01-31
+# @version     3.0.1
+# @date        2026-03-07
 # @author      aradanmn (forked from FlyingEwok)
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -37,6 +37,7 @@
 # @changelog
 #   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp for debug files
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
+#   3.0.1 (2026-03-07) - Fix: Set pauseOnLostFocus:false so instances don't mute when window focus moves during splitscreen repositioning
 #   1.0.1 (2026-01-23) - Added instance update handling with settings preservation
 #   1.0.0 (2026-01-22) - Initial implementation with CLI and manual creation methods
 # =============================================================================
@@ -727,7 +728,7 @@ textBackgroundOpacity:0.5
 backgroundForChatOnly:true
 hideServerAddress:false
 advancedItemTooltips:false
-pauseOnLostFocus:true
+pauseOnLostFocus:false
 overrideWidth:0
 overrideHeight:0
 heldItemTooltips:true

@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        desktop_launcher.sh
-# @version     2.0.1
-# @date        2026-01-31
+# @version     3.0.0
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -49,9 +49,8 @@
 #
 # ICON HIERARCHY:
 # 1. SteamGridDB custom icon (downloaded, professional appearance)
-# 2. PollyMC instance icon (if PollyMC setup successful)
-# 3. PrismLauncher instance icon (fallback)
-# 4. System generic icon (ultimate fallback)
+# 2. PrismLauncher instance icon (fallback)
+# 3. System generic icon (ultimate fallback)
 #
 # DESKTOP FILE LOCATIONS:
 # - Desktop shortcut: ~/Desktop/MinecraftSplitscreen.desktop

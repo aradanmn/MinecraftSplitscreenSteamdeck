@@ -3,8 +3,8 @@
 # VERSION INFORMATION MODULE
 # =============================================================================
 # @file        version_info.sh
-# @version     2.1.0
-# @date        2026-01-31
+# @version     3.1.0
+# @date        2026-03-07
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -36,6 +36,10 @@
 #     - verify_repo_source     : Verify running from expected repo
 #
 # @changelog
+#   3.1.0 (2026-03-07) - Release: v3.1.0 — dynamic splitscreen stable, zombie/race fixes, pauseOnLostFocus, PrismLauncher-only
+#   3.0.8 (2026-02-08) - Fix: SSH session detection, stop killing plasmashell, FullArea KWin, WAYLAND_DISPLAY check
+#   3.0.5 (2026-02-07) - KWin scripting for Wayland window management
+#   3.0.0 (2026-02-01) - Dynamic splitscreen: players can join/leave mid-session
 #   2.1.0 (2026-01-31) - Updated SCRIPT_VERSION to 2.1.0 for rev2 release
 #   2.0.0 (2026-01-24) - Updated for modular installer architecture
 #   1.0.0 (2026-01-22) - Initial version
@@ -46,7 +50,7 @@
 # =============================================================================
 
 # Script version - update this when making releases
-readonly SCRIPT_VERSION="2.1.0"
+readonly SCRIPT_VERSION="3.1.0"
 
 # Repository information
 readonly REPO_OWNER="aradanmn"

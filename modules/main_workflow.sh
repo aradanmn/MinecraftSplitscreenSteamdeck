@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        main_workflow.sh
-# @version     2.1.0
-# @date        2026-01-31
+# @version     3.0.3
+# @date        2026-03-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -27,7 +27,6 @@
 #   - lwjgl_management.sh (for get_lwjgl_version)
 #   - mod_management.sh (for check_mod_compatibility, select_user_mods)
 #   - instance_creation.sh (for create_instances)
-#   - pollymc_setup.sh (for setup_pollymc)
 #   - launcher_script_generator.sh (for generate_splitscreen_launcher)
 #   - steam_integration.sh (for setup_steam_integration)
 #   - desktop_launcher.sh (for create_desktop_launcher)
@@ -39,6 +38,10 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   3.0.3 (2026-03-07) - Removed PollyMC; PrismLauncher is now the sole launcher
+#   3.0.2 (2026-02-07) - Updated dynamic mode summary to show KWin scripting status
+#   3.0.1 (2026-02-01) - Updated launch instructions to show CLI arguments
+#   3.0.0 (2026-02-01) - Added dynamic mode dependency check and status display
 #   2.1.0 (2026-01-31) - Added version display in startup header
 #   2.0.1 (2026-01-26) - Added init_logging() call at startup
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
@@ -57,21 +60,20 @@
 # 5. MOD COMPATIBILITY: Query APIs and determine compatible mod versions
 # 6. USER SELECTION: Interactive mod selection interface
 # 7. INSTANCE CREATION: Create 4 splitscreen instances with PrismLauncher CLI
-# 8. LAUNCHER OPTIMIZATION: Setup PollyMC and cleanup PrismLauncher (if successful)
+# 8. LAUNCHER SCRIPT GENERATION: Generate the splitscreen launcher script
 # 9. INTEGRATION: Optional Steam and desktop launcher integration
 # 10. COMPLETION: Summary report and usage instructions
 #
 # ERROR HANDLING STRATEGY:
 # - Each phase has fallback mechanisms to ensure installation can complete
-# - Non-critical failures (like PollyMC setup) don't halt the entire process
+# - Non-critical failures don't halt the entire process
 # - Comprehensive error reporting helps users understand any issues
 # - Multiple validation checkpoints ensure data integrity
 #
-# DUAL-LAUNCHER APPROACH:
-# The script uses an optimized strategy combining two launchers:
-# - PrismLauncher: CLI automation for reliable instance creation with proper Fabric setup
-# - PollyMC: Offline-friendly gameplay launcher without forced authentication
-# - Smart cleanup: Removes PrismLauncher after successful PollyMC setup to save space
+# LAUNCHER APPROACH:
+# PrismLauncher is used for both instance creation and gameplay:
+# - CLI automation for reliable instance creation with proper Fabric setup
+# - Stable, well-supported launcher with broad community backing
 #
 # @global      Multiple globals from path_configuration.sh (ACTIVE_*, CREATION_*)
 # @global      MC_VERSION - (output) Set by get_minecraft_version
@@ -184,12 +186,6 @@ main() {
     create_instances             # Create 4 splitscreen instances using PrismLauncher CLI with comprehensive fallbacks
 
     # =============================================================================
-    # LAUNCHER OPTIMIZATION PHASE: Advanced launcher configuration
-    # =============================================================================
-
-    setup_pollymc               # Download PollyMC, migrate instances, verify, cleanup PrismLauncher
-
-    # =============================================================================
     # LAUNCHER SCRIPT GENERATION PHASE: Generate splitscreen launcher with correct paths
     # =============================================================================
 
@@ -258,17 +254,10 @@ main() {
     echo "   📁 Instances: $ACTIVE_INSTANCES_DIR"
     echo "   📜 Launcher Script: $ACTIVE_LAUNCHER_SCRIPT"
     echo ""
-    if [[ "$ACTIVE_LAUNCHER" == "pollymc" ]]; then
-        echo "🎯 POLLYMC BENEFITS:"
-        echo "   • Offline-friendly gameplay without forced Microsoft login prompts"
-        echo "   • Optimized for splitscreen scenarios"
-        echo "   • Best performance for local multiplayer"
-    else
-        echo "🎯 PRISMLAUNCHER BENEFITS:"
-        echo "   • Proven reliability and stability"
-        echo "   • Full functionality for splitscreen gameplay"
-        echo "   • Wide community support"
-    fi
+    echo "🎯 PRISMLAUNCHER BENEFITS:"
+    echo "   • Proven reliability and stability"
+    echo "   • Full functionality for splitscreen gameplay"
+    echo "   • Wide community support"
 
     # =============================================================================
     # TECHNICAL ACHIEVEMENT SUMMARY
@@ -291,6 +280,62 @@ main() {
     echo ""
 
     # =============================================================================
+    # DYNAMIC SPLITSCREEN MODE STATUS
+    # =============================================================================
+
+    check_dynamic_mode_dependencies
+
+    echo "🔄 DYNAMIC SPLITSCREEN MODE (v3.0.0):"
+    echo ""
+
+    local has_all_tools="true"
+
+    if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]] && { [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]] || [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; }; then
+        print_success "All optional tools detected - full dynamic mode available!"
+        echo "   • Instant controller detection"
+        if [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]]; then
+            echo "   • Window repositioning: KWin scripting (Wayland-native)"
+        else
+            echo "   • Window repositioning: xdotool/wmctrl (X11)"
+        fi
+        if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
+            echo "   • Desktop notifications enabled"
+        fi
+    else
+        print_info "Dynamic mode available with fallbacks:"
+        echo ""
+
+        if [[ "$DYNAMIC_HAS_INOTIFY" == "true" ]]; then
+            echo "   ✅ Controller detection: instant (inotifywait)"
+        else
+            echo "   ⚡ Controller detection: polling every 2 seconds"
+            has_all_tools="false"
+        fi
+
+        if [[ "$DYNAMIC_HAS_KWIN_SCRIPTING" == "true" ]]; then
+            echo "   ✅ Window repositioning: KWin scripting (Wayland-native)"
+        elif [[ "$DYNAMIC_HAS_WINDOW_TOOLS" == "true" ]]; then
+            echo "   ✅ Window repositioning: xdotool/wmctrl (X11)"
+        else
+            echo "   ⚡ Window repositioning: restart instances when layout changes"
+            has_all_tools="false"
+        fi
+
+        if [[ "$DYNAMIC_HAS_NOTIFY" == "true" ]]; then
+            echo "   ✅ Notifications: enabled"
+        else
+            echo "   ⚡ Notifications: disabled (silent operation)"
+        fi
+
+        if [[ "$has_all_tools" == "false" ]]; then
+            echo ""
+            print_info "To enable all features, install optional packages:"
+            show_dynamic_mode_install_hints
+        fi
+    fi
+    echo ""
+
+    # =============================================================================
     # USER GUIDANCE AND LAUNCH INSTRUCTIONS
     # =============================================================================
 
@@ -303,8 +348,10 @@ main() {
 
     # PRIMARY LAUNCH METHOD: Direct script execution
     echo "1. 🔧 DIRECT LAUNCH (Recommended):"
-    echo "   Command: $ACTIVE_LAUNCHER_SCRIPT"
-    echo "   Description: ${ACTIVE_LAUNCHER^}-based splitscreen with automatic controller detection"
+    echo "   Interactive:  $ACTIVE_LAUNCHER_SCRIPT"
+    echo "   Static mode:  $ACTIVE_LAUNCHER_SCRIPT --mode=static"
+    echo "   Dynamic mode: $ACTIVE_LAUNCHER_SCRIPT --mode=dynamic"
+    echo "   Help:         $ACTIVE_LAUNCHER_SCRIPT --help"
     echo ""
 
     # ALTERNATIVE LAUNCH METHODS: Other integration options

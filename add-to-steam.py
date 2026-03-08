@@ -9,7 +9,7 @@
 # Modified and improved for portability and clarity.
 #
 # Usage: python3 add-to-steam.py <launcher_script_path> <data_dir> <launcher_name>
-# Example: python3 add-to-steam.py ~/.local/share/PollyMC/minecraftSplitscreen.sh ~/.local/share/PollyMC PollyMC
+# Example: python3 add-to-steam.py ~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/minecraftSplitscreen.sh ~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher PrismLauncher
 
 import os
 import re
@@ -38,12 +38,12 @@ def print_usage():
         "  data_dir              Launcher data directory (working directory for Steam)"
     )
     print(
-        "  launcher_name         Display name of the launcher (e.g., PollyMC, PrismLauncher)"
+        "  launcher_name         Display name of the launcher (e.g., PrismLauncher)"
     )
     print("")
     print("Example:")
     print(
-        "  python3 add-to-steam.py ~/.local/share/PollyMC/minecraftSplitscreen.sh ~/.local/share/PollyMC PollyMC"
+        "  python3 add-to-steam.py ~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/minecraftSplitscreen.sh ~/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher PrismLauncher"
     )
 
 

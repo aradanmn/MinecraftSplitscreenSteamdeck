@@ -3,8 +3,8 @@
 # PATH CONFIGURATION MODULE - SINGLE SOURCE OF TRUTH
 # =============================================================================
 # @file        path_configuration.sh
-# @version     2.1.0
-# @date        2026-01-31
+# @version     3.0.1
+# @date        2026-03-07
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -14,9 +14,8 @@
 #   Splitscreen installer. All other modules MUST use these variables and
 #   functions - DO NOT hardcode paths anywhere else.
 #
-#   This module manages two launcher configurations:
-#   - CREATION launcher: Used for CLI instance creation (PrismLauncher preferred)
-#   - ACTIVE launcher: Used for gameplay (PollyMC preferred if available)
+#   PrismLauncher is the sole launcher used for both instance creation and gameplay.
+#   The CREATION and ACTIVE launcher variables both point to PrismLauncher.
 #
 # @dependencies
 #   - flatpak (optional, for Flatpak detection)
@@ -25,18 +24,14 @@
 # @exports
 #   Constants:
 #     - PRISM_FLATPAK_ID          : PrismLauncher Flatpak application ID
-#     - POLLYMC_FLATPAK_ID        : PollyMC Flatpak application ID
 #     - PRISM_APPIMAGE_DATA_DIR   : PrismLauncher AppImage data directory
-#     - POLLYMC_APPIMAGE_DATA_DIR : PollyMC AppImage data directory
 #     - PRISM_FLATPAK_DATA_DIR    : PrismLauncher Flatpak data directory
-#     - POLLYMC_FLATPAK_DATA_DIR  : PollyMC Flatpak data directory
 #     - PRISM_APPIMAGE_PATH       : Path to PrismLauncher AppImage
-#     - POLLYMC_APPIMAGE_PATH     : Path to PollyMC AppImage
 #
 #   Variables (set by configure_launcher_paths):
 #     - PREFER_FLATPAK            : Whether to prefer Flatpak over AppImage (true/false)
 #     - IMMUTABLE_OS_DETECTED     : Whether running on immutable OS (true/false)
-#     - ACTIVE_LAUNCHER           : Active launcher name ("prismlauncher"/"pollymc")
+#     - ACTIVE_LAUNCHER           : Active launcher name ("prismlauncher")
 #     - ACTIVE_LAUNCHER_TYPE      : Active launcher type ("appimage"/"flatpak")
 #     - ACTIVE_DATA_DIR           : Active launcher data directory
 #     - ACTIVE_INSTANCES_DIR      : Active launcher instances directory
@@ -52,11 +47,8 @@
 #     - is_flatpak_installed            : Check if Flatpak app is installed
 #     - is_appimage_available           : Check if AppImage exists
 #     - detect_prismlauncher            : Detect PrismLauncher installation
-#     - detect_pollymc                  : Detect PollyMC installation
 #     - configure_launcher_paths        : Main configuration function
 #     - set_creation_launcher_prismlauncher : Set PrismLauncher as creation launcher
-#     - set_active_launcher_pollymc     : Set PollyMC as active launcher
-#     - revert_to_prismlauncher         : Revert active launcher to PrismLauncher
 #     - finalize_launcher_paths         : Finalize and verify configuration
 #     - get_creation_instances_dir      : Get creation instances directory
 #     - get_active_instances_dir        : Get active instances directory
@@ -70,6 +62,7 @@
 #     - print_path_configuration        : Debug print all paths
 #
 # @changelog
+#   3.0.1 (2026-03-07) - Removed PollyMC; PrismLauncher is now the sole launcher
 #   2.1.0 (2026-01-31) - Added architecture detection for PollyMC AppImage (x86_64/arm64)
 #   2.0.2 (2026-01-25) - Fix: Don't create directories in configure_launcher_paths() detection phase
 #   2.0.1 (2026-01-25) - Centralized PREFER_FLATPAK decision; set once, used by all modules
@@ -83,38 +76,18 @@
 # LAUNCHER IDENTIFIERS (Constants)
 # =============================================================================
 readonly PRISM_FLATPAK_ID="org.prismlauncher.PrismLauncher"
-readonly POLLYMC_FLATPAK_ID="org.fn2006.PollyMC"
 
 # =============================================================================
 # BASE PATH DEFINITIONS (Constants)
 # =============================================================================
 # AppImage data directories (where AppImage launchers store their data)
 readonly PRISM_APPIMAGE_DATA_DIR="$HOME/.local/share/PrismLauncher"
-readonly POLLYMC_APPIMAGE_DATA_DIR="$HOME/.local/share/PollyMC"
 
 # Flatpak data directories (where Flatpak launchers store their data)
 readonly PRISM_FLATPAK_DATA_DIR="$HOME/.var/app/${PRISM_FLATPAK_ID}/data/PrismLauncher"
-readonly POLLYMC_FLATPAK_DATA_DIR="$HOME/.var/app/${POLLYMC_FLATPAK_ID}/data/PollyMC"
 
-# Detect system architecture for AppImage filenames
-# Maps uname -m output to PollyMC release naming convention
-_SYSTEM_ARCH=$(uname -m)
-case "$_SYSTEM_ARCH" in
-    x86_64)
-        _POLLYMC_ARCH_SUFFIX="x86_64"
-        ;;
-    aarch64|arm64)
-        _POLLYMC_ARCH_SUFFIX="arm64"
-        ;;
-    *)
-        # Fallback to x86_64 for unknown architectures
-        _POLLYMC_ARCH_SUFFIX="x86_64"
-        ;;
-esac
-
-# AppImage executable locations
+# AppImage executable location
 readonly PRISM_APPIMAGE_PATH="$PRISM_APPIMAGE_DATA_DIR/PrismLauncher.AppImage"
-readonly POLLYMC_APPIMAGE_PATH="$POLLYMC_APPIMAGE_DATA_DIR/PollyMC-Linux-${_POLLYMC_ARCH_SUFFIX}.AppImage"
 
 # =============================================================================
 # SYSTEM DETECTION VARIABLES
@@ -134,15 +107,15 @@ IMMUTABLE_OS_DETECTED=false
 # These are set by configure_launcher_paths() based on what's detected
 
 # Primary launcher (the one used for gameplay)
-ACTIVE_LAUNCHER=""           # "prismlauncher" or "pollymc"
+ACTIVE_LAUNCHER=""           # "prismlauncher"
 ACTIVE_LAUNCHER_TYPE=""      # "appimage" or "flatpak"
 ACTIVE_DATA_DIR=""           # Where launcher stores its data
 ACTIVE_INSTANCES_DIR=""      # Where instances are stored
 ACTIVE_EXECUTABLE=""         # Command to run the launcher
 ACTIVE_LAUNCHER_SCRIPT=""    # Path to minecraftSplitscreen.sh
 
-# Creation launcher (used for initial instance creation, may differ from primary)
-CREATION_LAUNCHER=""         # "prismlauncher" or "pollymc"
+# Creation launcher (used for initial instance creation)
+CREATION_LAUNCHER=""         # "prismlauncher"
 CREATION_LAUNCHER_TYPE=""    # "appimage" or "flatpak"
 CREATION_DATA_DIR=""         # Where to create instances
 CREATION_INSTANCES_DIR=""    # Instance creation directory
@@ -242,80 +215,19 @@ detect_prismlauncher() {
     return 1
 }
 
-# -----------------------------------------------------------------------------
-# @function    detect_pollymc
-# @description Detects if PollyMC is installed (AppImage or Flatpak).
-#              Sets POLLYMC_TYPE, POLLYMC_DATA_DIR, and POLLYMC_EXECUTABLE.
-#              Uses PREFER_FLATPAK (set by configure_launcher_paths) to determine
-#              check order: Flatpak first on immutable OS, AppImage first otherwise.
-# @param       None
-# @global      PREFER_FLATPAK     - (input) Whether to prefer Flatpak
-# @global      POLLYMC_DETECTED   - (output) Set to true/false
-# @global      POLLYMC_TYPE       - (output) "appimage" or "flatpak"
-# @global      POLLYMC_DATA_DIR   - (output) Path to data directory
-# @global      POLLYMC_EXECUTABLE - (output) Command to run PollyMC
-# @return      0 if detected, 1 if not found
-# -----------------------------------------------------------------------------
-detect_pollymc() {
-    POLLYMC_DETECTED=false
-    POLLYMC_TYPE=""
-    POLLYMC_DATA_DIR=""
-    POLLYMC_EXECUTABLE=""
-
-    # Check order depends on PREFER_FLATPAK (set during system detection)
-    if [[ "$PREFER_FLATPAK" == true ]]; then
-        # Immutable OS: Check Flatpak first, then AppImage
-        if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
-            POLLYMC_TYPE="flatpak"
-            POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
-            POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
-            print_info "Detected Flatpak PollyMC (preferred)"
-            return 0
-        fi
-
-        if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
-            POLLYMC_TYPE="appimage"
-            POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
-            POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
-            print_info "Detected AppImage PollyMC (fallback)"
-            return 0
-        fi
-    else
-        # Traditional OS: Check AppImage first, then Flatpak
-        if is_appimage_available "$POLLYMC_APPIMAGE_PATH"; then
-            POLLYMC_TYPE="appimage"
-            POLLYMC_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
-            POLLYMC_EXECUTABLE="$POLLYMC_APPIMAGE_PATH"
-            print_info "Detected AppImage PollyMC (preferred)"
-            return 0
-        fi
-
-        if is_flatpak_installed "$POLLYMC_FLATPAK_ID"; then
-            POLLYMC_TYPE="flatpak"
-            POLLYMC_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
-            POLLYMC_EXECUTABLE="flatpak run $POLLYMC_FLATPAK_ID"
-            print_info "Detected Flatpak PollyMC (fallback)"
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
 # =============================================================================
 # MAIN CONFIGURATION FUNCTION
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # @function    configure_launcher_paths
-# @description Main configuration function that detects installed launchers
-#              and sets up CREATION_* and ACTIVE_* variables. This MUST be
-#              called early in the installation process before any other
-#              module tries to access launcher paths.
+# @description Main configuration function that detects PrismLauncher and sets
+#              up CREATION_* and ACTIVE_* variables. This MUST be called early
+#              in the installation process before any other module tries to
+#              access launcher paths.
 #
-#              Priority:
-#              - Creation launcher: PrismLauncher (has CLI support)
-#              - Active launcher: PollyMC if available, else PrismLauncher
+#              PrismLauncher is used for both instance creation (CLI) and
+#              gameplay. Both CREATION_* and ACTIVE_* point to PrismLauncher.
 #
 # @param       None
 # @global      All CREATION_* and ACTIVE_* variables are set
@@ -346,7 +258,7 @@ configure_launcher_paths() {
     # LAUNCHER DETECTION
     # =========================================================================
 
-    # Determine creation launcher (PrismLauncher preferred for CLI instance creation)
+    # PrismLauncher is the sole launcher for both instance creation and gameplay
     if detect_prismlauncher; then
         CREATION_LAUNCHER="prismlauncher"
         CREATION_LAUNCHER_TYPE="$PRISM_TYPE"
@@ -356,24 +268,7 @@ configure_launcher_paths() {
         print_success "Creation launcher: PrismLauncher ($PRISM_TYPE)"
         print_info "  Data directory: $CREATION_DATA_DIR"
         print_info "  Instances: $CREATION_INSTANCES_DIR"
-    else
-        # No PrismLauncher - will need to download or use PollyMC
-        CREATION_LAUNCHER=""
-        print_warning "No PrismLauncher detected - will attempt download"
-    fi
 
-    # Determine active/gameplay launcher (PollyMC preferred if available)
-    if detect_pollymc; then
-        ACTIVE_LAUNCHER="pollymc"
-        ACTIVE_LAUNCHER_TYPE="$POLLYMC_TYPE"
-        ACTIVE_DATA_DIR="$POLLYMC_DATA_DIR"
-        ACTIVE_INSTANCES_DIR="$POLLYMC_DATA_DIR/instances"
-        ACTIVE_EXECUTABLE="$POLLYMC_EXECUTABLE"
-        ACTIVE_LAUNCHER_SCRIPT="$POLLYMC_DATA_DIR/minecraftSplitscreen.sh"
-        print_success "Active launcher: PollyMC ($POLLYMC_TYPE)"
-        print_info "  Data directory: $ACTIVE_DATA_DIR"
-        print_info "  Launcher script: $ACTIVE_LAUNCHER_SCRIPT"
-    elif detect_prismlauncher; then
         ACTIVE_LAUNCHER="prismlauncher"
         ACTIVE_LAUNCHER_TYPE="$PRISM_TYPE"
         ACTIVE_DATA_DIR="$PRISM_DATA_DIR"
@@ -384,11 +279,12 @@ configure_launcher_paths() {
         print_info "  Data directory: $ACTIVE_DATA_DIR"
         print_info "  Launcher script: $ACTIVE_LAUNCHER_SCRIPT"
     else
-        print_warning "No launcher detected - will configure after download"
+        CREATION_LAUNCHER=""
+        print_warning "No PrismLauncher detected - will attempt download"
     fi
 
     # NOTE: Directories are NOT created here during detection phase.
-    # They are created later by launcher_setup.sh and pollymc_setup.sh
+    # They are created later by launcher_setup.sh
     # only after successful installation/download to avoid empty directories.
 }
 
@@ -436,87 +332,18 @@ set_creation_launcher_prismlauncher() {
     fi
 }
 
-# -----------------------------------------------------------------------------
-# @function    set_active_launcher_pollymc
-# @description Updates the active launcher configuration to use PollyMC
-#              after it has been downloaded or detected.
-# @param       $1 - type: "appimage" or "flatpak"
-# @param       $2 - executable: Path or command to run PollyMC
-# @global      ACTIVE_* variables are updated
-# @return      0 always
-# -----------------------------------------------------------------------------
-set_active_launcher_pollymc() {
-    local type="$1"
-    local executable="$2"
-
-    ACTIVE_LAUNCHER="pollymc"
-    ACTIVE_LAUNCHER_TYPE="$type"
-
-    if [[ "$type" == "appimage" ]]; then
-        ACTIVE_DATA_DIR="$POLLYMC_APPIMAGE_DATA_DIR"
-    else
-        ACTIVE_DATA_DIR="$POLLYMC_FLATPAK_DATA_DIR"
-    fi
-
-    ACTIVE_INSTANCES_DIR="$ACTIVE_DATA_DIR/instances"
-    ACTIVE_EXECUTABLE="$executable"
-    ACTIVE_LAUNCHER_SCRIPT="$ACTIVE_DATA_DIR/minecraftSplitscreen.sh"
-
-    mkdir -p "$ACTIVE_INSTANCES_DIR"
-}
-
-# -----------------------------------------------------------------------------
-# @function    revert_to_prismlauncher
-# @description Reverts the active launcher back to PrismLauncher. Called when
-#              PollyMC setup fails and we need to fall back to PrismLauncher
-#              for gameplay.
-# @param       None
-# @global      ACTIVE_* variables are reset to match CREATION_* values
-# @return      0 always
-# -----------------------------------------------------------------------------
-revert_to_prismlauncher() {
-    print_info "Reverting to PrismLauncher as active launcher..."
-
-    ACTIVE_LAUNCHER="prismlauncher"
-    ACTIVE_LAUNCHER_TYPE="$CREATION_LAUNCHER_TYPE"
-    ACTIVE_DATA_DIR="$CREATION_DATA_DIR"
-    ACTIVE_INSTANCES_DIR="$CREATION_INSTANCES_DIR"
-    ACTIVE_EXECUTABLE="$CREATION_EXECUTABLE"
-    ACTIVE_LAUNCHER_SCRIPT="$ACTIVE_DATA_DIR/minecraftSplitscreen.sh"
-
-    print_success "Active launcher reverted to PrismLauncher ($ACTIVE_LAUNCHER_TYPE)"
-    print_info "  Data directory: $ACTIVE_DATA_DIR"
-    print_info "  Instances: $ACTIVE_INSTANCES_DIR"
-}
 
 # -----------------------------------------------------------------------------
 # @function    finalize_launcher_paths
 # @description Finalizes path configuration after all downloads and setup
-#              are complete. Verifies that instances exist in the expected
-#              location and falls back to PrismLauncher if PollyMC migration
-#              failed.
+#              are complete. Verifies that the active launcher and instance
+#              directory are properly configured.
 # @param       None
 # @global      ACTIVE_* variables may be updated if verification fails
 # @return      0 always
 # -----------------------------------------------------------------------------
 finalize_launcher_paths() {
     print_info "Finalizing launcher configuration..."
-
-    # If we're using PollyMC as active but instances were created in PrismLauncher,
-    # they should have been migrated. Verify.
-    if [[ "$ACTIVE_LAUNCHER" == "pollymc" ]] && [[ "$CREATION_LAUNCHER" == "prismlauncher" ]]; then
-        if [[ -d "$ACTIVE_INSTANCES_DIR/latestUpdate-1" ]]; then
-            print_success "Instances verified in PollyMC directory"
-        else
-            print_warning "Instances not found in PollyMC, falling back to PrismLauncher"
-            ACTIVE_LAUNCHER="prismlauncher"
-            ACTIVE_LAUNCHER_TYPE="$CREATION_LAUNCHER_TYPE"
-            ACTIVE_DATA_DIR="$CREATION_DATA_DIR"
-            ACTIVE_INSTANCES_DIR="$CREATION_INSTANCES_DIR"
-            ACTIVE_EXECUTABLE="$CREATION_EXECUTABLE"
-            ACTIVE_LAUNCHER_SCRIPT="$ACTIVE_DATA_DIR/minecraftSplitscreen.sh"
-        fi
-    fi
 
     print_success "Final configuration:"
     print_info "  Launcher: $ACTIVE_LAUNCHER ($ACTIVE_LAUNCHER_TYPE)"

@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        lwjgl_management.sh
-# @version     2.0.1
-# @date        2026-01-31
+# @version     3.0.0
+# @date        2026-02-01
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck

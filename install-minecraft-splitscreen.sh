@@ -2,7 +2,7 @@
 # =============================================================================
 # Minecraft Splitscreen Steam Deck Installer - MODULAR VERSION
 # =============================================================================
-# Version: 2.0.0 (commit: auto-populated at runtime)
+# Version: 3.0.0 (commit: auto-populated at runtime)
 # Last Modified: 2026-01-23
 # Source: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
@@ -193,7 +193,6 @@ readonly MODULE_FILES=(
     "lwjgl_management.sh"
     "mod_management.sh"
     "instance_creation.sh"
-    "pollymc_setup.sh"
     "steam_integration.sh"
     "desktop_launcher.sh"
     "main_workflow.sh"
@@ -317,7 +316,6 @@ source "$MODULES_DIR/version_management.sh"
 source "$MODULES_DIR/lwjgl_management.sh"
 source "$MODULES_DIR/mod_management.sh"
 source "$MODULES_DIR/instance_creation.sh"
-source "$MODULES_DIR/pollymc_setup.sh"
 source "$MODULES_DIR/steam_integration.sh"
 source "$MODULES_DIR/desktop_launcher.sh"
 source "$MODULES_DIR/main_workflow.sh"
@@ -331,7 +329,7 @@ source "$MODULES_DIR/main_workflow.sh"
 
 # NOTE: Launcher paths are now managed by path_configuration.sh
 # Use ACTIVE_DATA_DIR, ACTIVE_INSTANCES_DIR, CREATION_DATA_DIR, etc.
-# DO NOT use hardcoded PRISMLAUNCHER_DIR or POLLYMC_DIR
+# DO NOT use hardcoded paths.
 
 # Runtime variables (set during execution)
 JAVA_PATH=""

@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     2.1.1
-# @date        2026-02-01
+# @version     3.0.10
+# @date        2026-03-07
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,17 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.10 (2026-03-07) - Fix: Zombie process reaping, cleanup_exit reentrancy guard, gamescope cleanup race prevention; default mode changed to dynamic; remove dead launchGames()
+#   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
+#   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
+#   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
+#   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
+#   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
+#   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
+#   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
+#   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
+#   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
+#   3.0.0 (2026-02-01) - Dynamic splitscreen mode, controller hotplug, window repositioning
 #   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
 #   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
 #   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
@@ -49,7 +60,7 @@
 # @description Generate the minecraftSplitscreen.sh launcher script with
 #              configuration values baked in via placeholder replacement.
 # @param       $1 - output_path: Path for the generated script
-# @param       $2 - launcher_name: "PollyMC" or "PrismLauncher"
+# @param       $2 - launcher_name: "PrismLauncher"
 # @param       $3 - launcher_type: "appimage" or "flatpak"
 # @param       $4 - launcher_exec: Full path or flatpak command
 # @param       $5 - launcher_dir: Launcher data directory
@@ -58,9 +69,9 @@
 # @global      REPO_URL - (input, optional) Repository URL for embedding
 # @return      0 on success
 # @example
-#   generate_splitscreen_launcher "/path/to/script.sh" "PollyMC" "flatpak" \
-#       "flatpak run org.fn2006.PollyMC" "/home/user/.var/app/org.fn2006.PollyMC/data/PollyMC" \
-#       "/home/user/.var/app/org.fn2006.PollyMC/data/PollyMC/instances"
+#   generate_splitscreen_launcher "/path/to/script.sh" "PrismLauncher" "flatpak" \
+#       "flatpak run org.prismlauncher.PrismLauncher" "/home/user/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher" \
+#       "/home/user/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
 generate_splitscreen_launcher() {
     local output_path="$1"
     local launcher_name="$2"
@@ -125,6 +136,36 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 # END GENERATED CONFIGURATION
 # =============================================================================
 
+# =============================================================================
+# DYNAMIC SPLITSCREEN STATE (Rev 3.0.0)
+# =============================================================================
+# These variables track the state of dynamic splitscreen sessions where
+# players can join and leave mid-game.
+
+declare -a INSTANCE_PIDS=("" "" "" "")     # PID for each player slot (index 0-3)
+declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
+declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhibit or flatpak)
+declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
+declare -a INSTANCE_LAUNCH_TIME=(0 0 0 0)       # epoch seconds when instance was launched
+CURRENT_PLAYER_COUNT=0                      # Number of active players
+DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
+HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
+CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
+CONTROLLER_PIPE=""                          # Path to named pipe for controller events
+MAIN_PID=$$                                 # Track main process PID for cleanup guard
+CLEANUP_DONE=0                              # Reentrancy guard for cleanup_exit
+
+# =============================================================================
+# END DYNAMIC SPLITSCREEN STATE
+# =============================================================================
+
+# Ensure D-Bus session bus is available (needed for KWin scripting)
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    if [ -S "/run/user/$(id -u)/bus" ]; then
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+    fi
+fi
+
 # Temporary directory for intermediate files (respects TMPDIR if set)
 export target="${TMPDIR:-/tmp}"
 
@@ -151,6 +192,38 @@ log_debug() { echo "[Debug] $*" >&2; log "DEBUG: $*"; }
 
 _init_log
 
+# Import desktop session environment when launched from SSH or headless context.
+# SSH sessions lack DISPLAY/WAYLAND_DISPLAY, causing false "game mode" detection.
+# If a KDE desktop is running, import its env vars so the script detects desktop mode.
+# NOTE: kwin_wayland (the compositor) does NOT have WAYLAND_DISPLAY in its own env —
+# it creates that for child processes. So we check plasmashell first (has both
+# DISPLAY and WAYLAND_DISPLAY), then fall back to kwin_wayland for other vars.
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    # Try plasmashell first (has WAYLAND_DISPLAY and DISPLAY)
+    _session_pid=$(pgrep -u "$(id -u)" plasmashell 2>/dev/null | head -1)
+    _source="plasmashell"
+    # Fall back to kwin_wayland if plasmashell not found
+    if [ -z "$_session_pid" ]; then
+        _session_pid=$(pgrep -u "$(id -u)" kwin_wayland 2>/dev/null | head -1)
+        _source="kwin_wayland"
+    fi
+    if [ -n "$_session_pid" ] && [ -r "/proc/$_session_pid/environ" ]; then
+        log_info "No display vars but $_source running (PID $_session_pid) — importing session environment"
+        while IFS= read -r -d '' _envline; do
+            _key="${_envline%%=*}"
+            _val="${_envline#*=}"
+            case "$_key" in
+                WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|XDG_SESSION_TYPE)
+                    export "$_key=$_val"
+                    log_debug "Imported $_key=$_val"
+                    ;;
+            esac
+        done < "/proc/$_session_pid/environ"
+        unset _envline _key _val
+    fi
+    unset _session_pid _source
+fi
+
 # =============================================================================
 # Launcher Validation
 # =============================================================================
@@ -163,8 +236,7 @@ validate_launcher() {
         # For Flatpak, check if the app is installed
         local flatpak_id
         case "$LAUNCHER_NAME" in
-            "PollyMC") flatpak_id="org.fn2006.PollyMC" ;;
-            "PrismLauncher") flatpak_id="org.prismlauncher.PrismLauncher" ;;
+            "PrismLauncher"|*) flatpak_id="org.prismlauncher.PrismLauncher" ;;
         esac
         if command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "$flatpak_id"; then
             launcher_available=true
@@ -240,6 +312,61 @@ EOF
 # Game Launching
 # =============================================================================
 
+# Pre-start the launcher so it's ready to accept instance launch commands.
+# PrismLauncher ignores -l commands received while still initializing.
+# This starts the launcher in the background and waits for it to be ready.
+LAUNCHER_PREWARMED=0
+prewarmLauncher() {
+    if [ "$LAUNCHER_PREWARMED" = "1" ]; then
+        return 0
+    fi
+
+    log_info "Pre-starting $LAUNCHER_NAME to ensure it's ready for launch commands..."
+
+    # Start launcher without -l flag — just opens the main window
+    $LAUNCHER_EXEC &
+    local launcher_pid=$!
+    disown $launcher_pid 2>/dev/null || true
+
+    # Wait for PrismLauncher to finish initializing (up to 30 seconds)
+    local waited=0
+    local max_wait=30
+    while [ $waited -lt $max_wait ]; do
+        sleep 1
+        waited=$((waited + 1))
+
+        # Check if a Java process from PrismLauncher's managed instances exists
+        # OR if the PrismLauncher GUI has fully loaded (process is stable and responsive)
+        # We detect readiness by checking if the launcher's QLocalServer socket exists
+        local socket_path=""
+        if [ "$LAUNCHER_TYPE" = "flatpak" ]; then
+            socket_path=$(find /tmp/.flatpak-org.prismlauncher.PrismLauncher*/tmp/ -name "PrismLauncher-*" -type s 2>/dev/null | head -1)
+            if [ -z "$socket_path" ]; then
+                socket_path=$(find /run/user/$(id -u)/ -name "PrismLauncher*" -type s 2>/dev/null | head -1)
+            fi
+        else
+            socket_path=$(find /tmp/ -name "PrismLauncher-*" -type s 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$socket_path" ]; then
+            log_info "$LAUNCHER_NAME ready after ${waited}s (IPC socket: $socket_path)"
+            LAUNCHER_PREWARMED=1
+            return 0
+        fi
+
+        # Fallback: if we can't find a socket, just wait a reasonable time
+        if [ $waited -ge 10 ]; then
+            log_info "$LAUNCHER_NAME assumed ready after ${waited}s (no IPC socket found, using timeout)"
+            LAUNCHER_PREWARMED=1
+            return 0
+        fi
+    done
+
+    log_warning "$LAUNCHER_NAME may not be fully ready after ${max_wait}s — proceeding anyway"
+    LAUNCHER_PREWARMED=1
+    return 0
+}
+
 # Launch a single Minecraft instance with KDE inhibition
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
@@ -250,22 +377,29 @@ launchGame() {
 
     if command -v kde-inhibit >/dev/null 2>&1; then
         kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
+            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
     else
         log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
-        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name" &
+        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
     fi
-
-    sleep 10  # Give time for the instance to start
 }
 
 # =============================================================================
 # KDE Panel Management
 # =============================================================================
 
-# Hide KDE panels by killing plasmashell
+# Hide KDE panels for splitscreen.
+# When KWin scripting is available, we use FullArea (covers panels) in the
+# repositioning JS, so panels are simply covered — no need to kill plasmashell.
+# This prevents the desktop from being lost if the script crashes.
 hidePanels() {
+    if canUseKWinScripting 2>/dev/null; then
+        log_info "KWin scripting available — panels covered by FullArea geometry, not killed"
+        return 0
+    fi
+    # Fallback for non-KWin environments: kill plasmashell (legacy behavior)
     if command -v plasmashell >/dev/null 2>&1; then
+        log_warning "No KWin scripting — killing plasmashell (risky fallback)"
         pkill plasmashell
         sleep 1
         if pgrep -u "$USER" plasmashell >/dev/null; then
@@ -281,11 +415,20 @@ hidePanels() {
     fi
 }
 
-# Restore KDE panels by restarting plasmashell
+# Restore KDE panels.
+# If KWin scripting was used, panels were never killed — nothing to restore.
 restorePanels() {
+    if canUseKWinScripting 2>/dev/null; then
+        log_info "KWin scripting was used — panels were never killed, nothing to restore"
+        return 0
+    fi
+    # Fallback: restart plasmashell if it was killed
     if command -v plasmashell >/dev/null 2>&1; then
-        nohup plasmashell >/dev/null 2>&1 &
-        sleep 2
+        if ! pgrep -u "$USER" plasmashell >/dev/null; then
+            log_info "Restarting plasmashell..."
+            nohup plasmashell >/dev/null 2>&1 &
+            sleep 2
+        fi
     else
         log_info "plasmashell not found. Skipping KDE panel restore."
     fi
@@ -310,6 +453,22 @@ isSteamDeckHardware() {
     return 1
 }
 
+# Check if Steam Deck is docked (external display connected)
+# Returns 0 (true) if an external display is connected via DisplayPort
+# Uses glob for robustness across Steam Deck hardware revisions (LCD/OLED)
+isSteamDeckDocked() {
+    local dp_status
+    for dp_path in /sys/class/drm/card*-DP-*/status; do
+        if [ -f "$dp_path" ]; then
+            dp_status=$(cat "$dp_path" 2>/dev/null)
+            if [ "$dp_status" = "connected" ]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 # Check if Steam virtual controller is present
 # Returns 0 (true) if Steam Virtual Gamepad detected
 hasSteamVirtualController() {
@@ -327,6 +486,13 @@ hasSteamVirtualController() {
 # Handles Steam Input device duplication when Steam is running
 # Returns 0 if no controllers found (keyboard-only mode possible)
 getControllerCount() {
+    # Handheld mode: always report exactly 1 controller (Steam Deck built-in)
+    if [ "${HANDHELD_MODE:-0}" = "1" ]; then
+        log_debug "Controller detection: handheld mode, reporting 1 controller"
+        echo "1"
+        return 0
+    fi
+
     local count=0
     local steam_running=0
     local real_controllers=0
@@ -534,13 +700,767 @@ promptControllerMode() {
 }
 
 # =============================================================================
+# Controller Hotplug Monitoring (Dynamic Splitscreen)
+# =============================================================================
+# These functions enable real-time monitoring of controller connections
+# and disconnections for dynamic player join/leave functionality.
+
+# Monitor controller connections/disconnections
+# Writes "CONTROLLER_CHANGE:<count>" to stdout when changes detected
+# Uses inotifywait for efficiency, falls back to polling if unavailable
+monitorControllers() {
+    local last_count
+    last_count=$(getControllerCount)
+
+    # Prefer inotifywait (event-driven, efficient)
+    if command -v inotifywait >/dev/null 2>&1; then
+        log "Using inotifywait for controller monitoring"
+        inotifywait -m -q -e create -e delete /dev/input/ 2>/dev/null | while read -r _ action file; do
+            if [[ "$file" =~ ^js[0-9]+$ ]]; then
+                sleep 0.5  # Debounce rapid events
+                local new_count
+                new_count=$(getControllerCount)
+                if [ "$new_count" != "$last_count" ]; then
+                    echo "CONTROLLER_CHANGE:$new_count"
+                    last_count=$new_count
+                fi
+            fi
+        done
+    else
+        # Fallback: poll every 2 seconds
+        log "inotifywait not available, using polling for controller monitoring"
+        while true; do
+            sleep 2
+            local new_count
+            new_count=$(getControllerCount)
+            if [ "$new_count" != "$last_count" ]; then
+                echo "CONTROLLER_CHANGE:$new_count"
+                last_count=$new_count
+            fi
+        done
+    fi
+}
+
+# Start controller monitoring in background
+# Creates a named pipe for IPC and spawns monitor subprocess
+startControllerMonitor() {
+    # Create a named pipe for communication
+    CONTROLLER_PIPE="/tmp/mc-splitscreen-$$"
+    rm -f "$CONTROLLER_PIPE" 2>/dev/null
+    mkfifo "$CONTROLLER_PIPE" 2>/dev/null || {
+        log_warning "Failed to create named pipe, controller monitoring disabled"
+        return 1
+    }
+
+    # Start monitor in background, writing to pipe
+    monitorControllers > "$CONTROLLER_PIPE" &
+    CONTROLLER_MONITOR_PID=$!
+
+    # Open pipe for reading on fd 3
+    exec 3< "$CONTROLLER_PIPE"
+
+    log_info "Controller monitor started (PID: $CONTROLLER_MONITOR_PID)"
+    return 0
+}
+
+# Stop controller monitoring and clean up resources
+stopControllerMonitor() {
+    if [ -n "$CONTROLLER_MONITOR_PID" ]; then
+        kill "$CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        wait "$CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        CONTROLLER_MONITOR_PID=""
+        log "Controller monitor stopped"
+    fi
+
+    # Close fd 3 and clean up pipe
+    exec 3<&- 2>/dev/null || true
+    if [ -n "$CONTROLLER_PIPE" ]; then
+        rm -f "$CONTROLLER_PIPE" 2>/dev/null || true
+        CONTROLLER_PIPE=""
+    fi
+}
+
+# =============================================================================
+# Instance Lifecycle Management (Dynamic Splitscreen)
+# =============================================================================
+# Functions to track and manage individual Minecraft instance processes
+# for dynamic join/leave functionality.
+
+# Launch a single instance for a player slot
+# Arguments:
+#   $1 = slot number (1-4)
+#   $2 = total players for layout calculation
+launchInstanceForSlot() {
+    local slot=$1
+    local total_players=$2
+    local idx=$((slot - 1))
+
+    # Configure splitscreen position using existing function
+    setSplitscreenModeForPlayer "$slot" "$total_players"
+
+    # Launch the game in background — returns immediately
+    # Subshell must clear the EXIT trap to prevent cleanup_exit from running
+    # when the wrapper process (flatpak/kde-inhibit) exits
+    ( trap - EXIT INT TERM; launchGame "latestUpdate-$slot" "P$slot" ) &
+    local wrapper_pid=$!
+
+    # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
+    INSTANCE_PIDS[$idx]=$wrapper_pid
+    INSTANCE_WRAPPER_PIDS[$idx]=$wrapper_pid
+    INSTANCE_ACTIVE[$idx]=1
+    INSTANCE_JAVA_RESOLVED[$idx]=0
+    INSTANCE_LAUNCH_TIME[$idx]=$(date +%s)
+
+    log_info "Launched instance $slot (wrapper PID: $wrapper_pid) in $total_players-player layout"
+}
+
+# Check if an instance is still running
+# Arguments:
+#   $1 = slot number (1-4)
+# Returns: 0 if running, 1 if not
+isInstanceRunning() {
+    local slot=$1
+    local idx=$((slot - 1))
+    local pid="${INSTANCE_PIDS[$idx]}"
+
+    # Try to resolve actual Java PID if not yet done
+    if [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "0" ]; then
+        local java_pid
+        java_pid=$(pgrep -f "java.*instances/latestUpdate-${slot}/" 2>/dev/null | head -1)
+        if [ -n "$java_pid" ]; then
+            INSTANCE_PIDS[$idx]=$java_pid
+            INSTANCE_JAVA_RESOLVED[$idx]=1
+            log_debug "Resolved Java PID for slot $slot: $java_pid"
+        fi
+    fi
+
+    pid="${INSTANCE_PIDS[$idx]}"
+
+    # Check if the tracked process is alive
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+
+    # If Java PID was resolved and is dead, instance truly exited
+    if [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "1" ]; then
+        return 1
+    fi
+
+    # Java not yet resolved — check if wrapper is still alive (still starting up)
+    local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
+    if [ -n "$wrapper_pid" ] && kill -0 "$wrapper_pid" 2>/dev/null; then
+        return 0
+    fi
+
+    # Grace period: if launched recently, assume still starting up
+    # The flatpak wrapper exits before Java starts, creating a gap where
+    # neither wrapper nor Java PID is alive. Give 60s for Java to appear.
+    local launch_time="${INSTANCE_LAUNCH_TIME[$idx]}"
+    if [ -n "$launch_time" ] && [ "$launch_time" -gt 0 ]; then
+        local now
+        now=$(date +%s)
+        local elapsed=$((now - launch_time))
+        if [ "$elapsed" -lt 60 ]; then
+            log_debug "Instance $slot: wrapper dead, Java not yet found, but only ${elapsed}s since launch — assuming still starting"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Get next available slot (1-4)
+# Outputs: slot number, or empty string if all full
+getNextAvailableSlot() {
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "0" ]; then
+            echo "$i"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+# Count currently active instances
+# Outputs: number of active instances (0-4)
+countActiveInstances() {
+    local count=0
+    for i in 0 1 2 3; do
+        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ]; then
+            count=$((count + 1))
+        fi
+    done
+    echo "$count"
+}
+
+# Mark an instance as stopped (called when instance exits)
+# Arguments:
+#   $1 = slot number (1-4)
+markInstanceStopped() {
+    local slot=$1
+    local idx=$((slot - 1))
+
+    # Reap the wrapper subshell to prevent zombie accumulation.
+    # The wrapper is a direct child (launched via `( ... ) &` in launchInstanceForSlot),
+    # so `wait` collects its exit status and releases the process table entry.
+    local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
+    if [ -n "$wrapper_pid" ]; then
+        wait "$wrapper_pid" 2>/dev/null || true
+    fi
+
+    INSTANCE_PIDS[$idx]=""
+    INSTANCE_WRAPPER_PIDS[$idx]=""
+    INSTANCE_ACTIVE[$idx]=0
+    INSTANCE_JAVA_RESOLVED[$idx]=0
+    INSTANCE_LAUNCH_TIME[$idx]=0
+    log "Instance $slot marked as stopped (wrapper $wrapper_pid reaped)"
+}
+
+# Stop a specific instance, killing Java and wrapper processes
+# Arguments:
+#   $1 = slot number (1-4)
+stopInstance() {
+    local slot=$1
+    local idx=$((slot - 1))
+    local pid="${INSTANCE_PIDS[$idx]}"
+    local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
+
+    # Kill Java process (graceful then force)
+    # Note: Java is NOT a direct child — it's spawned by PrismLauncher inside the
+    # wrapper subshell. Once the wrapper exits, Java is reparented to init/systemd,
+    # so `wait` would fail. The pkill fallback below handles any survivors.
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        sleep 2
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    fi
+
+    # Kill wrapper (kde-inhibit / flatpak) if still alive.
+    # Zombie reaping is handled by markInstanceStopped() below.
+    if [ -n "$wrapper_pid" ]; then
+        kill "$wrapper_pid" 2>/dev/null || true
+    fi
+
+    # Catch any remaining processes for this specific instance
+    pkill -f "java.*instances/latestUpdate-${slot}/" 2>/dev/null || true
+
+    markInstanceStopped "$slot"
+}
+
+# =============================================================================
+# Window Repositioning (Dynamic Splitscreen)
+# =============================================================================
+# Functions to reposition Minecraft windows when player count changes.
+# Priority: KWin scripting (Wayland) > xdotool/wmctrl (X11) > restart instances.
+
+# Check if external window management is available
+# Returns: 0 if available (X11 with tools), 1 if not
+canUseExternalWindowManagement() {
+    # Must have a display
+    if [ -z "$DISPLAY" ]; then
+        return 1
+    fi
+
+    # Not available in gamescope/Game Mode
+    if isSteamDeckGameMode; then
+        return 1
+    fi
+
+    # On Wayland, don't use xdotool/wmctrl - causes display crashes
+    # KWin scripting is checked separately via canUseKWinScripting()
+    if [ -n "$WAYLAND_DISPLAY" ]; then
+        return 1
+    fi
+
+    # Check for window management tools (X11 only)
+    if command -v xdotool >/dev/null 2>&1 || command -v wmctrl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Check if KWin scripting is available (Wayland-native window management)
+# Returns: 0 if available (qdbus + KWin running), 1 if not
+canUseKWinScripting() {
+    # Need qdbus (or qdbus6) and KWin running
+    local qdbus_cmd=""
+    if command -v qdbus6 >/dev/null 2>&1; then
+        qdbus_cmd="qdbus6"
+    elif command -v qdbus >/dev/null 2>&1; then
+        qdbus_cmd="qdbus"
+    else
+        return 1
+    fi
+
+    # Verify KWin Scripting D-Bus interface is accessible
+    if $qdbus_cmd org.kde.KWin /Scripting 2>/dev/null | grep -q loadScript; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Get window ID for a Minecraft instance by PID
+# Arguments:
+#   $1 = process PID
+# Outputs: window ID or empty string
+getWindowIdForPid() {
+    local pid=$1
+    local window_id=""
+
+    if command -v xdotool >/dev/null 2>&1; then
+        # xdotool can search by PID - wait briefly for window to appear
+        sleep 0.5
+        window_id=$(xdotool search --pid "$pid" 2>/dev/null | head -1)
+    elif command -v wmctrl >/dev/null 2>&1; then
+        # wmctrl needs window list parsing
+        window_id=$(wmctrl -lp 2>/dev/null | awk -v pid="$pid" '$3 == pid {print $1; exit}')
+    fi
+
+    echo "$window_id"
+}
+
+# Move and resize a window
+# Arguments:
+#   $1 = window_id, $2 = x, $3 = y, $4 = width, $5 = height
+moveResizeWindow() {
+    local window_id=$1
+    local x=$2 y=$3 width=$4 height=$5
+
+    if [ -z "$window_id" ]; then
+        return 1
+    fi
+
+    if command -v xdotool >/dev/null 2>&1; then
+        xdotool windowmove "$window_id" "$x" "$y" 2>/dev/null
+        xdotool windowsize "$window_id" "$width" "$height" 2>/dev/null
+    elif command -v wmctrl >/dev/null 2>&1; then
+        wmctrl -i -r "$window_id" -e "0,$x,$y,$width,$height" 2>/dev/null
+    fi
+}
+
+# Get screen dimensions
+# Outputs: "width height" (e.g., "1920 1080")
+getScreenDimensions() {
+    local width=1920
+    local height=1080
+
+    if command -v xdpyinfo >/dev/null 2>&1 && [ -n "$DISPLAY" ]; then
+        local dims
+        dims=$(xdpyinfo 2>/dev/null | grep dimensions | awk '{print $2}')
+        if [ -n "$dims" ]; then
+            width=$(echo "$dims" | cut -dx -f1)
+            height=$(echo "$dims" | cut -dx -f2)
+        fi
+    fi
+
+    echo "$width $height"
+}
+
+# Reposition windows using KWin scripting (Wayland-native)
+# Arguments:
+#   $1 = new total player count
+repositionWindowsKWin() {
+    local new_total=$1
+    local script_file="/tmp/mc-splitscreen-position-$$.js"
+
+    # Force-resolve Java PIDs before building the list
+    # The wrapper PIDs (flatpak/kde-inhibit) don't own the KWin windows — Java does
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ] && [ "${INSTANCE_JAVA_RESOLVED[$idx]}" = "0" ]; then
+            local java_pid
+            java_pid=$(pgrep -f "java.*instances/latestUpdate-${i}/" 2>/dev/null | head -1)
+            if [ -n "$java_pid" ]; then
+                INSTANCE_PIDS[$idx]=$java_pid
+                INSTANCE_JAVA_RESOLVED[$idx]=1
+                log_debug "Pre-reposition: resolved Java PID for slot $i: $java_pid"
+            fi
+        fi
+    done
+
+    # Build PID array and slot mapping for active instances
+    local pid_list=""
+    local slot_num=0
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            slot_num=$((slot_num + 1))
+            local pid="${INSTANCE_PIDS[$idx]}"
+            if [ -n "$pid_list" ]; then
+                pid_list="${pid_list},${pid}"
+            else
+                pid_list="${pid}"
+            fi
+        fi
+    done
+
+    log_debug "KWin reposition: PIDs=[$pid_list], total=$new_total"
+
+    if [ -z "$pid_list" ]; then
+        log_warning "No active instance PIDs for KWin repositioning"
+        return 1
+    fi
+
+    # Generate KWin JavaScript with embedded PIDs and layout
+    # KDE 6 KWin scripting API notes:
+    #   - workspace.windowList() replaces clientList() from KDE 5
+    #   - frameGeometry must be cloned via Object.assign() before modification
+    #   - win.tile must be cleared to prevent tiling system from overriding geometry
+    #   - console.log() output goes to journalctl (journalctl --user -t kwin_scripting)
+    cat > "$script_file" << 'KWINSCRIPTEOF'
+(function() {
+    var pids = [__MC_PIDS__];
+    var total = __MC_TOTAL__;
+
+    console.log("MC-Splitscreen: Starting reposition for " + total + " players, PIDs: [" + pids.join(",") + "]");
+
+    // Layout definitions as fractions of screen: {x, y, w, h}
+    var layouts = {
+        1: [ {x:0, y:0, w:1, h:1} ],
+        2: [ {x:0, y:0, w:1, h:0.5}, {x:0, y:0.5, w:1, h:0.5} ],
+        3: [ {x:0, y:0, w:0.5, h:0.5}, {x:0.5, y:0, w:0.5, h:0.5}, {x:0, y:0.5, w:0.5, h:0.5} ],
+        4: [ {x:0, y:0, w:0.5, h:0.5}, {x:0.5, y:0, w:0.5, h:0.5}, {x:0, y:0.5, w:0.5, h:0.5}, {x:0.5, y:0.5, w:0.5, h:0.5} ]
+    };
+
+    var positions = layouts[total];
+    if (!positions) { console.log("MC-Splitscreen: No layout for total=" + total); return; }
+
+    // Find windows matching our PIDs
+    var windows = workspace.windowList();
+    console.log("MC-Splitscreen: Found " + windows.length + " total windows");
+
+    var matched = [];
+    for (var p = 0; p < pids.length; p++) {
+        var found = false;
+        for (var i = 0; i < windows.length; i++) {
+            if (windows[i].pid === pids[p]) {
+                matched.push(windows[i]);
+                console.log("MC-Splitscreen: PID " + pids[p] + " matched window: '" + (windows[i].caption || "unknown") + "'");
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            console.log("MC-Splitscreen: PID " + pids[p] + " NOT found in any window");
+        }
+    }
+
+    // Fallback: if PID matching found fewer windows than expected,
+    // try matching by window caption containing "Minecraft"
+    if (matched.length < total) {
+        console.log("MC-Splitscreen: PID match got " + matched.length + "/" + total + ", trying title fallback");
+        var mcWindows = [];
+        for (var i = 0; i < windows.length; i++) {
+            var cap = windows[i].caption || "";
+            if (cap.indexOf("Minecraft") !== -1) {
+                // Check not already matched
+                var already = false;
+                for (var m = 0; m < matched.length; m++) {
+                    if (matched[m] === windows[i]) { already = true; break; }
+                }
+                if (!already) {
+                    mcWindows.push(windows[i]);
+                    console.log("MC-Splitscreen: Title fallback found: '" + cap + "' (PID " + windows[i].pid + ")");
+                }
+            }
+        }
+        // Add title-matched windows to fill remaining slots
+        for (var j = 0; j < mcWindows.length && matched.length < total; j++) {
+            matched.push(mcWindows[j]);
+        }
+    }
+
+    console.log("MC-Splitscreen: Total matched: " + matched.length + " windows for " + total + " players");
+    if (matched.length === 0) { console.log("MC-Splitscreen: No windows matched, aborting"); return; }
+
+    // Get full screen area ignoring panels/struts
+    // KWin.FullScreenArea (4) gives us the entire screen, not MaximizeArea (2) which respects panel struts
+    var screen = workspace.clientArea(KWin.FullScreenArea, matched[0]);
+    console.log("MC-Splitscreen: Screen area: " + screen.x + "," + screen.y + " " + screen.width + "x" + screen.height);
+
+    for (var m = 0; m < matched.length && m < positions.length; m++) {
+        var pos = positions[m];
+        var win = matched[m];
+
+        // Clear tiling to prevent KWin tiling system from overriding geometry
+        if (win.tile) win.tile = null;
+        // Un-minimize windows so all players are visible simultaneously
+        if (win.minimized) win.minimized = false;
+        // Remove window decorations for borderless splitscreen
+        win.noBorder = true;
+        // Keep windows on top and skip taskbar/pager to prevent desktop interference
+        win.keepAbove = true;
+        win.skipTaskbar = true;
+        win.skipPager = true;
+        // Take out of fullscreen if the window manager thinks it's fullscreen
+        if (win.fullScreen) win.fullScreen = false;
+
+        // KDE 6: Must clone geometry object — mutating in-place doesn't trigger updates
+        var rect = Object.assign({}, win.frameGeometry);
+        rect.x = screen.x + Math.round(pos.x * screen.width);
+        rect.y = screen.y + Math.round(pos.y * screen.height);
+        rect.width = Math.round(pos.w * screen.width);
+        rect.height = Math.round(pos.h * screen.height);
+        win.frameGeometry = rect;
+
+        console.log("MC-Splitscreen: Window " + m + " -> " + rect.x + "," + rect.y + " " + rect.width + "x" + rect.height + " (minimized=" + win.minimized + ", noBorder=" + win.noBorder + ")");
+    }
+
+    // Activate player 1's window so it has sound/input focus
+    if (matched.length > 0) {
+        workspace.activeWindow = matched[0];
+        console.log("MC-Splitscreen: Activated window 0 (Player 1) for sound focus");
+    }
+
+    console.log("MC-Splitscreen: Reposition complete");
+})();
+KWINSCRIPTEOF
+
+    # Replace placeholders with actual values
+    sed -i "s/__MC_PIDS__/${pid_list}/g" "$script_file"
+    sed -i "s/__MC_TOTAL__/${new_total}/g" "$script_file"
+
+    # Determine qdbus command
+    local qdbus_cmd="qdbus"
+    command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+
+    # Load, run, unload via D-Bus
+    local script_name="mc-splitscreen-$$"
+    local script_id
+    script_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$script_file" "$script_name" 2>/dev/null)
+
+    if [ -n "$script_id" ]; then
+        $qdbus_cmd org.kde.KWin "/Scripting/Script${script_id}" run 2>/dev/null
+        sleep 0.5
+        $qdbus_cmd org.kde.KWin /Scripting unloadScript "$script_name" 2>/dev/null
+        # Capture KWin script debug output from journal
+        local kwin_output
+        kwin_output=$(journalctl --user -t kwin_scripting --since "5 seconds ago" --no-pager 2>/dev/null | grep "MC-Splitscreen" || true)
+        if [ -n "$kwin_output" ]; then
+            while IFS= read -r line; do
+                log_debug "KWin JS: $line"
+            done <<< "$kwin_output"
+        fi
+        log_info "KWin script executed (ID: $script_id) for $new_total-player layout"
+    else
+        log_warning "Failed to load KWin script"
+        rm -f "$script_file"
+        return 1
+    fi
+
+    rm -f "$script_file"
+    return 0
+}
+
+# Install a persistent KWin script that enforces noBorder on Minecraft windows
+# when they receive focus. KDE can re-apply decorations on focus change;
+# this handler counteracts that by re-setting noBorder on every activation.
+# The script stays loaded for the duration of the splitscreen session.
+installBorderEnforcer() {
+    local qdbus_cmd="qdbus"
+    command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+
+    local script_file="/tmp/mc-border-enforcer-$$.js"
+    cat > "$script_file" << 'BORDERENFORCER'
+(function() {
+    console.log("MC-Splitscreen: Border enforcer installed");
+
+    function isMC(win) {
+        return win && win.caption && win.caption.indexOf("Minecraft") !== -1;
+    }
+
+    // Re-enforce noBorder when a Minecraft window gains focus
+    workspace.windowActivated.connect(function(win) {
+        if (isMC(win) && !win.noBorder) {
+            win.noBorder = true;
+            console.log("MC-Splitscreen: Re-enforced noBorder on: " + win.caption);
+        }
+    });
+
+    // Prevent Minecraft windows from being minimized
+    // Connect to each existing Minecraft window
+    function guardWindow(win) {
+        if (!isMC(win)) return;
+        win.minimizedChanged.connect(function() {
+            if (win.minimized) {
+                win.minimized = false;
+                console.log("MC-Splitscreen: Prevented minimize on: " + win.caption);
+            }
+        });
+    }
+
+    // Guard all existing Minecraft windows
+    var windows = workspace.windowList();
+    for (var i = 0; i < windows.length; i++) {
+        guardWindow(windows[i]);
+    }
+
+    // Guard any new Minecraft windows that appear
+    workspace.windowAdded.connect(function(win) {
+        guardWindow(win);
+    });
+})();
+BORDERENFORCER
+
+    BORDER_ENFORCER_NAME="mc-border-enforcer-$$"
+    local script_id
+    script_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$script_file" "$BORDER_ENFORCER_NAME" 2>/dev/null)
+
+    if [ -n "$script_id" ]; then
+        $qdbus_cmd org.kde.KWin "/Scripting/Script${script_id}" run 2>/dev/null
+        BORDER_ENFORCER_ID="$script_id"
+        log_info "Border enforcer installed (script ID: $script_id)"
+    else
+        log_warning "Failed to install border enforcer"
+    fi
+
+    rm -f "$script_file"
+}
+
+# Unload the persistent border enforcer script
+uninstallBorderEnforcer() {
+    if [ -n "$BORDER_ENFORCER_NAME" ]; then
+        local qdbus_cmd="qdbus"
+        command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+        $qdbus_cmd org.kde.KWin /Scripting unloadScript "$BORDER_ENFORCER_NAME" 2>/dev/null
+        log_info "Border enforcer uninstalled"
+        BORDER_ENFORCER_NAME=""
+        BORDER_ENFORCER_ID=""
+    fi
+}
+
+# Calculate window geometry for external positioning
+# Arguments:
+#   $1 = slot (1-4), $2 = total_players, $3 = screen_width, $4 = screen_height
+# Outputs: "x y width height"
+calculateWindowPosition() {
+    local slot=$1
+    local total_players=$2
+    local screen_width=$3
+    local screen_height=$4
+
+    case "$total_players" in
+        1)
+            echo "0 0 $screen_width $screen_height"
+            ;;
+        2)
+            local half_height=$((screen_height / 2))
+            case "$slot" in
+                1) echo "0 0 $screen_width $half_height" ;;
+                2) echo "0 $half_height $screen_width $half_height" ;;
+            esac
+            ;;
+        3|4)
+            local half_width=$((screen_width / 2))
+            local half_height=$((screen_height / 2))
+            case "$slot" in
+                1) echo "0 0 $half_width $half_height" ;;
+                2) echo "$half_width 0 $half_width $half_height" ;;
+                3) echo "0 $half_height $half_width $half_height" ;;
+                4) echo "$half_width $half_height $half_width $half_height" ;;
+            esac
+            ;;
+    esac
+}
+
+# Reposition all active windows for new player count
+# Arguments:
+#   $1 = new total player count
+repositionAllWindows() {
+    local new_total=$1
+
+    if canUseKWinScripting; then
+        # KWin scripting: Wayland-native, preferred on KDE Plasma
+        log_info "Repositioning windows via KWin scripting for $new_total players"
+        if ! repositionWindowsKWin "$new_total"; then
+            log_warning "KWin scripting failed, falling back to restart"
+            repositionWithRestart "$new_total"
+        fi
+    elif canUseExternalWindowManagement; then
+        # xdotool/wmctrl: X11 fallback for non-KDE environments
+        log_info "Repositioning windows via xdotool/wmctrl for $new_total players"
+        local screen_width screen_height
+        read -r screen_width screen_height < <(getScreenDimensions)
+
+        local slot_num=0
+        for i in 1 2 3 4; do
+            local idx=$((i - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                slot_num=$((slot_num + 1))
+                local pid="${INSTANCE_PIDS[$idx]}"
+                local window_id
+                window_id=$(getWindowIdForPid "$pid")
+
+                if [ -n "$window_id" ]; then
+                    local x y w h
+                    read -r x y w h < <(calculateWindowPosition "$slot_num" "$new_total" "$screen_width" "$screen_height")
+                    moveResizeWindow "$window_id" "$x" "$y" "$w" "$h"
+                    log "Repositioned window for slot $i to ${x},${y} ${w}x${h}"
+                else
+                    log_warning "Could not find window for instance $i (PID: $pid)"
+                fi
+            fi
+        done
+    else
+        # Universal fallback: restart instances with new layout
+        log_warning "No window management available, restarting instances"
+        repositionWithRestart "$new_total"
+    fi
+}
+
+# Reposition by restarting instances (Game Mode fallback)
+# Arguments:
+#   $1 = new total player count
+repositionWithRestart() {
+    local new_total=$1
+
+    log_info "Restarting instances for $new_total-player layout"
+
+    # Track which slots were active before stopping
+    local -a was_active=(0 0 0 0)
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            was_active[$idx]=1
+            stopInstance "$i"
+        fi
+    done
+
+    # Wait for all to exit
+    sleep 2
+
+    # Relaunch previously active instances with new positions
+    local launch_count=0
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${was_active[$idx]}" = "1" ]; then
+            # Stagger launches to avoid GPU contention
+            if [ "$launch_count" -gt 0 ]; then
+                log_info "Waiting 10 seconds for GPU initialization..."
+                sleep 10
+            fi
+            launchInstanceForSlot "$i" "$new_total"
+            launch_count=$((launch_count + 1))
+        fi
+    done
+}
+
+# =============================================================================
 # Splitscreen Configuration
 # =============================================================================
 
 # Write splitscreen.properties for a player instance
+# Always uses FULLSCREEN mode to avoid Splitscreen mod's Wayland StackOverflowError.
+# The mod's non-FULLSCREEN modes (TOP, BOTTOM, etc.) call glfwSetWindowMonitor() which
+# triggers an infinite recursion via onResolutionChange -> repositionWindow on Wayland.
+# FULLSCREEN mode only sets this.fullscreen=true (no GLFW calls), so it's safe.
+# Window positioning is handled externally by KWin scripting.
 # Arguments:
 #   $1 = Player number (1-4)
-#   $2 = Total number of controllers/players
+#   $2 = Total number of controllers/players (unused, kept for API compatibility)
 setSplitscreenModeForPlayer() {
     local player=$1
     local numberOfControllers=$2
@@ -548,51 +1468,248 @@ setSplitscreenModeForPlayer() {
 
     mkdir -p "$(dirname "$config_path")"
 
-    local mode="FULLSCREEN"
-    case "$numberOfControllers" in
-        1)
-            mode="FULLSCREEN"
-            ;;
-        2)
-            if [ "$player" = 1 ]; then mode="TOP"; else mode="BOTTOM"; fi
-            ;;
-        3)
-            if [ "$player" = 1 ]; then mode="TOP"
-            elif [ "$player" = 2 ]; then mode="BOTTOM_LEFT"
-            else mode="BOTTOM_RIGHT"; fi
-            ;;
-        4)
-            if [ "$player" = 1 ]; then mode="TOP_LEFT"
-            elif [ "$player" = 2 ]; then mode="TOP_RIGHT"
-            elif [ "$player" = 3 ]; then mode="BOTTOM_LEFT"
-            else mode="BOTTOM_RIGHT"; fi
-            ;;
-    esac
-
-    echo -e "gap=1\nmode=$mode" > "$config_path"
+    # Always FULLSCREEN — KWin handles actual window positioning
+    echo -e "gap=0\nmode=FULLSCREEN" > "$config_path"
     sync
     sleep 0.5
 }
 
 # =============================================================================
-# Main Game Launch Logic
+# Dynamic Splitscreen Event Handlers (Rev 3.0.0)
 # =============================================================================
+# Event handlers for dynamic player join/leave functionality.
 
-# Launch all games based on controller count
-launchGames() {
+# Show desktop notification (if available)
+# Arguments:
+#   $1 = title, $2 = message
+showNotification() {
+    local title="$1"
+    local message="$2"
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Minecraft Splitscreen" "$title" "$message" 2>/dev/null &
+    fi
+}
+
+# Handle controller count change event
+# With FULLSCREEN mode, the Splitscreen mod doesn't manage windows (no GLFW calls),
+# so we can freely add instances and reposition via KWin without crashes.
+# Arguments:
+#   $1 = new controller count
+handleControllerChange() {
+    local new_controller_count=$1
+    local current_active
+    current_active=$(countActiveInstances)
+
+    log_info "Controller change: $new_controller_count controllers (currently $current_active active)"
+
+    # If controllers increased, launch new instances and reposition all via KWin
+    if [ "$new_controller_count" -gt "$current_active" ] && [ "$current_active" -lt 4 ]; then
+        local new_total=$new_controller_count
+        [ "$new_total" -gt 4 ] && new_total=4
+
+        log_info "Scaling up: $current_active -> $new_total players"
+
+        # Launch only the NEW instances (keep existing ones running)
+        for slot in $(seq 1 $new_total); do
+            local idx=$((slot - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" != "1" ]; then
+                showNotification "Player Joined" "Player $slot is joining the game"
+                setSplitscreenModeForPlayer "$slot" "$new_total"
+                if [ "$current_active" -gt 0 ]; then
+                    log_info "Waiting 10 seconds for GPU initialization..."
+                    sleep 10
+                fi
+                launchInstanceForSlot "$slot" "$new_total"
+                current_active=$((current_active + 1))
+            fi
+        done
+
+        # Wait for new instance(s) to finish loading, then reposition ALL via KWin
+        log_info "Waiting 15 seconds for new instance(s) to load before repositioning..."
+        sleep 15
+        repositionAllWindows "$new_total"
+    fi
+
+    CURRENT_PLAYER_COUNT=$current_active
+}
+
+# Check for and handle exited instances
+# Called periodically to detect when players quit
+checkForExitedInstances() {
+    local any_exited=0
+
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            if ! isInstanceRunning "$i"; then
+                log_info "Player $i has exited"
+                showNotification "Player Left" "Player $i has left the game"
+                markInstanceStopped "$i"
+                any_exited=1
+            fi
+        fi
+    done
+
+    if [ "$any_exited" = "1" ]; then
+        local remaining
+        remaining=$(countActiveInstances)
+        CURRENT_PLAYER_COUNT=$remaining
+
+        if [ "$remaining" -gt 0 ]; then
+            log_info "Repositioning $remaining remaining player(s) via KWin"
+            # Just reposition remaining windows — no restart needed since all
+            # instances run in FULLSCREEN mode (mod won't fight the resize)
+            repositionAllWindows "$remaining"
+        fi
+    fi
+}
+
+# =============================================================================
+# Dynamic Splitscreen Mode (Rev 3.0.0)
+# =============================================================================
+# Main loop for dynamic player join/leave mode.
+
+# Run dynamic splitscreen mode - players can join/leave mid-session
+runDynamicSplitscreen() {
+    log_info "Starting dynamic splitscreen mode"
+    DYNAMIC_MODE=1
+    local instances_ever_launched=0
+
     hidePanels
+
+    # Install persistent KWin script to enforce borderless windows on focus
+    if canUseKWinScripting 2>/dev/null; then
+        installBorderEnforcer
+    fi
+
+    # Enforce memory settings before PrismLauncher loads configs
+    enforceMemorySettings
+
+    # Pre-start the launcher so it's ready to accept instance launch commands
+    prewarmLauncher
+
+    # Start controller monitoring
+    if ! startControllerMonitor; then
+        log_error "Failed to start controller monitor, falling back to static mode"
+        runStaticSplitscreen
+        return
+    fi
+
+    # Initial launch based on current controllers
+    local initial_count
+    initial_count=$(getControllerCount)
+    if [ "$initial_count" -gt 0 ]; then
+        handleControllerChange "$initial_count"
+        instances_ever_launched=1
+    else
+        log_info "No controllers detected. Waiting for controller connection..."
+        showNotification "Waiting for Controllers" "Connect a controller to start playing"
+    fi
+
+    # Main event loop
+    while true; do
+        # Check for controller events (non-blocking read with timeout)
+        if read -t 1 -u 3 event 2>/dev/null; then
+            if [[ "$event" =~ ^CONTROLLER_CHANGE:([0-9]+)$ ]]; then
+                handleControllerChange "${BASH_REMATCH[1]}"
+                instances_ever_launched=1
+            fi
+        fi
+
+        # Check for exited instances
+        checkForExitedInstances
+
+        # Exit if all players have left (and at least one ever played)
+        local active
+        active=$(countActiveInstances)
+        if [ "$active" -eq 0 ] && [ "$instances_ever_launched" = "1" ]; then
+            log_info "All players have exited. Ending session."
+            break
+        fi
+    done
+
+    # Cleanup
+    stopControllerMonitor
+    restorePanels
+    log_info "Dynamic splitscreen session ended"
+}
+
+# Run static splitscreen mode (original behavior)
+runStaticSplitscreen() {
+    log_info "Starting static splitscreen mode"
+    DYNAMIC_MODE=0
+
+    hidePanels
+
+    # Install persistent KWin script to enforce borderless windows on focus
+    if canUseKWinScripting 2>/dev/null; then
+        installBorderEnforcer
+    fi
+
+    # Enforce memory settings before PrismLauncher loads configs
+    enforceMemorySettings
+
+    # Pre-start the launcher so it's ready to accept instance launch commands
+    prewarmLauncher
 
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
 
-    for player in $(seq 1 $numberOfControllers); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player"
+    # Handle 0 controllers - prompt user for options
+    if [ "$numberOfControllers" -eq 0 ]; then
+        numberOfControllers=$(promptControllerMode)
+        # If user chose to exit (returned 0), exit gracefully
+        if [ "$numberOfControllers" -eq 0 ]; then
+            restorePanels
+            exit 0
+        fi
+    fi
+
+    echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
+
+    for player in $(seq 1 "$numberOfControllers"); do
+        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
+        if [ "$player" -gt 1 ]; then
+            log_info "Waiting 10 seconds for instance $((player - 1)) to initialize GPU..."
+            sleep 10
+        fi
+        launchInstanceForSlot "$player" "$numberOfControllers"
     done
 
-    wait
+    # Reposition windows via KWin after all instances are launched
+    if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
+        log_info "Waiting 15 seconds for instances to load before KWin repositioning..."
+        sleep 15
+        repositionAllWindows "$numberOfControllers"
+    fi
+
+    echo "[Info] All instances launched. Waiting for games to exit..."
+
+    # Wait for all instances to exit by polling (wait builtin doesn't work
+    # for processes launched via flatpak/wrappers since they detach)
+    while true; do
+        local active=0
+        for i in $(seq 1 "$numberOfControllers"); do
+            local idx=$((i - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                if isInstanceRunning "$i"; then
+                    active=$((active + 1))
+                else
+                    # Reap wrapper zombie immediately on natural exit
+                    markInstanceStopped "$i"
+                fi
+            fi
+        done
+        if [ "$active" -eq 0 ]; then
+            break
+        fi
+        sleep 2
+    done
+
+    uninstallBorderEnforcer 2>/dev/null || true
     restorePanels
-    sleep 2
+    echo "[Info] All games have exited."
 }
 
 # =============================================================================
@@ -626,7 +1743,8 @@ isSteamDeckGameMode() {
 
     # Check 2: Running in KDE/other full desktop - this is DESKTOP mode, not game mode
     # Even if launched from startplasma-steamos, if we're in KDE, we have window management
-    if [ -n "$DISPLAY" ] && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
+    # Check both DISPLAY (X11/Xwayland) and WAYLAND_DISPLAY (pure Wayland sessions)
+    if { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; } && [[ "$XDG_CURRENT_DESKTOP" =~ ^(KDE|GNOME|XFCE|MATE|Cinnamon|LXQt)$ ]]; then
         log_debug "Desktop mode detected (full desktop environment: $XDG_CURRENT_DESKTOP)"
         return 1
     fi
@@ -654,58 +1772,320 @@ isSteamDeckGameMode() {
 # Cleanup
 # =============================================================================
 
-# Remove autostart file on script exit
-cleanup_autostart() {
-    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+# Stop all running Minecraft instances
+killAllInstances() {
+    log_info "Stopping all Minecraft instances..."
+    for i in 1 2 3 4; do
+        local idx=$((i - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+            stopInstance "$i"
+        fi
+    done
+    # Final sweep for any stragglers (use INSTANCES_DIR for specificity)
+    pkill -f "java.*${INSTANCES_DIR}/latestUpdate" 2>/dev/null || true
+    pkill -f "kde-inhibit.*$LAUNCHER_NAME" 2>/dev/null || true
 }
-trap cleanup_autostart EXIT
+
+# Kill the PrismLauncher process itself
+killLauncher() {
+    log_info "Stopping $LAUNCHER_NAME..."
+    if [ "$LAUNCHER_TYPE" = "flatpak" ]; then
+        local flatpak_id=""
+        case "$LAUNCHER_NAME" in
+            "PrismLauncher"|*) flatpak_id="org.prismlauncher.PrismLauncher" ;;
+        esac
+        flatpak kill "$flatpak_id" 2>/dev/null || true
+    fi
+    pkill -f "$LAUNCHER_EXEC" 2>/dev/null || true
+    sleep 1
+}
+
+# Enforce memory settings in instance configs before PrismLauncher starts.
+# PrismLauncher overwrites instance.cfg when it saves state, so we must
+# set these BEFORE prewarmLauncher() to ensure correct values are loaded.
+enforceMemorySettings() {
+    local max_mem=1536
+    log_info "Enforcing MaxMemAlloc=${max_mem}MB for all instances"
+    for i in 1 2 3 4; do
+        local cfg="$INSTANCES_DIR/latestUpdate-${i}/instance.cfg"
+        if [ -f "$cfg" ]; then
+            # Enable per-instance override so global default can't clobber
+            sed -i "s/OverrideMemory=false/OverrideMemory=true/" "$cfg" 2>/dev/null
+            # Set memory (handles any previous value)
+            sed -i "s/MaxMemAlloc=[0-9]*/MaxMemAlloc=${max_mem}/" "$cfg" 2>/dev/null
+        fi
+    done
+}
+
+# Core cleanup logic — shared between explicit cleanup and trap handler.
+# Can be called directly before gamescope logout, or indirectly via cleanup_exit().
+perform_cleanup() {
+    killAllInstances
+    killLauncher 2>/dev/null || true
+    stopControllerMonitor 2>/dev/null || true
+    uninstallBorderEnforcer 2>/dev/null || true
+    restorePanels 2>/dev/null || true
+    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+    rm -f "/tmp/mc-splitscreen-mode"
+
+    # Log any remaining Java processes for diagnostics
+    local remaining_java
+    remaining_java=$(pgrep -af "java.*${INSTANCES_DIR}/latestUpdate" 2>/dev/null || true)
+    if [ -n "$remaining_java" ]; then
+        log_warning "Remaining Java processes after cleanup:"
+        log_warning "$remaining_java"
+    fi
+}
+
+# Trap handler — reentrancy-safe wrapper around perform_cleanup().
+# Multiple signals (EXIT + TERM) can trigger this concurrently; the guard prevents
+# double-cleanup which causes race conditions with kill/wait on already-dead PIDs.
+cleanup_exit() {
+    local exit_code=$?
+    log_info "cleanup_exit triggered (exit_code=$exit_code, PID=$$, BASHPID=${BASHPID:-unknown}, MAIN_PID=$MAIN_PID)"
+
+    # Guard 1: Only run cleanup in the main process (subshell guard)
+    if [ "${BASHPID:-$$}" != "$MAIN_PID" ]; then
+        log_debug "Skipping cleanup — not main process"
+        return
+    fi
+
+    # Guard 2: Reentrancy protection — prevent concurrent cleanup from
+    # EXIT + TERM signals overlapping (e.g., gamescope/Plasma shutdown)
+    if [ "$CLEANUP_DONE" = "1" ]; then
+        log_debug "Skipping cleanup — already performed"
+        return
+    fi
+    CLEANUP_DONE=1
+
+    perform_cleanup
+    log_info "Cleanup complete"
+}
+trap cleanup_exit EXIT INT TERM
 
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
+# Show help/usage
+show_help() {
+    echo "Minecraft Splitscreen Launcher v__SCRIPT_VERSION__"
+    echo ""
+    echo "Usage: $(basename "$0") [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --mode=static    Launch with fixed player count (original behavior)"
+    echo "  --mode=dynamic   Launch with dynamic join/leave support [NEW in v3.0]"
+    echo "  --help, -h       Show this help message"
+    echo ""
+    echo "Shorthand:"
+    echo "  static           Same as --mode=static"
+    echo "  dynamic          Same as --mode=dynamic"
+    echo ""
+    echo "Environment Variables:"
+    echo "  SPLITSCREEN_DEBUG=1    Enable debug output"
+    echo ""
+    echo "Examples:"
+    echo "  $(basename "$0")                   # Interactive mode selection"
+    echo "  $(basename "$0") --mode=dynamic    # Start dynamic mode directly"
+    echo "  $(basename "$0") static            # Start static mode directly"
+    echo ""
+    echo "Steam Deck: Handheld = single player. Dock to a TV for splitscreen."
+    echo ""
+    exit 0
+}
+
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
-    log_debug "=== Minecraft Splitscreen Launcher ==="
+    log_debug "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
     log_debug "Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)"
     log_debug "Instances: $INSTANCES_DIR"
     log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
+    if isSteamDeckHardware; then
+        if isSteamDeckDocked; then
+            log_debug "Steam Deck: DOCKED (external display connected)"
+        else
+            log_debug "Steam Deck: HANDHELD (internal display only)"
+        fi
+    fi
+fi
+
+# Parse command line arguments
+LAUNCH_MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            show_help
+            ;;
+        --mode=static|static)
+            LAUNCH_MODE="static"
+            ;;
+        --mode=dynamic|dynamic)
+            LAUNCH_MODE="dynamic"
+            ;;
+        launchFromPlasma)
+            LAUNCH_MODE="launchFromPlasma"
+            ;;
+    esac
+done
+
+# Steam Deck handheld mode: single player, no splitscreen
+if [ -z "$LAUNCH_MODE" ] || [ "$LAUNCH_MODE" != "launchFromPlasma" ]; then
+    if isSteamDeckHardware && ! isSteamDeckDocked; then
+        log_info "Steam Deck handheld mode detected (no external display)"
+        log_info "Running single-player mode with built-in controls"
+        echo ""
+        echo "=== Steam Deck Handheld Mode ==="
+        echo "Single-player mode (dock to a TV for splitscreen)"
+        echo ""
+        LAUNCH_MODE="static"
+        HANDHELD_MODE=1
+    fi
+fi
+
+# Interactive mode selection if no mode specified
+if [ -z "$LAUNCH_MODE" ]; then
+<<<<<<< HEAD
+    echo ""
+    echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+    echo ""
+    echo "Launch Modes:"
+    echo "  1. Static  - Launch based on current controllers (original behavior)"
+    echo "  2. Dynamic - Players can join/leave during session [DEFAULT]"
+    echo ""
+    echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
+    echo ""
+    read -t 15 -p "Select mode [2]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
+    mode_choice=${mode_choice:-2}
+
+    case "$mode_choice" in
+        1|static|s) LAUNCH_MODE="static" ;;
+        *) LAUNCH_MODE="dynamic" ;;
+    esac
+    echo ""
+=======
+    # If no terminal available (e.g. launched from Steam/Game Mode), default to static
+    if ! [ -t 0 ] 2>/dev/null; then
+        log_info "No terminal detected — defaulting to static mode"
+        LAUNCH_MODE="static"
+    else
+        echo ""
+        echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+        echo ""
+        echo "Launch Modes:"
+        echo "  1. Static  - Launch based on current controllers (original behavior)"
+        echo "  2. Dynamic - Players can join/leave during session [NEW in v3.0]"
+        echo ""
+        echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
+        echo ""
+        read -t 15 -p "Select mode [2]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
+        mode_choice=${mode_choice:-2}
+
+        case "$mode_choice" in
+            1|static|s) LAUNCH_MODE="static" ;;
+            *) LAUNCH_MODE="dynamic" ;;
+        esac
+        echo ""
+    fi
+>>>>>>> 1d845fe (fix: Zombie reaping, cleanup reentrancy guard, and gamescope race prevention)
 fi
 
 if isSteamDeckGameMode; then
-    if [ "$1" = launchFromPlasma ]; then
-        # Inside nested Plasma session
+    if [ "$LAUNCH_MODE" = "launchFromPlasma" ]; then
+        # Inside nested Plasma session - check for stored mode
         rm -f ~/.config/autostart/minecraft-launch.desktop
-        launchGames
+
+        # Read stored mode from temp file (set by outer invocation)
+        stored_mode=""
+        if [ -f "/tmp/mc-splitscreen-mode" ]; then
+            stored_mode=$(cat "/tmp/mc-splitscreen-mode" 2>/dev/null)
+            rm -f "/tmp/mc-splitscreen-mode"
+        fi
+
+        if [ "$stored_mode" = "dynamic" ]; then
+            runDynamicSplitscreen
+        else
+            runStaticSplitscreen
+        fi
+
+        # Explicit cleanup BEFORE Plasma logout.
+        # Once qdbus logout is called, Plasma begins async shutdown and may:
+        # - Kill our child processes before we can clean them up
+        # - Send SIGTERM to this script, causing cleanup_exit to race
+        # - Kill KWin, making D-Bus calls (uninstallBorderEnforcer) fail
+        # By cleaning up first, we avoid all these race conditions.
+        log_info "Performing explicit cleanup before Plasma logout..."
+        perform_cleanup
+        CLEANUP_DONE=1
+
+        # Disable traps — cleanup is done, don't let EXIT/TERM re-run it
+        # during Plasma's shutdown sequence
+        trap - EXIT INT TERM
+
         qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
     else
-        # Start nested session
+        # Store mode for nested session and start it
+        echo "$LAUNCH_MODE" > "/tmp/mc-splitscreen-mode"
         nestedPlasma
     fi
 else
-    # Desktop mode: launch directly
-    numberOfControllers=$(getControllerCount)
-
-    # Handle 0 controllers - prompt user for options
-    if [ "$numberOfControllers" -eq 0 ]; then
-        numberOfControllers=$(promptControllerMode)
-        # If user chose to exit (returned 0), exit gracefully
-        if [ "$numberOfControllers" -eq 0 ]; then
-            exit 0
+    # Desktop mode: launch directly with selected mode
+    # Handle launchFromPlasma case: nested Plasma session ended up in desktop mode
+    # (isSteamDeckGameMode returns false because KDE is now running)
+    if [ "$LAUNCH_MODE" = "launchFromPlasma" ]; then
+        rm -f ~/.config/autostart/minecraft-launch.desktop
+        stored_mode=""
+        if [ -f "/tmp/mc-splitscreen-mode" ]; then
+            stored_mode=$(cat "/tmp/mc-splitscreen-mode" 2>/dev/null)
+            rm -f "/tmp/mc-splitscreen-mode"
         fi
+        if [ "$stored_mode" = "dynamic" ]; then
+            runDynamicSplitscreen
+        else
+            runStaticSplitscreen
+        fi
+    elif [ "$LAUNCH_MODE" = "dynamic" ]; then
+        runDynamicSplitscreen
+    else
+        runStaticSplitscreen
     fi
 
-    echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
-
-    for player in $(seq 1 $numberOfControllers); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
-        launchGame "latestUpdate-$player" "P$player"
-    done
-
-    echo "[Info] All instances launched. Waiting for games to exit..."
-    wait
-    echo "[Info] All games have exited."
+    # Return focus to Steam if it was running
+    if pgrep -x steam >/dev/null 2>&1; then
+        sleep 1
+        if canUseKWinScripting; then
+            # KWin-native: activate Steam window via scripting
+            steam_focus_script="/tmp/mc-steam-focus-$$.js"
+            cat > "$steam_focus_script" << 'STEAMFOCUSEOF'
+(function() {
+    var windows = workspace.windowList();
+    for (var i = 0; i < windows.length; i++) {
+        if (windows[i].caption.indexOf("Steam") !== -1) {
+            workspace.activeWindow = windows[i];
+            break;
+        }
+    }
+})();
+STEAMFOCUSEOF
+            qdbus_cmd="qdbus"
+            command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+            sf_id=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$steam_focus_script" "mc-steam-focus-$$" 2>/dev/null)
+            if [ -n "$sf_id" ]; then
+                $qdbus_cmd org.kde.KWin "/Scripting/Script${sf_id}" run 2>/dev/null
+                sleep 0.2
+                $qdbus_cmd org.kde.KWin /Scripting unloadScript "mc-steam-focus-$$" 2>/dev/null
+                log_info "Returned focus to Steam via KWin"
+            fi
+            rm -f "$steam_focus_script"
+        elif command -v xdotool >/dev/null 2>&1 && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+            # X11 fallback
+            steam_wid=$(xdotool search --name "Steam" 2>/dev/null | head -1)
+            if [ -n "$steam_wid" ]; then
+                xdotool windowactivate "$steam_wid" 2>/dev/null || true
+                log_info "Returned focus to Steam via xdotool"
+            fi
+        fi
+    fi
 fi
 LAUNCHER_SCRIPT_EOF
 
@@ -716,7 +2096,7 @@ LAUNCHER_SCRIPT_EOF
     sed -i "s|__LAUNCHER_EXEC__|${launcher_exec}|g" "$output_path"
     sed -i "s|__LAUNCHER_DIR__|${launcher_dir}|g" "$output_path"
     sed -i "s|__INSTANCES_DIR__|${instances_dir}|g" "$output_path"
-    sed -i "s|__SCRIPT_VERSION__|${SCRIPT_VERSION:-2.0.0}|g" "$output_path"
+    sed -i "s|__SCRIPT_VERSION__|${SCRIPT_VERSION:-3.0.0}|g" "$output_path"
     sed -i "s|__COMMIT_HASH__|${commit_hash}|g" "$output_path"
     sed -i "s|__GENERATION_DATE__|${generation_date}|g" "$output_path"
     sed -i "s|__REPO_URL__|${REPO_URL:-https://github.com/aradanmn/MinecraftSplitscreenSteamdeck}|g" "$output_path"
@@ -789,6 +2169,6 @@ print_generation_config() {
     echo "Executable:   $launcher_exec"
     echo "Data Dir:     $launcher_dir"
     echo "Instances:    $instances_dir"
-    echo "Version:      ${SCRIPT_VERSION:-2.0.0}"
+    echo "Version:      ${SCRIPT_VERSION:-3.0.0}"
     echo "=========================================="
 }

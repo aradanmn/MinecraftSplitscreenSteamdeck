@@ -34,14 +34,9 @@ KEEP_JAVA=true  # Default to keeping Java (it's useful for other things)
 
 # Flatpak IDs
 readonly PRISM_FLATPAK_ID="org.prismlauncher.PrismLauncher"
-readonly POLLYMC_FLATPAK_ID="org.fn2006.PollyMC"
 
 # Data directories to clean
 PATHS_TO_CLEAN=(
-    # PollyMC data directories
-    "$HOME/.local/share/PollyMC"
-    "$HOME/.var/app/org.fn2006.PollyMC"
-
     # PrismLauncher data directories
     "$HOME/.local/share/PrismLauncher"
     "$HOME/.var/app/org.prismlauncher.PrismLauncher"
@@ -154,22 +149,6 @@ cleanup_flatpaks() {
         return 0
     fi
 
-    # Check and remove PollyMC Flatpak
-    if flatpak list --app 2>/dev/null | grep -q "$POLLYMC_FLATPAK_ID"; then
-        if [[ "$DRY_RUN" == true ]]; then
-            print_dry "Uninstall Flatpak: PollyMC ($POLLYMC_FLATPAK_ID)"
-        else
-            print_info "Uninstalling PollyMC Flatpak..."
-            if flatpak uninstall -y --noninteractive "$POLLYMC_FLATPAK_ID" 2>/dev/null; then
-                print_success "Removed PollyMC Flatpak"
-            else
-                print_warning "Failed to remove PollyMC Flatpak (may need: flatpak uninstall $POLLYMC_FLATPAK_ID)"
-            fi
-        fi
-    else
-        print_info "PollyMC Flatpak not installed"
-    fi
-
     # Check and remove PrismLauncher Flatpak
     if flatpak list --app 2>/dev/null | grep -q "$PRISM_FLATPAK_ID"; then
         if [[ "$DRY_RUN" == true ]]; then
@@ -262,14 +241,12 @@ show_summary() {
 
     echo ""
     echo "This script will remove:"
-    echo "  - PollyMC data and AppImage (~/.local/share/PollyMC)"
-    echo "  - PollyMC Flatpak data (~/.var/app/org.fn2006.PollyMC)"
     echo "  - PrismLauncher data and AppImage (~/.local/share/PrismLauncher)"
     echo "  - PrismLauncher Flatpak data (~/.var/app/org.prismlauncher.PrismLauncher)"
     echo "  - Minecraft instances (latestUpdate-1 through latestUpdate-4)"
     echo "  - Desktop shortcuts and application menu entries"
     echo "  - Installer logs (~/.local/share/MinecraftSplitscreen)"
-    echo "  - PollyMC and PrismLauncher Flatpak applications"
+    echo "  - PrismLauncher Flatpak application"
     echo ""
 
     if [[ "$KEEP_JAVA" == true ]]; then
@@ -289,20 +266,6 @@ show_detected_components() {
 
     local found_any=false
 
-    # Check PollyMC
-    if [[ -d "$HOME/.local/share/PollyMC" ]]; then
-        local size
-        size=$(du -sh "$HOME/.local/share/PollyMC" 2>/dev/null | cut -f1) || size="?"
-        print_info "PollyMC AppImage data: $size"
-        found_any=true
-    fi
-    if [[ -d "$HOME/.var/app/org.fn2006.PollyMC" ]]; then
-        local size
-        size=$(du -sh "$HOME/.var/app/org.fn2006.PollyMC" 2>/dev/null | cut -f1) || size="?"
-        print_info "PollyMC Flatpak data: $size"
-        found_any=true
-    fi
-
     # Check PrismLauncher
     if [[ -d "$HOME/.local/share/PrismLauncher" ]]; then
         local size
@@ -319,10 +282,6 @@ show_detected_components() {
 
     # Check Flatpaks
     if command -v flatpak &>/dev/null; then
-        if flatpak list --app 2>/dev/null | grep -q "$POLLYMC_FLATPAK_ID"; then
-            print_info "PollyMC Flatpak app installed"
-            found_any=true
-        fi
         if flatpak list --app 2>/dev/null | grep -q "$PRISM_FLATPAK_ID"; then
             print_info "PrismLauncher Flatpak app installed"
             found_any=true
