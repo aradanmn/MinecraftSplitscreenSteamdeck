@@ -3,8 +3,8 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     3.0.1
-# @date        2026-02-07
+# @version     3.0.2
+# @date        2026-03-15
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -58,6 +58,7 @@
 #     - DYNAMIC_HAS_NOTIFY        : Set by check_dynamic_mode_dependencies()
 #
 # @changelog
+#   3.0.2 (2026-03-15) - Fix: SIGSEGV crash from read -t in subshell (prompt_user now uses PROMPT_REPLY global)
 #   3.0.1 (2026-02-07) - Added KWin scripting detection (DYNAMIC_HAS_KWIN_SCRIPTING)
 #   3.0.0 (2026-02-01) - Dynamic splitscreen: players can join/leave mid-session
 #   2.1.2 (2026-02-01) - Fix: prompt_user echo to stderr so timeout newline isn't captured
@@ -153,45 +154,68 @@ get_log_file() {
 # -----------------------------------------------------------------------------
 # @function    prompt_user
 # @description Get user input. Works with curl | bash by reopening /dev/tty.
+#              IMPORTANT: Result is stored in global PROMPT_REPLY, NOT echoed.
+#              This avoids calling read -t inside a $() subshell, which causes
+#              SIGSEGV (exit 139) on bash 5.2.x.
 # @param       $1 - Prompt text
 # @param       $2 - Default value
 # @param       $3 - Timeout in seconds (default: 30, 0 for none)
-# @stdout      User's response (or default)
+# @global      PROMPT_REPLY - Set to the user's response (or default)
+# @return      0 on success, 1 if no tty available (uses default)
 # -----------------------------------------------------------------------------
+PROMPT_REPLY=""
 prompt_user() {
     local prompt="$1"
     local default="${2:-}"
     local timeout="${3:-30}"
-    local response saved_stdin
+    local response
+    local use_tty=false
 
+    PROMPT_REPLY=""
     log "PROMPT: $prompt (default: $default, timeout: ${timeout}s)"
 
-    # Reopen /dev/tty if stdin isn't a terminal (curl | bash case)
+    # Determine input source: stdin if it's a terminal, else /dev/tty
     if [[ ! -t 0 ]]; then
-        if [[ -e /dev/tty ]]; then
-            exec {saved_stdin}<&0
-            exec 0</dev/tty
-            log "Reopened /dev/tty for input"
+        # stdin is not a terminal (e.g., curl | bash)
+        # Test if /dev/tty is actually usable (not just present as a file)
+        if ( : < /dev/tty ) 2>/dev/null; then
+            use_tty=true
+            log "stdin not a terminal, will read from /dev/tty"
         else
-            log "No /dev/tty available, using default"
-            echo "$default"
-            return 1
+            log "No usable /dev/tty available, using default"
+            PROMPT_REPLY="$default"
+            return 0
         fi
     fi
 
     local timed_out=false
-    if [[ "$timeout" -gt 0 ]]; then
-        if ! read -r -t "$timeout" -p "$prompt" response; then
-            echo "" >&2  # New line after timeout (stderr, not captured by command substitution)
-            timed_out=true
-            response="$default"
+    if [[ "$use_tty" == true ]]; then
+        # Read directly from /dev/tty (curl | bash case)
+        # Print prompt to /dev/tty so the user sees it
+        printf '%s' "$prompt" > /dev/tty 2>/dev/null || true
+        if [[ "$timeout" -gt 0 ]]; then
+            if ! read -r -t "$timeout" response < /dev/tty 2>/dev/null; then
+                echo "" > /dev/tty 2>/dev/null || true
+                timed_out=true
+                response="$default"
+            fi
+        else
+            if ! read -r response < /dev/tty 2>/dev/null; then
+                response="$default"
+            fi
         fi
     else
-        read -r -p "$prompt" response
+        # Normal terminal: use read -p
+        if [[ "$timeout" -gt 0 ]]; then
+            if ! read -r -t "$timeout" -p "$prompt" response; then
+                echo "" >&2
+                timed_out=true
+                response="$default"
+            fi
+        else
+            read -r -p "$prompt" response
+        fi
     fi
-
-    # Restore stdin if changed
-    [[ -n "${saved_stdin:-}" ]] && { exec 0<&"$saved_stdin"; exec {saved_stdin}<&-; }
 
     response="${response:-$default}"
     if [[ "$timed_out" == true ]]; then
@@ -199,7 +223,7 @@ prompt_user() {
     else
         log "USER INPUT: $response"
     fi
-    echo "$response"
+    PROMPT_REPLY="$response"
 }
 
 # -----------------------------------------------------------------------------
@@ -215,7 +239,8 @@ prompt_yes_no() {
     local prompt_text response
 
     [[ "${default,,}" == "y" ]] && prompt_text="$question [Y/n]: " || prompt_text="$question [y/N]: "
-    response=$(prompt_user "$prompt_text" "$default" 30)
+    prompt_user "$prompt_text" "$default" 30
+    response="$PROMPT_REPLY"
 
     [[ "${response,,}" =~ ^y(es)?$ ]] && return 0 || return 1
 }
