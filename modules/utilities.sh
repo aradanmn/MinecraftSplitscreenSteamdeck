@@ -191,18 +191,12 @@ prompt_user() {
     local timed_out=false
     if [[ "$use_tty" == true ]]; then
         # Read directly from /dev/tty (curl | bash case)
-        # Print prompt to /dev/tty so the user sees it
+        # NOTE: Do NOT use 'read -t' (timeout) with /dev/tty redirection —
+        # bash 5.2.x segfaults (SIGSEGV/exit 139) with read -t on redirected fds.
+        # The user is at the console, so no timeout is needed.
         printf '%s' "$prompt" > /dev/tty 2>/dev/null || true
-        if [[ "$timeout" -gt 0 ]]; then
-            if ! read -r -t "$timeout" response < /dev/tty 2>/dev/null; then
-                echo "" > /dev/tty 2>/dev/null || true
-                timed_out=true
-                response="$default"
-            fi
-        else
-            if ! read -r response < /dev/tty 2>/dev/null; then
-                response="$default"
-            fi
+        if ! read -r response < /dev/tty 2>/dev/null; then
+            response="$default"
         fi
     else
         # Normal terminal: use read -p
