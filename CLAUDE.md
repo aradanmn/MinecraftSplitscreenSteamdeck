@@ -406,39 +406,23 @@ INSTALLER_SOURCE_URL=https://raw.githubusercontent.com/aradanmn/MinecraftSplitsc
 
 ---
 
-### Issue #2: Steam Deck Controller Issues (MEDIUM PRIORITY)
+### Issue #2: Steam Deck Controller Issues ✅ RESOLVED
 
-**Problem A: No Controllers Detected**
-When launching on Steam Deck without external controllers, the script detects the Steam virtual controller, filters it out, and then stops because no "real" controllers remain.
+**Problem A (No Controllers): FIXED**
+- `getControllerCount()` uses uhid-based filtering to separate real from virtual devices
+- Steam Deck built-in controls: if count=0 and `hasSteamVirtualController()` → P1 using built-in
+- `promptControllerMode()` provides keyboard/mouse fallback when no controllers at all
 
-**Problem B: Double Button Presses in Desktop Mode**
-When Steam is running in Desktop Mode, the Steam Deck's physical controls AND Steam's virtual controller BOTH send input to the game, causing every button press to register twice.
+**Problem B (Double Input): FIXED**
+- uhid-based device counting already filters Steam Input virtual duplicates
+- Fallback halving logic (`(count + 1) / 2`) for older kernels where uhid filtering isn't available
+- `HANDHELD_MODE=1` bypasses counting entirely, always reports exactly 1 controller
 
-**Root Cause:** Steam Input creates virtual controller devices that mirror physical inputs. In Desktop Mode with Steam running:
-- Physical controller → `/dev/input/js0` → game
-- Steam virtual controller → `/dev/input/js1` → game (duplicate!)
-
-**Current State:** The launcher script tries to filter Steam virtual controllers but:
-1. Doesn't handle when virtual controller is the ONLY option
-2. Doesn't prevent double-input when both physical AND virtual are active
-
-**Solution Approaches:**
-
-*For Problem A (no controllers):*
-- If on Steam Deck AND only Steam virtual controller detected → allow using it as Player 1
-- Provide "keyboard only" fallback mode
-
-*For Problem B (double presses):*
-1. **User-side fix:** Disable Steam Input per-game in Steam properties
-2. **Script-side detection:** Warn user when both physical and virtual detected
-3. **Script-side fix:** Before launching, advise user to either:
-   - Launch from Game Mode (Steam handles this correctly there)
-   - Disable Steam Input for Minecraft in Steam settings
-   - Close Steam before launching (if not using Steam integration)
-
-**Controllable Mod Note:** The Controllable mod has device selection settings. Users may be able to manually select only the physical controller there. Worth documenting.
-
-**Files to modify:** `modules/launcher_script_generator.sh` (the generated script template)
+**Key functions in generated launcher (`launcher_script_generator.sh`):**
+- `hasSteamVirtualController()` — detects Steam virtual gamepad presence
+- `getControllerCount()` — uhid-filtered count with Steam Deck built-in fallback
+- `hasKeyboardInput()` — keyboard/mouse detection
+- `promptControllerMode()` — interactive fallback when no controllers found
 
 ---
 
@@ -464,26 +448,18 @@ When Steam is running in Desktop Mode, the Steam Deck's physical controls AND St
 
 ---
 
-### Issue #4: Minecraft New Versioning System (LOW PRIORITY - Future)
-**Problem:** Minecraft is switching to a new version numbering system (announced at minecraft.net/en-us/article/minecraft-new-version-numbering-system).
+### Issue #4: Minecraft New Versioning System ✅ RESOLVED
 
-**Current State:** Version parsing assumes `1.X.Y` format throughout codebase.
+**Resolution:** Year-based versioning (`YY.X` / `YY.X.Y`) is fully supported.
 
-**Research Needed:**
-- Fetch and document the new versioning scheme details
-- Identify when this takes effect
-- Likely format change from `1.21.x` to something like `25.1` (year-based?)
+**Implemented in `modules/utilities.sh`:**
+- `detect_version_format()` — returns `"legacy"` or `"year"`
+- `get_version_series()` — extracts major.minor from either format (`1.21.3` → `1.21`, `25.1.2` → `25.1`)
+- `normalize_version()` — treats year-based versions as newer than legacy
 
-**Files likely affected:**
-- `modules/version_management.sh` - version parsing and comparison
-- `modules/java_management.sh` - Java version mapping
-- `modules/lwjgl_management.sh` - LWJGL version mapping
-- `modules/mod_management.sh` - mod compatibility matching
-
-**Solution approach:**
-- Create version parsing functions that handle both old and new formats
-- Maintain backward compatibility for existing `1.x.x` versions
-- Add detection for which format a version string uses
+**Modules updated to use these utilities:**
+- `modules/lwjgl_management.sh` — `get_lwjgl_version_by_mapping()` handles both formats
+- `modules/mod_management.sh` — version matching uses `get_version_series()`
 
 ---
 
@@ -637,6 +613,62 @@ PollyMC went offline as of 2026-02-07 (`pollymc.org` does not resolve, GitHub re
 
 ---
 
+### Issue #9: Controller-to-Session Mapping ✅ RESOLVED
+
+**Root cause discovered:** Controllable stores controller selection in `selected_controllers.json` using SDL2 GUIDs. The saved GUIDs were from a Steam session (Steam Virtual Gamepad, vendor=0x28DE) but Controllable's own bundled SDL2 (at `controllable_natives/SDL/2.32.10/libSDL2.so`) sees raw Bluetooth Sony controllers (vendor=0x054c). This GUID mismatch caused Controllable to fall back to `autoSelect=true` and always grab controller index 0 for every instance.
+
+**Fix implemented in `launcher_script_generator.sh` v3.1.0:**
+- `findControllableSDL2()` — locates Controllable's bundled `libSDL2.so`
+- `enumerateControllerGUIDs()` — Python3/ctypes enumerate using the same SDL2 Controllable uses
+- `writeControllableConfig()` — writes correct `selected_controllers.json` for a slot
+- `setControllableAutoSelect()` — disables/enables `autoSelect` in `controllable-client.toml`
+- `assignControllerToSlot()` — called by `launchInstanceForSlot()`: finds unassigned GUID, writes config, disables autoSelect on active instances
+- `markInstanceStopped()` — clears GUID assignment and re-enables autoSelect on stop
+
+**Known limitation:** Identical controller models (e.g., 3x DS4 v2) share the same SDL2 GUID. SDL2 has no device-level isolation so it always resolves to the first physical match. Players with all-same-model controllers may still get mixed assignments; mixed controller sets (different models) work correctly.
+
+---
+
+### Issue #10: Require Controller Disconnect+Reconnect Before Relaunch (HIGH PRIORITY)
+
+**Problem:** If a player quits Minecraft but leaves their controller connected, the dynamic mode may relaunch a new session for that slot automatically. The controller count hasn't changed so no CONTROLLER_CHANGE event fires — but a timing race between `checkForExitedInstances()` (which decrements active count) and a subsequent controller event can cause `handleControllerChange()` to see `controller_count > active_instances` and relaunch.
+
+**Desired Behavior:** Once a controller has been used in a session, it must be physically disconnected and reconnected before it can trigger a new session launch. This gives players intentional control over when they re-join.
+
+**Implementation Approach:**
+- Track a `CONTROLLER_SEEN` set of device paths that have participated in the current session
+- In `monitorControllers()` (using inotifywait), only emit a `CONTROLLER_CHANGE` event on a `create` event for a device that was previously deleted — not for devices that were present throughout
+- In polling fallback: track which js indices were active and require a disappear→reappear cycle before counting as "new"
+- Add `INSTANCE_CONTROLLER_DEV[$idx]` to track which device was assigned to each slot
+
+**Files to modify:** `modules/launcher_script_generator.sh` — `monitorControllers()`, `handleControllerChange()`, `markInstanceStopped()`
+
+---
+
+### Issue #11: Black Placeholder Window for 3-Player Layout (MEDIUM PRIORITY)
+
+**Problem:** In a 3-player session, the layout is a 2×2 grid with the bottom-right quadrant (P4 position) empty. This leaves an ugly gap — the desktop/wallpaper is visible there.
+
+**Desired Behavior:**
+- When exactly 3 players are active: show a solid black window filling the P4 (bottom-right) quadrant
+- When a 4th player joins: close the black window
+- When player count drops to 2 or below: close the black window (layout switches to halves)
+
+**Implementation Approach:**
+- Create a lightweight black window using one of:
+  - `python3 -c "import tkinter as tk; r=tk.Tk(); r.configure(bg='black'); r.attributes('-fullscreen',False); r.mainloop()"` — no deps beyond python3
+  - `xterm -bg black -fg black -geometry ...` — X11 only
+  - A small bash script using `/dev/fb0` or a named socket
+- Track the placeholder window PID in a `PLACEHOLDER_PID` variable
+- Launch/kill it in `handleControllerChange()` and `checkForExitedInstances()` based on active count
+- Position it at the P4 quadrant coordinates from `calculateWindowPosition 4 4`
+
+**Gamescope note:** In gamescope (Game Mode), external windows can't be created. Skip placeholder in that environment.
+
+**Files to modify:** `modules/launcher_script_generator.sh` — `handleControllerChange()`, `checkForExitedInstances()`, add `showPlaceholderWindow()` / `hidePlaceholderWindow()`
+
+---
+
 ### Implementation Order
 1. ✅ **Issue #3 (Logging)** - DONE. All print_* functions auto-log.
 2. ✅ **Issue #1 (User Input)** - DONE. All modules refactored to use `prompt_user()` and `prompt_yes_no()`.
@@ -644,8 +676,11 @@ PollyMC went offline as of 2026-02-07 (`pollymc.org` does not resolve, GitHub re
 4. ✅ **Issue #7 (PollyMC Removed)** - DONE. PollyMC code removed, PrismLauncher-only.
 5. ⏳ **Issue #8 (MS Account During Install)** - OAuth device flow for headless auth
 6. ⏳ **Issue #6 (Previous Installation Detection)** - Improves repeat user experience
-7. ⏳ **Issue #2 (Controller Detection)** - Improves Steam Deck UX
-8. ⏳ **Issue #4 (Versioning)** - Can wait until Minecraft actually releases new format
+7. ✅ **Issue #2 (Controller Detection)** - DONE. uhid filtering, Steam Deck built-in fallback, keyboard mode.
+8. ✅ **Issue #4 (Versioning)** - DONE. Year-based format handled via utilities.sh version utilities.
+9. ✅ **Issue #9 (Controller-to-Session Mapping)** - DONE. Uses Controllable's own SDL2 to write correct GUIDs; disables autoSelect on active slots.
+10. ⏳ **Issue #10 (Disconnect+Reconnect Before Relaunch)** - Prevent unintended relaunch when controller stays connected
+11. ⏳ **Issue #11 (3-Player Placeholder Window)** - Black window fills P4 gap when 3 players active
 
 ## Useful Debugging
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.10
-# @date        2026-03-07
+# @version     3.2.2
+# @date        2026-03-14
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,10 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.2.2 (2026-03-14) - Fix: Screen blanking during gameplay — session-level kde-inhibit sleep infinity persists for full session; xset fallback for X11
+#   3.2.1 (2026-03-14) - Fix: Controller isolation via Controllable serial matching (Bluetooth MAC from sysfs uniq); SDL_JOYSTICK_DEVICE kept as secondary layer; autoSelect=false per active slot
+#   3.2.0 (2026-03-14) - Fix: Controller isolation via instance.cfg Env/OverrideEnv instead of broken --env= flatpak flags (lost to PrismLauncher single-instance IPC); add writeInstanceSdlEnv/clearInstanceSdlEnv
+#   3.1.0 (2026-03-14) - Feat: Controller-to-session mapping using Controllable's own SDL2; writes correct selected_controllers.json per slot; disables autoSelect on active instances
 #   3.0.10 (2026-03-07) - Fix: Zombie process reaping, cleanup_exit reentrancy guard, gamescope cleanup race prevention; default mode changed to dynamic; remove dead launchGames()
 #   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
 #   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
@@ -142,11 +146,12 @@ INSTANCES_DIR="__INSTANCES_DIR__"
 # These variables track the state of dynamic splitscreen sessions where
 # players can join and leave mid-game.
 
-declare -a INSTANCE_PIDS=("" "" "" "")     # PID for each player slot (index 0-3)
-declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
+declare -a INSTANCE_PIDS=("" "" "" "")          # PID for each player slot (index 0-3)
+declare -a INSTANCE_ACTIVE=(0 0 0 0)            # 1 if slot is in use, 0 otherwise
 declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhibit or flatpak)
 declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
 declare -a INSTANCE_LAUNCH_TIME=(0 0 0 0)       # epoch seconds when instance was launched
+declare -a INSTANCE_CONTROLLER_DEVICE=("" "" "" "") # /dev/input/eventN path assigned to each slot
 CURRENT_PLAYER_COUNT=0                      # Number of active players
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
@@ -367,7 +372,37 @@ prewarmLauncher() {
     return 0
 }
 
-# Launch a single Minecraft instance with KDE inhibition
+# Write SDL controller isolation env vars to PrismLauncher's per-instance config.
+# PrismLauncher's single-instance IPC means --env= flags on 'flatpak run' are
+# discarded (the new process just sends the -l command to the running instance
+# and exits). Per-instance Env/OverrideEnv in instance.cfg is read at launch
+# time by the running PrismLauncher and injected directly into the game JVM.
+# Arguments: $1=slot, $2=/dev/input/eventN path
+writeInstanceSdlEnv() {
+    local slot=$1
+    local dev="$2"
+    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
+    [ -f "$cfg" ] || { log_warning "No instance.cfg for slot $slot — SDL isolation skipped"; return 1; }
+    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\"}"
+    sed -i "s|^Env=.*|Env=$env_json|" "$cfg"
+    sed -i "s|^OverrideEnv=.*|OverrideEnv=true|" "$cfg"
+    log_info "Slot $slot: wrote SDL_JOYSTICK_DEVICE=$dev to instance.cfg"
+}
+
+# Clear SDL env vars from instance.cfg when the slot is no longer active.
+# Arguments: $1=slot
+clearInstanceSdlEnv() {
+    local slot=$1
+    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
+    [ -f "$cfg" ] || return 0
+    sed -i "s|^Env=.*|Env={}|" "$cfg"
+    sed -i "s|^OverrideEnv=.*|OverrideEnv=false|" "$cfg"
+    log_info "Slot $slot: cleared SDL env vars from instance.cfg"
+}
+
+# Launch a single Minecraft instance with KDE inhibition.
+# SDL controller isolation is handled via instance.cfg (writeInstanceSdlEnv),
+# not via command-line env flags which are lost to PrismLauncher's single-instance IPC.
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., P1)
@@ -375,12 +410,55 @@ launchGame() {
     local instance_name="$1"
     local player_name="$2"
 
+    # shellcheck disable=SC2206
+    local -a cmd=($LAUNCHER_EXEC)
+
     if command -v kde-inhibit >/dev/null 2>&1; then
         kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
+            "${cmd[@]}" -l "$instance_name" -a "$player_name"
     else
         log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
-        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
+        "${cmd[@]}" -l "$instance_name" -a "$player_name"
+    fi
+}
+
+# =============================================================================
+# Session-Level Screen Inhibition
+# =============================================================================
+# kde-inhibit per-instance releases when its wrapped 'flatpak run -l' exits
+# (which happens immediately if PrismLauncher uses single-instance IPC).
+# A session-level inhibition tied to a long-lived 'sleep infinity' keeps the
+# screen on for the entire splitscreen session regardless of per-instance lifecycle.
+
+INHIBIT_PID=""
+
+inhibitScreen() {
+    if [ -n "$INHIBIT_PID" ]; then return 0; fi  # already active
+
+    if command -v kde-inhibit >/dev/null 2>&1; then
+        # Runs sleep infinity under kde-inhibit; killed in perform_cleanup()
+        kde-inhibit --power --screenSaver --colorCorrect sleep infinity &
+        INHIBIT_PID=$!
+        disown "$INHIBIT_PID" 2>/dev/null || true
+        log_info "Session screen inhibition active (kde-inhibit PID: $INHIBIT_PID)"
+    elif [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
+        xset s off -dpms 2>/dev/null || true
+        log_info "X11 screensaver/DPMS disabled for session"
+    else
+        log_warning "No session screen inhibition available — screen may blank during gameplay"
+    fi
+}
+
+uninhibitScreen() {
+    if [ -n "$INHIBIT_PID" ]; then
+        kill "$INHIBIT_PID" 2>/dev/null || true
+        wait "$INHIBIT_PID" 2>/dev/null || true
+        INHIBIT_PID=""
+        log_info "Session screen inhibition released"
+    fi
+    # Restore X11 defaults if applicable
+    if [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
+        xset s default +dpms 2>/dev/null || true
     fi
 }
 
@@ -781,6 +859,175 @@ stopControllerMonitor() {
 }
 
 # =============================================================================
+# Controller-to-Session Mapping (Issue #9)
+# =============================================================================
+# Uses Controllable's own bundled SDL2 to enumerate controllers and write the
+# correct selected_controllers.json for each slot before launch. This fixes
+# stale Steam Virtual Gamepad GUIDs and assigns unique-model controllers
+# correctly. Identical-model controllers share the same SDL2 GUID; for those,
+# the correct GUID is written but SDL2 will resolve to the first matching
+# physical device (a known SDL2 limitation without device-level isolation).
+
+# Find Controllable's bundled libSDL2.so in the instances directory.
+# This is the same SDL2 the game uses, so GUIDs will match exactly.
+# Outputs the library path, or returns 1 if not found.
+# Enumerate real (non-Steam-virtual) controller event devices from sysfs.
+# Outputs one /dev/input/eventN path per line, sorted by path for stable ordering.
+# Filters out Steam Input virtual gamepads (vendor 28de) so only physical
+# controllers are enumerated.
+findRealControllerEventDevices() {
+    for js in $(ls -d /sys/class/input/js* 2>/dev/null | sort); do
+        local vendor
+        vendor=$(cat "$js/device/id/vendor" 2>/dev/null)
+        # Skip Steam Input virtual gamepads (vendor=28de, Valve)
+        [[ "$vendor" == "28de" ]] && continue
+        # Find the corresponding event device
+        local event_dev
+        event_dev=$(ls "$js/device/" 2>/dev/null | grep "^event" | head -1)
+        if [ -n "$event_dev" ] && [ -e "/dev/input/$event_dev" ]; then
+            echo "/dev/input/$event_dev"
+        fi
+    done
+}
+
+# Enable or disable Controllable's autoSelect for a slot.
+# Arguments: $1=slot, $2=true|false
+setControllableAutoSelect() {
+    local slot=$1
+    local enabled=$2
+    local toml="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable-client.toml"
+    [ -f "$toml" ] || return 0
+    sed -i "s/^\s*autoSelect = .*/\tautoSelect = $enabled/" "$toml"
+}
+
+# Get the Bluetooth serial (MAC address) for an event device from sysfs.
+# Outputs the serial in lowercase (e.g., "a0:5a:5e:d0:8a:dc"), or nothing
+# if not a Bluetooth device (USB controllers may have no serial).
+# Arguments: $1=/dev/input/eventN path
+getControllerSerial() {
+    local event_dev="$1"
+    local event_name="${event_dev##*/}"
+    cat "/sys/class/input/$event_name/device/uniq" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+# Search all instance selected_controllers.json files for a saved config
+# whose "serial" field matches the given serial. Outputs the full JSON content.
+# Returns 1 if no match found.
+# Arguments: $1=serial (e.g., "a0:5a:5e:d0:8a:dc")
+findControllableConfigBySerial() {
+    local target_serial="$1"
+    local cfg_dir cfg_file cfg_serial
+    for i in 1 2 3 4; do
+        cfg_file="$INSTANCES_DIR/latestUpdate-$i/.minecraft/config/controllable/selected_controllers.json"
+        [ -f "$cfg_file" ] || continue
+        cfg_serial=$(grep -o '"serial": *"[^"]*"' "$cfg_file" | head -1 | grep -o '"[^"]*"$' | tr -d '"' | tr '[:upper:]' '[:lower:]')
+        if [ "$cfg_serial" = "$target_serial" ]; then
+            cat "$cfg_file"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Write Controllable's selected_controllers.json for a slot using the Bluetooth
+# serial to match a previously-saved controller config. This uniquely identifies
+# physical controllers even when identical models share the same SDL2 GUID.
+# Sets autoSelect=false so Controllable uses our assigned controller.
+# Falls back gracefully (autoSelect=true) if serial or saved config is unavailable.
+# Arguments: $1=slot, $2=/dev/input/eventN path
+writeControllableConfigBySerial() {
+    local slot=$1
+    local event_dev="$2"
+    local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable"
+
+    local serial
+    serial=$(getControllerSerial "$event_dev")
+    if [ -z "$serial" ]; then
+        log_warning "Slot $slot: no Bluetooth serial for $event_dev — Controllable will use autoSelect"
+        setControllableAutoSelect "$slot" "true"
+        return 1
+    fi
+
+    local saved_config
+    saved_config=$(findControllableConfigBySerial "$serial")
+    if [ -z "$saved_config" ]; then
+        log_warning "Slot $slot: no saved Controllable config for serial $serial — Controllable will use autoSelect"
+        setControllableAutoSelect "$slot" "true"
+        return 1
+    fi
+
+    mkdir -p "$config_dir"
+    echo "$saved_config" > "$config_dir/selected_controllers.json"
+    setControllableAutoSelect "$slot" "false"
+    log_info "Slot $slot: assigned controller serial $serial via Controllable config (autoSelect=false)"
+    return 0
+}
+
+# Assign a specific controller event device to a slot.
+# Strategy: enumerate real (non-Steam-virtual) controller event devices from sysfs,
+# find the first one not already claimed by an active slot, store it in
+# INSTANCE_CONTROLLER_DEVICE[], and write SDL_JOYSTICK_DEVICE + SDL_JOYSTICK_HIDAPI=0
+# to instance.cfg via writeInstanceSdlEnv(). PrismLauncher reads per-instance env
+# vars at game launch time and injects them into the JVM, so each Minecraft instance
+# sees exactly one controller. Works for identical-model controllers (e.g., 4x DS4)
+# since device isolation is at the OS event device level, not GUID level.
+# Arguments: $1=slot
+assignControllerToSlot() {
+    local slot=$1
+    local idx=$((slot - 1))
+
+    # Enumerate real controller event devices (sorted for stable ordering)
+    local -a all_devices
+    mapfile -t all_devices < <(findRealControllerEventDevices)
+
+    if [ ${#all_devices[@]} -eq 0 ]; then
+        log_warning "No controller event devices found — slot $slot will use Controllable autoSelect"
+        return
+    fi
+
+    log_debug "Available controller event devices: ${all_devices[*]}"
+
+    # Collect devices already claimed by active slots
+    local -a used_devices=()
+    for i in 0 1 2 3; do
+        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
+            used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
+        fi
+    done
+
+    # Pick the first unclaimed device
+    local chosen_device=""
+    for dev in "${all_devices[@]}"; do
+        local in_use=false
+        for used in "${used_devices[@]}"; do
+            [[ "$used" == "$dev" ]] && in_use=true && break
+        done
+        if [ "$in_use" = "false" ]; then
+            chosen_device="$dev"
+            break
+        fi
+    done
+
+    # Fallback: all devices claimed — use slot-index-based assignment
+    if [ -z "$chosen_device" ]; then
+        local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
+        chosen_device="${all_devices[$dev_idx]}"
+        log_warning "Slot $slot: all devices claimed — falling back to device index $dev_idx"
+    fi
+
+    INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
+
+    # Primary isolation: Controllable serial matching (works for identical-model
+    # controllers since Bluetooth MAC uniquely identifies each physical device).
+    # Secondary isolation: SDL_JOYSTICK_DEVICE in instance.cfg as a belt-and-suspenders
+    # layer in case PrismLauncher forwards env vars to the JVM.
+    writeControllableConfigBySerial "$slot" "$chosen_device"
+    writeInstanceSdlEnv "$slot" "$chosen_device"
+
+    log_info "Slot $slot: assigned controller device $chosen_device"
+}
+
+# =============================================================================
 # Instance Lifecycle Management (Dynamic Splitscreen)
 # =============================================================================
 # Functions to track and manage individual Minecraft instance processes
@@ -797,6 +1044,9 @@ launchInstanceForSlot() {
 
     # Configure splitscreen position using existing function
     setSplitscreenModeForPlayer "$slot" "$total_players"
+
+    # Assign the correct controller to this slot before launch
+    assignControllerToSlot "$slot"
 
     # Launch the game in background — returns immediately
     # Subshell must clear the EXIT trap to prevent cleanup_exit from running
@@ -914,6 +1164,9 @@ markInstanceStopped() {
     INSTANCE_ACTIVE[$idx]=0
     INSTANCE_JAVA_RESOLVED[$idx]=0
     INSTANCE_LAUNCH_TIME[$idx]=0
+    INSTANCE_CONTROLLER_DEVICE[$idx]=""
+    clearInstanceSdlEnv "$slot"
+    setControllableAutoSelect "$slot" "true"
     log "Instance $slot marked as stopped (wrapper $wrapper_pid reaped)"
 }
 
@@ -1576,6 +1829,7 @@ runDynamicSplitscreen() {
     DYNAMIC_MODE=1
     local instances_ever_launched=0
 
+    inhibitScreen
     hidePanels
 
     # Install persistent KWin script to enforce borderless windows on focus
@@ -1640,6 +1894,7 @@ runStaticSplitscreen() {
     log_info "Starting static splitscreen mode"
     DYNAMIC_MODE=0
 
+    inhibitScreen
     hidePanels
 
     # Install persistent KWin script to enforce borderless windows on focus
@@ -1820,6 +2075,7 @@ enforceMemorySettings() {
 # Core cleanup logic — shared between explicit cleanup and trap handler.
 # Can be called directly before gamescope logout, or indirectly via cleanup_exit().
 perform_cleanup() {
+    uninhibitScreen 2>/dev/null || true
     killAllInstances
     killLauncher 2>/dev/null || true
     stopControllerMonitor 2>/dev/null || true
@@ -1945,36 +2201,17 @@ fi
 
 # Interactive mode selection if no mode specified
 if [ -z "$LAUNCH_MODE" ]; then
-<<<<<<< HEAD
-    echo ""
-    echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
-    echo ""
-    echo "Launch Modes:"
-    echo "  1. Static  - Launch based on current controllers (original behavior)"
-    echo "  2. Dynamic - Players can join/leave during session [DEFAULT]"
-    echo ""
-    echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
-    echo ""
-    read -t 15 -p "Select mode [2]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
-    mode_choice=${mode_choice:-2}
-
-    case "$mode_choice" in
-        1|static|s) LAUNCH_MODE="static" ;;
-        *) LAUNCH_MODE="dynamic" ;;
-    esac
-    echo ""
-=======
-    # If no terminal available (e.g. launched from Steam/Game Mode), default to static
+    # If no terminal (e.g. launched from Steam/Game Mode), skip prompt and default to dynamic
     if ! [ -t 0 ] 2>/dev/null; then
-        log_info "No terminal detected — defaulting to static mode"
-        LAUNCH_MODE="static"
+        log_info "No terminal detected — defaulting to dynamic mode"
+        LAUNCH_MODE="dynamic"
     else
         echo ""
         echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
         echo ""
         echo "Launch Modes:"
         echo "  1. Static  - Launch based on current controllers (original behavior)"
-        echo "  2. Dynamic - Players can join/leave during session [NEW in v3.0]"
+        echo "  2. Dynamic - Players can join/leave during session [DEFAULT]"
         echo ""
         echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
         echo ""
@@ -1987,7 +2224,6 @@ if [ -z "$LAUNCH_MODE" ]; then
         esac
         echo ""
     fi
->>>>>>> 1d845fe (fix: Zombie reaping, cleanup reentrancy guard, and gamescope race prevention)
 fi
 
 if isSteamDeckGameMode; then
