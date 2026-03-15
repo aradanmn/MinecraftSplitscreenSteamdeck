@@ -616,20 +616,41 @@ prewarmLauncher() {
     return 0
 }
 
-# Launch a single Minecraft instance with KDE inhibition
+# Launch a single Minecraft instance with KDE inhibition.
+# When a SDL device is provided and the launcher is flatpak, we use
+# 'flatpak run --env=SDL_JOYSTICK_DEVICE=... --no-single-instance' so the env
+# var is baked into a fresh PrismLauncher process. The prewarm single-instance
+# IPC discards subshell exports and ignores instance.cfg Env writes, so this
+# is the only reliable path to get SDL_JOYSTICK_DEVICE into the JVM.
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
-#   $2 = Player name (e.g., P1)
+#   $2 = Player name (e.g., Player1)
+#   $3 = SDL device path (e.g., /dev/input/event13), optional
 launchGame() {
     local instance_name="$1"
     local player_name="$2"
+    local sdl_dev="${3:-}"
+
+    local -a cmd
+    if [[ "$LAUNCHER_TYPE" == "flatpak" ]] && [ -n "$sdl_dev" ]; then
+        # Bypass single-instance IPC: start a dedicated PrismLauncher process
+        # with SDL isolation baked into its environment.
+        cmd=(flatpak run
+             --env=SDL_JOYSTICK_DEVICE="$sdl_dev"
+             --env=SDL_JOYSTICK_HIDAPI=0
+             org.prismlauncher.PrismLauncher
+             --no-single-instance)
+    else
+        # shellcheck disable=SC2206
+        cmd=($LAUNCHER_EXEC)
+    fi
 
     if command -v kde-inhibit >/dev/null 2>&1; then
         kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
+            "${cmd[@]}" -l "$instance_name" -a "$player_name"
     else
         log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
-        $LAUNCHER_EXEC -l "$instance_name" -a "$player_name"
+        "${cmd[@]}" -l "$instance_name" -a "$player_name"
     fi
 }
 
@@ -1055,17 +1076,15 @@ launchInstanceForSlot() {
     assignControllerToSlot "$slot"
 
     # Launch the game in background — returns immediately
+    # Launch the game in background — returns immediately.
     # Subshell must clear the EXIT trap to prevent cleanup_exit from running
     # when the wrapper process (flatpak/kde-inhibit) exits.
-    # Set SDL_JOYSTICK_DEVICE in the subshell environment so it is inherited by
-    # flatpak → PrismLauncher → Java, bypassing PrismLauncher's instance.cfg cache.
+    # SDL isolation is passed as an argument to launchGame, which injects it
+    # via 'flatpak run --env=...' so it survives into the JVM regardless of
+    # whether PrismLauncher's single-instance IPC is in play.
     local sdl_dev="${INSTANCE_CONTROLLER_DEVICE[$idx]:-}"
     ( trap - EXIT INT TERM
-      if [ -n "$sdl_dev" ]; then
-          export SDL_JOYSTICK_DEVICE="$sdl_dev"
-          export SDL_JOYSTICK_HIDAPI=0
-      fi
-      launchGame "latestUpdate-$slot" "Player$slot" ) &
+      launchGame "latestUpdate-$slot" "Player$slot" "$sdl_dev" ) &
     local wrapper_pid=$!
 
     # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
