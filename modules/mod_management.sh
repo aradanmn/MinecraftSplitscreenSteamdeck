@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        mod_management.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.1
+# @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -50,6 +50,7 @@
 #     - get_curseforge_download_url: Get download URL for CurseForge mod
 #
 # @changelog
+#   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation with dual-platform support
@@ -1360,7 +1361,9 @@ select_user_mods() {
 
     local mod_selection
     # Use centralized prompt function that handles curl | bash piping
-    mod_selection=$(prompt_user "Your choice [0]: " "0" 60)
+    # NOTE: prompt_user sets PROMPT_REPLY (not subshell) to avoid bash SIGSEGV
+    prompt_user "Your choice [0]: " "0" 60
+    mod_selection="$PROMPT_REPLY"
 
     # Process user selection
     if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then

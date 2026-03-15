@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        version_management.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.1
+# @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -38,6 +38,7 @@
 #     - get_fabric_version               : Fetch latest Fabric loader version
 #
 # @changelog
+#   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
@@ -384,7 +385,9 @@ get_minecraft_version() {
 
     local user_choice
     # Use centralized prompt function that handles curl | bash piping
-    user_choice=$(prompt_user "Your choice [latest]: " "latest" 60)
+    # NOTE: prompt_user sets PROMPT_REPLY (not subshell) to avoid bash SIGSEGV
+    prompt_user "Your choice [latest]: " "latest" 60
+    user_choice="$PROMPT_REPLY"
 
     if [[ -z "$user_choice" || "$user_choice" == "latest" ]]; then
         # Use latest supported version
@@ -400,7 +403,8 @@ get_minecraft_version() {
     elif [[ "$user_choice" == "custom" ]]; then
         # User wants to enter a custom version
         local custom_version
-        custom_version=$(prompt_user "Enter custom Minecraft version (e.g., 1.21.3): " "" 60)
+        prompt_user "Enter custom Minecraft version (e.g., 1.21.3): " "" 60
+        custom_version="$PROMPT_REPLY"
         if [[ -n "$custom_version" ]]; then
             MC_VERSION="$custom_version"
             print_warning "Using custom version: $MC_VERSION"
