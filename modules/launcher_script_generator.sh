@@ -147,6 +147,7 @@ declare -a INSTANCE_ACTIVE=(0 0 0 0)       # 1 if slot is in use, 0 otherwise
 declare -a INSTANCE_WRAPPER_PIDS=("" "" "" "")  # Wrapper/subshell PID (kde-inhibit or flatpak)
 declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has been found
 declare -a INSTANCE_LAUNCH_TIME=(0 0 0 0)       # epoch seconds when instance was launched
+declare -a INSTANCE_CONTROLLER_DEVICE=("" "" "" "")  # /dev/input/eventN assigned to each slot
 CURRENT_PLAYER_COUNT=0                      # Number of active players
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
@@ -306,6 +307,253 @@ EOF
 
     # Start nested Plasma session (never returns)
     exec dbus-run-session startplasma-wayland
+}
+
+# =============================================================================
+# Controller Isolation
+# =============================================================================
+# Per-slot controller assignment so each Minecraft instance uses a different
+# physical device. Handles Steam Input mode (Game Mode) transparently.
+
+# Write SDL_JOYSTICK_DEVICE and SDL_JOYSTICK_HIDAPI=0 to instance.cfg so each
+# JVM sees exactly one controller device.
+# Arguments: $1=slot, $2=/dev/input/eventN path
+writeInstanceSdlEnv() {
+    local slot=$1
+    local dev="$2"
+    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
+    [ -f "$cfg" ] || { log_warning "No instance.cfg for slot $slot — SDL isolation skipped"; return 1; }
+    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\"}"
+    sed -i "s|^Env=.*|Env=$env_json|" "$cfg"
+    sed -i "s|^OverrideEnv=.*|OverrideEnv=true|" "$cfg"
+    log_info "Slot $slot: wrote SDL_JOYSTICK_DEVICE=$dev to instance.cfg"
+}
+
+# Clear SDL env vars from instance.cfg when the slot is no longer active.
+# Arguments: $1=slot
+clearInstanceSdlEnv() {
+    local slot=$1
+    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
+    [ -f "$cfg" ] || return 0
+    sed -i "s|^Env=.*|Env={}|" "$cfg"
+    sed -i "s|^OverrideEnv=.*|OverrideEnv=false|" "$cfg"
+    log_info "Slot $slot: cleared SDL env vars from instance.cfg"
+}
+
+# Enumerate real (non-Steam-virtual) controller event devices from sysfs.
+# Outputs one /dev/input/eventN path per line, sorted for stable ordering.
+# Filters out Steam Input virtual gamepads (vendor 28de) so only physical
+# controllers are enumerated.
+findRealControllerEventDevices() {
+    for js in $(ls -d /sys/class/input/js* 2>/dev/null | sort); do
+        local vendor
+        vendor=$(cat "$js/device/id/vendor" 2>/dev/null)
+        # Skip Steam Input virtual gamepads (vendor=28de, Valve)
+        [[ "$vendor" == "28de" ]] && continue
+        local event_dev
+        event_dev=$(ls "$js/device/" 2>/dev/null | grep "^event" | head -1)
+        if [ -n "$event_dev" ] && [ -e "/dev/input/$event_dev" ]; then
+            echo "/dev/input/$event_dev"
+        fi
+    done
+}
+
+# Enumerate Steam Input virtual gamepad event devices (vendor 28de).
+# Outputs one /dev/input/eventN path per line, sorted for stable ordering.
+# Used in Game Mode so each slot gets its own Steam Virtual Gamepad device.
+findSteamVirtualEventDevices() {
+    for js in $(ls -d /sys/class/input/js* 2>/dev/null | sort); do
+        local vendor
+        vendor=$(cat "$js/device/id/vendor" 2>/dev/null)
+        [[ "$vendor" != "28de" ]] && continue
+        local event_dev
+        event_dev=$(ls "$js/device/" 2>/dev/null | grep "^event" | head -1)
+        if [ -n "$event_dev" ] && [ -e "/dev/input/$event_dev" ]; then
+            echo "/dev/input/$event_dev"
+        fi
+    done
+}
+
+# Enable or disable Controllable's autoSelect for a slot.
+# Arguments: $1=slot, $2=true|false
+setControllableAutoSelect() {
+    local slot=$1
+    local enabled=$2
+    local toml="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable-client.toml"
+    [ -f "$toml" ] || return 0
+    sed -i "s/^\s*autoSelect = .*/\tautoSelect = $enabled/" "$toml"
+}
+
+# Get the Bluetooth serial (MAC address) for an event device from sysfs.
+# Arguments: $1=/dev/input/eventN path
+getControllerSerial() {
+    local event_dev="$1"
+    local event_name="${event_dev##*/}"
+    cat "/sys/class/input/$event_name/device/uniq" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+# Search all instance selected_controllers.json files for a saved config
+# whose "serial" field matches the given serial. Outputs the full JSON content.
+# Arguments: $1=serial (e.g., "a0:5a:5e:d0:8a:dc")
+findControllableConfigBySerial() {
+    local target_serial="$1"
+    local cfg_dir cfg_file cfg_serial
+    for i in 1 2 3 4; do
+        cfg_file="$INSTANCES_DIR/latestUpdate-$i/.minecraft/config/controllable/selected_controllers.json"
+        [ -f "$cfg_file" ] || continue
+        cfg_serial=$(grep -o '"serial": *"[^"]*"' "$cfg_file" | head -1 | grep -o '"[^"]*"$' | tr -d '"' | tr '[:upper:]' '[:lower:]')
+        if [ "$cfg_serial" = "$target_serial" ]; then
+            cat "$cfg_file"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Write Controllable's selected_controllers.json for a slot using the Bluetooth
+# serial to match a previously-saved controller config.
+# In Game Mode (Steam Virtual Gamepad present), uses autoSelect=true instead
+# so Controllable picks whatever SDL can open (the Steam Input virtual device).
+# Arguments: $1=slot, $2=/dev/input/eventN path
+writeControllableConfigBySerial() {
+    local slot=$1
+    local event_dev="$2"
+    local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable"
+
+    # In Game Mode, Steam Input grabs the raw device and presents a Steam Virtual
+    # Gamepad with a different GUID. Use autoSelect=true so Controllable picks
+    # whatever SDL can actually open.
+    if hasSteamVirtualController; then
+        log_info "Slot $slot: Steam Virtual Gamepad detected — using autoSelect (Game Mode)"
+        setControllableAutoSelect "$slot" "true"
+        return 0
+    fi
+
+    local serial
+    serial=$(getControllerSerial "$event_dev")
+    if [ -z "$serial" ]; then
+        log_warning "Slot $slot: no Bluetooth serial for $event_dev — Controllable will use autoSelect"
+        setControllableAutoSelect "$slot" "true"
+        return 1
+    fi
+
+    local saved_config
+    saved_config=$(findControllableConfigBySerial "$serial")
+    if [ -z "$saved_config" ]; then
+        log_warning "Slot $slot: no saved Controllable config for serial $serial — Controllable will use autoSelect"
+        setControllableAutoSelect "$slot" "true"
+        return 1
+    fi
+
+    mkdir -p "$config_dir"
+    echo "$saved_config" > "$config_dir/selected_controllers.json"
+    setControllableAutoSelect "$slot" "false"
+    log_info "Slot $slot: assigned controller serial $serial via Controllable config (autoSelect=false)"
+    return 0
+}
+
+# Assign a specific controller event device to a slot.
+# Enumerates real (non-Steam-virtual) devices, picks the first unclaimed one,
+# writes SDL_JOYSTICK_DEVICE to instance.cfg, and configures Controllable.
+# In Game Mode, skips SDL_JOYSTICK_DEVICE restriction so Steam Virtual Gamepad
+# is accessible to SDL.
+# Arguments: $1=slot
+assignControllerToSlot() {
+    local slot=$1
+    local idx=$((slot - 1))
+
+    # In Game Mode, Steam Input grabs physical devices and presents Steam Virtual
+    # Gamepads (vendor 28de). Assign one virtual device per slot so each instance
+    # only sees its own controller via SDL_JOYSTICK_DEVICE.
+    if hasSteamVirtualController; then
+        local -a virtual_devices
+        mapfile -t virtual_devices < <(findSteamVirtualEventDevices)
+
+        if [ ${#virtual_devices[@]} -eq 0 ]; then
+            log_warning "Slot $slot: no Steam Virtual Gamepad devices found — falling back to autoSelect"
+            setControllableAutoSelect "$slot" "true"
+            return
+        fi
+
+        log_debug "Available Steam Virtual event devices: ${virtual_devices[*]}"
+
+        # Collect virtual devices already claimed by active slots
+        local -a used_devices=()
+        for i in 0 1 2 3; do
+            if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
+                used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
+            fi
+        done
+
+        # Pick first unclaimed virtual device
+        local chosen_device=""
+        for dev in "${virtual_devices[@]}"; do
+            local in_use=false
+            for used in "${used_devices[@]}"; do
+                [[ "$used" == "$dev" ]] && in_use=true && break
+            done
+            if [ "$in_use" = "false" ]; then
+                chosen_device="$dev"
+                break
+            fi
+        done
+
+        if [ -z "$chosen_device" ]; then
+            local dev_idx=$((idx < ${#virtual_devices[@]} ? idx : ${#virtual_devices[@]} - 1))
+            chosen_device="${virtual_devices[$dev_idx]}"
+            log_warning "Slot $slot: all virtual devices claimed — falling back to index $dev_idx"
+        fi
+
+        INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
+        setControllableAutoSelect "$slot" "true"
+        writeInstanceSdlEnv "$slot" "$chosen_device"
+        log_info "Slot $slot: assigned Steam Virtual Gamepad $chosen_device (autoSelect=true)"
+        return
+    fi
+
+    # Desktop Mode: enumerate real (non-Steam-virtual) controller event devices
+    local -a all_devices
+    mapfile -t all_devices < <(findRealControllerEventDevices)
+
+    if [ ${#all_devices[@]} -eq 0 ]; then
+        log_warning "No controller event devices found — slot $slot will use Controllable autoSelect"
+        return
+    fi
+
+    log_debug "Available controller event devices: ${all_devices[*]}"
+
+    # Collect devices already claimed by active slots
+    local -a used_devices=()
+    for i in 0 1 2 3; do
+        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
+            used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
+        fi
+    done
+
+    # Pick the first unclaimed device
+    local chosen_device=""
+    for dev in "${all_devices[@]}"; do
+        local in_use=false
+        for used in "${used_devices[@]}"; do
+            [[ "$used" == "$dev" ]] && in_use=true && break
+        done
+        if [ "$in_use" = "false" ]; then
+            chosen_device="$dev"
+            break
+        fi
+    done
+
+    # Fallback: all devices claimed — use slot-index-based assignment
+    if [ -z "$chosen_device" ]; then
+        local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
+        chosen_device="${all_devices[$dev_idx]}"
+        log_warning "Slot $slot: all devices claimed — falling back to device index $dev_idx"
+    fi
+
+    INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
+    writeControllableConfigBySerial "$slot" "$chosen_device"
+    writeInstanceSdlEnv "$slot" "$chosen_device"
+    log_info "Slot $slot: assigned controller device $chosen_device"
 }
 
 # =============================================================================
@@ -470,11 +718,15 @@ isSteamDeckDocked() {
 }
 
 # Check if Steam virtual controller is present
-# Returns 0 (true) if Steam Virtual Gamepad detected
+# Returns 0 (true) if a Steam Input virtual gamepad is detected.
+# Detects by Valve vendor ID (28de) on a joystick device — more reliable than
+# name matching since Steam presents virtual pads as "Microsoft X-Box 360 pad".
 hasSteamVirtualController() {
-    if grep -q "Steam Virtual Gamepad" /proc/bus/input/devices 2>/dev/null; then
-        return 0
-    fi
+    for js in $(ls -d /sys/class/input/js* 2>/dev/null); do
+        local vendor
+        vendor=$(cat "$js/device/id/vendor" 2>/dev/null)
+        [[ "$vendor" == "28de" ]] && return 0
+    done
     return 1
 }
 
@@ -798,6 +1050,9 @@ launchInstanceForSlot() {
     # Configure splitscreen position using existing function
     setSplitscreenModeForPlayer "$slot" "$total_players"
 
+    # Assign the correct controller to this slot before launch
+    assignControllerToSlot "$slot"
+
     # Launch the game in background — returns immediately
     # Subshell must clear the EXIT trap to prevent cleanup_exit from running
     # when the wrapper process (flatpak/kde-inhibit) exits
@@ -909,6 +1164,7 @@ markInstanceStopped() {
         wait "$wrapper_pid" 2>/dev/null || true
     fi
 
+    clearInstanceSdlEnv "$slot"
     INSTANCE_PIDS[$idx]=""
     INSTANCE_WRAPPER_PIDS[$idx]=""
     INSTANCE_ACTIVE[$idx]=0
@@ -1945,25 +2201,6 @@ fi
 
 # Interactive mode selection if no mode specified
 if [ -z "$LAUNCH_MODE" ]; then
-<<<<<<< HEAD
-    echo ""
-    echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
-    echo ""
-    echo "Launch Modes:"
-    echo "  1. Static  - Launch based on current controllers (original behavior)"
-    echo "  2. Dynamic - Players can join/leave during session [DEFAULT]"
-    echo ""
-    echo "Tip: Use '--mode=static' or '--mode=dynamic' to skip this prompt."
-    echo ""
-    read -t 15 -p "Select mode [2]: " mode_choice </dev/tty 2>/dev/null || mode_choice=""
-    mode_choice=${mode_choice:-2}
-
-    case "$mode_choice" in
-        1|static|s) LAUNCH_MODE="static" ;;
-        *) LAUNCH_MODE="dynamic" ;;
-    esac
-    echo ""
-=======
     # If no terminal available (e.g. launched from Steam/Game Mode), default to static
     if ! [ -t 0 ] 2>/dev/null; then
         log_info "No terminal detected — defaulting to static mode"
@@ -1987,7 +2224,6 @@ if [ -z "$LAUNCH_MODE" ]; then
         esac
         echo ""
     fi
->>>>>>> 1d845fe (fix: Zombie reaping, cleanup reentrancy guard, and gamescope race prevention)
 fi
 
 if isSteamDeckGameMode; then
