@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.10
-# @date        2026-03-07
+# @version     3.0.11
+# @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.11 (2026-03-15) - Fix: Screen not resizing on controller disconnect (stop instance whose device is gone); fix reconnect not spawning new instance (sync KNOWN_CONTROLLER_COUNT in checkForExitedInstances)
 #   3.0.10 (2026-03-07) - Fix: Zombie process reaping, cleanup_exit reentrancy guard, gamescope cleanup race prevention; default mode changed to dynamic; remove dead launchGames()
 #   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
 #   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
@@ -1857,7 +1858,36 @@ handleControllerChange() {
     KNOWN_CONTROLLER_COUNT=$new_controller_count
 
     if [ "$slots_to_launch" -le 0 ]; then
-        CURRENT_PLAYER_COUNT=$current_active
+        # Controller count dropped (or stayed same). Stop any instance whose
+        # tracked device has physically disappeared from /dev/input/ — this
+        # covers the case where a player disconnects their controller while
+        # their game is still running (or just exited before isInstanceRunning
+        # had a chance to detect it). Stopping here triggers an immediate
+        # reposition rather than waiting for the grace period to expire.
+        local any_stopped=0
+        for i in 1 2 3 4; do
+            local idx=$((i - 1))
+            if [ "${INSTANCE_ACTIVE[$idx]}" = "1" ]; then
+                local dev="${INSTANCE_CONTROLLER_DEVICE[$idx]}"
+                if [ -n "$dev" ] && [ ! -e "$dev" ]; then
+                    log_info "Scaling down: stopping slot $i (controller $dev disconnected)"
+                    showNotification "Player Left" "Player $i's controller disconnected"
+                    stopInstance "$i"
+                    any_stopped=1
+                fi
+            fi
+        done
+
+        if [ "$any_stopped" = "1" ]; then
+            local remaining
+            remaining=$(countActiveInstances)
+            CURRENT_PLAYER_COUNT=$remaining
+            if [ "$remaining" -gt 0 ]; then
+                repositionAllWindows "$remaining"
+            fi
+        else
+            CURRENT_PLAYER_COUNT=$current_active
+        fi
         return
     fi
 
@@ -1916,6 +1946,18 @@ checkForExitedInstances() {
             # Just reposition remaining windows — no restart needed since all
             # instances run in FULLSCREEN mode (mod won't fight the resize)
             repositionAllWindows "$remaining"
+        fi
+
+        # Sync KNOWN_CONTROLLER_COUNT down to the remaining active instance count.
+        # Without this, a player who exits without disconnecting their controller
+        # leaves KNOWN elevated (e.g. 2). A fast disconnect+reconnect within the
+        # 2-second polling window produces no CONTROLLER_CHANGE events, so
+        # slots_to_launch would be 0 on reconnect and no new instance would spawn.
+        # Syncing KNOWN = remaining means the next explicit reconnect (or the next
+        # disconnect event that does fire) will produce a positive slots_to_launch.
+        if [ "$KNOWN_CONTROLLER_COUNT" -gt "$remaining" ]; then
+            KNOWN_CONTROLLER_COUNT=$remaining
+            log_debug "Synced KNOWN_CONTROLLER_COUNT=$remaining after instance exit(s)"
         fi
     fi
 }
