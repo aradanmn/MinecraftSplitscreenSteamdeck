@@ -617,11 +617,15 @@ prewarmLauncher() {
 }
 
 # Launch a single Minecraft instance with KDE inhibition.
-# When a SDL device is provided and the launcher is flatpak, we use
-# 'flatpak run --env=SDL_JOYSTICK_DEVICE=... --no-single-instance' so the env
-# var is baked into a fresh PrismLauncher process. The prewarm single-instance
-# IPC discards subshell exports and ignores instance.cfg Env writes, so this
-# is the only reliable path to get SDL_JOYSTICK_DEVICE into the JVM.
+# SDL isolation strategy (two complementary layers):
+#   1. writeInstanceSdlEnv() writes SDL_JOYSTICK_DEVICE to instance.cfg before
+#      each launch. PrismLauncher reads per-instance Env at launch time, so
+#      IPC-delegated launches (Player 2+) pick up the correct device from config.
+#   2. For Player 1 (no existing PrismLauncher running), 'flatpak run --env='
+#      bakes SDL_JOYSTICK_DEVICE directly into the new PrismLauncher process
+#      so the JVM inherits it without relying on instance.cfg parsing.
+# NOTE: --no-single-instance is intentionally NOT used — it causes PrismLauncher
+# to start a fresh GUI and silently ignore the -l launch argument.
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., Player1)
@@ -633,13 +637,14 @@ launchGame() {
 
     local -a cmd
     if [[ "$LAUNCHER_TYPE" == "flatpak" ]] && [ -n "$sdl_dev" ]; then
-        # Bypass single-instance IPC: start a dedicated PrismLauncher process
-        # with SDL isolation baked into its environment.
+        # Pass SDL device into the flatpak sandbox environment.
+        # If no PrismLauncher is running, this starts a fresh process that
+        # inherits the env. If one is already running, IPC delegation occurs
+        # and the env flag is ignored — instance.cfg Env handles that case.
         cmd=(flatpak run
              --env=SDL_JOYSTICK_DEVICE="$sdl_dev"
              --env=SDL_JOYSTICK_HIDAPI=0
-             org.prismlauncher.PrismLauncher
-             --no-single-instance)
+             org.prismlauncher.PrismLauncher)
     else
         # shellcheck disable=SC2206
         cmd=($LAUNCHER_EXEC)
@@ -1879,9 +1884,6 @@ runDynamicSplitscreen() {
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
 
-    # Pre-start the launcher so it's ready to accept instance launch commands
-    prewarmLauncher
-
     # Start controller monitoring
     if ! startControllerMonitor; then
         log_error "Failed to start controller monitor, falling back to static mode"
@@ -1942,9 +1944,6 @@ runStaticSplitscreen() {
 
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
-
-    # Pre-start the launcher so it's ready to accept instance launch commands
-    prewarmLauncher
 
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
