@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        lwjgl_management.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.1
+# @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -96,7 +96,7 @@ get_lwjgl_version() {
 
     # If API lookup failed, use version mapping logic
     if [[ -z "$LWJGL_VERSION" || "$LWJGL_VERSION" == "null" ]]; then
-        LWJGL_VERSION=$(get_lwjgl_version_by_mapping "$MC_VERSION")
+        LWJGL_VERSION=$(get_lwjgl_version_for_mc "$MC_VERSION")
     fi
 
     # Final fallback
@@ -106,46 +106,4 @@ get_lwjgl_version() {
     fi
 
     print_success "Using LWJGL version: $LWJGL_VERSION"
-}
-
-# =============================================================================
-# VERSION MAPPING
-# =============================================================================
-
-# @function    get_lwjgl_version_by_mapping
-# @description Map Minecraft version to LWJGL version using centralized utilities.
-#              Supports both legacy (1.X.Y) and year-based (YY.X) version formats.
-# @param       $1 - mc_version: Minecraft version (e.g., "1.21.3" or "25.1")
-# @stdout      Appropriate LWJGL version string
-# @return      0 always
-# @see         https://minecraft.wiki/w/Tutorials/Update_LWJGL
-# @example
-#   lwjgl=$(get_lwjgl_version_by_mapping "1.21.3")  # Returns "3.3.3"
-#   lwjgl=$(get_lwjgl_version_by_mapping "25.1")    # Returns "3.3.3"
-get_lwjgl_version_by_mapping() {
-    local mc_version="$1"
-
-    # Use centralized version utility that handles both legacy and year-based formats
-    get_lwjgl_version_for_mc "$mc_version"
-}
-
-# =============================================================================
-# VALIDATION
-# =============================================================================
-
-# @function    validate_lwjgl_version
-# @description Validate that an LWJGL version string has the expected format.
-# @param       $1 - version: LWJGL version string to validate
-# @return      0 if valid (matches X.Y.Z format), 1 if invalid
-# @example
-#   if validate_lwjgl_version "3.3.3"; then echo "Valid"; fi
-validate_lwjgl_version() {
-    local version="$1"
-
-    # Check if version matches expected format (e.g., "3.3.3")
-    if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        return 0
-    else
-        return 1
-    fi
 }

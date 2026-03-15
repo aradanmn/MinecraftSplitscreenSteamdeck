@@ -501,9 +501,3 @@ detect_and_install_java() {
     fi
 }
 
-# @function    detect_java
-# @description Legacy alias for detect_and_install_java (backward compatibility).
-# @see         detect_and_install_java
-detect_java() {
-    detect_and_install_java
-}

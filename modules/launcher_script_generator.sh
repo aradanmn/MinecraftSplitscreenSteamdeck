@@ -27,8 +27,7 @@
 # @exports
 #   Functions:
 #     - generate_splitscreen_launcher : Main generation function
-#     - verify_generated_script       : Validation utility
-#     - print_generation_config       : Debug/info utility
+#     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
 #   3.0.12 (2026-03-15) - Fix: Back-port inhibitScreen/uninhibitScreen to generator (were in live script only); remove dead old instance.cfg-based writeInstanceSdlEnv from heredoc
@@ -2542,29 +2541,4 @@ verify_generated_script() {
 
     print_success "Generated script verified: $script_path"
     return 0
-}
-
-# @function    print_generation_config
-# @description Print the configuration that would be used for script generation.
-#              Useful for debugging and verification.
-# @param       $1-$6 - Same as generate_splitscreen_launcher
-# @stdout      Formatted configuration summary
-# @return      0 always
-print_generation_config() {
-    local output_path="$1"
-    local launcher_name="$2"
-    local launcher_type="$3"
-    local launcher_exec="$4"
-    local launcher_dir="$5"
-    local instances_dir="$6"
-
-    echo "=== Launcher Script Generation Config ==="
-    echo "Output:       $output_path"
-    echo "Launcher:     $launcher_name"
-    echo "Type:         $launcher_type"
-    echo "Executable:   $launcher_exec"
-    echo "Data Dir:     $launcher_dir"
-    echo "Instances:    $instances_dir"
-    echo "Version:      ${SCRIPT_VERSION:-3.0.0}"
-    echo "=========================================="
 }

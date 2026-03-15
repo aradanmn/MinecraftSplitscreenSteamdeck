@@ -29,9 +29,7 @@
 #     - get_log_file            : Get current log file path
 #     - prompt_user             : Get user input (works with curl | bash)
 #     - prompt_yes_no           : Simplified yes/no prompts
-#     - get_prism_executable    : Locate PrismLauncher executable
 #     - is_immutable_os         : Detect immutable Linux distributions
-#     - should_prefer_flatpak   : Determine preferred package format
 #     - check_dynamic_mode_dependencies : Check optional dynamic mode tools
 #     - show_dynamic_mode_install_hints : Show package install commands
 #     - print_header            : Display section headers (auto-logs)
@@ -44,7 +42,6 @@
 #     - detect_version_format   : Detect legacy (1.X.Y) vs year-based (YY.X) version
 #     - get_version_series      : Extract major.minor from version string
 #     - get_version_patch       : Extract patch number from version string
-#     - compare_versions        : Compare two version strings
 #     - get_java_version_for_mc : Map Minecraft version to Java version
 #     - get_lwjgl_version_for_mc: Map Minecraft version to LWJGL version
 #
@@ -243,30 +240,6 @@ prompt_yes_no() {
 # PRISMLAUNCHER EXECUTABLE DETECTION
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# @function    get_prism_executable
-# @description Locates the PrismLauncher executable, checking for both the
-#              standard AppImage and extracted squashfs-root version (used
-#              when FUSE is unavailable).
-# @param       None
-# @global      PRISMLAUNCHER_DIR - Base directory for PrismLauncher installation
-# @stdout      Path to the executable if found
-# @return      0 if executable found, 1 if not found
-# @example
-#   if prism_exec=$(get_prism_executable); then
-#       "$prism_exec" --help
-#   fi
-# -----------------------------------------------------------------------------
-get_prism_executable() {
-    if [[ -x "$PRISMLAUNCHER_DIR/squashfs-root/AppRun" ]]; then
-        echo "$PRISMLAUNCHER_DIR/squashfs-root/AppRun"
-    elif [[ -x "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage" ]]; then
-        echo "$PRISMLAUNCHER_DIR/PrismLauncher.AppImage"
-    else
-        return 1
-    fi
-}
-
 # =============================================================================
 # SYSTEM DETECTION FUNCTIONS
 # =============================================================================
@@ -343,36 +316,6 @@ is_immutable_os() {
     if [[ -d /ostree ]] && command -v ostree &>/dev/null; then
         IMMUTABLE_OS_NAME="ostree-based"
         return 0
-    fi
-
-    return 1
-}
-
-# -----------------------------------------------------------------------------
-# @function    should_prefer_flatpak
-# @description Determines if Flatpak should be preferred over AppImage for
-#              application installation. Returns true for immutable systems
-#              or systems where Flatpak appears to be the primary package format.
-# @param       None
-# @return      0 if Flatpak preferred, 1 if AppImage preferred
-# @example
-#   if should_prefer_flatpak; then
-#       flatpak install --user flathub org.prismlauncher.PrismLauncher
-#   else
-#       wget -O app.AppImage "$appimage_url"
-#   fi
-# -----------------------------------------------------------------------------
-should_prefer_flatpak() {
-    # Prefer Flatpak on immutable systems
-    if is_immutable_os; then
-        return 0
-    fi
-
-    # Also prefer Flatpak if it's the primary package manager
-    if command -v flatpak &>/dev/null; then
-        if ! command -v apt &>/dev/null && ! command -v dnf &>/dev/null && ! command -v pacman &>/dev/null; then
-            return 0
-        fi
     fi
 
     return 1
@@ -686,73 +629,6 @@ get_version_patch() {
 
     if [[ -n "$patch" ]]; then
         echo "$patch"
-    else
-        echo "0"
-    fi
-}
-
-# -----------------------------------------------------------------------------
-# @function    normalize_version
-# @description Convert a version string to a numeric value for comparison.
-#              Year-based versions are treated as newer than legacy versions.
-# @param       $1 - version: Version string to normalize
-# @stdout      Numeric representation suitable for comparison
-# @return      0 always
-# @example
-#   normalize_version "1.21.3"  # Returns a number < 1000000
-#   normalize_version "25.1"    # Returns a number > 1000000
-# -----------------------------------------------------------------------------
-normalize_version() {
-    local version="$1"
-    local format
-    format=$(detect_version_format "$version")
-
-    local major minor patch
-
-    if [[ "$format" == "year" ]]; then
-        # Year-based: YY.X.Y -> offset by 1000000 to ensure year > legacy
-        major=$(echo "$version" | cut -d. -f1)
-        minor=$(echo "$version" | cut -d. -f2)
-        patch=$(echo "$version" | cut -d. -f3)
-        patch=${patch:-0}
-        # Formula: 1000000 + (year * 10000) + (minor * 100) + patch
-        echo $((1000000 + major * 10000 + minor * 100 + patch))
-    else
-        # Legacy: 1.X.Y -> use X and Y directly
-        major=$(echo "$version" | cut -d. -f1)
-        minor=$(echo "$version" | cut -d. -f2)
-        patch=$(echo "$version" | cut -d. -f3)
-        patch=${patch:-0}
-        # Formula: (major * 100000) + (minor * 100) + patch
-        # For 1.x versions: 100000 + minor*100 + patch
-        echo $((major * 100000 + minor * 100 + patch))
-    fi
-}
-
-# -----------------------------------------------------------------------------
-# @function    compare_versions
-# @description Compare two version strings.
-# @param       $1 - version1: First version string
-# @param       $2 - version2: Second version string
-# @stdout      -1 if v1 < v2, 0 if equal, 1 if v1 > v2
-# @return      0 always
-# @example
-#   compare_versions "1.21.3" "1.20.4"  # Returns "1"
-#   compare_versions "25.1" "1.21.3"    # Returns "1" (year > legacy)
-#   compare_versions "1.21" "1.21.0"    # Returns "0"
-# -----------------------------------------------------------------------------
-compare_versions() {
-    local v1="$1"
-    local v2="$2"
-
-    local n1 n2
-    n1=$(normalize_version "$v1")
-    n2=$(normalize_version "$v2")
-
-    if [[ "$n1" -lt "$n2" ]]; then
-        echo "-1"
-    elif [[ "$n1" -gt "$n2" ]]; then
-        echo "1"
     else
         echo "0"
     fi
