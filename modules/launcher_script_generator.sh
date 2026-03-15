@@ -149,6 +149,7 @@ declare -a INSTANCE_JAVA_RESOLVED=(0 0 0 0)     # 1 once actual Java PID has bee
 declare -a INSTANCE_LAUNCH_TIME=(0 0 0 0)       # epoch seconds when instance was launched
 declare -a INSTANCE_CONTROLLER_DEVICE=("" "" "" "")  # /dev/input/eventN assigned to each slot
 CURRENT_PLAYER_COUNT=0                      # Number of active players
+KNOWN_CONTROLLER_COUNT=0                    # Last controller count seen by handleControllerChange
 DYNAMIC_MODE=0                              # 1 if dynamic mode enabled
 HANDHELD_MODE=0                             # 1 if Steam Deck handheld (no external display)
 CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
@@ -1064,7 +1065,7 @@ launchInstanceForSlot() {
           export SDL_JOYSTICK_DEVICE="$sdl_dev"
           export SDL_JOYSTICK_HIDAPI=0
       fi
-      launchGame "latestUpdate-$slot" "P$slot" ) &
+      launchGame "latestUpdate-$slot" "Player$slot" ) &
     local wrapper_pid=$!
 
     # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
@@ -1767,33 +1768,42 @@ handleControllerChange() {
 
     log_info "Controller change: $new_controller_count controllers (currently $current_active active)"
 
-    # If controllers increased, launch new instances and reposition all via KWin
-    if [ "$new_controller_count" -gt "$current_active" ] && [ "$current_active" -lt 4 ]; then
-        local new_total=$new_controller_count
-        [ "$new_total" -gt 4 ] && new_total=4
+    # Compare against KNOWN_CONTROLLER_COUNT (last count seen here), NOT against
+    # current_active.  If a player exits Minecraft but keeps their controller connected,
+    # current_active drops but KNOWN_CONTROLLER_COUNT stays the same, so
+    # slots_to_launch will be 0 or negative — no spurious relaunch.
+    local slots_to_launch=$(( new_controller_count - KNOWN_CONTROLLER_COUNT ))
+    KNOWN_CONTROLLER_COUNT=$new_controller_count
 
-        log_info "Scaling up: $current_active -> $new_total players"
-
-        # Launch only the NEW instances (keep existing ones running)
-        for slot in $(seq 1 $new_total); do
-            local idx=$((slot - 1))
-            if [ "${INSTANCE_ACTIVE[$idx]}" != "1" ]; then
-                showNotification "Player Joined" "Player $slot is joining the game"
-                setSplitscreenModeForPlayer "$slot" "$new_total"
-                if [ "$current_active" -gt 0 ]; then
-                    log_info "Waiting 10 seconds for GPU initialization..."
-                    sleep 10
-                fi
-                launchInstanceForSlot "$slot" "$new_total"
-                current_active=$((current_active + 1))
-            fi
-        done
-
-        # Wait for new instance(s) to finish loading, then reposition ALL via KWin
-        log_info "Waiting 15 seconds for new instance(s) to load before repositioning..."
-        sleep 15
-        repositionAllWindows "$new_total"
+    if [ "$slots_to_launch" -le 0 ]; then
+        CURRENT_PLAYER_COUNT=$current_active
+        return
     fi
+
+    local new_total=$(( current_active + slots_to_launch ))
+    [ "$new_total" -gt 4 ] && new_total=4
+
+    log_info "Scaling up: $current_active -> $new_total players"
+
+    # Launch only the NEW instances (keep existing ones running)
+    for slot in $(seq 1 $new_total); do
+        local idx=$((slot - 1))
+        if [ "${INSTANCE_ACTIVE[$idx]}" != "1" ]; then
+            showNotification "Player Joined" "Player $slot is joining the game"
+            setSplitscreenModeForPlayer "$slot" "$new_total"
+            if [ "$current_active" -gt 0 ]; then
+                log_info "Waiting 10 seconds for GPU initialization..."
+                sleep 10
+            fi
+            launchInstanceForSlot "$slot" "$new_total"
+            current_active=$((current_active + 1))
+        fi
+    done
+
+    # Wait for new instance(s) to finish loading, then reposition ALL via KWin
+    log_info "Waiting 15 seconds for new instance(s) to load before repositioning..."
+    sleep 15
+    repositionAllWindows "$new_total"
 
     CURRENT_PLAYER_COUNT=$current_active
 }
