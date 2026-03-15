@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.0.11
+# @version     3.0.12
 # @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -31,6 +31,7 @@
 #     - print_generation_config       : Debug/info utility
 #
 # @changelog
+#   3.0.12 (2026-03-15) - Fix: Back-port inhibitScreen/uninhibitScreen to generator (were in live script only); remove dead old instance.cfg-based writeInstanceSdlEnv from heredoc
 #   3.0.11 (2026-03-15) - Fix: Screen not resizing on controller disconnect (stop instance whose device is gone); fix reconnect not spawning new instance (sync KNOWN_CONTROLLER_COUNT in checkForExitedInstances)
 #   3.0.10 (2026-03-07) - Fix: Zombie process reaping, cleanup_exit reentrancy guard, gamescope cleanup race prevention; default mode changed to dynamic; remove dead launchGames()
 #   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
@@ -157,6 +158,7 @@ CONTROLLER_MONITOR_PID=""                   # PID of monitor subprocess
 CONTROLLER_PIPE=""                          # Path to named pipe for controller events
 MAIN_PID=$$                                 # Track main process PID for cleanup guard
 CLEANUP_DONE=0                              # Reentrancy guard for cleanup_exit
+INHIBIT_PID=""                              # PID of kde-inhibit sleep process (screen inhibition)
 
 # =============================================================================
 # END DYNAMIC SPLITSCREEN STATE
@@ -316,31 +318,6 @@ EOF
 # =============================================================================
 # Per-slot controller assignment so each Minecraft instance uses a different
 # physical device. Handles Steam Input mode (Game Mode) transparently.
-
-# Write SDL_JOYSTICK_DEVICE and SDL_JOYSTICK_HIDAPI=0 to instance.cfg so each
-# JVM sees exactly one controller device.
-# Arguments: $1=slot, $2=/dev/input/eventN path
-writeInstanceSdlEnv() {
-    local slot=$1
-    local dev="$2"
-    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
-    [ -f "$cfg" ] || { log_warning "No instance.cfg for slot $slot — SDL isolation skipped"; return 1; }
-    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\"}"
-    sed -i "s|^Env=.*|Env=$env_json|" "$cfg"
-    sed -i "s|^OverrideEnv=.*|OverrideEnv=true|" "$cfg"
-    log_info "Slot $slot: wrote SDL_JOYSTICK_DEVICE=$dev to instance.cfg"
-}
-
-# Clear SDL env vars from instance.cfg when the slot is no longer active.
-# Arguments: $1=slot
-clearInstanceSdlEnv() {
-    local slot=$1
-    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
-    [ -f "$cfg" ] || return 0
-    sed -i "s|^Env=.*|Env={}|" "$cfg"
-    sed -i "s|^OverrideEnv=.*|OverrideEnv=false|" "$cfg"
-    log_info "Slot $slot: cleared SDL env vars from instance.cfg"
-}
 
 # Enumerate real (non-Steam-virtual) controller event devices from sysfs.
 # Outputs one /dev/input/eventN path per line, sorted for stable ordering.
@@ -716,6 +693,44 @@ launchGame() {
     else
         log_warning "kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
         "${cmd[@]}" -l "$instance_name" -a "$player_name"
+    fi
+}
+
+# =============================================================================
+# Screen Inhibition
+# =============================================================================
+
+# Prevent the screen from blanking/suspending during gameplay.
+# Uses kde-inhibit (Wayland + X11) or xset (X11-only fallback).
+# INHIBIT_PID tracks the background process; uninhibitScreen() kills it.
+inhibitScreen() {
+    if [ -n "$INHIBIT_PID" ]; then return 0; fi  # already active
+
+    if command -v kde-inhibit >/dev/null 2>&1; then
+        # Runs sleep infinity under kde-inhibit; killed in perform_cleanup()
+        kde-inhibit --power --screenSaver --colorCorrect sleep infinity &
+        INHIBIT_PID=$!
+        disown "$INHIBIT_PID" 2>/dev/null || true
+        log_info "Session screen inhibition active (kde-inhibit PID: $INHIBIT_PID)"
+    elif [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
+        xset s off -dpms 2>/dev/null || true
+        log_info "X11 screensaver/DPMS disabled for session"
+    else
+        log_warning "No session screen inhibition available — screen may blank during gameplay"
+    fi
+}
+
+# Release screen inhibition acquired by inhibitScreen().
+uninhibitScreen() {
+    if [ -n "$INHIBIT_PID" ]; then
+        kill "$INHIBIT_PID" 2>/dev/null || true
+        wait "$INHIBIT_PID" 2>/dev/null || true
+        INHIBIT_PID=""
+        log_info "Session screen inhibition released"
+    fi
+    # Restore X11 defaults if applicable
+    if [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xset >/dev/null 2>&1; then
+        xset s default +dpms 2>/dev/null || true
     fi
 }
 
@@ -2223,6 +2238,7 @@ perform_cleanup() {
     killLauncher 2>/dev/null || true
     stopControllerMonitor 2>/dev/null || true
     uninstallBorderEnforcer 2>/dev/null || true
+    uninhibitScreen 2>/dev/null || true
     restorePanels 2>/dev/null || true
     cleanupSdlWrappers 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
