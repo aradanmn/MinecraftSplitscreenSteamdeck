@@ -616,35 +616,94 @@ prewarmLauncher() {
     return 0
 }
 
+# SDL isolation via WrapperCommand
+# ─────────────────────────────────────────────────────────────────────────────
+# Root cause: PrismLauncher loads ALL instance configs once at startup and does
+# NOT re-read them after that.  Writes to instance.cfg Env= are therefore
+# invisible to a running PrismLauncher, so the Env approach cannot work for
+# IPC-delegated launches (Player 2+).
+#
+# Solution: WrapperCommand.  PrismLauncher caches the wrapper *path* at startup
+# (constant — set by initSdlWrappers before the first launch).  The wrapper
+# *script content* is rewritten by writeInstanceSdlEnv at each launch and is
+# never cached by PrismLauncher.  When PrismLauncher runs the wrapper it
+# executes the current script, which exports the correct SDL_JOYSTICK_DEVICE
+# and exec's into Java.  Works for every player slot, including IPC-delegated
+# launches.
+
+# Create passthrough wrapper scripts and configure WrapperCommand in each
+# instance.cfg.  Must be called BEFORE the first PrismLauncher launch so the
+# wrapper path ends up in PrismLauncher's startup cache.
+initSdlWrappers() {
+    local slot wrapper cfg
+    for slot in 1 2 3 4; do
+        wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+        cfg="$INSTANCES_DIR/latestUpdate-${slot}/instance.cfg"
+        # Passthrough wrapper — device is injected by writeInstanceSdlEnv later
+        printf '#!/bin/sh\nexec "$@"\n' > "$wrapper" && chmod +x "$wrapper" || {
+            log_warning "Slot $slot: failed to create SDL wrapper — controller isolation unavailable"
+            continue
+        }
+        if [ -f "$cfg" ]; then
+            sed -i "s|^WrapperCommand=.*|WrapperCommand=${wrapper}|" "$cfg"
+            sed -i "s|^OverrideCommands=.*|OverrideCommands=true|" "$cfg"
+        fi
+    done
+    log_info "SDL controller wrappers installed for all slots"
+}
+
+# Inject SDL_JOYSTICK_DEVICE into the slot's wrapper script.
+# Called just before each instance launch; PrismLauncher executes the wrapper
+# at launch time so it always reads the current device path.
+# Arguments: $1=slot, $2=/dev/input/eventN path
+writeInstanceSdlEnv() {
+    local slot=$1
+    local dev="$2"
+    local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+    [ -f "$wrapper" ] || { log_warning "Slot $slot: SDL wrapper missing — SDL isolation skipped"; return 1; }
+    printf '#!/bin/sh\nexport SDL_JOYSTICK_DEVICE="%s"\nexport SDL_JOYSTICK_HIDAPI=0\nexec "$@"\n' "$dev" > "$wrapper"
+    log_info "Slot $slot: SDL_JOYSTICK_DEVICE=$dev written to wrapper"
+}
+
+# Reset a slot's wrapper to passthrough when the slot is no longer active.
+# Arguments: $1=slot
+clearInstanceSdlEnv() {
+    local slot=$1
+    local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+    [ -f "$wrapper" ] || return 0
+    printf '#!/bin/sh\nexec "$@"\n' > "$wrapper"
+    log_info "Slot $slot: SDL wrapper reset to passthrough"
+}
+
+# Restore instance.cfg WrapperCommand settings and remove wrapper scripts.
+# Called at session end.
+cleanupSdlWrappers() {
+    local slot wrapper cfg
+    for slot in 1 2 3 4; do
+        wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+        cfg="$INSTANCES_DIR/latestUpdate-${slot}/instance.cfg"
+        rm -f "$wrapper"
+        if [ -f "$cfg" ]; then
+            sed -i "s|^WrapperCommand=.*|WrapperCommand=|" "$cfg"
+            sed -i "s|^OverrideCommands=.*|OverrideCommands=false|" "$cfg"
+        fi
+    done
+    log_info "SDL controller wrappers cleaned up"
+}
+
 # Launch a single Minecraft instance with KDE inhibition.
-# SDL isolation strategy (two complementary layers):
-#   1. writeInstanceSdlEnv() writes SDL_JOYSTICK_DEVICE to instance.cfg before
-#      each launch. PrismLauncher reads per-instance Env at launch time, so
-#      IPC-delegated launches (Player 2+) pick up the correct device from config.
-#   2. For Player 1 (no existing PrismLauncher running), 'flatpak run --env='
-#      bakes SDL_JOYSTICK_DEVICE directly into the new PrismLauncher process
-#      so the JVM inherits it without relying on instance.cfg parsing.
-# NOTE: --no-single-instance is intentionally NOT used — it causes PrismLauncher
-# to start a fresh GUI and silently ignore the -l launch argument.
+# SDL_JOYSTICK_DEVICE is injected by the per-slot wrapper script configured via
+# initSdlWrappers()/writeInstanceSdlEnv() — no --env= flag needed here.
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., Player1)
-#   $3 = SDL device path (e.g., /dev/input/event13), optional
 launchGame() {
     local instance_name="$1"
     local player_name="$2"
-    local sdl_dev="${3:-}"
 
     local -a cmd
-    if [[ "$LAUNCHER_TYPE" == "flatpak" ]] && [ -n "$sdl_dev" ]; then
-        # Pass SDL device into the flatpak sandbox environment.
-        # If no PrismLauncher is running, this starts a fresh process that
-        # inherits the env. If one is already running, IPC delegation occurs
-        # and the env flag is ignored — instance.cfg Env handles that case.
-        cmd=(flatpak run
-             --env=SDL_JOYSTICK_DEVICE="$sdl_dev"
-             --env=SDL_JOYSTICK_HIDAPI=0
-             org.prismlauncher.PrismLauncher)
+    if [[ "$LAUNCHER_TYPE" == "flatpak" ]]; then
+        cmd=(flatpak run org.prismlauncher.PrismLauncher)
     else
         # shellcheck disable=SC2206
         cmd=($LAUNCHER_EXEC)
@@ -1084,12 +1143,10 @@ launchInstanceForSlot() {
     # Launch the game in background — returns immediately.
     # Subshell must clear the EXIT trap to prevent cleanup_exit from running
     # when the wrapper process (flatpak/kde-inhibit) exits.
-    # SDL isolation is passed as an argument to launchGame, which injects it
-    # via 'flatpak run --env=...' so it survives into the JVM regardless of
-    # whether PrismLauncher's single-instance IPC is in play.
-    local sdl_dev="${INSTANCE_CONTROLLER_DEVICE[$idx]:-}"
+    # SDL isolation is handled by the per-slot wrapper script.
+    # writeInstanceSdlEnv already wrote the device to the wrapper before this call.
     ( trap - EXIT INT TERM
-      launchGame "latestUpdate-$slot" "Player$slot" "$sdl_dev" ) &
+      launchGame "latestUpdate-$slot" "Player$slot" ) &
     local wrapper_pid=$!
 
     # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
@@ -1884,6 +1941,10 @@ runDynamicSplitscreen() {
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
 
+    # Install SDL wrapper scripts and configure WrapperCommand in each instance.cfg.
+    # Must happen BEFORE the first PrismLauncher launch so the path is in its cache.
+    initSdlWrappers
+
     # Start controller monitoring
     if ! startControllerMonitor; then
         log_error "Failed to start controller monitor, falling back to static mode"
@@ -1944,6 +2005,10 @@ runStaticSplitscreen() {
 
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
+
+    # Install SDL wrapper scripts and configure WrapperCommand in each instance.cfg.
+    # Must happen BEFORE the first PrismLauncher launch so the path is in its cache.
+    initSdlWrappers
 
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
@@ -2117,6 +2182,7 @@ perform_cleanup() {
     stopControllerMonitor 2>/dev/null || true
     uninstallBorderEnforcer 2>/dev/null || true
     restorePanels 2>/dev/null || true
+    cleanupSdlWrappers 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     rm -f "/tmp/mc-splitscreen-mode"
 
