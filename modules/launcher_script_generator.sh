@@ -1055,8 +1055,16 @@ launchInstanceForSlot() {
 
     # Launch the game in background — returns immediately
     # Subshell must clear the EXIT trap to prevent cleanup_exit from running
-    # when the wrapper process (flatpak/kde-inhibit) exits
-    ( trap - EXIT INT TERM; launchGame "latestUpdate-$slot" "P$slot" ) &
+    # when the wrapper process (flatpak/kde-inhibit) exits.
+    # Set SDL_JOYSTICK_DEVICE in the subshell environment so it is inherited by
+    # flatpak → PrismLauncher → Java, bypassing PrismLauncher's instance.cfg cache.
+    local sdl_dev="${INSTANCE_CONTROLLER_DEVICE[$idx]:-}"
+    ( trap - EXIT INT TERM
+      if [ -n "$sdl_dev" ]; then
+          export SDL_JOYSTICK_DEVICE="$sdl_dev"
+          export SDL_JOYSTICK_HIDAPI=0
+      fi
+      launchGame "latestUpdate-$slot" "P$slot" ) &
     local wrapper_pid=$!
 
     # Track the instance — Java PID will be resolved lazily by isInstanceRunning()
