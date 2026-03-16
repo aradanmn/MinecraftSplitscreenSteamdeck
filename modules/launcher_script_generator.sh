@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.3
+# @version     3.2.4
 # @date        2026-03-15
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
 #   3.2.3 (2026-03-15) - Fix: handleControllerChange scale-down stops orphaned instances by checking INSTANCE_CONTROLLER_DEVICE device existence; sync KNOWN_CONTROLLER_COUNT downward in checkForExitedInstances
 #   3.2.2 (2026-03-14) - Fix: Screen blanking during gameplay — session-level kde-inhibit sleep infinity persists for full session; xset fallback for X11
 #   3.2.1 (2026-03-14) - Fix: Controller isolation via Controllable serial matching (Bluetooth MAC from sysfs uniq); SDL_JOYSTICK_DEVICE kept as secondary layer; autoSelect=false per active slot
@@ -1335,13 +1336,15 @@ isInstanceRunning() {
 
     # Grace period: if launched recently, assume still starting up
     # The flatpak wrapper exits before Java starts, creating a gap where
-    # neither wrapper nor Java PID is alive. Give 60s for Java to appear.
+    # neither wrapper nor Java PID is alive. Give 180s for Java to appear.
+    # First-time launches require downloading all Minecraft + Fabric libraries
+    # (~50 JARs) before Java starts, which can take 2-3 minutes on slow connections.
     local launch_time="${INSTANCE_LAUNCH_TIME[$idx]}"
     if [ -n "$launch_time" ] && [ "$launch_time" -gt 0 ]; then
         local now
         now=$(date +%s)
         local elapsed=$((now - launch_time))
-        if [ "$elapsed" -lt 60 ]; then
+        if [ "$elapsed" -lt 180 ]; then
             log_debug "Instance $slot: wrapper dead, Java not yet found, but only ${elapsed}s since launch — assuming still starting"
             return 0
         fi
