@@ -118,10 +118,19 @@ Steam shortcuts must be removed manually: **Steam → Library → right-click 'M
 
 The launcher script (`minecraftSplitscreen.sh`) and logs (`~/.local/share/MinecraftSplitscreen/logs/`) live inside the appropriate directory.
 
+## Known Limitations
+
+**Identical controllers (same make and model):**
+The [Controllable](https://www.curseforge.com/minecraft/mc-mods/controllable) mod identifies controllers by SDL2 GUID, which is derived from vendor ID + product ID. Two controllers of the exact same model produce the same GUID, so the launcher cannot reliably distinguish which physical device to assign to which player slot.
+
+**Workaround:** use controllers of different models (e.g. one DualShock 4 + one Xbox controller). Mixed sets work correctly regardless of count.
+
+If you only own identical controllers, the Controllable mod's in-game device selector can be used to reassign manually after launch.
+
 ## Troubleshooting
 
 - **Controllers not detected** — connect controllers before launching; in static mode the count is fixed at startup
-- **Wrong controller assigned to player** — the Controllable mod's in-game device selector can reassign controllers per-instance
+- **Wrong controller assigned to player** — see *Known Limitations* above; mixed controller models resolve this automatically
 - **Screen doesn't reposition** — install `xdotool`/`wmctrl` (X11) or ensure KWin is running (Wayland/KDE)
 - **Logs** — check `~/.local/share/MinecraftSplitscreen/logs/` for the most recent install and launcher logs
 

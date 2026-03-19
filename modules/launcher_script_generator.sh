@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.4
-# @date        2026-03-15
+# @version     3.2.5
+# @date        2026-03-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.5 (2026-03-18) - Fix: Issue #10 — require controller disconnect+reconnect after instance exit; remove KNOWN_CONTROLLER_COUNT sync from checkForExitedInstances so spurious CONTROLLER_CHANGE events cannot trigger unintended relaunches
 #   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
 #   3.2.3 (2026-03-15) - Fix: handleControllerChange scale-down stops orphaned instances by checking INSTANCE_CONTROLLER_DEVICE device existence; sync KNOWN_CONTROLLER_COUNT downward in checkForExitedInstances
 #   3.2.2 (2026-03-14) - Fix: Screen blanking during gameplay — session-level kde-inhibit sleep infinity persists for full session; xset fallback for X11
@@ -2089,17 +2090,31 @@ checkForExitedInstances() {
             repositionAllWindows "$remaining"
         fi
 
-        # Sync KNOWN_CONTROLLER_COUNT down to the remaining active instance count.
-        # Without this, a player who exits without disconnecting their controller
-        # leaves KNOWN elevated (e.g. 2). A fast disconnect+reconnect within the
-        # 2-second polling window produces no CONTROLLER_CHANGE events, so
-        # slots_to_launch would be 0 on reconnect and no new instance would spawn.
-        # Syncing KNOWN = remaining means the next explicit reconnect (or the next
-        # disconnect event that does fire) will produce a positive slots_to_launch.
-        if [ "$KNOWN_CONTROLLER_COUNT" -gt "$remaining" ]; then
-            KNOWN_CONTROLLER_COUNT=$remaining
-            log_debug "Synced KNOWN_CONTROLLER_COUNT=$remaining after instance exit(s)"
-        fi
+        # Issue #10: Do NOT sync KNOWN_CONTROLLER_COUNT down here.
+        #
+        # Keeping KNOWN at the real physical controller count means a player who
+        # exits Minecraft without disconnecting cannot accidentally trigger a
+        # relaunch via a spurious CONTROLLER_CHANGE event:
+        #   slots_to_launch = new_count - KNOWN = 0  →  no relaunch.
+        #
+        # The correct relaunch sequence requires intentional disconnect+reconnect:
+        #   1. Player exits Minecraft (controller still connected)  →  no relaunch
+        #   2. Player physically disconnects controller             →  CONTROLLER_CHANGE:N-1
+        #      handleControllerChange scale-down path sets KNOWN = N-1
+        #   3. Player reconnects                                    →  CONTROLLER_CHANGE:N
+        #      slots_to_launch = N - (N-1) = 1  →  relaunch ✓
+        #
+        # Trade-off: in polling fallback mode a very fast disconnect+reconnect
+        # (< 2 s) may be missed, requiring a second, slower attempt. With
+        # inotifywait (the primary method) every event is caught immediately.
+        for i in 1 2 3 4; do
+            local _idx=$(( i - 1 ))
+            if [ "${INSTANCE_ACTIVE[$_idx]}" = "0" ] && \
+               [ -n "${INSTANCE_CONTROLLER_DEVICE[$_idx]}" ] && \
+               [ -e "${INSTANCE_CONTROLLER_DEVICE[$_idx]}" ]; then
+                log_info "Slot $i: instance exited but controller still connected — disconnect and reconnect controller to rejoin"
+            fi
+        done
     fi
 }
 
