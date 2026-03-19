@@ -2,6 +2,18 @@
 
 This document provides essential context for AI assistants working on this codebase.
 
+## Session Start Checklist (do this first, every session)
+
+1. **Sync with remote:**
+   ```bash
+   git fetch origin && git pull --ff-only origin main
+   ```
+
+2. **Read session memory** — `.claude/memory/MEMORY.md` is the index; read it first,
+   then read any linked files relevant to the current task. These files record decisions,
+   bugs fixed, architectural context, and open issues accumulated across all past sessions.
+   They are the fastest way to get up to speed on what has already been done and why.
+
 ## Project Overview
 
 **Minecraft Splitscreen Steam Deck & Linux Installer** - An automated installer for setting up splitscreen Minecraft (1-4 players) on Steam Deck and Linux systems.

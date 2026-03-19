@@ -17,4 +17,7 @@
 !modules/**
 !tools/
 !tools/**
+!.claude/
+!.claude/memory/
+!.claude/memory/**
 !PLAN-*.md
