@@ -53,9 +53,26 @@ setup_pollymc() {
     
     # Download PollyMC AppImage from official GitHub releases
     # AppImage format provides universal Linux compatibility without dependencies
-    # PollyMC GitHub releases API endpoint for latest version
-    # We download the x86_64 Linux AppImage which works on most modern Linux systems
-    local pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
+    # Resolve the latest x86_64 AppImage dynamically from release metadata because
+    # asset names can change between releases.
+    local pollymc_url
+    pollymc_url=$(wget -qO- "https://api.github.com/repos/fn2006/PollyMC/releases/latest" 2>/dev/null | \
+        jq -r '.assets[]? | select((.name | test("AppImage$")) and (.name | test("x86_64|amd64"; "i"))) | .browser_download_url' | \
+        head -n1)
+
+    # Fallback: choose any AppImage if architecture-specific asset not detected.
+    if [[ -z "$pollymc_url" || "$pollymc_url" == "null" ]]; then
+        pollymc_url=$(wget -qO- "https://api.github.com/repos/fn2006/PollyMC/releases/latest" 2>/dev/null | \
+            jq -r '.assets[]? | select(.name | test("AppImage$")) | .browser_download_url' | \
+            head -n1)
+    fi
+
+    # Last-resort fallback to legacy static URL for environments where API access is blocked.
+    if [[ -z "$pollymc_url" || "$pollymc_url" == "null" ]]; then
+        pollymc_url="https://github.com/fn2006/PollyMC/releases/latest/download/PollyMC-Linux-x86_64.AppImage"
+        print_warning "Could not resolve PollyMC asset via GitHub API, using legacy static URL fallback"
+    fi
+
     print_progress "Fetching PollyMC from GitHub releases: $(basename "$pollymc_url")..."
     
     # DOWNLOAD WITH FALLBACK HANDLING
