@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.5
-# @date        2026-03-18
+# @version     3.2.6
+# @date        2026-04-05
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.6 (2026-04-05) - Fix: markInstanceStopped blocks event loop on recycled wrapper PID — skip wait() if wrapper launched > 30s ago; reduce GPU init sleep 10s→5s and reposition wait 15s→10s
 #   3.2.5 (2026-03-18) - Fix: Issue #10 — require controller disconnect+reconnect after instance exit; remove KNOWN_CONTROLLER_COUNT sync from checkForExitedInstances so spurious CONTROLLER_CHANGE events cannot trigger unintended relaunches
 #   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
 #   3.2.3 (2026-03-15) - Fix: handleControllerChange scale-down stops orphaned instances by checking INSTANCE_CONTROLLER_DEVICE device existence; sync KNOWN_CONTROLLER_COUNT downward in checkForExitedInstances
@@ -1389,9 +1390,22 @@ markInstanceStopped() {
     # Reap the wrapper subshell to prevent zombie accumulation.
     # The wrapper is a direct child (launched via `( ... ) &` in launchInstanceForSlot),
     # so `wait` collects its exit status and releases the process table entry.
+    #
+    # Guard: only wait if the wrapper was launched recently (< 30 s ago).
+    # The flatpak/AppImage wrapper exits within seconds of spawning Java, so by
+    # the time a natural instance exit is detected, the wrapper PID has been dead
+    # for a long time. On a busy system, that PID can be recycled to another child
+    # of this script (e.g. a pgrep or countActiveInstances subshell), causing
+    # wait() to block indefinitely and stall the event loop — preventing the
+    # screen-resize reposition from ever running.  After 30 s the zombie risk is
+    # negligible; remaining zombies are reaped when the session ends.
     local wrapper_pid="${INSTANCE_WRAPPER_PIDS[$idx]}"
     if [ -n "$wrapper_pid" ]; then
-        wait "$wrapper_pid" 2>/dev/null || true
+        local _launch="${INSTANCE_LAUNCH_TIME[$idx]}"
+        local _elapsed=$(( $(date +%s) - ${_launch:-0} ))
+        if [ "$_elapsed" -lt 30 ]; then
+            wait "$wrapper_pid" 2>/dev/null || true
+        fi
     fi
 
     clearInstanceSdlEnv "$slot"
@@ -1928,8 +1942,8 @@ repositionWithRestart() {
         if [ "${was_active[$idx]}" = "1" ]; then
             # Stagger launches to avoid GPU contention
             if [ "$launch_count" -gt 0 ]; then
-                log_info "Waiting 10 seconds for GPU initialization..."
-                sleep 10
+                log_info "Waiting 5 seconds for GPU initialization..."
+                sleep 5
             fi
             launchInstanceForSlot "$i" "$new_total"
             launch_count=$((launch_count + 1))
@@ -2045,8 +2059,8 @@ handleControllerChange() {
             showNotification "Player Joined" "Player $slot is joining the game"
             setSplitscreenModeForPlayer "$slot" "$new_total"
             if [ "$current_active" -gt 0 ]; then
-                log_info "Waiting 10 seconds for GPU initialization..."
-                sleep 10
+                log_info "Waiting 5 seconds for GPU initialization..."
+                sleep 5
             fi
             launchInstanceForSlot "$slot" "$new_total"
             current_active=$((current_active + 1))
@@ -2054,8 +2068,8 @@ handleControllerChange() {
     done
 
     # Wait for new instance(s) to finish loading, then reposition ALL via KWin
-    log_info "Waiting 15 seconds for new instance(s) to load before repositioning..."
-    sleep 15
+    log_info "Waiting 10 seconds for new instance(s) to load before repositioning..."
+    sleep 10
     repositionAllWindows "$new_total"
 
     CURRENT_PLAYER_COUNT=$current_active
@@ -2228,16 +2242,16 @@ runStaticSplitscreen() {
     for player in $(seq 1 "$numberOfControllers"); do
         echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
         if [ "$player" -gt 1 ]; then
-            log_info "Waiting 10 seconds for instance $((player - 1)) to initialize GPU..."
-            sleep 10
+            log_info "Waiting 5 seconds for instance $((player - 1)) to initialize GPU..."
+            sleep 5
         fi
         launchInstanceForSlot "$player" "$numberOfControllers"
     done
 
     # Reposition windows via KWin after all instances are launched
     if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
-        log_info "Waiting 15 seconds for instances to load before KWin repositioning..."
-        sleep 15
+        log_info "Waiting 10 seconds for instances to load before KWin repositioning..."
+        sleep 10
         repositionAllWindows "$numberOfControllers"
     fi
 
