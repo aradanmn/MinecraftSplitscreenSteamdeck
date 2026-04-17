@@ -30,7 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
-#   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); skipped in gamescope
+#   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); works in gamescope via nested X11 display
 #   3.2.6 (2026-04-05) - Fix: markInstanceStopped blocks event loop on recycled wrapper PID — skip wait() if wrapper launched > 30s ago; reduce GPU init sleep 10s→5s and reposition wait 15s→10s
 #   3.2.5 (2026-03-18) - Fix: Issue #10 — require controller disconnect+reconnect after instance exit; remove KNOWN_CONTROLLER_COUNT sync from checkForExitedInstances so spurious CONTROLLER_CHANGE events cannot trigger unintended relaunches
 #   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
@@ -2002,14 +2002,9 @@ showNotification() {
 # When exactly 3 players are active the layout is a 2x2 grid with the
 # bottom-right (P4) quadrant empty. showPlaceholderWindow fills that gap with
 # a solid black window so the desktop/wallpaper is not visible.
-# Skipped in gamescope (Game Mode) where external windows cannot be created.
+# Works in gamescope too — gamescope hosts a nested X11 display that python3/tkinter can target.
 
 showPlaceholderWindow() {
-    # Gamescope cannot host external windows
-    if isSteamDeckGameMode; then
-        return 0
-    fi
-
     # Need some kind of display
     if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
         return 0
