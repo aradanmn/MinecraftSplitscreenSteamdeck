@@ -251,7 +251,7 @@ validate_launcher() {
         case "$LAUNCHER_NAME" in
             "PrismLauncher"|*) flatpak_id="org.prismlauncher.PrismLauncher" ;;
         esac
-        if command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "$flatpak_id"; then
+        if is_flatpak_installed "$flatpak_id"; then
             launcher_available=true
         fi
     else
@@ -1547,9 +1547,16 @@ moveResizeWindow() {
     fi
 }
 
+_SCREEN_DIMS_CACHE=""  # cached after first query; resolution never changes mid-session
+
 # Get screen dimensions
 # Outputs: "width height" (e.g., "1920 1080")
 getScreenDimensions() {
+    if [[ -n "$_SCREEN_DIMS_CACHE" ]]; then
+        echo "$_SCREEN_DIMS_CACHE"
+        return
+    fi
+
     local width=1920
     local height=1080
 
@@ -1562,7 +1569,8 @@ getScreenDimensions() {
         fi
     fi
 
-    echo "$width $height"
+    _SCREEN_DIMS_CACHE="$width $height"
+    echo "$_SCREEN_DIMS_CACHE"
 }
 
 # Reposition windows using KWin scripting (Wayland-native)
@@ -2062,9 +2070,9 @@ hidePlaceholderWindow() {
 # Show or hide the placeholder based on current active instance count.
 # Call this after any layout change (join, leave, reposition).
 updatePlaceholderWindow() {
-    local active_count
-    active_count=$(countActiveInstances)
-    if [ "$active_count" = "3" ]; then
+    # CURRENT_PLAYER_COUNT is maintained by handleControllerChange and
+    # checkForExitedInstances — read it directly instead of spawning a subshell.
+    if [ "$CURRENT_PLAYER_COUNT" = "3" ]; then
         # Skip re-spawn if the window is already live — avoids a brief flicker
         # and the cost of a redundant tkinter availability check + process fork.
         if [ -n "$PLACEHOLDER_PID" ] && kill -0 "$PLACEHOLDER_PID" 2>/dev/null; then
@@ -2277,10 +2285,9 @@ runDynamicSplitscreen() {
         # Check for exited instances
         checkForExitedInstances
 
-        # Exit if all players have left (and at least one ever played)
-        local active
-        active=$(countActiveInstances)
-        if [ "$active" -eq 0 ] && [ "$instances_ever_launched" = "1" ]; then
+        # CURRENT_PLAYER_COUNT is kept up-to-date by handleControllerChange and
+        # checkForExitedInstances, so no subshell is needed here.
+        if [ "$CURRENT_PLAYER_COUNT" -eq 0 ] && [ "$instances_ever_launched" = "1" ]; then
             log_info "All players have exited. Ending session."
             break
         fi

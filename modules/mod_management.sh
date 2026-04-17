@@ -134,7 +134,7 @@ check_modrinth_mod() {
     local http_code
     http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
     local version_json
-    version_json=$(cat "$tmp_body")
+    version_json=$(<"$tmp_body")
     rm "$tmp_body"
 
     # Validate API response (must be HTTP 200 and valid JSON)
@@ -321,7 +321,13 @@ check_modrinth_mod() {
 #              API callers to avoid duplicating download/decrypt logic.
 # @stdout      Decrypted API token string
 # @return      0 on success, 1 on any failure (download, decrypt, or empty result)
+_CF_TOKEN_CACHE=""  # cached after first successful fetch; avoids repeated network+openssl cost
 _get_curseforge_token() {
+    if [[ -n "$_CF_TOKEN_CACHE" ]]; then
+        echo "$_CF_TOKEN_CACHE"
+        return 0
+    fi
+
     local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
     local tmp_file
     tmp_file=$(mktemp) || return 1
@@ -352,6 +358,7 @@ _get_curseforge_token() {
     rm -f "$tmp_file"
 
     [[ -n "$token" ]] || return 1
+    _CF_TOKEN_CACHE="$token"
     echo "$token"
 }
 
@@ -396,7 +403,7 @@ check_curseforge_mod() {
     http_code=$(timeout 15 curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url" 2>/dev/null)
     local curl_exit=$?
     local version_json
-    version_json=$(cat "$tmp_body")
+    version_json=$(<"$tmp_body")
     rm "$tmp_body"
 
     # Check for timeout or API failure
@@ -618,7 +625,7 @@ resolve_modrinth_dependencies() {
     local http_code
     http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url" 2>/dev/null)
     local version_json
-    version_json=$(cat "$tmp_body")
+    version_json=$(<"$tmp_body")
     rm "$tmp_body"
 
     # Validate API response
@@ -689,7 +696,7 @@ resolve_curseforge_dependencies() {
     # Make authenticated API request
     http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url" 2>/dev/null)
     local version_json
-    version_json=$(cat "$tmp_body")
+    version_json=$(<"$tmp_body")
     rm "$tmp_body"
 
     # Validate API response
