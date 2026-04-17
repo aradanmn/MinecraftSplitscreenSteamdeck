@@ -135,9 +135,15 @@ CREATION_EXECUTABLE=""       # Command to run creation launcher
 #       echo "PrismLauncher Flatpak is installed"
 #   fi
 # -----------------------------------------------------------------------------
+_FLATPAK_LIST_CACHE=""  # populated on first call; avoids repeated ~1s flatpak list scans
+
 is_flatpak_installed() {
     local flatpak_id="$1"
-    command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "$flatpak_id"
+    command -v flatpak >/dev/null 2>&1 || return 1
+    if [[ -z "$_FLATPAK_LIST_CACHE" ]]; then
+        _FLATPAK_LIST_CACHE=$(flatpak list --app 2>/dev/null)
+    fi
+    grep -q "$flatpak_id" <<< "$_FLATPAK_LIST_CACHE"
 }
 
 # -----------------------------------------------------------------------------
