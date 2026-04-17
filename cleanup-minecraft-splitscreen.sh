@@ -265,16 +265,15 @@ show_detected_components() {
     print_header "DETECTED COMPONENTS"
 
     local found_any=false
+    local size
 
     # Check PrismLauncher
     if [[ -d "$HOME/.local/share/PrismLauncher" ]]; then
-        local size
         size=$(du -sh "$HOME/.local/share/PrismLauncher" 2>/dev/null | cut -f1) || size="?"
         print_info "PrismLauncher AppImage data: $size"
         found_any=true
     fi
     if [[ -d "$HOME/.var/app/org.prismlauncher.PrismLauncher" ]]; then
-        local size
         size=$(du -sh "$HOME/.var/app/org.prismlauncher.PrismLauncher" 2>/dev/null | cut -f1) || size="?"
         print_info "PrismLauncher Flatpak data: $size"
         found_any=true
@@ -308,7 +307,6 @@ show_detected_components() {
 
     # Check Java
     if [[ -d "$JAVA_DIR" ]]; then
-        local size
         size=$(du -sh "$JAVA_DIR" 2>/dev/null | cut -f1) || size="?"
         print_info "Java installations: $size (will be preserved)"
         found_any=true

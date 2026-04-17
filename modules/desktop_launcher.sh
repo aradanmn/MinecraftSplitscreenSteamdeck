@@ -180,8 +180,8 @@ create_desktop_launcher() {
 Type=Application
 Name=Minecraft Splitscreen
 Comment=$launcher_comment
-Exec=$launcher_script_path
-Icon=$icon_desktop
+Exec="$launcher_script_path"
+Icon="$icon_desktop"
 Terminal=false
 Categories=Game;
 EOF

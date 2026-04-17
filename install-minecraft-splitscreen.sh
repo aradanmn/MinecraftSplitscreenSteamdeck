@@ -248,7 +248,7 @@ download_modules() {
         else
             echo "❌ Error: Neither curl nor wget is available"
             echo "Please install curl or wget to download modules automatically"
-            echo "Or manually download all modules from: $REPO_BASE_URL"
+            echo "Or manually download all modules from: $BOOTSTRAP_REPO_MODULES_URL"
             # Re-enable strict error handling before exiting
             set -euo pipefail
             exit 1

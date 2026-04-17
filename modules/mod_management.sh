@@ -315,6 +315,46 @@ check_modrinth_mod() {
     fi
 }
 
+# @function    _get_curseforge_token
+# @description Download and decrypt the CurseForge API token from the encrypted
+#              token file hosted in the repository. Shared by all CurseForge
+#              API callers to avoid duplicating download/decrypt logic.
+# @stdout      Decrypted API token string
+# @return      0 on success, 1 on any failure (download, decrypt, or empty result)
+_get_curseforge_token() {
+    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local tmp_file
+    tmp_file=$(mktemp) || return 1
+
+    local http_code=""
+    if command -v curl >/dev/null 2>&1; then
+        http_code=$(timeout 10 curl -s -L -w "%{http_code}" -o "$tmp_file" "$token_url" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -O "$tmp_file" "$token_url" >/dev/null 2>&1; then
+            http_code="200"
+        else
+            http_code="000"
+        fi
+    fi
+
+    if [[ "$http_code" != "200" || ! -s "$tmp_file" ]]; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    local token
+    token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$tmp_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+    rm -f "$tmp_file"
+
+    [[ -n "$token" ]] || return 1
+    echo "$token"
+}
+
 # @function    check_curseforge_mod
 # @description Check CurseForge mod compatibility with encrypted API access.
 #              CurseForge requires API key authentication with more restrictive access.
@@ -335,51 +375,9 @@ check_curseforge_mod() {
     local mod_name="$1"           # Human-readable mod name
     local cf_project_id="$2"      # CurseForge project ID (numeric)
 
-    # Simplified CurseForge API access using a simpler method
-    # Instead of the complex encrypted token approach, use alternative method
-    local cf_api_key=""
-
-    # Try to use a simple decryption method for the token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-    local tmp_token_file
-
-    # Create temporary file for encrypted token download with timeout
-    tmp_token_file=$(mktemp)
-    if [[ -z "$tmp_token_file" ]]; then
-        print_warning "mktemp failed for $mod_name"
-        return 1
-    fi
-
-    # Download with timeout to prevent hanging
-    local http_code
-    http_code=$(timeout 10 curl -s -L -w "%{http_code}" -o "$tmp_token_file" "$cf_token_enc_url" 2>/dev/null)
-    local curl_exit=$?
-
-    if [[ $curl_exit -eq 124 ]]; then
-        print_warning "CurseForge API token download timed out for $mod_name"
-        rm -f "$tmp_token_file"
-        return 1
-    elif [[ "$http_code" != "200" ]] || [[ ! -s "$tmp_token_file" ]]; then
-        print_warning "Failed to download CurseForge API token (HTTP: $http_code)"
-        rm -f "$tmp_token_file"
-        return 1
-    fi
-
-    # Decrypt API token using OpenSSL (requires passphrase hardcoded for automation)
-    if command -v openssl >/dev/null 2>&1; then
-        cf_api_key=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$tmp_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-    else
-        print_warning "OpenSSL not available for token decryption for $mod_name (skipping)"
-        rm -f "$tmp_token_file"
-        return 1
-    fi
-
-    # Clean up temp file immediately
-    rm -f "$tmp_token_file"
-
-    # If OpenSSL decryption failed, skip this mod
-    if [[ -z "$cf_api_key" ]]; then
-        print_warning "Failed to decrypt CurseForge API token for $mod_name (skipping)"
+    local cf_api_key
+    if ! cf_api_key=$(_get_curseforge_token); then
+        print_warning "Failed to obtain CurseForge API token for $mod_name (skipping)"
         return 1
     fi
 
@@ -597,48 +595,6 @@ resolve_all_dependencies() {
     print_info "Added $added_count dependencies ($initial_mod_count → $updated_mod_count total mods)"
 }
 
-# @function    resolve_mod_dependencies
-# @description Resolve dependencies for a specific mod by routing to the
-#              appropriate platform-specific resolver based on mod type.
-# @param       $1 - mod_id: The mod ID to resolve dependencies for
-# @global      MOD_IDS - (input) Array of mod IDs to find the mod
-# @global      MOD_TYPES - (input) Array of platform types
-# @global      SUPPORTED_MODS - (input) Array of mod names for logging
-# @stdout      Space-separated list of dependency mod IDs
-# @return      0 if dependencies found, 1 if mod not found or unknown type
-resolve_mod_dependencies() {
-    local mod_id="$1"
-
-    # Find mod in our arrays to determine platform type
-    local mod_type=""
-    local mod_name=""
-    for i in "${!MOD_IDS[@]}"; do
-        if [[ "${MOD_IDS[$i]}" == "$mod_id" ]]; then
-            mod_type="${MOD_TYPES[$i]}"
-            mod_name="${SUPPORTED_MODS[$i]}"
-            break
-        fi
-    done
-
-    if [[ -z "$mod_type" ]]; then
-        return 1
-    fi
-
-    # Route to appropriate platform-specific dependency resolver
-    case "$mod_type" in
-        "modrinth")
-            resolve_modrinth_dependencies "$mod_id" "$mod_name"
-            ;;
-        "curseforge")
-            resolve_curseforge_dependencies "$mod_id" "$mod_name"
-            ;;
-        *)
-            print_warning "Unknown mod type: $mod_type for $mod_name"
-            return 1
-            ;;
-    esac
-}
-
 # @function    resolve_modrinth_dependencies
 # @description Get dependencies from Modrinth API using version matching logic.
 # @param       $1 - mod_id: Modrinth project ID
@@ -717,33 +673,8 @@ resolve_curseforge_dependencies() {
     local mod_id="$1"
     local mod_name="$2"
 
-    # Download and decrypt CurseForge API token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-    local tmp_token_file
-    tmp_token_file=$(mktemp)
-    if [[ -z "$tmp_token_file" ]]; then
-        return 1
-    fi
-
-    # Download encrypted token
-    local http_code
-    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_token_file" "$cf_token_enc_url" 2>/dev/null)
-    if [[ "$http_code" != "200" ]]; then
-        rm "$tmp_token_file"
-        return 1
-    fi
-
-    # Decrypt API token using OpenSSL (requires passphrase hardcoded for automation)
     local cf_api_key
-    if command -v openssl >/dev/null 2>&1; then
-        cf_api_key=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$tmp_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-    else
-        rm "$tmp_token_file"
-        return 1
-    fi
-    rm "$tmp_token_file"
-
-    if [[ -z "$cf_api_key" ]]; then
+    if ! cf_api_key=$(_get_curseforge_token); then
         return 1
     fi
 
@@ -844,16 +775,18 @@ resolve_modrinth_dependencies_api() {
         local mc_major_minor
         mc_major_minor=$(get_version_series "$MC_VERSION")  # Extract "1.21" from "1.21.3" or "25.1" from "25.1.2"
 
-        # Simple jq filter to get dependencies from compatible fabric versions with strict matching
-        # Use temporary file to avoid command line length limits
-        dependencies=$(jq -r "
-            .[]
-            | select(.loaders[]? == \"fabric\")
-            | select(.game_versions[]? | (. == \"$MC_VERSION\" or . == \"$mc_major_minor\" or . == \"${mc_major_minor}.x\" or . == \"${mc_major_minor}.0\"))
+        dependencies=$(jq -r \
+            --arg ver "$MC_VERSION" \
+            --arg mm "$mc_major_minor" \
+            --arg mmx "${mc_major_minor}.x" \
+            --arg mm0 "${mc_major_minor}.0" \
+            '.[]
+            | select(.loaders[]? == "fabric")
+            | select(.game_versions[]? | (. == $ver or . == $mm or . == $mmx or . == $mm0))
             | .dependencies[]?
-            | select(.dependency_type == \"required\")
-            | .project_id
-        " < "$tmp_file" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+            | select(.dependency_type == "required")
+            | .project_id' \
+            < "$tmp_file" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
     else
         # Fallback to basic grep parsing if jq is not available
         local deps_section=$(grep -o '"dependencies":\[[^]]*\]' "$tmp_file" | head -1)
@@ -886,44 +819,8 @@ resolve_curseforge_dependencies_api() {
     local mod_id="$1"
     local dependencies=""
 
-    # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-    local encrypted_token_file=$(mktemp)
-    local http_code
-
-    if command -v curl >/dev/null 2>&1; then
-        http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
-    elif command -v wget >/dev/null 2>&1; then
-        if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
-            http_code="200"
-        else
-            http_code="404"
-        fi
-    else
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    if [[ "$http_code" != "200" || ! -s "$encrypted_token_file" ]]; then
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    # Decrypt the API token using OpenSSL (requires passphrase hardcoded for automation)
     local api_token
-    if command -v openssl >/dev/null 2>&1; then
-        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-    else
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    rm -f "$encrypted_token_file"
-
-    if [[ -z "$api_token" ]]; then
+    if ! api_token=$(_get_curseforge_token); then
         echo ""
         return 1
     fi
@@ -1096,53 +993,26 @@ fetch_and_add_external_mod() {
             local mod_description=""
             local download_url=""
 
-            # Download encrypted CurseForge API token from GitHub repository
-            local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-            local encrypted_token_file=$(mktemp)
-            local http_code
+            local api_token
+            if api_token=$(_get_curseforge_token); then
+                # Fetch mod info from CurseForge API
+                local api_url="https://api.curseforge.com/v1/mods/$ext_mod_id"
+                local temp_file=$(mktemp)
 
-            if command -v curl >/dev/null 2>&1; then
-                http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
-            elif command -v wget >/dev/null 2>&1; then
-                if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
-                    http_code="200"
-                else
-                    http_code="404"
+                if command -v curl >/dev/null 2>&1; then
+                    curl -s -H "x-api-key: $api_token" -o "$temp_file" "$api_url" 2>/dev/null
+                elif command -v wget >/dev/null 2>&1; then
+                    wget -q --header="x-api-key: $api_token" -O "$temp_file" "$api_url" 2>/dev/null
                 fi
+
+                if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
+                    mod_title=$(jq -r '.data.name // ""' "$temp_file" 2>/dev/null)
+                    mod_description=$(jq -r '.data.summary // ""' "$temp_file" 2>/dev/null)
+                fi
+
+                rm -f "$temp_file"
+                download_url=$(get_curseforge_download_url "$ext_mod_id")
             fi
-
-            if [[ "$http_code" == "200" && -s "$encrypted_token_file" ]]; then
-                # Decrypt the API token
-                local api_token
-                if command -v openssl >/dev/null 2>&1; then
-                    api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamdeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-                fi
-
-                if [[ -n "$api_token" ]]; then
-                    # Fetch mod info from CurseForge API
-                    local api_url="https://api.curseforge.com/v1/mods/$ext_mod_id"
-                    local temp_file=$(mktemp)
-
-                    if command -v curl >/dev/null 2>&1; then
-                        curl -s -H "x-api-key: $api_token" -o "$temp_file" "$api_url" 2>/dev/null
-                    elif command -v wget >/dev/null 2>&1; then
-                        wget -q --header="x-api-key: $api_token" -O "$temp_file" "$api_url" 2>/dev/null
-                    fi
-
-                    # Extract mod title and description
-                    if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
-                        mod_title=$(jq -r '.data.name // ""' "$temp_file" 2>/dev/null)
-                        mod_description=$(jq -r '.data.summary // ""' "$temp_file" 2>/dev/null)
-                    fi
-
-                    rm -f "$temp_file"
-
-                    # Get download URL using our robust function
-                    download_url=$(get_curseforge_download_url "$ext_mod_id")
-                fi
-            fi
-
-            rm -f "$encrypted_token_file"
 
             # Fallback for known mods if API fails
             if [[ -z "$mod_title" ]]; then
@@ -1198,44 +1068,8 @@ get_curseforge_download_url() {
     local mod_id="$1"
     local download_url=""
 
-    # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-    local encrypted_token_file=$(mktemp)
-    local http_code
-
-    if command -v curl >/dev/null 2>&1; then
-        http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
-    elif command -v wget >/dev/null 2>&1; then
-        if wget -O "$encrypted_token_file" "$token_url" >/dev/null 2>&1; then
-            http_code="200"
-        else
-            http_code="404"
-        fi
-    else
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    if [[ "$http_code" != "200" || ! -s "$encrypted_token_file" ]]; then
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    # Decrypt the API token using OpenSSL (requires passphrase hardcoded for automation)
     local api_token
-    if command -v openssl >/dev/null 2>&1; then
-        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-    else
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    rm -f "$encrypted_token_file"
-
-    if [[ -z "$api_token" ]]; then
+    if ! api_token=$(_get_curseforge_token); then
         echo ""
         return 1
     fi

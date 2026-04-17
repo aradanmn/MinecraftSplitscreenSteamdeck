@@ -93,7 +93,7 @@ create_instances() {
     print_info "Creating instances for Minecraft $MC_VERSION with Fabric $FABRIC_VERSION"
 
     # Clean up the final mod selection list (remove any duplicates from dependency resolution)
-    FINAL_MOD_INDEXES=( $(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u) )
+    readarray -t FINAL_MOD_INDEXES < <(printf "%s\n" "${FINAL_MOD_INDEXES[@]}" | sort -u)
 
     # Initialize tracking for mods that fail to install
     MISSING_MODS=()
@@ -892,7 +892,7 @@ handle_instance_update() {
     # Update instance.cfg
     if [[ -f "$instance_dir/instance.cfg" ]]; then
         # Update the IntendedVersion line
-        sed -i "s/^IntendedVersion=.*/IntendedVersion=$MC_VERSION/" "$instance_dir/instance.cfg"
+        sed -i "s|^IntendedVersion=.*|IntendedVersion=$MC_VERSION|" "$instance_dir/instance.cfg"
         print_success "Instance configuration updated"
     fi
 
