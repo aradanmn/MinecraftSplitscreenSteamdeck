@@ -170,7 +170,7 @@ if data.endswith(b"\x08\x08"):
     print(f"✅ Minecraft shortcut added with index {index} and appid {appid}")
 else:
     print("❌ File structure not recognized. No changes made.")
-    exit(1)
+    sys.exit(1)
 
 # --- Download SteamGridDB artwork for the new shortcut ---
 grid_dir = os.path.join(userdata, user_id, "config", "grid")  # Path to grid images

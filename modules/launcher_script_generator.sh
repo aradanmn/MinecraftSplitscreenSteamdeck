@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.6
-# @date        2026-04-05
+# @version     3.2.8
+# @date        2026-04-17
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,8 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.8 (2026-04-17) - Refactor: placeholder window — use calculateWindowPosition for P4 coords; add tkinter pre-check; idempotency guard in updatePlaceholderWindow; remove dead Python lines; cleaner cleanup call
+#   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); works in gamescope via nested X11 display
 #   3.2.6 (2026-04-05) - Fix: markInstanceStopped blocks event loop on recycled wrapper PID — skip wait() if wrapper launched > 30s ago; reduce GPU init sleep 10s→5s and reposition wait 15s→10s
 #   3.2.5 (2026-03-18) - Fix: Issue #10 — require controller disconnect+reconnect after instance exit; remove KNOWN_CONTROLLER_COUNT sync from checkForExitedInstances so spurious CONTROLLER_CHANGE events cannot trigger unintended relaunches
 #   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
@@ -164,6 +166,7 @@ CONTROLLER_PIPE=""                          # Path to named pipe for controller 
 MAIN_PID=$$                                 # Track main process PID for cleanup guard
 CLEANUP_DONE=0                              # Reentrancy guard for cleanup_exit
 INHIBIT_PID=""                              # PID of kde-inhibit sleep process (screen inhibition)
+PLACEHOLDER_PID=""                          # PID of black placeholder window (fills P4 quadrant for 3-player layout)
 
 # =============================================================================
 # END DYNAMIC SPLITSCREEN STATE
@@ -1994,6 +1997,85 @@ showNotification() {
     fi
 }
 
+# =============================================================================
+# Placeholder Window (Issue #11)
+# =============================================================================
+# When exactly 3 players are active the layout is a 2x2 grid with the
+# bottom-right (P4) quadrant empty. showPlaceholderWindow fills that gap with
+# a solid black window so the desktop/wallpaper is not visible.
+# Works in gamescope too — gamescope hosts a nested X11 display that python3/tkinter can target.
+
+showPlaceholderWindow() {
+    if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_warning "python3 not found; skipping 3-player placeholder window"
+        return 0
+    fi
+
+    # Verify tkinter is available before backgrounding — otherwise the process
+    # silently exits and we'd think we have a valid PLACEHOLDER_PID we don't.
+    if ! python3 -c "import tkinter" 2>/dev/null; then
+        log_warning "python3-tkinter not available; skipping placeholder (install python3-tk)"
+        return 0
+    fi
+
+    # Re-use the existing P4 position formula so coordinates stay in sync with
+    # calculateWindowPosition if the layout logic ever changes.
+    local screen_width screen_height
+    read -r screen_width screen_height < <(getScreenDimensions)
+    local x y w h
+    read -r x y w h < <(calculateWindowPosition 4 4 "$screen_width" "$screen_height")
+
+    # Kill any prior placeholder process before spawning a new one so we never
+    # accumulate orphaned windows from rapid join/leave events.
+    hidePlaceholderWindow
+
+    python3 - "$x" "$y" "$w" "$h" <<'PYEOF' &
+import sys
+try:
+    import tkinter as tk
+    x, y, w, h = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+    root = tk.Tk()
+    root.configure(bg='black')
+    root.overrideredirect(True)
+    root.geometry(f'{w}x{h}+{x}+{y}')
+    root.mainloop()
+except Exception:
+    sys.exit(1)
+PYEOF
+    PLACEHOLDER_PID=$!
+    log_info "3-player placeholder window started (PID=$PLACEHOLDER_PID) at ${x},${y} ${w}x${h}"
+}
+
+hidePlaceholderWindow() {
+    if [ -n "$PLACEHOLDER_PID" ] && kill -0 "$PLACEHOLDER_PID" 2>/dev/null; then
+        kill "$PLACEHOLDER_PID" 2>/dev/null || true
+        wait "$PLACEHOLDER_PID" 2>/dev/null || true
+        log_info "Placeholder window closed (PID=$PLACEHOLDER_PID)"
+    fi
+    PLACEHOLDER_PID=""
+}
+
+# Show or hide the placeholder based on current active instance count.
+# Call this after any layout change (join, leave, reposition).
+updatePlaceholderWindow() {
+    local active_count
+    active_count=$(countActiveInstances)
+    if [ "$active_count" = "3" ]; then
+        # Skip re-spawn if the window is already live — avoids a brief flicker
+        # and the cost of a redundant tkinter availability check + process fork.
+        if [ -n "$PLACEHOLDER_PID" ] && kill -0 "$PLACEHOLDER_PID" 2>/dev/null; then
+            return 0
+        fi
+        showPlaceholderWindow
+    else
+        hidePlaceholderWindow
+    fi
+}
+
 # Handle controller count change event
 # With FULLSCREEN mode, the Splitscreen mod doesn't manage windows (no GLFW calls),
 # so we can freely add instances and reposition via KWin without crashes.
@@ -2041,6 +2123,7 @@ handleControllerChange() {
             if [ "$remaining" -gt 0 ]; then
                 repositionAllWindows "$remaining"
             fi
+            updatePlaceholderWindow
         else
             CURRENT_PLAYER_COUNT=$current_active
         fi
@@ -2051,6 +2134,9 @@ handleControllerChange() {
     [ "$new_total" -gt 4 ] && new_total=4
 
     log_info "Scaling up: $current_active -> $new_total players"
+
+    # Hide placeholder before launching new instance (layout is about to change)
+    hidePlaceholderWindow
 
     # Launch only the NEW instances (keep existing ones running)
     for slot in $(seq 1 $new_total); do
@@ -2071,6 +2157,7 @@ handleControllerChange() {
     log_info "Waiting 10 seconds for new instance(s) to load before repositioning..."
     sleep 10
     repositionAllWindows "$new_total"
+    updatePlaceholderWindow
 
     CURRENT_PLAYER_COUNT=$current_active
 }
@@ -2103,6 +2190,7 @@ checkForExitedInstances() {
             # instances run in FULLSCREEN mode (mod won't fight the resize)
             repositionAllWindows "$remaining"
         fi
+        updatePlaceholderWindow
 
         # Issue #10: Do NOT sync KNOWN_CONTROLLER_COUNT down here.
         #
@@ -2391,6 +2479,7 @@ enforceMemorySettings() {
 # Core cleanup logic — shared between explicit cleanup and trap handler.
 # Can be called directly before gamescope logout, or indirectly via cleanup_exit().
 perform_cleanup() {
+    hidePlaceholderWindow
     uninhibitScreen 2>/dev/null || true
     killAllInstances
     killLauncher 2>/dev/null || true

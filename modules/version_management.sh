@@ -344,7 +344,7 @@ get_minecraft_version() {
 
     # Get list of supported Minecraft versions
     local -a supported_versions
-    readarray -t supported_versions <<< "$(get_supported_minecraft_versions)"
+    readarray -t supported_versions < <(get_supported_minecraft_versions)
 
     # Filter out any empty entries
     local -a clean_versions=()

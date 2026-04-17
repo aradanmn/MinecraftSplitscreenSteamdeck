@@ -657,7 +657,7 @@ PollyMC went offline as of 2026-02-07 (`pollymc.org` does not resolve, GitHub re
 
 ---
 
-### Issue #11: Black Placeholder Window for 3-Player Layout (MEDIUM PRIORITY)
+### Issue #11: Black Placeholder Window for 3-Player Layout ✅ RESOLVED
 
 **Problem:** In a 3-player session, the layout is a 2×2 grid with the bottom-right quadrant (P4 position) empty. This leaves an ugly gap — the desktop/wallpaper is visible there.
 
@@ -692,7 +692,7 @@ PollyMC went offline as of 2026-02-07 (`pollymc.org` does not resolve, GitHub re
 8. ✅ **Issue #4 (Versioning)** - DONE. Year-based format handled via utilities.sh version utilities.
 9. ✅ **Issue #9 (Controller-to-Session Mapping)** - DONE. Uses Controllable's own SDL2 to write correct GUIDs; disables autoSelect on active slots.
 10. ⏳ **Issue #10 (Disconnect+Reconnect Before Relaunch)** - Prevent unintended relaunch when controller stays connected
-11. ⏳ **Issue #11 (3-Player Placeholder Window)** - Black window fills P4 gap when 3 players active
+11. ✅ **Issue #11 (3-Player Placeholder Window)** - Black window fills P4 gap when 3 players active
 
 ## Useful Debugging
 
