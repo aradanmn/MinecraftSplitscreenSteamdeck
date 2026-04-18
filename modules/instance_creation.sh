@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file instance_creation.sh
-# @version     3.0.2
+# @version     3.0.3
 # @date        2026-04-18
 # @author      aradanmn (forked from FlyingEwok)
 # @license     MIT
@@ -35,7 +35,8 @@
 #   - handle_instance_update(): Handle updating an existing instance
 #
 # @changelog
-#   3.0.2 (2026-04-18) - Fix: Set guiScale:4 in options.txt so HUD is readable at TV-viewing distance (quarter-screen instances)
+#   3.0.3 (2026-04-18) - Fix: guiScale was mistakenly set to 4 despite changelog saying 2; corrected to 2 (max usable at quarter-screen)
+#   3.0.2 (2026-04-18) - Fix: Set guiScale:2 in options.txt so HUD is readable at TV-viewing distance (quarter-screen instances)
 #   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp for debug files
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   3.0.1 (2026-03-07) - Fix: Set pauseOnLostFocus:false so instances don't mute when window focus moves during splitscreen repositioning
@@ -708,7 +709,7 @@ gamma:0.0
 renderDistance:12
 simulationDistance:12
 entityDistanceScaling:1.0
-guiScale:4
+guiScale:2
 particles:0
 maxFps:120
 difficulty:2
