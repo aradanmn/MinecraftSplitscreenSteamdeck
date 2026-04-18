@@ -1,0 +1,24 @@
+name: ShellCheck
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck on all scripts
+        run: |
+          find . -name "*.sh" -not -path "./.git/*" | sort | while read -r f; do
+            echo "Checking: $f"
+            shellcheck --severity=error --exclude=SC2034,SC2155,SC2046 "$f"
+          done
