@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.8
-# @date        2026-04-17
+# @version     3.2.9
+# @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.9 (2026-04-18) - Fix: embed is_flatpak_installed() in generated script — was called in validate_launcher() but never defined, causing "prismlauncher not found" error on every launch
 #   3.2.8 (2026-04-17) - Refactor: placeholder window — use calculateWindowPosition for P4 coords; add tkinter pre-check; idempotency guard in updatePlaceholderWindow; remove dead Python lines; cleaner cleanup call
 #   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); works in gamescope via nested X11 display
 #   3.2.6 (2026-04-05) - Fix: markInstanceStopped blocks event loop on recycled wrapper PID — skip wait() if wrapper launched > 30s ago; reduce GPU init sleep 10s→5s and reposition wait 15s→10s
@@ -240,6 +241,16 @@ fi
 # =============================================================================
 # Launcher Validation
 # =============================================================================
+
+_FLATPAK_LIST_CACHE=""
+is_flatpak_installed() {
+    local flatpak_id="\$1"
+    command -v flatpak >/dev/null 2>&1 || return 1
+    if [[ -z "\$_FLATPAK_LIST_CACHE" ]]; then
+        _FLATPAK_LIST_CACHE=\$(flatpak list --app 2>/dev/null)
+    fi
+    grep -q "\$flatpak_id" <<< "\$_FLATPAK_LIST_CACHE"
+}
 
 # Validate that the configured launcher is available
 validate_launcher() {
