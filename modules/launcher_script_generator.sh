@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.10
+# @version     3.2.11
 # @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.11 (2026-04-18) - Fix: add quick 1s second reposition pass so KWin processes fullscreen clearance before geometry is re-applied; keeps 7s third pass for stragglers
 #   3.2.10 (2026-04-18) - Fix: second reposition pass 8s after first to catch late-opening windows (P3/P4 under load)
 #   3.2.9 (2026-04-18) - Fix: embed is_flatpak_installed() in generated script — was called in validate_launcher() but never defined, causing "prismlauncher not found" error on every launch
 #   3.2.8 (2026-04-17) - Refactor: placeholder window — use calculateWindowPosition for P4 coords; add tkinter pre-check; idempotency guard in updatePlaceholderWindow; remove dead Python lines; cleaner cleanup call
@@ -2180,8 +2181,11 @@ handleControllerChange() {
     sleep 10
     repositionAllWindows "$new_total"
     updatePlaceholderWindow
-    sleep 8
-    log_info "Second reposition pass (catching late-opening windows)..."
+    sleep 1
+    log_info "Quick second reposition pass (allows KWin to process fullscreen clearance)..."
+    repositionAllWindows "$new_total"
+    sleep 7
+    log_info "Third reposition pass (catching late-opening windows)..."
     repositionAllWindows "$new_total"
 
     CURRENT_PLAYER_COUNT=$current_active
@@ -2361,13 +2365,16 @@ runStaticSplitscreen() {
     done
 
     # Reposition windows via KWin after all instances are launched.
-    # Second pass catches instances whose windows opened after the first pass.
+    # Three passes: first clears fullscreen, quick second lets KWin process it, third catches stragglers.
     if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
         log_info "Waiting 10 seconds for instances to load before KWin repositioning..."
         sleep 10
         repositionAllWindows "$numberOfControllers"
-        sleep 8
-        log_info "Second reposition pass (catching late-opening windows)..."
+        sleep 1
+        log_info "Quick second reposition pass (allows KWin to process fullscreen clearance)..."
+        repositionAllWindows "$numberOfControllers"
+        sleep 7
+        log_info "Third reposition pass (catching late-opening windows)..."
         repositionAllWindows "$numberOfControllers"
     fi
 
