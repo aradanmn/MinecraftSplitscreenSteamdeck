@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.9
+# @version     3.2.10
 # @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.10 (2026-04-18) - Fix: second reposition pass 8s after first to catch late-opening windows (P3/P4 under load)
 #   3.2.9 (2026-04-18) - Fix: embed is_flatpak_installed() in generated script — was called in validate_launcher() but never defined, causing "prismlauncher not found" error on every launch
 #   3.2.8 (2026-04-17) - Refactor: placeholder window — use calculateWindowPosition for P4 coords; add tkinter pre-check; idempotency guard in updatePlaceholderWindow; remove dead Python lines; cleaner cleanup call
 #   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); works in gamescope via nested X11 display
@@ -2172,11 +2173,16 @@ handleControllerChange() {
         fi
     done
 
-    # Wait for new instance(s) to finish loading, then reposition ALL via KWin
+    # Wait for new instance(s) to finish loading, then reposition ALL via KWin.
+    # A second pass runs 8s later to catch instances whose windows opened after the first pass
+    # (common when 2+ instances are already running and competing for RAM/CPU).
     log_info "Waiting 10 seconds for new instance(s) to load before repositioning..."
     sleep 10
     repositionAllWindows "$new_total"
     updatePlaceholderWindow
+    sleep 8
+    log_info "Second reposition pass (catching late-opening windows)..."
+    repositionAllWindows "$new_total"
 
     CURRENT_PLAYER_COUNT=$current_active
 }
@@ -2354,10 +2360,14 @@ runStaticSplitscreen() {
         launchInstanceForSlot "$player" "$numberOfControllers"
     done
 
-    # Reposition windows via KWin after all instances are launched
+    # Reposition windows via KWin after all instances are launched.
+    # Second pass catches instances whose windows opened after the first pass.
     if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
         log_info "Waiting 10 seconds for instances to load before KWin repositioning..."
         sleep 10
+        repositionAllWindows "$numberOfControllers"
+        sleep 8
+        log_info "Second reposition pass (catching late-opening windows)..."
         repositionAllWindows "$numberOfControllers"
     fi
 
