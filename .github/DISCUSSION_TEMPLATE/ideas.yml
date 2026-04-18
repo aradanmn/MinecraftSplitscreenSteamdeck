@@ -1,0 +1,45 @@
+title: "[Idea] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea to make Minecraft splitscreen better? Share it here!
+        Check existing discussions first to avoid duplicates.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What's the idea?
+      description: One or two sentences summarising the feature or improvement.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      description: What friction or limitation does this address today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would this work from the user's perspective?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which part of the project does this affect?
+      multiple: true
+      options:
+        - Installer script
+        - Launcher script (splitscreen.sh)
+        - Dynamic splitscreen mode
+        - Mod selection / compatibility
+        - Steam integration
+        - Desktop shortcuts
+        - Controller detection
+        - Documentation

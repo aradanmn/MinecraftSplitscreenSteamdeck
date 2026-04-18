@@ -1,0 +1,40 @@
+title: "[Show & Tell] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share your splitscreen Minecraft setup! Screenshots, videos, mod combos,
+        custom configs — all welcome. Inspire the community 🎮
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: Describe your hardware, player count, mods, and anything that makes it great.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: players
+    attributes:
+      label: Player count
+      options:
+        - "1 (solo / testing)"
+        - "2"
+        - "3"
+        - "4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tips
+    attributes:
+      label: Tips for others
+      description: Anything you learned the hard way that others should know?
+
+  - type: input
+    id: media
+    attributes:
+      label: Screenshot / video link
+      placeholder: "Optional — paste an image URL or link to a clip"
