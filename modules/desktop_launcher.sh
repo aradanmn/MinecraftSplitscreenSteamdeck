@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        desktop_launcher.sh
-# @version     3.0.0
-# @date        2026-02-01
+# @version     3.0.1
+# @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -29,6 +29,7 @@
 #     - create_desktop_launcher : Main function to create desktop integration
 #
 # @changelog
+#   3.0.1 (2026-04-18) - Fix: convert .ico to .png via ImageMagick before writing .desktop file; Linux desktops don't render .ico reliably
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_yes_no function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
@@ -130,8 +131,24 @@ create_desktop_launcher() {
         local icon_desktop
         local instance_icon_path="$ACTIVE_INSTANCES_DIR/latestUpdate-1/icon.png"
 
-        if [[ -f "$icon_path" ]]; then
-            icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
+        # Convert .ico to .png for desktop environments that don't render .ico reliably
+        local icon_png_path="$HOME/.local/share/MinecraftSplitscreen/icons/minecraft-splitscreen.png"
+        if [[ -f "$icon_path" ]] && [[ ! -f "$icon_png_path" || "$icon_path" -nt "$icon_png_path" ]]; then
+            mkdir -p "$(dirname "$icon_png_path")"
+            if command -v magick >/dev/null 2>&1; then
+                magick "${icon_path}[4]" "$icon_png_path" 2>/dev/null && \
+                    print_info "   → Converted icon to PNG for desktop compatibility"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "${icon_path}[4]" "$icon_png_path" 2>/dev/null && \
+                    print_info "   → Converted icon to PNG for desktop compatibility"
+            fi
+        fi
+
+        if [[ -f "$icon_png_path" ]]; then
+            icon_desktop="$icon_png_path"  # Best: PNG converted from SteamGridDB icon
+            print_info "   → Using PNG icon for consistent desktop rendering"
+        elif [[ -f "$icon_path" ]]; then
+            icon_desktop="$icon_path"  # Fallback: raw .ico
             print_info "   → Using custom SteamGridDB icon for consistent branding"
         elif [[ -f "$instance_icon_path" ]]; then
             icon_desktop="$instance_icon_path"  # Good: Instance icon from active launcher
