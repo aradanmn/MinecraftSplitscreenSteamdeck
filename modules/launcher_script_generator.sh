@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.12
+# @version     3.2.13
 # @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.13 (2026-04-18) - Fix: killall plasmashell scoped to current user (-u $USER); numeric comparisons for controller count and player count
 #   3.2.12 (2026-04-18) - Fix: move CURRENT_PLAYER_COUNT update before updatePlaceholderWindow in scale-up path so placeholder shows correctly when 3rd player joins
 #   3.2.11 (2026-04-18) - Fix: add quick 1s second reposition pass so KWin processes fullscreen clearance before geometry is re-applied; keeps 7s third pass for stragglers
 #   3.2.10 (2026-04-18) - Fix: second reposition pass 8s after first to catch late-opening windows (P3/P4 under load)
@@ -724,7 +725,7 @@ hidePanels() {
         pkill plasmashell
         sleep 1
         if pgrep -u "$USER" plasmashell >/dev/null; then
-            killall plasmashell
+            killall -u "$USER" plasmashell
             sleep 1
         fi
         if pgrep -u "$USER" plasmashell >/dev/null; then
@@ -1045,7 +1046,7 @@ monitorControllers() {
                 sleep 0.5  # Debounce rapid events
                 local new_count
                 new_count=$(getControllerCount)
-                if [ "$new_count" != "$last_count" ]; then
+                if [ "$new_count" -ne "$last_count" ]; then
                     echo "CONTROLLER_CHANGE:$new_count"
                     last_count=$new_count
                 fi
@@ -2086,7 +2087,7 @@ hidePlaceholderWindow() {
 updatePlaceholderWindow() {
     # CURRENT_PLAYER_COUNT is maintained by handleControllerChange and
     # checkForExitedInstances — read it directly instead of spawning a subshell.
-    if [ "$CURRENT_PLAYER_COUNT" = "3" ]; then
+    if [ "$CURRENT_PLAYER_COUNT" -eq 3 ]; then
         # Skip re-spawn if the window is already live — avoids a brief flicker
         # and the cost of a redundant tkinter availability check + process fork.
         if [ -n "$PLACEHOLDER_PID" ] && kill -0 "$PLACEHOLDER_PID" 2>/dev/null; then
