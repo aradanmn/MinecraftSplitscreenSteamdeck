@@ -248,12 +248,12 @@ fi
 
 _FLATPAK_LIST_CACHE=""
 is_flatpak_installed() {
-    local flatpak_id="\$1"
+    local flatpak_id="$1"
     command -v flatpak >/dev/null 2>&1 || return 1
-    if [[ -z "\$_FLATPAK_LIST_CACHE" ]]; then
-        _FLATPAK_LIST_CACHE=\$(flatpak list --app 2>/dev/null)
+    if [[ -z "$_FLATPAK_LIST_CACHE" ]]; then
+        _FLATPAK_LIST_CACHE=$(flatpak list --app 2>/dev/null)
     fi
-    grep -q "\$flatpak_id" <<< "\$_FLATPAK_LIST_CACHE"
+    grep -q "$flatpak_id" <<< "$_FLATPAK_LIST_CACHE"
 }
 
 # Validate that the configured launcher is available
