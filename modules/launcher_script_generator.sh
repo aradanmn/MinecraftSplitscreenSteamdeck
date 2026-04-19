@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.14
+# @version     3.2.15
 # @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.15 (2026-04-18) - Fix: placeholder uses python3+GTK (black bg) as primary; yad --css not valid in yad 9.3 caused silent crash
 #   3.2.14 (2026-04-18) - Fix: placeholder window uses yad/zenity fallback chain instead of tkinter-only; KWin script forces position into P4 quadrant on Wayland
 #   3.2.13 (2026-04-18) - Fix: killall plasmashell scoped to current user (-u $USER); numeric comparisons for controller count and player count
 #   3.2.12 (2026-04-18) - Fix: move CURRENT_PLAYER_COUNT update before updatePlaceholderWindow in scale-up path so placeholder shows correctly when 3rd player joins
@@ -2045,16 +2046,40 @@ showPlaceholderWindow() {
     # accumulate orphaned windows from rapid join/leave events.
     hidePlaceholderWindow
 
-    # Launch a black window via yad, zenity, or python3+tkinter.
+    # Launch a black window. Priority: python3+GTK (reliable, black bg) > yad > zenity > tkinter.
     # On Wayland apps can't self-position, so we use a KWin script to force the
     # window into the P4 quadrant after it opens (same mechanism as Minecraft).
     local title="MC-Splitscreen-Placeholder"
     local tool=""
 
-    if command -v yad >/dev/null 2>&1; then
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import gi" 2>/dev/null; then
+        python3 - "$w" "$h" <<'PYEOF' &
+import gi, sys
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk
+try:
+    w, h = int(sys.argv[1]), int(sys.argv[2])
+    win = Gtk.Window()
+    win.set_title('MC-Splitscreen-Placeholder')
+    win.set_decorated(False)
+    win.set_skip_taskbar_hint(True)
+    win.set_skip_pager_hint(True)
+    css = Gtk.CssProvider()
+    css.load_from_data(b'window { background-color: black; }')
+    win.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    win.set_default_size(w, h)
+    win.connect('destroy', Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+except Exception:
+    sys.exit(1)
+PYEOF
+        PLACEHOLDER_PID=$!
+        tool="python3-gtk"
+    elif command -v yad >/dev/null 2>&1; then
         yad --fixed --no-buttons --borders=0 --skip-taskbar \
+            --width="$w" --height="$h" \
             --title="$title" --text="" \
-            --css="window,*{background-color:black;color:black;}" \
             2>/dev/null &
         PLACEHOLDER_PID=$!
         tool="yad"
@@ -2080,7 +2105,7 @@ PYEOF
         PLACEHOLDER_PID=$!
         tool="tkinter"
     else
-        log_warning "No window tool for placeholder (need yad, zenity, or python3-tkinter)"
+        log_warning "No window tool for placeholder (need yad, zenity, or python3-tkinter, or python3-gobject)"
         return 0
     fi
 
