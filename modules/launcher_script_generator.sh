@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.13
+# @version     3.2.14
 # @date        2026-04-18
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.2.14 (2026-04-18) - Fix: placeholder window uses yad/zenity fallback chain instead of tkinter-only; KWin script forces position into P4 quadrant on Wayland
 #   3.2.13 (2026-04-18) - Fix: killall plasmashell scoped to current user (-u $USER); numeric comparisons for controller count and player count
 #   3.2.12 (2026-04-18) - Fix: move CURRENT_PLAYER_COUNT update before updatePlaceholderWindow in scale-up path so placeholder shows correctly when 3rd player joins
 #   3.2.11 (2026-04-18) - Fix: add quick 1s second reposition pass so KWin processes fullscreen clearance before geometry is re-applied; keeps 7s third pass for stragglers
@@ -2033,18 +2034,6 @@ showPlaceholderWindow() {
         return 0
     fi
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        log_warning "python3 not found; skipping 3-player placeholder window"
-        return 0
-    fi
-
-    # Verify tkinter is available before backgrounding — otherwise the process
-    # silently exits and we'd think we have a valid PLACEHOLDER_PID we don't.
-    if ! python3 -c "import tkinter" 2>/dev/null; then
-        log_warning "python3-tkinter not available; skipping placeholder (install python3-tk)"
-        return 0
-    fi
-
     # Re-use the existing P4 position formula so coordinates stay in sync with
     # calculateWindowPosition if the layout logic ever changes.
     local screen_width screen_height
@@ -2056,12 +2045,31 @@ showPlaceholderWindow() {
     # accumulate orphaned windows from rapid join/leave events.
     hidePlaceholderWindow
 
-    python3 - "$x" "$y" "$w" "$h" <<'PYEOF' &
+    # Launch a black window via yad, zenity, or python3+tkinter.
+    # On Wayland apps can't self-position, so we use a KWin script to force the
+    # window into the P4 quadrant after it opens (same mechanism as Minecraft).
+    local title="MC-Splitscreen-Placeholder"
+    local tool=""
+
+    if command -v yad >/dev/null 2>&1; then
+        yad --fixed --no-buttons --borders=0 --skip-taskbar \
+            --title="$title" --text="" \
+            --css="window,*{background-color:black;color:black;}" \
+            2>/dev/null &
+        PLACEHOLDER_PID=$!
+        tool="yad"
+    elif command -v zenity >/dev/null 2>&1; then
+        zenity --info --text=" " --title="$title" --no-wrap --timeout=86400 2>/dev/null &
+        PLACEHOLDER_PID=$!
+        tool="zenity"
+    elif command -v python3 >/dev/null 2>&1 && python3 -c "import tkinter" 2>/dev/null; then
+        python3 - "$x" "$y" "$w" "$h" <<'PYEOF' &
 import sys
 try:
     import tkinter as tk
     x, y, w, h = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
     root = tk.Tk()
+    root.title("MC-Splitscreen-Placeholder")
     root.configure(bg='black')
     root.overrideredirect(True)
     root.geometry(f'{w}x{h}+{x}+{y}')
@@ -2069,8 +2077,52 @@ try:
 except Exception:
     sys.exit(1)
 PYEOF
-    PLACEHOLDER_PID=$!
-    log_info "3-player placeholder window started (PID=$PLACEHOLDER_PID) at ${x},${y} ${w}x${h}"
+        PLACEHOLDER_PID=$!
+        tool="tkinter"
+    else
+        log_warning "No window tool for placeholder (need yad, zenity, or python3-tkinter)"
+        return 0
+    fi
+
+    log_info "3-player placeholder window started via $tool (PID=$PLACEHOLDER_PID)"
+
+    # Give the window time to appear, then use KWin to force it into P4 quadrant
+    sleep 0.5
+    local qdbus_cmd="qdbus"; command -v qdbus6 >/dev/null 2>&1 && qdbus_cmd="qdbus6"
+    local script_file="/tmp/mc-placeholder-pos-$$.js"
+    cat > "$script_file" << KWINEOF
+(function() {
+    var title = "$title";
+    var tx = $x, ty = $y, tw = $w, th = $h;
+    var wins = workspace.windowList();
+    for (var i = 0; i < wins.length; i++) {
+        var cap = wins[i].caption || "";
+        if (cap.indexOf(title) !== -1) {
+            wins[i].tile = null;
+            wins[i].noBorder = true;
+            wins[i].keepAbove = true;
+            wins[i].skipTaskbar = true;
+            wins[i].skipPager = true;
+            if (wins[i].fullScreen) wins[i].fullScreen = false;
+            var r = Object.assign({}, wins[i].frameGeometry);
+            r.x = tx; r.y = ty; r.width = tw; r.height = th;
+            wins[i].frameGeometry = r;
+            console.log("MC-Splitscreen: Placeholder placed at " + tx + "," + ty + " " + tw + "x" + th);
+            break;
+        }
+    }
+})();
+KWINEOF
+    local sname="mc-placeholder-pos-$$"
+    local sid
+    sid=$($qdbus_cmd org.kde.KWin /Scripting loadScript "$script_file" "$sname" 2>/dev/null)
+    if [ -n "$sid" ]; then
+        $qdbus_cmd org.kde.KWin "/Scripting/Script${sid}" run 2>/dev/null
+        sleep 0.2
+        $qdbus_cmd org.kde.KWin /Scripting unloadScript "$sname" 2>/dev/null
+    fi
+    rm -f "$script_file"
+    log_info "Placeholder positioned at ${x},${y} ${w}x${h} via KWin"
 }
 
 hidePlaceholderWindow() {
