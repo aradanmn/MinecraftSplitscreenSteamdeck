@@ -27,19 +27,19 @@ export target=/tmp
 # =============================
 # Function: detectLauncher
 # =============================
-# Detects PollyMC launcher for splitscreen gameplay.
+# Detects PolyMC launcher for splitscreen gameplay.
 # Returns launcher paths and executable info.
 detectLauncher() {
-    # Check if PollyMC is available
-    if [ -f "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" ] && [ -x "$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage" ]; then
-        export LAUNCHER_DIR="$HOME/.local/share/PollyMC"
-        export LAUNCHER_EXEC="$HOME/.local/share/PollyMC/PollyMC-Linux-x86_64.AppImage"
-        export LAUNCHER_NAME="PollyMC"
+    # Check if PolyMC is available.
+    if [ -f "$HOME/.local/share/PolyMC/PolyMC.AppImage" ] && [ -x "$HOME/.local/share/PolyMC/PolyMC.AppImage" ]; then
+        export LAUNCHER_DIR="$HOME/.local/share/PolyMC"
+        export LAUNCHER_EXEC="$HOME/.local/share/PolyMC/PolyMC.AppImage"
+        export LAUNCHER_NAME="PolyMC"
         return 0
     fi
     
-    echo "[Error] PollyMC not found at $HOME/.local/share/PollyMC/" >&2
-    echo "[Error] Please run the Minecraft Splitscreen installer to set up PollyMC" >&2
+    echo "[Error] PolyMC not found at $HOME/.local/share/PolyMC/" >&2
+    echo "[Error] Please run the Minecraft Splitscreen installer to set up PolyMC" >&2
     return 1
 }
 
@@ -73,18 +73,11 @@ selfUpdate() {
         # If not running in an interactive shell (no $PS1), not launched by a terminal program, and not attached to a tty,
         # then we are likely running from a GUI (e.g., .desktop launcher) and cannot prompt the user for input.
         if [ -z "$PS1" ] && [ -z "$TERM_PROGRAM" ] && ! tty -s; then
-            # Try to find a terminal emulator to relaunch the script for the update prompt.
-            # This loop checks for common terminal emulators in order of preference.
-            for term in x-terminal-emulator gnome-terminal konsole xfce4-terminal xterm; do
-                if command -v $term >/dev/null 2>&1; then
-                    # Relaunch this script in the found terminal emulator, passing all arguments.
-                    exec $term -e "$script_path" "$@"
-                fi
-            done
-            # If no terminal emulator is found, print an error and exit.
-            echo "[Self-Update] Update available, but no terminal found for prompt. Please run this script from a terminal to update." >&2
+            # Non-interactive launch (desktop shortcut/autostart/Game Mode path):
+            # do not block or abort gameplay flow for an update prompt.
+            echo "[Self-Update] Update available. Skipping prompt in non-interactive mode."
             rm -f "$tmpfile"
-            exit 1
+            return
         fi
         # --- Interactive Update Prompt ---
         # If we are running in a terminal, prompt the user for update confirmation.
@@ -107,8 +100,11 @@ selfUpdate() {
     fi
 }
 
-# Call selfUpdate at the very start of the script
-selfUpdate
+# Call selfUpdate at the very start of the script, except in the nested
+# autostart handoff path where we want deterministic immediate launch.
+if [ "${1:-}" != "launchFromPlasma" ]; then
+    selfUpdate
+fi
 
 # =============================
 # Function: nestedPlasma
@@ -152,10 +148,18 @@ EOF
 #   $1 = Launcher instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., P1)
 launchGame() {
-    if command -v kde-inhibit >/dev/null 2>&1; then
-        kde-inhibit --power --screenSaver --colorCorrect --notifications "$LAUNCHER_EXEC" -l "$1" -a "$2" &
+    echo "[Info] Launching $LAUNCHER_NAME instance '$1' with account '$2'..."
+    # Only use kde-inhibit inside KDE/Plasma sessions.
+    # On GNOME and other desktops it can exist but fail over DBus.
+    if command -v kde-inhibit >/dev/null 2>&1 && \
+       [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|PLASMA ]] ; then
+        (
+            kde-inhibit --power --screenSaver --colorCorrect --notifications \
+                "$LAUNCHER_EXEC" -l "$1" -a "$2" || \
+                "$LAUNCHER_EXEC" -l "$1" -a "$2"
+        ) >/dev/null 2>&1 &
     else
-        echo "[Warning] kde-inhibit not found. Running $LAUNCHER_NAME without KDE inhibition."
+        # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
         "$LAUNCHER_EXEC" -l "$1" -a "$2" &
     fi
     sleep 10 # Give time for the instance to start (avoid race conditions)
@@ -350,6 +354,3 @@ else
     done
     wait
 fi
-
-
-

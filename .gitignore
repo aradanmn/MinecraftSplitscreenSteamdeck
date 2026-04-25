@@ -1,15 +1,2 @@
-# Ignore everything
-*
-
-# But not these scripts and the .gitignore file itself
-!.gitignore
-!README.md
-!install-minecraft-splitscreen.sh
-!minecraftSplitscreen.sh
-!add-to-steam.py
-!accounts.json
-!.github/
-!.github/**
-!token.enc
-!modules/
-!modules/**
+__pycache__/
+**/__pycache__/
