@@ -23,6 +23,7 @@ set +e  # Allow script to continue on errors for robustness
 
 # Set a temporary directory for intermediate files (used for wrappers, etc)
 export target=/tmp
+LAUNCH_DEBUG_LOG="$HOME/.local/share/PolyMC/splitscreen-launch-debug.log"
 
 # =============================
 # Function: detectLauncher
@@ -151,10 +152,14 @@ launchGame() {
     local instance_name="$1"
     local account_name="$2"
     local joystick_device="${3:-}"
+    local controller_vidpid="${4:-}"
 
     echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
     if [ -n "$joystick_device" ]; then
         echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
+    fi
+    if [ -n "$controller_vidpid" ]; then
+        echo "[Info]   -> Restricting game controller VID/PID to: $controller_vidpid"
     fi
 
     local -a launch_cmd
@@ -165,8 +170,21 @@ launchGame() {
     local -a launch_env
     launch_env=(env)
     if [ -n "$joystick_device" ]; then
-        launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device" "SDL_JOYSTICK_LINUX_CLASSIC=1")
+        launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device")
     fi
+    if [ -n "$controller_vidpid" ]; then
+        launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=$controller_vidpid")
+    fi
+    launch_env+=("SDL_JOYSTICK_LINUX_CLASSIC=1")
+
+    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
+    {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
+        echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
+        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=${controller_vidpid:-<unset>}"
+        echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
+        echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
+    } >> "$LAUNCH_DEBUG_LOG"
 
     # Only use kde-inhibit inside KDE/Plasma sessions.
     # On GNOME and other desktops it can exist but fail over DBus.
@@ -191,28 +209,54 @@ launchGame() {
 # and duplicate joystick nodes appear, we pick every second entry to align with the
 # existing controller count halving behavior.
 getControllerDevices() {
-    local steam_running=0
     local -a js_devices
-    local -a filtered
+    local -a non_steam_virtual
+    local js
+    local vendor
+    local product
+    local base
+    local id_dir
 
     mapfile -t js_devices < <(ls /dev/input/js* 2>/dev/null | sort -V)
 
-    if pgrep -x steam >/dev/null \
-        || pgrep -f '^/app/bin/steam$' >/dev/null \
-        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null; then
-        steam_running=1
-    fi
+    for js in "${js_devices[@]}"; do
+        base="$(basename "$js")"
+        id_dir="/sys/class/input/$base/device/id"
+        vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
+        product="$(cat "$id_dir/product" 2>/dev/null || true)"
+        # Prefer non-Steam virtual pads when available.
+        if [ "$vendor" != "28de" ] || [ "$product" != "11ff" ]; then
+            non_steam_virtual+=("$js")
+        fi
+    done
 
-    if [ "$steam_running" -eq 1 ] && [ "${#js_devices[@]}" -gt 1 ]; then
-        local i
-        for ((i=0; i<${#js_devices[@]}; i+=2)); do
-            filtered+=("${js_devices[$i]}")
-        done
+    if [ "${#non_steam_virtual[@]}" -gt 0 ]; then
+        printf '%s\n' "${non_steam_virtual[@]}"
     else
-        filtered=("${js_devices[@]}")
+        printf '%s\n' "${js_devices[@]}"
     fi
+}
 
-    printf '%s\n' "${filtered[@]}"
+# Returns VID/PID in SDL hint format for a given joystick device path:
+# 0xVVVV/0xPPPP
+getJoystickVidPid() {
+    local joystick_device="$1"
+    local base
+    local id_dir
+    local vendor
+    local product
+
+    [ -n "$joystick_device" ] || return 1
+    base="$(basename "$joystick_device")"
+    id_dir="/sys/class/input/$base/device/id"
+    vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
+    product="$(cat "$id_dir/product" 2>/dev/null || true)"
+
+    if [ -n "$vendor" ] && [ -n "$product" ]; then
+        printf '0x%s/0x%s\n' "$vendor" "$product"
+        return 0
+    fi
+    return 1
 }
 
 # =============================
@@ -336,6 +380,10 @@ launchGames() {
     local -a controller_devices
     numberOfControllers=$(getControllerCount) # Detect how many players
     mapfile -t controller_devices < <(getControllerDevices)
+    if [ "${#controller_devices[@]}" -gt 0 ]; then
+        numberOfControllers="${#controller_devices[@]}"
+        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
+    fi
 
     if [ "${#controller_devices[@]}" -gt 0 ]; then
         echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
@@ -345,11 +393,13 @@ launchGames() {
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
+        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
+            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid" # Launch Minecraft instance for this player
     done
     wait # Wait for all Minecraft instances to exit
     restorePanels # Bring back KDE panels
@@ -413,6 +463,10 @@ else
     local -a controller_devices
     numberOfControllers=$(getControllerCount)
     mapfile -t controller_devices < <(getControllerDevices)
+    if [ "${#controller_devices[@]}" -gt 0 ]; then
+        numberOfControllers="${#controller_devices[@]}"
+        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
+    fi
 
     if [ "${#controller_devices[@]}" -gt 0 ]; then
         echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
@@ -422,11 +476,13 @@ else
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
+        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
+            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid"
     done
     wait
 fi
