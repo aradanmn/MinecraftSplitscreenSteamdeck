@@ -55,17 +55,9 @@ setup_steam_integration() {
         # LAUNCHER PATH DETECTION AND CONFIGURATION
         # =============================================================================
         
-        # LAUNCHER TYPE DETECTION: Determine which launcher is active for Steam integration
-        # The Steam shortcut needs to point to the correct launcher executable and script
-        # Path fragments are used by the duplicate detection system
-        local launcher_path=""
-        if [[ "$USE_POLLYMC" == true ]]; then
-            launcher_path="local/share/PollyMC/minecraft"  # PollyMC path signature for duplicate detection
-            print_info "Configuring Steam integration for PollyMC launcher"
-        else
-            launcher_path="local/share/PrismLauncher/minecraft"  # PrismLauncher path signature
-            print_info "Configuring Steam integration for PrismLauncher"
-        fi
+        # Use PolyMC path signature for duplicate detection.
+        local launcher_path="local/share/PolyMC/minecraft"
+        print_info "Configuring Steam integration for PolyMC"
         
         # =============================================================================
         # DUPLICATE SHORTCUT PREVENTION
@@ -181,12 +173,12 @@ setup_steam_integration() {
             # STEAM INTEGRATION SCRIPT EXECUTION
             # =============================================================================
             
-            # PYTHON INTEGRATION SCRIPT: Download and execute Steam shortcut creation tool
-            # Uses the official add-to-steam.py script from the repository
+            # PYTHON INTEGRATION SCRIPT: Execute Steam shortcut creation tool.
+            # Prefer local repository copy for version consistency; fall back to download.
             # This script handles the complex shortcuts.vdf binary format safely
             # Includes automatic artwork download from SteamGridDB for professional appearance
             print_progress "Running Steam integration script to add Minecraft Splitscreen..."
-            print_info "   → Downloading launcher detection and shortcut creation script"
+            print_info "   → Preparing launcher detection and shortcut creation script"
             print_info "   → Modifying Steam shortcuts.vdf binary database"
             print_info "   → Downloading custom artwork from SteamGridDB"
             
@@ -198,8 +190,15 @@ setup_steam_integration() {
             # Disable strict error handling for script download and execution
             set +e
             
-            print_info "   → Downloading Steam integration script..."
-            if curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp" 2>/dev/null; then
+            if [[ -f "${SCRIPT_DIR:-}/add-to-steam.py" ]]; then
+                print_info "   → Using local add-to-steam.py from repository checkout"
+                cp "${SCRIPT_DIR}/add-to-steam.py" "$steam_script_temp"
+            else
+                print_info "   → Downloading Steam integration script..."
+            fi
+
+            if [[ -s "$steam_script_temp" ]] || \
+               curl -sSL https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/add-to-steam.py -o "$steam_script_temp" 2>/dev/null; then
                 print_info "   → Executing Steam integration script..."
                 # Execute the downloaded script with proper error handling
                 if python3 "$steam_script_temp" 2>/dev/null; then
@@ -209,7 +208,7 @@ setup_steam_integration() {
                 else
                     print_warning "⚠️  Steam integration script encountered errors"
                     print_info "   → You may need to add the shortcut manually"
-                    print_info "   → Common causes: PollyMC not found, Steam not installed, or permissions issues"
+                    print_info "   → Common causes: PolyMC not found, Steam not installed, or permissions issues"
                 fi
             else
                 print_warning "⚠️  Failed to download Steam integration script"
