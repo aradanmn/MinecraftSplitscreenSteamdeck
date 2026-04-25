@@ -199,10 +199,10 @@ Note: Steam library shortcuts are not edited automatically. Remove the Minecraft
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
 ## TODO
-- **Figure out a way to handle steam deck controller without needing to disable it for the whole system** - Find a method to selectively disable the Steam Deck controller only for splitscreen sessions while keeping it available for other games, and somehow figure out how to use Steam Deck controller with other controllers at the same time, as well as have the usecase with no Steam Deck controller at all and just the external controllers
 - **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
 
 ## Recent Improvements
+- ✅ **Steam Deck Controller Handling Improved**: Added per-instance controller filtering so Steam Deck controls no longer need to be disabled system-wide for splitscreen sessions
 - ✅ **Automatic Java Installation**: No manual Java setup required - the installer automatically detects, downloads, and installs the correct Java version for your chosen Minecraft version
 - ✅ **Automatic Java Version Detection**: Automatically detects and uses the correct Java version for each Minecraft version (Java 8, 16, 17, or 21) with smart backward compatibility
 - ✅ **Intelligent Version Selection**: Only Minecraft versions supported by both Controllable and Splitscreen Support mods are offered to users, ensuring full compatibility
