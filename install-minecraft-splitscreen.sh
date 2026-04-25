@@ -63,7 +63,6 @@ readonly MODULE_FILES=(
     "lwjgl_management.sh"
     "mod_management.sh"
     "instance_creation.sh"
-    "pollymc_setup.sh"
     "steam_integration.sh"
     "desktop_launcher.sh"
     "main_workflow.sh"
@@ -179,7 +178,6 @@ source "$MODULES_DIR/version_management.sh"
 source "$MODULES_DIR/lwjgl_management.sh"
 source "$MODULES_DIR/mod_management.sh"
 source "$MODULES_DIR/instance_creation.sh"
-source "$MODULES_DIR/pollymc_setup.sh"
 source "$MODULES_DIR/steam_integration.sh"
 source "$MODULES_DIR/desktop_launcher.sh"
 source "$MODULES_DIR/main_workflow.sh"
@@ -189,15 +187,13 @@ source "$MODULES_DIR/main_workflow.sh"
 # =============================================================================
 
 # Script configuration paths
-readonly TARGET_DIR="$HOME/.local/share/PrismLauncher"
-readonly POLLYMC_DIR="$HOME/.local/share/PollyMC"
+readonly TARGET_DIR="$HOME/.local/share/PolyMC"
 
 # Runtime variables (set during execution)
 JAVA_PATH=""
 MC_VERSION=""
 FABRIC_VERSION=""
 LWJGL_VERSION=""
-USE_POLLYMC=false
 
 # Mod configuration arrays
 declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")

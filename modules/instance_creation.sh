@@ -14,7 +14,7 @@
 # =============================================================================
 
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
-# Uses PrismLauncher CLI when possible, falls back to manual creation if needed
+# Uses PolyMC CLI when possible, falls back to manual creation if needed
 # Each instance gets the same mods but separate configurations for splitscreen
 create_instances() {
     print_header "🚀 CREATING MINECRAFT INSTANCES"
@@ -41,26 +41,14 @@ create_instances() {
     # Ensure instances directory exists
     mkdir -p "$TARGET_DIR/instances"
     
-    # Check if we're updating existing instances
-    # We need to check both PrismLauncher and PollyMC directories
+    # Check if we're updating existing PolyMC instances.
     local existing_instances=0
-    local pollymc_dir="$HOME/.local/share/PollyMC"
     local instances_dir="$TARGET_DIR/instances"
-    local using_pollymc=false
     
     for i in {1..4}; do
         local instance_name="latestUpdate-$i"
-        # Check in current TARGET_DIR (PrismLauncher)
         if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
             existing_instances=$((existing_instances + 1))
-        # Also check in PollyMC directory (for subsequent runs)
-        elif [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
-            existing_instances=$((existing_instances + 1))
-            if [[ "$using_pollymc" == "false" ]]; then
-                instances_dir="$pollymc_dir/instances"
-                using_pollymc=true
-                print_info "Found existing instances in PollyMC directory"
-            fi
         fi
     done
     
@@ -70,18 +58,6 @@ create_instances() {
         print_info "   → Your existing options.txt settings will be preserved"
         print_info "   → Instance configurations will be updated to new versions"
         
-        # If we're updating from PollyMC, copy instances to working directory
-        if [[ "$using_pollymc" == "true" ]]; then
-            print_info "   → Copying instances from PollyMC to workspace for processing..."
-            for i in {1..4}; do
-                local instance_name="latestUpdate-$i"
-                if [[ -d "$pollymc_dir/instances/$instance_name" ]]; then
-                    cp -r "$pollymc_dir/instances/$instance_name" "$TARGET_DIR/instances/"
-                fi
-            done
-            # Now use the TARGET_DIR for processing
-            instances_dir="$TARGET_DIR/instances"
-        fi
     else
         print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
     fi
@@ -109,11 +85,11 @@ create_instances() {
         print_progress "Creating Minecraft $MC_VERSION instance with Fabric..."
         local cli_success=false
         
-        # Check if PrismLauncher executable exists and is accessible
+        # Check if PolyMC executable exists and is accessible
         local prism_exec
         if prism_exec=$(get_prism_executable) && [[ -x "$prism_exec" ]]; then
             # Try multiple CLI creation approaches with progressively fewer parameters
-            # This handles different PrismLauncher versions that may have varying CLI support
+            # This handles different PolyMC versions that may have varying CLI support
             
             print_info "Attempting CLI instance creation..."
             
@@ -148,12 +124,12 @@ create_instances() {
             # Re-enable strict error handling
             set -e
         else
-            print_info "PrismLauncher executable not available, using manual method"
+            print_info "PolyMC executable not available, using manual method"
         fi
         
         # FALLBACK: Manual instance creation when CLI methods fail
         # This creates instances manually by writing configuration files directly
-        # This ensures compatibility even with older PrismLauncher versions that lack CLI support
+        # This ensures compatibility even with older PolyMC versions that lack CLI support
         if [[ "$cli_success" == false ]]; then
             print_info "Using manual instance creation method..."
             local instance_dir="$TARGET_DIR/instances/$instance_name"
@@ -170,7 +146,7 @@ create_instances() {
                 continue  # Skip to next instance
             }
             
-            # Create instance.cfg - PrismLauncher's main instance configuration file
+            # Create instance.cfg - PolyMC's main instance configuration file
             # This file defines the instance metadata, version, and launcher settings
             cat > "$instance_dir/instance.cfg" <<EOF
 InstanceType=OneSix
@@ -180,11 +156,14 @@ OverrideCommands=false
 OverrideConsole=false
 OverrideGameTime=false
 OverrideJavaArgs=false
-OverrideJavaLocation=false
+OverrideJavaLocation=true
 OverrideMCLaunchMethod=false
-OverrideMemory=false
+OverrideMemory=true
 OverrideNativeWorkarounds=false
 OverrideWindow=false
+JavaPath=$JAVA_PATH
+MinMemAlloc=512
+MaxMemAlloc=4096
 IntendedVersion=$MC_VERSION
 EOF
             
@@ -193,7 +172,7 @@ EOF
                 continue  # Skip to next instance
             fi
             
-            # Create mmc-pack.json - MultiMC/PrismLauncher component definition file
+            # Create mmc-pack.json - MultiMC/PolyMC component definition file
             # This file defines the mod loader stack: LWJGL3 → Minecraft → Intermediary → Fabric
             # Components are loaded in dependency order to ensure proper mod support
             cat > "$instance_dir/mmc-pack.json" <<EOF
@@ -288,7 +267,7 @@ EOF
 # Install Fabric mod loader and download all selected mods for an instance
 # This function ensures each instance has the proper mod loader and all compatible mods
 # Parameters:
-#   $1 - instance_dir: Path to the PrismLauncher instance directory
+#   $1 - instance_dir: Path to the PolyMC instance directory
 #   $2 - instance_name: Display name of the instance for logging
 #   $3 - preserve_options: Whether to preserve existing options.txt (true/false)
 install_fabric_and_mods() {
@@ -792,6 +771,21 @@ handle_instance_update() {
     if [[ -f "$instance_dir/instance.cfg" ]]; then
         # Update the IntendedVersion line
         sed -i "s/^IntendedVersion=.*/IntendedVersion=$MC_VERSION/" "$instance_dir/instance.cfg"
+        sed -i "s|^OverrideJavaLocation=.*|OverrideJavaLocation=true|" "$instance_dir/instance.cfg"
+        sed -i "s|^OverrideMemory=.*|OverrideMemory=true|" "$instance_dir/instance.cfg"
+
+        if grep -q "^JavaPath=" "$instance_dir/instance.cfg"; then
+            sed -i "s|^JavaPath=.*|JavaPath=$JAVA_PATH|" "$instance_dir/instance.cfg"
+        else
+            echo "JavaPath=$JAVA_PATH" >> "$instance_dir/instance.cfg"
+        fi
+
+        if ! grep -q "^MinMemAlloc=" "$instance_dir/instance.cfg"; then
+            echo "MinMemAlloc=512" >> "$instance_dir/instance.cfg"
+        fi
+        if ! grep -q "^MaxMemAlloc=" "$instance_dir/instance.cfg"; then
+            echo "MaxMemAlloc=4096" >> "$instance_dir/instance.cfg"
+        fi
         print_success "✅ Instance configuration updated"
     fi
     
