@@ -1,10 +1,10 @@
 # Minecraft Splitscreen Steam Deck & Linux Installer
 
-This project provides an easy way to set up splitscreen Minecraft on Steam Deck and Linux using an optimized dual-launcher approach. It supports 1–4 players, controller detection, and seamless integration with Steam Game Mode and your desktop environment.
+This project provides an easy way to set up splitscreen Minecraft on Steam Deck and Linux using a PolyMC-first approach. It supports 1–4 players, controller detection, and seamless integration with Steam Game Mode and your desktop environment.
 
 ## Features
 - **Automatic Java Installation:** Detects required Java version and installs automatically (no manual setup required)
-- **Optimized Installation:** Uses PrismLauncher for automated instance creation, then switches to PollyMC for gameplay
+- **Optimized Installation:** Uses PolyMC for automated instance creation and gameplay
 - Launch 1–4 Minecraft instances in splitscreen mode with proper Fabric support
 - Automatic controller detection and per-player config
 - Works on Steam Deck (Game Mode & Desktop Mode) and any Linux PC
@@ -22,31 +22,14 @@ This project provides an easy way to set up splitscreen Minecraft on Steam Deck 
 - *Steam Deck users: For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. See [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller).*
 
 ## Installation Process
-The installer uses an **optimized hybrid approach** combining the strengths of two different launchers:
+The installer uses a **PolyMC-only approach**:
 
-### Why the Hybrid Approach?
-
-Both launchers are essentially the same program with one key difference:
-
-**PrismLauncher** has excellent automation but requires Minecraft licenses:
-- ✅ **Excellent CLI automation** - Reliable command-line instance creation
-- ✅ **Robust Fabric integration** - Proper mod loader dependency chains
-- ❌ **Requires Minecraft license** - Must link a paid Microsoft account before creating offline accounts
-
-**PollyMC** is identical but doesn't require licenses:
-- ✅ **No license verification** - Can create offline accounts immediately without any Microsoft account linking
-- ❌ **No CLI automation** - Manual setup required for instances
-
-### Our Solution: Best of Both Worlds
-
-1. **PrismLauncher CLI** - For automated instance creation with proper Fabric setup
-2. **PollyMC** - For splitscreen gameplay (no forced login, offline-friendly)
-3. **Smart Cleanup** - Removes PrismLauncher after successful PollyMC setup
-
-This hybrid approach ensures reliable automated installation while providing the optimal splitscreen gaming experience.
+1. **PolyMC CLI** - Automated instance creation with proper Fabric setup
+2. **PolyMC gameplay** - Single launcher path for launch, updates, and management
+3. **Smart Cleanup** - Removes temporary installer files after setup
 
 ## What gets installed
-- [PollyMC](https://github.com/fn2006/PollyMC) AppImage (primary launcher)
+- [PolyMC](https://github.com/PolyMC/PolyMC) AppImage (primary launcher)
 - **Minecraft version:** User-selectable (defaults to latest stable release, with 4 separate instances for splitscreen)
 - **Fabric Loader:** Complete dependency chain including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader
 - **Mods included (automatically installed):**
@@ -75,13 +58,13 @@ This hybrid approach ensures reliable automated installation while providing the
   - *Note: These dependencies are automatically downloaded when a mod that requires them is selected*
 
 ## Installation Features
-- **CLI-driven instance creation:** Automated setup using PrismLauncher's command-line interface
+- **CLI-driven instance creation:** Automated setup using PolyMC's command-line interface
 - **Intelligent version selection:** Only offers Minecraft versions that are fully compatible with both required splitscreen mods (Controllable and Splitscreen Support)
 - **Fabric compatibility verification:** All mods are filtered to ensure they're Fabric-compatible versions
 - **Automatic dependency resolution:** Uses Modrinth and CurseForge APIs to automatically discover and install all required mod dependencies
 - **Dependency chain validation:** Proper Fabric Loader setup with LWJGL 3, Intermediary Mappings, and all required dependencies
 - **Fallback mechanisms:** Manual instance creation if CLI fails, with multiple retry strategies
-- **Smart cleanup:** Automatically removes temporary PrismLauncher files after successful PollyMC setup
+- **Smart cleanup:** Automatically removes temporary installer files after successful setup
 
 ## Installation
 1. **Download and run the installer:**
@@ -122,9 +105,9 @@ This hybrid approach ensures reliable automated installation while providing the
      - Choose "y" to create a desktop shortcut and add to your applications menu
      - Choose "n" if you only want to launch from Steam or manually
    - **Installation progress:** The installer will show detailed progress including:
-     - PrismLauncher download and CLI verification
+     - PolyMC download and CLI verification
      - Instance creation (4 separate Minecraft instances for splitscreen)
-     - PollyMC download and configuration
+     - PolyMC download and configuration
      - Automatic Java version detection and installation (if needed)
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
@@ -148,9 +131,9 @@ This hybrid approach ensures reliable automated installation while providing the
 - **Steam Deck users:** For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. Use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) to automate this process.
 
 ## Installation Locations
-- **Primary installation:** `~/.local/share/PollyMC/` (instances, launcher, and game files)
+- **Primary installation:** `~/.local/share/PolyMC/` (instances, launcher, and game files)
 - **Temporary files:** Automatically cleaned up after successful installation
-- **Launcher script:** `~/.local/share/PollyMC/minecraftSplitscreen.sh`
+- **Launcher script:** `~/.local/share/PolyMC/minecraftSplitscreen.sh`
 
 ## Troubleshooting
 - **Java installation issues:**
@@ -186,13 +169,24 @@ To update your Minecraft version or mod configuration:
    - Preserve all your existing worlds
 
 ## Uninstall
-- Delete the PollyMC folder: `rm -rf ~/.local/share/PollyMC`
-- Remove any desktop or Steam shortcuts you created.
+Run the uninstall script:
+```sh
+wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/uninstall-minecraft-splitscreen.sh
+chmod +x uninstall-minecraft-splitscreen.sh
+./uninstall-minecraft-splitscreen.sh
+```
+
+Optional flags:
+- `--yes` to skip confirmation
+- `--dry-run` to preview what would be removed
+- `--keep-data` to remove launchers/shortcuts but keep instances, worlds, and accounts
+
+Note: Steam library shortcuts are not edited automatically. Remove the Minecraft Splitscreen shortcut manually from Steam if needed.
 
 ## Credits
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen) (original concept/script, but this project is mostly a full rewrite).
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
-- Uses [PollyMC](https://github.com/fn2006/PollyMC) for gameplay and [PrismLauncher](https://github.com/PrismLauncher/PrismLauncher) for instance creation.
+- Uses [PolyMC](https://github.com/PolyMC/PolyMC) for both instance creation and gameplay.
 - Steam Deck Java installation script by [FlyingEwok](https://github.com/FlyingEwok/install-jdk-on-steam-deck) - provides seamless Java installation for Steam Deck's read-only filesystem with automatic version detection.
 - Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
 
@@ -200,7 +194,7 @@ To update your Minecraft version or mod configuration:
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
 - **API Filtering:** Both Modrinth and CurseForge APIs are filtered to only download Fabric-compatible mod versions
 - **Automatic Dependency Resolution:** Recursively resolves all mod dependencies using live API calls, eliminating the need to manually maintain dependency lists
-- **Optimized Launcher Strategy:** Combines PrismLauncher's reliable CLI automation with PollyMC's offline-friendly gameplay approach
+- **Optimized Launcher Strategy:** Uses PolyMC's reliable CLI automation and gameplay flow
 - **Smart Cleanup:** Automatically removes temporary build files and directories after successful setup
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
