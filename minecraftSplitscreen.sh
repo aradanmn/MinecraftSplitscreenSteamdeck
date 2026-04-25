@@ -148,21 +148,71 @@ EOF
 #   $1 = Launcher instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., P1)
 launchGame() {
-    echo "[Info] Launching $LAUNCHER_NAME instance '$1' with account '$2'..."
+    local instance_name="$1"
+    local account_name="$2"
+    local joystick_device="${3:-}"
+
+    echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
+    if [ -n "$joystick_device" ]; then
+        echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
+    fi
+
+    local -a launch_cmd
+    launch_cmd=("$LAUNCHER_EXEC" -l "$instance_name" -a "$account_name")
+
+    # SDL hint used by Controllable's bundled SDL backend. This constrains each process
+    # to a single joystick path to reduce cross-instance controller collisions.
+    local -a launch_env
+    launch_env=(env)
+    if [ -n "$joystick_device" ]; then
+        launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device" "SDL_JOYSTICK_LINUX_CLASSIC=1")
+    fi
+
     # Only use kde-inhibit inside KDE/Plasma sessions.
     # On GNOME and other desktops it can exist but fail over DBus.
     if command -v kde-inhibit >/dev/null 2>&1 && \
        [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|PLASMA ]] ; then
         (
             kde-inhibit --power --screenSaver --colorCorrect --notifications \
-                "$LAUNCHER_EXEC" -l "$1" -a "$2" || \
-                "$LAUNCHER_EXEC" -l "$1" -a "$2"
+                "${launch_env[@]}" "${launch_cmd[@]}" || \
+                "${launch_env[@]}" "${launch_cmd[@]}"
         ) >/dev/null 2>&1 &
     else
         # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
-        "$LAUNCHER_EXEC" -l "$1" -a "$2" &
+        "${launch_env[@]}" "${launch_cmd[@]}" &
     fi
     sleep 10 # Give time for the instance to start (avoid race conditions)
+}
+
+# =============================
+# Function: getControllerDevices
+# =============================
+# Builds an ordered list of joystick devices to map to players. When Steam is running
+# and duplicate joystick nodes appear, we pick every second entry to align with the
+# existing controller count halving behavior.
+getControllerDevices() {
+    local steam_running=0
+    local -a js_devices
+    local -a filtered
+
+    mapfile -t js_devices < <(ls /dev/input/js* 2>/dev/null | sort -V)
+
+    if pgrep -x steam >/dev/null \
+        || pgrep -f '^/app/bin/steam$' >/dev/null \
+        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null; then
+        steam_running=1
+    fi
+
+    if [ "$steam_running" -eq 1 ] && [ "${#js_devices[@]}" -gt 1 ]; then
+        local i
+        for ((i=0; i<${#js_devices[@]}; i+=2)); do
+            filtered+=("${js_devices[$i]}")
+        done
+    else
+        filtered=("${js_devices[@]}")
+    fi
+
+    printf '%s\n' "${filtered[@]}"
 }
 
 # =============================
@@ -283,10 +333,23 @@ setSplitscreenModeForPlayer() {
 # Handles all splitscreen logic and per-player config.
 launchGames() {
     hidePanels # Remove KDE panels for a clean game view
+    local -a controller_devices
     numberOfControllers=$(getControllerCount) # Detect how many players
+    mapfile -t controller_devices < <(getControllerDevices)
+
+    if [ "${#controller_devices[@]}" -gt 0 ]; then
+        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
+    else
+        echo "[Info] No joystick devices detected for per-instance input pinning"
+    fi
+
     for player in $(seq 1 $numberOfControllers); do
+        local joystick_device=""
+        if [ "$player" -le "${#controller_devices[@]}" ]; then
+            joystick_device="${controller_devices[$((player-1))]}"
+        fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" # Launch Minecraft instance for this player
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
     done
     wait # Wait for all Minecraft instances to exit
     restorePanels # Bring back KDE panels
@@ -347,10 +410,23 @@ if isSteamDeckGameMode; then
     fi
 else
     # Not in Game Mode: just launch Minecraft instances directly
+    local -a controller_devices
     numberOfControllers=$(getControllerCount)
+    mapfile -t controller_devices < <(getControllerDevices)
+
+    if [ "${#controller_devices[@]}" -gt 0 ]; then
+        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
+    else
+        echo "[Info] No joystick devices detected for per-instance input pinning"
+    fi
+
     for player in $(seq 1 $numberOfControllers); do
+        local joystick_device=""
+        if [ "$player" -le "${#controller_devices[@]}" ]; then
+            joystick_device="${controller_devices[$((player-1))]}"
+        fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player"
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
     done
     wait
 fi
