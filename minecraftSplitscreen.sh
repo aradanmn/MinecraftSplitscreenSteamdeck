@@ -175,13 +175,16 @@ launchGame() {
     if [ -n "$controller_vidpid" ]; then
         launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=$controller_vidpid")
     fi
-    launch_env+=("SDL_JOYSTICK_LINUX_CLASSIC=1")
+    # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
+    # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
+    launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
 
     mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
     {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
         echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
         echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=${controller_vidpid:-<unset>}"
+        echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
         echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
         echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
     } >> "$LAUNCH_DEBUG_LOG"
