@@ -212,7 +212,9 @@ launchGame() {
 # existing controller count halving behavior.
 getControllerDevices() {
     local -a js_devices
-    local -a non_steam_virtual
+    local -a external_devices
+    local -a deck_devices
+    local -a steam_virtual_devices
     local js
     local vendor
     local product
@@ -226,14 +228,25 @@ getControllerDevices() {
         id_dir="/sys/class/input/$base/device/id"
         vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
         product="$(cat "$id_dir/product" 2>/dev/null || true)"
-        # Prefer non-Steam virtual pads when available.
-        if [ "$vendor" != "28de" ] || [ "$product" != "11ff" ]; then
-            non_steam_virtual+=("$js")
+        # Steam virtual pads are 28de:11ff and often appear in duplicate.
+        if [ "$vendor" = "28de" ] && [ "$product" = "11ff" ]; then
+            steam_virtual_devices+=("$js")
+        # On Steam Deck, vendor 28de (non-11ff) is Deck/Valve-origin input.
+        elif [ "$vendor" = "28de" ]; then
+            deck_devices+=("$js")
+        # Prefer third-party external controllers whenever present.
+        else
+            external_devices+=("$js")
         fi
     done
 
-    if [ "${#non_steam_virtual[@]}" -gt 0 ]; then
-        printf '%s\n' "${non_steam_virtual[@]}"
+    if [ "${#external_devices[@]}" -gt 0 ]; then
+        printf '%s\n' "${external_devices[@]}"
+    elif [ "${#deck_devices[@]}" -gt 0 ]; then
+        printf '%s\n' "${deck_devices[@]}"
+    elif [ "${#steam_virtual_devices[@]}" -gt 0 ]; then
+        # Only expose one virtual pad node to avoid duplicate assignment.
+        printf '%s\n' "${steam_virtual_devices[0]}"
     else
         printf '%s\n' "${js_devices[@]}"
     fi
