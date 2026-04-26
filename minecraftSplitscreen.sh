@@ -152,14 +152,10 @@ launchGame() {
     local instance_name="$1"
     local account_name="$2"
     local joystick_device="${3:-}"
-    local controller_vidpid="${4:-}"
 
     echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
     if [ -n "$joystick_device" ]; then
         echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
-    fi
-    if [ -n "$controller_vidpid" ]; then
-        echo "[Info]   -> Restricting game controller VID/PID to: $controller_vidpid"
     fi
 
     local -a launch_cmd
@@ -172,12 +168,11 @@ launchGame() {
     if [ -n "$joystick_device" ]; then
         launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device")
     fi
-    if [ -n "$controller_vidpid" ]; then
-        launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=$controller_vidpid")
-    fi
     # Steam can inject a very large SDL_GAMECONTROLLER_IGNORE_DEVICES blacklist that may
-    # include perfectly valid controllers. Clear it so our per-instance allowlist can work.
+    # include perfectly valid controllers. Clear it for launched instances.
     launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
+    # Prefer physical controllers over Steam virtual pads in Controllable.
+    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0")
     # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
     # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
     launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
@@ -186,8 +181,8 @@ launchGame() {
     {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
         echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
-        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=${controller_vidpid:-<unset>}"
         echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
+        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0"
         echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
         echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
         echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
@@ -242,28 +237,6 @@ getControllerDevices() {
     else
         printf '%s\n' "${js_devices[@]}"
     fi
-}
-
-# Returns VID/PID in SDL hint format for a given joystick device path:
-# 0xVVVV/0xPPPP
-getJoystickVidPid() {
-    local joystick_device="$1"
-    local base
-    local id_dir
-    local vendor
-    local product
-
-    [ -n "$joystick_device" ] || return 1
-    base="$(basename "$joystick_device")"
-    id_dir="/sys/class/input/$base/device/id"
-    vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
-    product="$(cat "$id_dir/product" 2>/dev/null || true)"
-
-    if [ -n "$vendor" ] && [ -n "$product" ]; then
-        printf '0x%s/0x%s\n' "$vendor" "$product"
-        return 0
-    fi
-    return 1
 }
 
 # =============================
@@ -400,13 +373,11 @@ launchGames() {
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
-        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
-            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid" # Launch Minecraft instance for this player
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
     done
     wait # Wait for all Minecraft instances to exit
     restorePanels # Bring back KDE panels
@@ -483,13 +454,11 @@ else
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
-        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
-            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid"
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
     done
     wait
 fi
