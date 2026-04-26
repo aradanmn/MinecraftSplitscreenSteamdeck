@@ -112,11 +112,11 @@ The installer uses a **PolyMC-only approach**:
      - Mod downloads with Fabric compatibility verification
      - Automatic cleanup of temporary files
 
-5. **Steam Deck only - Install Steam Deck controller auto-disable (required):**
+5. **Steam Deck only - Install Steam Deck controller auto-disable (optional):**
    ```sh
    curl -sSL https://raw.githubusercontent.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller/main/curl_install.sh | bash
    ```
-   This automatically disables the built-in Steam Deck controller when external controllers are connected, which is essential for proper splitscreen controller counting. **This step is only needed on Steam Deck.**
+   This automatically disables the built-in Steam Deck controller when external controllers are connected. This can still be useful as a fallback, but it is no longer required for normal per-instance controller mapping. **This step is only relevant on Steam Deck.**
 
 ## Technical Details
 - **Mod Compatibility:** Uses both Modrinth and CurseForge APIs with Fabric filtering (`modLoaderType=4` for CurseForge, `.loaders[] == "fabric"` for Modrinth)
@@ -128,7 +128,7 @@ The installer uses a **PolyMC-only approach**:
 - Launch the game from Steam, your desktop menu, or the generated desktop shortcut.
 - The script will detect controllers and launch the correct number of Minecraft instances.
 - On Steam Deck Game Mode, it will use a nested KDE session for best compatibility.
-- **Steam Deck users:** For proper controller counting, you must disable the built-in Steam Deck controller when an external controller is connected. Use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) to automate this process.
+- **Steam Deck users:** The launcher now prioritizes external controllers for instance assignment. If you still see edge-case mapping conflicts on your setup, you can optionally use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) as a fallback.
 
 ## Installation Locations
 - **Primary installation:** `~/.local/share/PolyMC/` (instances, launcher, and game files)
@@ -143,6 +143,8 @@ The installer uses a **PolyMC-only approach**:
   - Steam Deck users can use the [install-jdk-on-steam-deck](https://github.com/FlyingEwok/install-jdk-on-steam-deck) script separately if needed
 - **Controller issues:**
   - Make sure controllers are connected before launching.
+  - Avoid manually assigning controllers in Controllable unless needed for troubleshooting; stale manual selections can override automatic per-instance mapping.
+  - Relaunch after connecting/disconnecting controllers so device ordering is recalculated cleanly.
 
 ## Updating
 
@@ -188,7 +190,7 @@ Note: Steam library shortcuts are not edited automatically. Remove the Minecraft
 - Additional contributions by [FlyingEwok](https://github.com/FlyingEwok) and others.
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC) for both instance creation and gameplay.
 - Steam Deck Java installation script by [FlyingEwok](https://github.com/FlyingEwok/install-jdk-on-steam-deck) - provides seamless Java installation for Steam Deck's read-only filesystem with automatic version detection.
-- Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - automatically disables built-in Steam Deck controller when external controllers are connected, essential for proper splitscreen controller counting.
+- Steam Deck controller auto-disable tool by [scawp](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) - optionally disables the built-in Steam Deck controller when external controllers are connected, useful as a fallback on setups with edge-case mapping conflicts.
 
 ## Technical Improvements
 - **Complete Fabric Dependency Chain:** Ensures mods load and function correctly by including LWJGL 3, Minecraft, Intermediary Mappings, and Fabric Loader with proper dependency references
@@ -199,9 +201,10 @@ Note: Steam library shortcuts are not edited automatically. Remove the Minecraft
 - **Enhanced Error Handling:** Multiple fallback mechanisms and retry strategies for robust installation
 
 ## TODO
-- **Figure out preconfiguring controllers within controllable (if possible)** - Investigate automatic controller assignment configuration to avoid having Controllable grab the same controllers as all the other instances, ensuring each player gets their own dedicated controller
+- [x] **Prevent Controllable from assigning the same controller to multiple instances** - Completed via per-instance SDL joystick pinning, external-controller prioritization, stale Controllable selection cleanup, and launch-sequencing isolation fixes.
 
 ## Recent Improvements
+- ✅ **Issue #2 Resolved (Unique Controller Per Instance):** Multi-instance controller assignment now reliably pins one external controller per running instance without reusing the same controller across players
 - ✅ **Steam Deck Controller Handling Improved**: Added per-instance controller filtering so Steam Deck controls no longer need to be disabled system-wide for splitscreen sessions
 - ✅ **Automatic Java Installation**: No manual Java setup required - the installer automatically detects, downloads, and installs the correct Java version for your chosen Minecraft version
 - ✅ **Automatic Java Version Detection**: Automatically detects and uses the correct Java version for each Minecraft version (Java 8, 16, 17, or 21) with smart backward compatibility
