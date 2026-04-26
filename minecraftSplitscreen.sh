@@ -252,6 +252,51 @@ getControllerDevices() {
     fi
 }
 
+# Upsert a key/value in a PolyMC instance.cfg file.
+setInstanceCfgValue() {
+    local cfg_path="$1"
+    local key="$2"
+    local value="$3"
+
+    [ -f "$cfg_path" ] || return 1
+
+    if grep -q "^${key}=" "$cfg_path"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$cfg_path"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$cfg_path"
+    fi
+}
+
+# Configure per-instance wrapper command so controller pinning is applied at the
+# actual game process level (instead of only the launcher process environment).
+configureInstanceControllerWrapper() {
+    local instance_name="$1"
+    local joystick_device="${2:-}"
+    local cfg_path="$LAUNCHER_DIR/instances/${instance_name}/instance.cfg"
+    local wrapper_cmd=""
+
+    [ -f "$cfg_path" ] || return 0
+
+    if [ -n "$joystick_device" ]; then
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
+        setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
+        setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
+    else
+        # No pinning target for this instance; clear wrapper override.
+        setInstanceCfgValue "$cfg_path" "OverrideCommands" "false"
+        setInstanceCfgValue "$cfg_path" "WrapperCommand" ""
+    fi
+}
+
+# Controllable persists manually selected controllers per instance. If this file
+# is stale (e.g., both instances saved as Steam Deck), it can override launch-time
+# device filtering and cause every instance to grab the same controller.
+clearControllableSelection() {
+    local instance_name="$1"
+    local selected_file="$LAUNCHER_DIR/instances/${instance_name}/.minecraft/config/controllable/selected_controllers.json"
+    rm -f "$selected_file"
+}
+
 # =============================
 # Function: hidePanels
 # =============================
@@ -389,6 +434,8 @@ launchGames() {
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
         fi
+        clearControllableSelection "latestUpdate-$player"
+        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
         launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
     done
@@ -470,6 +517,8 @@ else
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
         fi
+        clearControllableSelection "latestUpdate-$player"
+        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
         launchGame "latestUpdate-$player" "P$player" "$joystick_device"
     done
