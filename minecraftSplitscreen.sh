@@ -152,14 +152,10 @@ launchGame() {
     local instance_name="$1"
     local account_name="$2"
     local joystick_device="${3:-}"
-    local controller_vidpid="${4:-}"
 
     echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
     if [ -n "$joystick_device" ]; then
         echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
-    fi
-    if [ -n "$controller_vidpid" ]; then
-        echo "[Info]   -> Restricting game controller VID/PID to: $controller_vidpid"
     fi
 
     local -a launch_cmd
@@ -172,16 +168,26 @@ launchGame() {
     if [ -n "$joystick_device" ]; then
         launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device")
     fi
-    if [ -n "$controller_vidpid" ]; then
-        launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=$controller_vidpid")
-    fi
-    launch_env+=("SDL_JOYSTICK_LINUX_CLASSIC=1")
+    # Steam can inject a very large SDL_GAMECONTROLLER_IGNORE_DEVICES blacklist that may
+    # include perfectly valid controllers. Clear it for launched instances.
+    launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
+    # Prefer physical controllers over Steam virtual pads in Controllable.
+    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0")
+    # Force SDL to use Linux joystick devices instead of HIDAPI so SDL_JOYSTICK_DEVICE
+    # pinning is applied per instance.
+    launch_env+=("SDL_JOYSTICK_HIDAPI=0")
+    # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
+    # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
+    launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
 
     mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
     {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
         echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
-        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=${controller_vidpid:-<unset>}"
+        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
+        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0"
+        echo "  SDL_JOYSTICK_HIDAPI=0"
+        echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
         echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
         echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
     } >> "$LAUNCH_DEBUG_LOG"
@@ -199,7 +205,49 @@ launchGame() {
         # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
         "${launch_env[@]}" "${launch_cmd[@]}" &
     fi
-    sleep 10 # Give time for the instance to start (avoid race conditions)
+    # Wait for this specific instance's Java process to appear so the next
+    # player's pre-launch frontend prune won't kill this launch too early.
+    local launch_started=0
+    local _i
+    for _i in $(seq 1 120); do
+        if pgrep -af "instances/${instance_name}/natives" >/dev/null 2>&1; then
+            launch_started=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [ "$launch_started" -eq 0 ]; then
+        {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Java process for ${instance_name} not detected within 60s"
+        } >> "$LAUNCH_DEBUG_LOG"
+    fi
+}
+
+# Kill PolyMC frontend wrapper processes without touching running Java game processes.
+pruneLauncherFrontends() {
+    local reason="${1:-manual}"
+    local launcher_pids=""
+    local left_after=""
+
+    launcher_pids="$(pgrep -f 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true)"
+    if [ -n "$launcher_pids" ]; then
+        {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Prune launcher frontends (${reason})"
+            pgrep -af 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true
+        } >> "$LAUNCH_DEBUG_LOG"
+        kill $launcher_pids 2>/dev/null || true
+        sleep 1
+        left_after="$(pgrep -f 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true)"
+        if [ -n "$left_after" ]; then
+            kill -9 $left_after 2>/dev/null || true
+            sleep 0.5
+        fi
+    fi
+
+    {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Frontends after prune (${reason})"
+        pgrep -af 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || echo "  <none>"
+    } >> "$LAUNCH_DEBUG_LOG"
 }
 
 # =============================
@@ -210,7 +258,9 @@ launchGame() {
 # existing controller count halving behavior.
 getControllerDevices() {
     local -a js_devices
-    local -a non_steam_virtual
+    local -a external_devices
+    local -a deck_devices
+    local -a steam_virtual_devices
     local js
     local vendor
     local product
@@ -224,39 +274,98 @@ getControllerDevices() {
         id_dir="/sys/class/input/$base/device/id"
         vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
         product="$(cat "$id_dir/product" 2>/dev/null || true)"
-        # Prefer non-Steam virtual pads when available.
-        if [ "$vendor" != "28de" ] || [ "$product" != "11ff" ]; then
-            non_steam_virtual+=("$js")
+        # Steam virtual pads are 28de:11ff and often appear in duplicate.
+        if [ "$vendor" = "28de" ] && [ "$product" = "11ff" ]; then
+            steam_virtual_devices+=("$js")
+        # On Steam Deck, vendor 28de (non-11ff) is Deck/Valve-origin input.
+        elif [ "$vendor" = "28de" ]; then
+            deck_devices+=("$js")
+        # Prefer third-party external controllers whenever present.
+        else
+            external_devices+=("$js")
         fi
     done
 
-    if [ "${#non_steam_virtual[@]}" -gt 0 ]; then
-        printf '%s\n' "${non_steam_virtual[@]}"
+    if [ "${#external_devices[@]}" -gt 0 ]; then
+        printf '%s\n' "${external_devices[@]}"
+    elif [ "${#deck_devices[@]}" -gt 0 ]; then
+        printf '%s\n' "${deck_devices[@]}"
+    elif [ "${#steam_virtual_devices[@]}" -gt 0 ]; then
+        # Only expose one virtual pad node to avoid duplicate assignment.
+        printf '%s\n' "${steam_virtual_devices[0]}"
     else
         printf '%s\n' "${js_devices[@]}"
     fi
 }
 
-# Returns VID/PID in SDL hint format for a given joystick device path:
-# 0xVVVV/0xPPPP
-getJoystickVidPid() {
-    local joystick_device="$1"
-    local base
-    local id_dir
-    local vendor
-    local product
+# Upsert a key/value in a PolyMC instance.cfg file.
+setInstanceCfgValue() {
+    local cfg_path="$1"
+    local key="$2"
+    local value="$3"
+    local tmp_file
 
-    [ -n "$joystick_device" ] || return 1
-    base="$(basename "$joystick_device")"
-    id_dir="/sys/class/input/$base/device/id"
-    vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
-    product="$(cat "$id_dir/product" 2>/dev/null || true)"
+    [ -f "$cfg_path" ] || return 1
 
-    if [ -n "$vendor" ] && [ -n "$product" ]; then
-        printf '0x%s/0x%s\n' "$vendor" "$product"
+    if grep -q "^${key}=" "$cfg_path"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$cfg_path"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$cfg_path"
+    fi
+
+    # Verify write; if it did not stick, use a full-file rewrite fallback.
+    if grep -Fqx "${key}=${value}" "$cfg_path"; then
         return 0
     fi
-    return 1
+
+    tmp_file="$(mktemp)"
+    awk -F= -v k="$key" -v v="$value" '
+        BEGIN { updated=0 }
+        $1 == k { print k "=" v; updated=1; next }
+        { print }
+        END { if (!updated) print k "=" v }
+    ' "$cfg_path" > "$tmp_file"
+    mv "$tmp_file" "$cfg_path"
+
+    grep -Fqx "${key}=${value}" "$cfg_path"
+}
+
+# Configure per-instance wrapper command so controller pinning is applied at the
+# actual game process level (instead of only the launcher process environment).
+configureInstanceControllerWrapper() {
+    local instance_name="$1"
+    local joystick_device="${2:-}"
+    local cfg_path="$LAUNCHER_DIR/instances/${instance_name}/instance.cfg"
+    local wrapper_cmd=""
+
+    [ -f "$cfg_path" ] || return 0
+
+    if [ -n "$joystick_device" ]; then
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
+        setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
+        setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
+    else
+        # No pinning target for this instance; clear wrapper override.
+        setInstanceCfgValue "$cfg_path" "OverrideCommands" "false"
+        setInstanceCfgValue "$cfg_path" "WrapperCommand" ""
+    fi
+
+    # Log what ended up in the config so we can diagnose any launcher-side override.
+    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
+    {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Wrapper config for ${instance_name}"
+        echo "  $(grep -m1 '^OverrideCommands=' "$cfg_path" || echo 'OverrideCommands=<missing>')"
+        echo "  $(grep -m1 '^WrapperCommand=' "$cfg_path" || echo 'WrapperCommand=<missing>')"
+    } >> "$LAUNCH_DEBUG_LOG"
+}
+
+# Controllable persists manually selected controllers per instance. If this file
+# is stale (e.g., both instances saved as Steam Deck), it can override launch-time
+# device filtering and cause every instance to grab the same controller.
+clearControllableSelection() {
+    local instance_name="$1"
+    local selected_file="$LAUNCHER_DIR/instances/${instance_name}/.minecraft/config/controllable/selected_controllers.json"
+    rm -f "$selected_file"
 }
 
 # =============================
@@ -393,13 +502,16 @@ launchGames() {
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
-        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
-            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
+        if [ "$player" -gt 1 ]; then
+            pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        fi
+        clearControllableSelection "latestUpdate-$player"
+        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid" # Launch Minecraft instance for this player
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
     done
     wait # Wait for all Minecraft instances to exit
     restorePanels # Bring back KDE panels
@@ -476,13 +588,16 @@ else
 
     for player in $(seq 1 $numberOfControllers); do
         local joystick_device=""
-        local controller_vidpid=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
-            controller_vidpid="$(getJoystickVidPid "$joystick_device" || true)"
         fi
+        if [ "$player" -gt 1 ]; then
+            pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        fi
+        clearControllableSelection "latestUpdate-$player"
+        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" "$controller_vidpid"
+        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
     done
     wait
 fi
