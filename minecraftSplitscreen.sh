@@ -261,6 +261,7 @@ setInstanceCfgValue() {
     local cfg_path="$1"
     local key="$2"
     local value="$3"
+    local tmp_file
 
     [ -f "$cfg_path" ] || return 1
 
@@ -269,6 +270,22 @@ setInstanceCfgValue() {
     else
         printf '%s=%s\n' "$key" "$value" >> "$cfg_path"
     fi
+
+    # Verify write; if it did not stick, use a full-file rewrite fallback.
+    if grep -Fqx "${key}=${value}" "$cfg_path"; then
+        return 0
+    fi
+
+    tmp_file="$(mktemp)"
+    awk -F= -v k="$key" -v v="$value" '
+        BEGIN { updated=0 }
+        $1 == k { print k "=" v; updated=1; next }
+        { print }
+        END { if (!updated) print k "=" v }
+    ' "$cfg_path" > "$tmp_file"
+    mv "$tmp_file" "$cfg_path"
+
+    grep -Fqx "${key}=${value}" "$cfg_path"
 }
 
 # Configure per-instance wrapper command so controller pinning is applied at the
@@ -290,6 +307,14 @@ configureInstanceControllerWrapper() {
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "false"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" ""
     fi
+
+    # Log what ended up in the config so we can diagnose any launcher-side override.
+    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
+    {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Wrapper config for ${instance_name}"
+        echo "  $(grep -m1 '^OverrideCommands=' "$cfg_path" || echo 'OverrideCommands=<missing>')"
+        echo "  $(grep -m1 '^WrapperCommand=' "$cfg_path" || echo 'WrapperCommand=<missing>')"
+    } >> "$LAUNCH_DEBUG_LOG"
 }
 
 # Controllable persists manually selected controllers per instance. If this file
