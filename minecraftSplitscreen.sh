@@ -205,24 +205,22 @@ launchGame() {
         # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
         "${launch_env[@]}" "${launch_cmd[@]}" &
     fi
-    # Wait for this specific instance's Java process to appear so we can safely
-    # prune launcher frontend processes before launching the next player.
+    # Wait for this specific instance's Java process to appear so the next
+    # player's pre-launch frontend prune won't kill this launch too early.
     local launch_started=0
     local _i
-    for _i in $(seq 1 40); do
+    for _i in $(seq 1 120); do
         if pgrep -af "instances/${instance_name}/natives" >/dev/null 2>&1; then
             launch_started=1
             break
         fi
         sleep 0.5
     done
-    [ "$launch_started" -eq 0 ] && sleep 10
-
-    # PolyMC can reuse a singleton frontend process for later launches, which may
-    # cause controller env from an earlier launch to bleed into later instances.
-    # Java game processes stay alive after frontend exit, so prune launcher frontends
-    # between launches to force a fresh process + env per player.
-    pruneLauncherFrontends "post-launch ${instance_name}"
+    if [ "$launch_started" -eq 0 ]; then
+        {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Java process for ${instance_name} not detected within 60s"
+        } >> "$LAUNCH_DEBUG_LOG"
+    fi
 }
 
 # Kill PolyMC frontend wrapper processes without touching running Java game processes.
@@ -507,7 +505,9 @@ launchGames() {
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
         fi
-        pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        if [ "$player" -gt 1 ]; then
+            pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        fi
         clearControllableSelection "latestUpdate-$player"
         configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
@@ -591,7 +591,9 @@ else
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
         fi
-        pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        if [ "$player" -gt 1 ]; then
+            pruneLauncherFrontends "pre-launch latestUpdate-$player"
+        fi
         clearControllableSelection "latestUpdate-$player"
         configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
         setSplitscreenModeForPlayer "$player" "$numberOfControllers"
