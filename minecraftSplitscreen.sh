@@ -173,6 +173,9 @@ launchGame() {
     launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
     # Prefer physical controllers over Steam virtual pads in Controllable.
     launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0")
+    # Force SDL to use Linux joystick devices instead of HIDAPI so SDL_JOYSTICK_DEVICE
+    # pinning is applied per instance.
+    launch_env+=("SDL_JOYSTICK_HIDAPI=0")
     # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
     # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
     launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
@@ -183,6 +186,7 @@ launchGame() {
         echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
         echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
         echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0"
+        echo "  SDL_JOYSTICK_HIDAPI=0"
         echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
         echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
         echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
@@ -278,7 +282,7 @@ configureInstanceControllerWrapper() {
     [ -f "$cfg_path" ] || return 0
 
     if [ -n "$joystick_device" ]; then
-        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
     else
