@@ -205,7 +205,27 @@ launchGame() {
         # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
         "${launch_env[@]}" "${launch_cmd[@]}" &
     fi
-    sleep 10 # Give time for the instance to start (avoid race conditions)
+    # Wait for this specific instance's Java process to appear so we can safely
+    # prune launcher frontend processes before launching the next player.
+    local launch_started=0
+    local _i
+    for _i in $(seq 1 40); do
+        if pgrep -af "instances/${instance_name}/natives" >/dev/null 2>&1; then
+            launch_started=1
+            break
+        fi
+        sleep 0.5
+    done
+    [ "$launch_started" -eq 0 ] && sleep 10
+
+    # PolyMC can reuse a singleton frontend process for later launches, which may
+    # cause controller env from an earlier launch to bleed into later instances.
+    # Java game processes stay alive after frontend exit, so prune launcher frontends
+    # between launches to force a fresh process + env per player.
+    pkill -f '/tmp/.mount_PolyMC.*/AppRun.wrapped -l latestUpdate-' 2>/dev/null || true
+    pkill -f '/home/.*/\.local/share/PolyMC/PolyMC\.AppImage -l latestUpdate-' 2>/dev/null || true
+    pkill -f 'kde-inhibit --power --screenSaver --colorCorrect --notifications env SDL_.*PolyMC\.AppImage -l latestUpdate-' 2>/dev/null || true
+    sleep 1
 }
 
 # =============================
