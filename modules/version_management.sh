@@ -261,9 +261,6 @@ fallback_dependencies() {
         "modrinth:yJgqfSDR")  # Splitscreen Support
             echo "P7dR8mSH" # Fabric API
             ;;
-        "modrinth:gHvKJofA")  # Legacy4J
-            echo "lhGA9TYQ P7dR8mSH nkTZHOLD"  # Architectury API, Fabric API, Factory API
-            ;;
         "curseforge:317269")  # Controllable
             echo "634179"  # Framework
             ;;

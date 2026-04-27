@@ -51,3 +51,10 @@ print_info() {
 print_progress() {
     echo "🔄 $1"
 }
+
+# print_debug: Display debug message only when --debug flag is enabled
+print_debug() {
+    if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
+        echo "🐛 $1"
+    fi
+}

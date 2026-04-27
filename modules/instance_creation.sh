@@ -14,7 +14,7 @@
 # =============================================================================
 
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
-# Uses PolyMC CLI when possible, falls back to manual creation if needed
+# Uses manual instance creation for reliability
 # Each instance gets the same mods but separate configurations for splitscreen
 create_instances() {
     print_header "🚀 CREATING MINECRAFT INSTANCES"
@@ -54,10 +54,9 @@ create_instances() {
     
     if [[ $existing_instances -gt 0 ]]; then
         print_info "🔄 UPDATE MODE: Found $existing_instances existing instance(s)"
-        print_info "   → Mods will be updated to match the selected Minecraft version"
-        print_info "   → Your existing options.txt settings will be preserved"
-        print_info "   → Instance configurations will be updated to new versions"
-        
+        print_debug "Mods will be updated to match the selected Minecraft version"
+        print_debug "Existing options.txt settings will be preserved"
+        print_debug "Instance configurations will be updated to new versions"
     else
         print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
     fi
@@ -68,7 +67,7 @@ create_instances() {
     # This naming convention is expected by the splitscreen launcher script
     
     # Disable strict error handling for instance creation to prevent early exit
-    print_info "Starting instance creation with improved error handling"
+    print_debug "Starting instance creation with improved error handling"
     set +e  # Disable exit on error for this section
     
     for i in {1..4}; do
@@ -81,74 +80,21 @@ create_instances() {
             preserve_options_txt=$(handle_instance_update "$instances_dir/$instance_name" "$instance_name")
         fi
         
-        # STAGE 1: Attempt CLI-based instance creation (preferred method)
         print_progress "Creating Minecraft $MC_VERSION instance with Fabric..."
-        local cli_success=false
-        
-        # Check if PolyMC executable exists and is accessible
-        local prism_exec
-        if prism_exec=$(get_prism_executable) && [[ -x "$prism_exec" ]]; then
-            # Try multiple CLI creation approaches with progressively fewer parameters
-            # This handles different PolyMC versions that may have varying CLI support
-            
-            print_info "Attempting CLI instance creation..."
-            
-            # Temporarily disable strict error handling for CLI attempts
-            set +e
-            
-            # Attempt 1: Full specification with Fabric loader
-            if "$prism_exec" --cli create-instance \
-                --name "$instance_name" \
-                --mc-version "$MC_VERSION" \
-                --group "Splitscreen" \
-                --loader "fabric" 2>/dev/null; then
-                cli_success=true
-                print_success "Created with Fabric loader"
-            # Try without loader specification
-            elif "$prism_exec" --cli create-instance \
-                --name "$instance_name" \
-                --mc-version "$MC_VERSION" \
-                --group "Splitscreen" 2>/dev/null; then
-                cli_success=true
-                print_success "Created without specific loader"
-            # Try basic creation with minimal parameters
-            elif "$prism_exec" --cli create-instance \
-                --name "$instance_name" \
-                --mc-version "$MC_VERSION" 2>/dev/null; then
-                cli_success=true
-                print_success "Created with minimal parameters"
-            else
-                print_info "All CLI creation attempts failed, will use manual method"
-            fi
-            
-            # Re-enable strict error handling
-            set -e
-        else
-            print_info "PolyMC executable not available, using manual method"
-        fi
-        
-        # FALLBACK: Manual instance creation when CLI methods fail
-        # This creates instances manually by writing configuration files directly
-        # This ensures compatibility even with older PolyMC versions that lack CLI support
-        if [[ "$cli_success" == false ]]; then
-            print_info "Using manual instance creation method..."
-            local instance_dir="$TARGET_DIR/instances/$instance_name"
-            
-            # Create instance directory structure
-            mkdir -p "$instance_dir" || {
-                print_error "Failed to create instance directory: $instance_dir"
-                continue  # Skip to next instance
-            }
-            
-            # Create .minecraft subdirectory
-            mkdir -p "$instance_dir/.minecraft" || {
-                print_error "Failed to create .minecraft directory in $instance_dir"
-                continue  # Skip to next instance
-            }
-            
-            # Create instance.cfg - PolyMC's main instance configuration file
-            # This file defines the instance metadata, version, and launcher settings
-            cat > "$instance_dir/instance.cfg" <<EOF
+        local instance_dir="$TARGET_DIR/instances/$instance_name"
+
+        # Manual instance creation by writing PolyMC metadata files directly.
+        mkdir -p "$instance_dir" || {
+            print_error "Failed to create instance directory: $instance_dir"
+            continue
+        }
+
+        mkdir -p "$instance_dir/.minecraft" || {
+            print_error "Failed to create .minecraft directory in $instance_dir"
+            continue
+        }
+
+        cat > "$instance_dir/instance.cfg" <<EOF
 InstanceType=OneSix
 iconKey=default
 name=Player $i
@@ -166,16 +112,13 @@ MinMemAlloc=512
 MaxMemAlloc=4096
 IntendedVersion=$MC_VERSION
 EOF
-            
-            if [[ $? -ne 0 ]]; then
-                print_error "Failed to create instance.cfg for $instance_name"
-                continue  # Skip to next instance
-            fi
-            
-            # Create mmc-pack.json - MultiMC/PolyMC component definition file
-            # This file defines the mod loader stack: LWJGL3 → Minecraft → Intermediary → Fabric
-            # Components are loaded in dependency order to ensure proper mod support
-            cat > "$instance_dir/mmc-pack.json" <<EOF
+
+        if [[ $? -ne 0 ]]; then
+            print_error "Failed to create instance.cfg for $instance_name"
+            continue
+        fi
+
+        cat > "$instance_dir/mmc-pack.json" <<EOF
 {
     "components": [
         {
@@ -228,14 +171,13 @@ EOF
     "formatVersion": 1
 }
 EOF
-            
-            if [[ $? -ne 0 ]]; then
-                print_error "Failed to create mmc-pack.json for $instance_name"
-                continue  # Skip to next instance
-            fi
-            
-            print_success "Manual instance creation completed for $instance_name"
+
+        if [[ $? -ne 0 ]]; then
+            print_error "Failed to create mmc-pack.json for $instance_name"
+            continue
         fi
+
+        print_success "Manual instance creation completed for $instance_name"
         
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
@@ -375,82 +317,74 @@ EOF
             
             # Fetch all versions for this dependency
             local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
-            local api_success=false
             
             if command -v curl >/dev/null 2>&1; then
-                echo "   Trying curl for $mod_name..."
+                print_debug "Trying curl for $mod_name"
                 if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
                     if [[ -s "$temp_resolve_file" ]]; then
                         resolve_data=$(cat "$temp_resolve_file")
-                        api_success=true
-                        echo "   ✅ curl succeeded, got $(wc -c < "$temp_resolve_file") bytes"
+                        print_debug "curl succeeded, got $(wc -c < "$temp_resolve_file") bytes"
                     else
-                        echo "   ❌ curl returned empty file"
+                        print_debug "curl returned empty file"
                     fi
                 else
-                    echo "   ❌ curl failed"
+                    print_debug "curl failed"
                 fi
             elif command -v wget >/dev/null 2>&1; then
-                echo "   Trying wget for $mod_name..."
+                print_debug "Trying wget for $mod_name"
                 if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
                     if [[ -s "$temp_resolve_file" ]]; then
                         resolve_data=$(cat "$temp_resolve_file")
-                        api_success=true
-                        echo "   ✅ wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
+                        print_debug "wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
                     else
-                        echo "   ❌ wget returned empty file"
+                        print_debug "wget returned empty file"
                     fi
                 else
-                    echo "   ❌ wget failed"
+                    print_debug "wget failed"
                 fi
             fi
             
-            # Debug: Save API response to a persistent file for examination
-            local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
-            
-            # More robust way to write the data
-            if [[ -n "$resolve_data" ]]; then
-                printf "%s" "$resolve_data" > "$debug_file"
-                echo "✅ Resolving data for $mod_name (ID: $mod_id) saved to: $debug_file"
-                echo "   API URL: $versions_url"
-                echo "   Data length: ${#resolve_data} characters"
-            else
-                echo "❌ No data received for $mod_name (ID: $mod_id)"
-                echo "   API URL: $versions_url" 
-                echo "   Check if the API call succeeded"
-                # Special handling for known problematic dependencies
-                if [[ "$mod_name" == *"Collective"* || "$mod_id" == "e0M1UDsY" ]]; then
-                    echo "   💡 Note: Collective mod often has API issues and is usually an optional dependency"
-                    echo "   💡 This is typically safe to ignore - the main mods will still work"
+            if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
+                local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
+                if [[ -n "$resolve_data" ]]; then
+                    printf "%s" "$resolve_data" > "$debug_file"
+                    print_debug "Saved resolver data for $mod_name to $debug_file"
+                    print_debug "API URL: $versions_url"
+                    print_debug "Data length: ${#resolve_data} characters"
+                else
+                    print_debug "No data received for $mod_name (ID: $mod_id)"
+                    print_debug "API URL: $versions_url"
+                    if [[ "$mod_name" == *"Collective"* || "$mod_id" == "e0M1UDsY" ]]; then
+                        print_debug "Collective is commonly optional and can be skipped"
+                    fi
+                    touch "$debug_file"
+                    print_debug "Empty debug file created at: $debug_file"
                 fi
-                # Create empty file to indicate the attempt was made
-                touch "$debug_file"
-                echo "   Empty debug file created at: $debug_file"
             fi
 
             if [[ -n "$resolve_data" && "$resolve_data" != "[]" && "$resolve_data" != *"\"error\""* ]]; then
-                echo "🔍 DEBUG: Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
+                print_debug "Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
                 
                 # Try exact version match first
                 mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-                echo "   → Exact version match result: ${mod_url:-'(empty)'}"
+                print_debug "Exact version match result: ${mod_url:-'(empty)'}"
                 
                 # Try major.minor version if exact match failed  
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                     local mc_major_minor
                     mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-                    echo "   → Trying major.minor version: $mc_major_minor"
+                    print_debug "Trying major.minor version: $mc_major_minor"
                     
                     # Try exact major.minor
                     mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-                    echo "   → Major.minor match result: ${mod_url:-'(empty)'}"
+                    print_debug "Major.minor match result: ${mod_url:-'(empty)'}"
                     
                     # Try wildcard version (e.g., "1.21.x")
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                         local mc_major_minor_x="$mc_major_minor.x"
-                        echo "   → Trying wildcard version: $mc_major_minor_x"
+                        print_debug "Trying wildcard version: $mc_major_minor_x"
                         mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-                        echo "   → Wildcard match result: ${mod_url:-'(empty)'}"
+                        print_debug "Wildcard match result: ${mod_url:-'(empty)'}"
                     fi
                     
                     # Try limited previous patch version (more restrictive than prefix matching)
@@ -461,21 +395,21 @@ EOF
                             # Try one patch version down (e.g., if looking for 1.21.6, try 1.21.5)
                             local prev_patch=$((mc_patch_version - 1))
                             local mc_prev_version="$mc_major_minor.$prev_patch"
-                            echo "   → Trying limited backwards compatibility with: $mc_prev_version"
+                            print_debug "Trying limited backwards compatibility with: $mc_prev_version"
                             mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
-                            echo "   → Limited backwards compatibility result: ${mod_url:-'(empty)'}"
+                            print_debug "Limited backwards compatibility result: ${mod_url:-'(empty)'}"
                         fi
                     fi
                 fi
                 
                 # If still no URL found, try the latest Fabric version for any compatible release
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
-                    echo "   → Trying latest Fabric version (any compatible release)"
+                    print_debug "Trying latest Fabric version (any compatible release)"
                     mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
-                    echo "   → Latest Fabric match result: ${mod_url:-'(empty)'}"
+                    print_debug "Latest Fabric match result: ${mod_url:-'(empty)'}"
                 fi
                 
-                echo "🎯 FINAL URL for $mod_name: ${mod_url:-'(none found)'}"
+                print_debug "Final URL for $mod_name: ${mod_url:-'(none found)'}"
             fi
             
             rm -f "$temp_resolve_file" 2>/dev/null
