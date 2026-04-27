@@ -24,6 +24,23 @@
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
+# Runtime flags
+DEBUG_MODE=false
+
+# Parse installer flags early so startup/module logs can respect debug mode.
+declare -a FORWARDED_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --debug)
+            DEBUG_MODE=true
+            ;;
+        *)
+            FORWARDED_ARGS+=("$arg")
+            ;;
+    esac
+done
+set -- "${FORWARDED_ARGS[@]}"
+
 # =============================================================================
 # CLEANUP AND SIGNAL HANDLING
 # =============================================================================
@@ -71,8 +88,10 @@ readonly MODULE_FILES=(
 # Function to download modules if they don't exist
 download_modules() {
     echo "🔄 Downloading required modules to temporary directory..."
-    echo "📁 Temporary modules directory: $MODULES_DIR"
-    echo "🌐 Repository URL: $REPO_BASE_URL"
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "📁 Temporary modules directory: $MODULES_DIR"
+        echo "🌐 Repository URL: $REPO_BASE_URL"
+    fi
     
     # Temporarily disable strict error handling for downloads
     set +e
@@ -86,8 +105,10 @@ download_modules() {
         local module_path="$MODULES_DIR/$module"
         local module_url="$REPO_BASE_URL/$module"
         
-        echo "⬇️  Downloading module: $module"
-        echo "    URL: $module_url"
+        if [[ "$DEBUG_MODE" == true ]]; then
+            echo "⬇️  Downloading module: $module"
+            echo "    URL: $module_url"
+        fi
         
         # Download the module file
         if command -v curl >/dev/null 2>&1; then
@@ -96,7 +117,9 @@ download_modules() {
             if [[ $curl_exit_code -eq 0 ]]; then
                 chmod +x "$module_path"
                 ((downloaded_count++))
-                echo "✅ Downloaded: $module"
+                if [[ "$DEBUG_MODE" == true ]]; then
+                    echo "✅ Downloaded: $module"
+                fi
             else
                 echo "❌ Failed to download: $module"
                 echo "    Curl exit code: $curl_exit_code"
@@ -109,7 +132,9 @@ download_modules() {
             if [[ $wget_exit_code -eq 0 ]]; then
                 chmod +x "$module_path"
                 ((downloaded_count++))
-                echo "✅ Downloaded: $module"
+                if [[ "$DEBUG_MODE" == true ]]; then
+                    echo "✅ Downloaded: $module"
+                fi
             else
                 echo "❌ Failed to download: $module"
                 echo "    Wget exit code: $wget_exit_code"
@@ -151,10 +176,14 @@ download_modules() {
 # Download modules if needed
 # First check if modules exist locally, if not try to download them
 if [[ -d "$SCRIPT_DIR/modules" ]]; then
-    echo "📁 Found local modules directory, copying to temporary location..."
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "📁 Found local modules directory, copying to temporary location..."
+    fi
     cp -r "$SCRIPT_DIR/modules/"* "$MODULES_DIR/"
     chmod +x "$MODULES_DIR"/*.sh
-    echo "✅ Copied local modules to temporary directory"
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "✅ Copied local modules to temporary directory"
+    fi
 else
     download_modules
 fi
@@ -207,7 +236,6 @@ declare -a MODS=(
     "Full Brightness Toggle|modrinth|aEK1KhsC"
     "In-Game Account Switcher|modrinth|cudtvDnd"
     "Just Zoom|modrinth|iAiqcykM"
-    "Legacy4J|modrinth|gHvKJofA"
     "Mod Menu|modrinth|mOgUt4GM"
     "Old Combat Mod|modrinth|dZ1APLkO"
     "Reese's Sodium Options|modrinth|Bh37bMuy"
