@@ -250,8 +250,18 @@ check_modrinth_mod() {
         MOD_TYPES+=("modrinth")                # Mark as Modrinth mod
         MOD_DEPENDENCIES+=("$dep_ids")         # Store dependency information
         print_success "✅ $mod_name (Modrinth)"
+        return 0
     else
-        print_warning "❌ $mod_name ($mod_id) - not compatible with $MC_VERSION"
+        local fabric_release_count=0
+        if command -v jq >/dev/null 2>&1; then
+            fabric_release_count=$(printf "%s" "$version_json" | jq -r '[.[] | select(any(.loaders[]?; . == "fabric"))] | length' 2>/dev/null || echo "0")
+        fi
+        if [[ "$fabric_release_count" == "0" ]]; then
+            print_warning "❌ $mod_name ($mod_id) - no Fabric versions found on Modrinth"
+        else
+            print_warning "❌ $mod_name ($mod_id) - no compatible Fabric version for Minecraft $MC_VERSION"
+        fi
+        return 1
     fi
 }
 
@@ -261,6 +271,8 @@ check_modrinth_mod() {
 check_curseforge_mod() {
     local mod_name="$1"           # Human-readable mod name
     local cf_project_id="$2"      # CurseForge project ID (numeric)
+    local file_url=""
+    local dep_ids=""
     
     # Simplified CurseForge API access using a simpler method
     # Instead of the complex encrypted token approach, use alternative method
@@ -343,6 +355,36 @@ check_curseforge_mod() {
     mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
     local mc_major_minor_x="$mc_major_minor.x"
     local mc_major_minor_0="$mc_major_minor.0"
+    local mc_patch_version
+    mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+    local should_try_fallback=true
+
+    # Apply strict fallback guard for patch releases:
+    # - If a standalone major.minor exists (e.g., 1.21), don't assume compatibility for patch requests.
+    # - If requested patch is newer than highest published patch, don't fallback to older variants.
+    if [[ -n "$mc_patch_version" ]]; then
+        local has_standalone_major_minor
+        has_standalone_major_minor=$(printf "%s" "$version_json" | jq -r --arg mm "$mc_major_minor" '
+            .data[]
+            | select(any(.gameVersions[]?; . == $mm))
+            | .id' 2>/dev/null | head -n1)
+
+        local highest_patch
+        highest_patch=$(printf "%s" "$version_json" | jq -r --arg mm "$mc_major_minor" '
+            [
+              .data[]?
+              | .gameVersions[]?
+              | select(startswith($mm + ".") and (split(".") | length == 3))
+              | (split(".")[2] | tonumber?)
+            ]
+            | map(select(. != null))
+            | if length > 0 then max else empty end' 2>/dev/null)
+
+        if [[ -n "$has_standalone_major_minor" && "$has_standalone_major_minor" != "null" ]] || \
+           [[ -n "$highest_patch" && "$highest_patch" != "null" && "$mc_patch_version" -gt "$highest_patch" ]]; then
+            should_try_fallback=false
+        fi
+    fi
     
     # CurseForge-specific jq filter for version matching
     # Checks gameVersions array and extracts downloadUrl and dependencies
@@ -350,10 +392,15 @@ check_curseforge_mod() {
     local jq_filter='
         .data[]
         | select(
-            ((.gameVersions[] == $mc_version) or
-            (.gameVersions[] == $mc_major_minor) or
-            (.gameVersions[] == $mc_major_minor_x) or
-            (.gameVersions[] == $mc_major_minor_0))
+            (.gameVersions[] == $mc_version) or
+            (
+              $allow_fallback == "true" and
+              (
+                (.gameVersions[] == $mc_major_minor) or
+                (.gameVersions[] == $mc_major_minor_x) or
+                (.gameVersions[] == $mc_major_minor_0)
+              )
+            )
           )
         | {url: .downloadUrl, dependencies: (.dependencies // [] | map(select(.relationType == 3) | .modId))}
         | @base64
@@ -366,6 +413,7 @@ check_curseforge_mod() {
         --arg mc_major_minor "$mc_major_minor" \
         --arg mc_major_minor_x "$mc_major_minor_x" \
         --arg mc_major_minor_0 "$mc_major_minor_0" \
+        --arg allow_fallback "$should_try_fallback" \
         "$jq_filter" 2>/dev/null | head -n1)
     
     # Process the result if we found a compatible version
@@ -383,8 +431,18 @@ check_curseforge_mod() {
         MOD_TYPES+=("curseforge")             # Mark as CurseForge mod
         MOD_DEPENDENCIES+=("$dep_ids")        # Store CurseForge dependency IDs
         print_success "✅ $mod_name (CurseForge)"
+        return 0
     else
-        print_warning "❌ $mod_name ($cf_project_id) - not compatible with $MC_VERSION"
+        local fabric_file_count=0
+        if command -v jq >/dev/null 2>&1; then
+            fabric_file_count=$(printf "%s" "$version_json" | jq -r '.data | length' 2>/dev/null || echo "0")
+        fi
+        if [[ "$fabric_file_count" == "0" ]]; then
+            print_warning "❌ $mod_name ($cf_project_id) - no Fabric files found on CurseForge"
+        else
+            print_warning "❌ $mod_name ($cf_project_id) - no compatible Fabric file for Minecraft $MC_VERSION"
+        fi
+        return 1
     fi
 }
 
@@ -1007,7 +1065,7 @@ fetch_and_add_external_mod() {
                 # Decrypt the API token
                 local api_token
                 if command -v openssl >/dev/null 2>&1; then
-                    api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamdeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+                    api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
                 fi
                 
                 if [[ -n "$api_token" ]]; then
@@ -1148,25 +1206,50 @@ get_curseforge_download_url() {
     if [[ -s "$temp_file" ]] && command -v jq >/dev/null 2>&1; then
         local mc_major_minor
         mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+        local mc_patch_version
+        mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        local should_try_fallback=true
+
+        if [[ -n "$mc_patch_version" ]]; then
+            local has_standalone_major_minor
+            has_standalone_major_minor=$(jq -r --arg mm "$mc_major_minor" '
+                .data[]?
+                | select(any(.gameVersions[]?; . == $mm))
+                | .id' "$temp_file" 2>/dev/null | head -n1)
+
+            local highest_patch
+            highest_patch=$(jq -r --arg mm "$mc_major_minor" '
+                [
+                  .data[]?
+                  | .gameVersions[]?
+                  | select(startswith($mm + ".") and (split(".") | length == 3))
+                  | (split(".")[2] | tonumber?)
+                ]
+                | map(select(. != null))
+                | if length > 0 then max else empty end' "$temp_file" 2>/dev/null)
+
+            if [[ -n "$has_standalone_major_minor" && "$has_standalone_major_minor" != "null" ]] || \
+               [[ -n "$highest_patch" && "$highest_patch" != "null" && "$mc_patch_version" -gt "$highest_patch" ]]; then
+                should_try_fallback=false
+            fi
+        fi
         
         # Try exact version match first
         download_url=$(jq -r --arg v "$MC_VERSION" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
         
-        # Try major.minor version if exact match failed
-        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+        # Try major.minor version if exact match failed and fallback is allowed
+        if [[ "$should_try_fallback" == true ]] && [[ -z "$download_url" || "$download_url" == "null" ]]; then
             download_url=$(jq -r --arg v "$mc_major_minor" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
         fi
         
-        # Try wildcard version (e.g., "1.21.x")
-        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
+        # Try wildcard version (e.g., "1.21.x") if fallback is allowed
+        if [[ "$should_try_fallback" == true ]] && [[ -z "$download_url" || "$download_url" == "null" ]]; then
             local mc_major_minor_x="$mc_major_minor.x"
             download_url=$(jq -r --arg v "$mc_major_minor_x" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
         fi
         
-        # Try limited previous patch version (more restrictive than prefix matching)
-        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
-            local mc_patch_version
-            mc_patch_version=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
+        # Try limited previous patch version when fallback is allowed
+        if [[ "$should_try_fallback" == true ]] && [[ -z "$download_url" || "$download_url" == "null" ]]; then
             if [[ -n "$mc_patch_version" && $mc_patch_version -gt 0 ]]; then
                 # Try one patch version down (e.g., if looking for 1.21.6, try 1.21.5)
                 local prev_patch=$((mc_patch_version - 1))
@@ -1174,17 +1257,600 @@ get_curseforge_download_url() {
                 download_url=$(jq -r --arg v "$mc_prev_version" '.data[]? | select(.gameVersions[]? == $v) | .downloadUrl' "$temp_file" 2>/dev/null | head -n1)
             fi
         fi
-        
-        # If still no URL found, try the latest file
-        if [[ -z "$download_url" || "$download_url" == "null" ]]; then
-            download_url=$(jq -r '.data[0]?.downloadUrl // ""' "$temp_file" 2>/dev/null)
-        fi
     fi
     
     rm -f "$temp_file"
     
     # Return the download URL (may be empty if not found)
     echo "$download_url"
+}
+
+# get_curseforge_api_token: Download and decrypt CurseForge API token
+# Returns: token string on stdout, or empty on failure
+get_curseforge_api_token() {
+    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local encrypted_token_file
+    encrypted_token_file=$(mktemp)
+    local http_code=""
+
+    if [[ -z "$encrypted_token_file" ]]; then
+        echo ""
+        return 1
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        http_code=$(curl -s -w "%{http_code}" -o "$encrypted_token_file" "$token_url" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -q -O "$encrypted_token_file" "$token_url" 2>/dev/null; then
+            http_code="200"
+        else
+            http_code="404"
+        fi
+    else
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+
+    if [[ "$http_code" != "200" || ! -s "$encrypted_token_file" ]]; then
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+
+    local api_token=""
+    if command -v openssl >/dev/null 2>&1; then
+        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 -in "$encrypted_token_file" -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+    fi
+
+    rm -f "$encrypted_token_file"
+    echo "$api_token"
+}
+
+# parse_custom_mod_input: Parse Modrinth/CurseForge custom mod input
+# Supports URLs, prefixed IDs (mr:/cf:), raw Modrinth IDs/slugs, and numeric CurseForge IDs
+# Parameters:
+#   $1 - raw user input
+#   $2 - output platform nameref (modrinth/curseforge)
+#   $3 - output ID nameref
+parse_custom_mod_input() {
+    local raw_input="$1"
+    local -n out_platform="$2"
+    local -n out_id="$3"
+    out_platform=""
+    out_id=""
+
+    # Trim leading/trailing whitespace
+    local cleaned
+    cleaned=$(echo "$raw_input" | xargs 2>/dev/null || echo "$raw_input")
+    if [[ -z "$cleaned" ]]; then
+        return 1
+    fi
+
+    # Modrinth URLs (modrinth.com/mod/<id-or-slug>)
+    if [[ "$cleaned" =~ modrinth\.com/(mod|plugin|datapack|resourcepack|shader)/([^/?#]+) ]]; then
+        out_platform="modrinth"
+        out_id="${BASH_REMATCH[2]}"
+        return 0
+    fi
+
+    # CurseForge URLs with numeric project IDs (.../projects/<id>)
+    if [[ "$cleaned" =~ curseforge\.com/.*/projects/([0-9]+) ]]; then
+        out_platform="curseforge"
+        out_id="${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    # Explicit prefixes
+    if [[ "$cleaned" =~ ^(modrinth|mr):([A-Za-z0-9_-]+)$ ]]; then
+        out_platform="modrinth"
+        out_id="${BASH_REMATCH[2]}"
+        return 0
+    fi
+    if [[ "$cleaned" =~ ^(curseforge|cf):([0-9]+)$ ]]; then
+        out_platform="curseforge"
+        out_id="${BASH_REMATCH[2]}"
+        return 0
+    fi
+
+    # Raw numeric values are treated as CurseForge project IDs
+    if [[ "$cleaned" =~ ^[0-9]+$ ]]; then
+        out_platform="curseforge"
+        out_id="$cleaned"
+        return 0
+    fi
+
+    # Raw Modrinth ID/slug
+    if [[ "$cleaned" =~ ^[A-Za-z0-9_-]{3,}$ ]]; then
+        out_platform="modrinth"
+        out_id="$cleaned"
+        return 0
+    fi
+
+    return 1
+}
+
+# find_existing_mod_index: Find existing mod index by platform and ID
+# Parameters:
+#   $1 - platform (modrinth/curseforge)
+#   $2 - ID
+# Returns: index on stdout or empty if not found
+find_existing_mod_index() {
+    local platform="$1"
+    local mod_id="$2"
+    local i
+    for i in "${!MOD_IDS[@]}"; do
+        if [[ "${MOD_TYPES[$i]}" == "$platform" && "${MOD_IDS[$i]}" == "$mod_id" ]]; then
+            echo "$i"
+            return 0
+        fi
+    done
+    echo ""
+    return 1
+}
+
+# get_custom_mod_display_name: Resolve display name for custom mod
+# Parameters:
+#   $1 - platform
+#   $2 - ID
+# Returns: best-effort display name
+get_custom_mod_display_name() {
+    local platform="$1"
+    local mod_id="$2"
+
+    if [[ "$platform" == "modrinth" ]]; then
+        local api_url="https://api.modrinth.com/v2/project/$mod_id"
+        local tmp_file
+        tmp_file=$(mktemp)
+        if [[ -n "$tmp_file" ]]; then
+            if command -v curl >/dev/null 2>&1; then
+                curl -s -m 12 -o "$tmp_file" "$api_url" 2>/dev/null
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q -O "$tmp_file" --timeout=12 "$api_url" 2>/dev/null
+            fi
+
+            if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
+                local title
+                title=$(jq -r '.title // .name // empty' "$tmp_file" 2>/dev/null)
+                rm -f "$tmp_file"
+                if [[ -n "$title" && "$title" != "null" ]]; then
+                    echo "$title"
+                    return 0
+                fi
+            fi
+            rm -f "$tmp_file"
+        fi
+        echo "Custom Modrinth mod ($mod_id)"
+        return 0
+    fi
+
+    local api_token=""
+    if ! api_token=$(get_curseforge_api_token 2>/dev/null); then
+        api_token=""
+    fi
+    if [[ -n "$api_token" ]]; then
+        local cf_api_url="https://api.curseforge.com/v1/mods/$mod_id"
+        local tmp_file
+        tmp_file=$(mktemp)
+        if [[ -n "$tmp_file" ]]; then
+            if command -v curl >/dev/null 2>&1; then
+                curl -s -m 12 -H "x-api-key: $api_token" -o "$tmp_file" "$cf_api_url" 2>/dev/null
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q --timeout=12 --header="x-api-key: $api_token" -O "$tmp_file" "$cf_api_url" 2>/dev/null
+            fi
+
+            if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
+                local name
+                name=$(jq -r '.data.name // empty' "$tmp_file" 2>/dev/null)
+                rm -f "$tmp_file"
+                if [[ -n "$name" && "$name" != "null" ]]; then
+                    echo "$name"
+                    return 0
+                fi
+            fi
+            rm -f "$tmp_file"
+        fi
+    fi
+
+    echo "Custom CurseForge mod ($mod_id)"
+    return 0
+}
+
+# print_supported_versions_for_custom_mod: Show compatible Fabric MC versions for a custom mod
+# Parameters:
+#   $1 - platform
+#   $2 - ID
+print_supported_versions_for_custom_mod() {
+    local platform="$1"
+    local mod_id="$2"
+
+    print_info "Compatible Minecraft versions for this mod (Fabric):"
+
+    if [[ "$platform" == "modrinth" ]]; then
+        local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
+        local tmp_file
+        tmp_file=$(mktemp)
+        if [[ -z "$tmp_file" ]]; then
+            print_warning "Could not allocate temp file to query supported versions"
+            return 1
+        fi
+
+        if command -v curl >/dev/null 2>&1; then
+            curl -s -m 15 -o "$tmp_file" "$api_url" 2>/dev/null
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "$tmp_file" --timeout=15 "$api_url" 2>/dev/null
+        fi
+
+        if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
+            local versions
+            versions=$(jq -r '.[] | select(any(.loaders[]?; . == "fabric")) | .game_versions[]?' "$tmp_file" 2>/dev/null \
+                | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+                | sort -Vu \
+                | tail -n 30)
+            rm -f "$tmp_file"
+
+            if [[ -n "$versions" ]]; then
+                echo "$versions" | while IFS= read -r v; do
+                    echo "  - $v"
+                done
+                return 0
+            fi
+        fi
+
+        rm -f "$tmp_file"
+        print_warning "Could not determine supported versions from Modrinth API"
+        return 1
+    fi
+
+    local api_token=""
+    if ! api_token=$(get_curseforge_api_token 2>/dev/null); then
+        api_token=""
+    fi
+    if [[ -z "$api_token" ]]; then
+        print_warning "Could not access CurseForge API to list supported versions"
+        return 1
+    fi
+
+    local cf_files_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+    local tmp_file
+    tmp_file=$(mktemp)
+    if [[ -z "$tmp_file" ]]; then
+        print_warning "Could not allocate temp file to query supported versions"
+        return 1
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -s -m 15 -H "x-api-key: $api_token" -o "$tmp_file" "$cf_files_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=15 --header="x-api-key: $api_token" -O "$tmp_file" "$cf_files_url" 2>/dev/null
+    fi
+
+    if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
+        local versions
+        versions=$(jq -r '.data[]?.gameVersions[]?' "$tmp_file" 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            | sort -Vu \
+            | tail -n 30)
+        rm -f "$tmp_file"
+
+        if [[ -n "$versions" ]]; then
+            echo "$versions" | while IFS= read -r v; do
+                echo "  - $v"
+            done
+            return 0
+        fi
+    fi
+
+    rm -f "$tmp_file"
+    print_warning "Could not determine supported versions from CurseForge API"
+    return 1
+}
+
+# check_modrinth_mod_strict: strict custom check (Fabric + exact MC version only)
+check_modrinth_mod_strict() {
+    local mod_name="$1"
+    local mod_id="$2"
+    local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
+
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        print_warning "mktemp failed for $mod_name"
+        return 1
+    fi
+
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm -f "$tmp_body"
+
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . >/dev/null 2>&1; then
+        print_warning "❌ $mod_name ($mod_id) - API error"
+        return 1
+    fi
+
+    local file_url=""
+    local dep_ids=""
+    CUSTOM_MOD_LAST_INCOMPAT_REASON=""
+    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select((.loaders[]? == "fabric") and any(.game_versions[]?; . == $v)) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
+    if [[ -n "$file_url" && "$file_url" != "null" ]]; then
+        dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select((.loaders[]? == "fabric") and any(.game_versions[]?; . == $v)) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
+        SUPPORTED_MODS+=("$mod_name")
+        MOD_DESCRIPTIONS+=("")
+        MOD_URLS+=("$file_url")
+        MOD_IDS+=("$mod_id")
+        MOD_TYPES+=("modrinth")
+        MOD_DEPENDENCIES+=("$dep_ids")
+        print_success "✅ $mod_name (Modrinth)"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON=""
+        return 0
+    fi
+
+    local fabric_release_count=0
+    fabric_release_count=$(printf "%s" "$version_json" | jq -r '[.[] | select(any(.loaders[]?; . == "fabric"))] | length' 2>/dev/null || echo "0")
+    if [[ "$fabric_release_count" == "0" ]]; then
+        print_warning "❌ $mod_name ($mod_id) - no Fabric versions found on Modrinth"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="no_fabric"
+    else
+        print_warning "❌ $mod_name ($mod_id) - no exact Fabric support for Minecraft $MC_VERSION"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="version_mismatch"
+    fi
+    return 1
+}
+
+# check_curseforge_mod_strict: strict custom check (Fabric + exact MC version only)
+check_curseforge_mod_strict() {
+    local mod_name="$1"
+    local cf_project_id="$2"
+    local api_token=""
+    local file_url=""
+    local dep_ids=""
+    CUSTOM_MOD_LAST_INCOMPAT_REASON=""
+
+    if ! api_token=$(get_curseforge_api_token 2>/dev/null); then
+        api_token=""
+    fi
+    if [[ -z "$api_token" ]]; then
+        print_warning "❌ $mod_name ($cf_project_id) - unable to access CurseForge API token"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="api_error"
+        return 1
+    fi
+
+    local cf_api_url="https://api.curseforge.com/v1/mods/$cf_project_id/files?modLoaderType=4"
+    local tmp_body
+    tmp_body=$(mktemp)
+    if [[ -z "$tmp_body" ]]; then
+        print_warning "mktemp failed for CurseForge API call"
+        return 1
+    fi
+
+    local http_code
+    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $api_token" "$cf_api_url" 2>/dev/null)
+    local version_json
+    version_json=$(cat "$tmp_body")
+    rm -f "$tmp_body"
+
+    if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . >/dev/null 2>&1; then
+        print_warning "❌ $mod_name ($cf_project_id) - API error (HTTP $http_code)"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="api_error"
+        return 1
+    fi
+
+    local jq_result
+    jq_result=$(printf "%s" "$version_json" | jq -r --arg mc_version "$MC_VERSION" '
+        .data[]
+        | select(any(.gameVersions[]?; . == $mc_version))
+        | {url: .downloadUrl, dependencies: (.dependencies // [] | map(select(.relationType == 3) | .modId))}
+        | @base64' 2>/dev/null | head -n1)
+
+    if [[ -n "$jq_result" ]]; then
+        local decoded
+        decoded=$(echo "$jq_result" | base64 --decode)
+        file_url=$(echo "$decoded" | jq -r '.url')
+        dep_ids=$(echo "$decoded" | jq -r '.dependencies[]?' | tr '\n' ' ')
+        SUPPORTED_MODS+=("$mod_name")
+        MOD_DESCRIPTIONS+=("")
+        MOD_URLS+=("$file_url")
+        MOD_IDS+=("$cf_project_id")
+        MOD_TYPES+=("curseforge")
+        MOD_DEPENDENCIES+=("$dep_ids")
+        print_success "✅ $mod_name (CurseForge)"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON=""
+        return 0
+    fi
+
+    local fabric_file_count=0
+    fabric_file_count=$(printf "%s" "$version_json" | jq -r '.data | length' 2>/dev/null || echo "0")
+    if [[ "$fabric_file_count" == "0" ]]; then
+        print_warning "❌ $mod_name ($cf_project_id) - no Fabric files found on CurseForge"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="no_fabric"
+    else
+        print_warning "❌ $mod_name ($cf_project_id) - no exact Fabric support for Minecraft $MC_VERSION"
+        CUSTOM_MOD_LAST_INCOMPAT_REASON="version_mismatch"
+    fi
+    return 1
+}
+
+# prompt_custom_mods: Interactive flow for adding custom mods
+# Parameters:
+#   $1 - nameref to associative array tracking already-added indexes
+prompt_custom_mods() {
+    local -n added_map_ref="$1"
+
+    echo ""
+    print_warning "Custom mods are untested in this splitscreen setup. Add at your own risk."
+    local add_custom_choice="n"
+    if ! read -r -p "Do you want to add custom mods from Modrinth/CurseForge? (y/N): " add_custom_choice; then
+        print_warning "No input available for custom mod prompt, skipping custom mods."
+        return 0
+    fi
+
+    case "${add_custom_choice,,}" in
+        y|yes) ;;
+        *) return 0 ;;
+    esac
+
+    print_info "Add one mod at a time, then press Enter."
+    print_info "CurseForge: paste just the numeric project ID (example: 422301)"
+    print_info "Modrinth: paste the mod URL or slug (example: sodium)"
+    print_info "Custom mods must support your exact selected Minecraft version on Fabric."
+    print_info "Type 'done' when finished."
+
+    while true; do
+        local custom_input=""
+        if ! read -r -p "Custom mod (or 'done'): " custom_input; then
+            print_info "Input ended. Continuing without additional custom mods."
+            break
+        fi
+
+        case "${custom_input,,}" in
+            done|d|q|quit|exit) break ;;
+        esac
+
+        if [[ -z "$custom_input" ]]; then
+            continue
+        fi
+
+        local platform=""
+        local mod_id=""
+        if ! parse_custom_mod_input "$custom_input" platform mod_id; then
+            print_warning "Could not parse that mod input. Use a supported URL or ID format."
+            continue
+        fi
+
+        local existing_idx=""
+        existing_idx=$(find_existing_mod_index "$platform" "$mod_id" || true)
+        if [[ -n "$existing_idx" ]]; then
+            if [[ -z "${added_map_ref[$existing_idx]:-}" ]]; then
+                FINAL_MOD_INDEXES+=("$existing_idx")
+                added_map_ref[$existing_idx]=1
+                add_mod_dependencies "$existing_idx" added_map_ref
+            fi
+            print_info "Already available, added to selection: ${SUPPORTED_MODS[$existing_idx]}"
+            continue
+        fi
+
+        local display_name=""
+        display_name=$(get_custom_mod_display_name "$platform" "$mod_id")
+        local pre_count=${#SUPPORTED_MODS[@]}
+        local compatible=false
+
+        print_progress "Checking compatibility for custom mod: $display_name"
+        if [[ "$platform" == "modrinth" ]]; then
+            if check_modrinth_mod_strict "$display_name" "$mod_id"; then
+                compatible=true
+            fi
+        else
+            if check_curseforge_mod_strict "$display_name" "$mod_id"; then
+                compatible=true
+            fi
+        fi
+
+        if [[ "$compatible" == true ]]; then
+            local new_idx=$(( ${#SUPPORTED_MODS[@]} - 1 ))
+            if (( new_idx >= pre_count )); then
+                FINAL_MOD_INDEXES+=("$new_idx")
+                added_map_ref[$new_idx]=1
+                add_mod_dependencies "$new_idx" added_map_ref
+                print_success "Added custom mod: ${SUPPORTED_MODS[$new_idx]}"
+            fi
+            continue
+        fi
+
+        print_warning "Custom mod '$display_name' is not compatible with Minecraft $MC_VERSION (Fabric)."
+        local incompatible_choice=""
+        if [[ "${CUSTOM_MOD_LAST_INCOMPAT_REASON:-}" == "no_fabric" ]]; then
+            echo "Options:"
+            echo "  1. Continue without this mod (recommended)"
+            echo "  2. Stop installer"
+            if ! read -r -p "Choose [1]: " incompatible_choice; then
+                incompatible_choice="1"
+            fi
+            case "$incompatible_choice" in
+                2)
+                    print_error "Installer stopped by user due to incompatible custom mod."
+                    exit 1
+                    ;;
+                *)
+                    print_info "Skipping incompatible custom mod."
+                    ;;
+            esac
+            continue
+        fi
+
+        echo "Options:"
+        echo "  1. Continue without this mod (recommended)"
+        echo "  2. Change to a supported Minecraft version (core mods + this mod)"
+        echo "  3. Stop installer"
+        if ! read -r -p "Choose [1]: " incompatible_choice; then
+            incompatible_choice="1"
+        fi
+
+        case "$incompatible_choice" in
+            2)
+                print_info "Switching to Minecraft version selection constrained by core mods and '$display_name'..."
+                EXTRA_REQUIRED_MOD_ID="$mod_id"
+                EXTRA_REQUIRED_MOD_PLATFORM="$platform"
+                EXTRA_REQUIRED_MOD_NAME="$display_name"
+
+                # Pre-check constrained versions so we can avoid confusing fallback errors.
+                local -a constrained_versions=()
+                readarray -t constrained_versions <<< "$(get_supported_minecraft_versions 2>/dev/null || true)"
+                local -a constrained_clean=()
+                local ver
+                for ver in "${constrained_versions[@]}"; do
+                    if [[ -n "$ver" && "$ver" != "null" ]]; then
+                        constrained_clean+=("$ver")
+                    fi
+                done
+                if [[ ${#constrained_clean[@]} -eq 0 ]]; then
+                    print_warning "No compatible Minecraft versions found for core mods + '$display_name'."
+                    print_info "Continuing without this custom mod."
+                    unset EXTRA_REQUIRED_MOD_ID EXTRA_REQUIRED_MOD_PLATFORM EXTRA_REQUIRED_MOD_NAME
+                    continue
+                fi
+
+                # Re-run the version/core compatibility pipeline.
+                if ! get_minecraft_version; then
+                    print_warning "No compatible Minecraft versions found for core mods + '$display_name'."
+                    print_info "Continuing without this custom mod."
+                    unset EXTRA_REQUIRED_MOD_ID EXTRA_REQUIRED_MOD_PLATFORM EXTRA_REQUIRED_MOD_NAME
+                    continue
+                fi
+                detect_java
+                configure_polymc_defaults
+                get_fabric_version
+                get_lwjgl_version
+
+                # Reset runtime mod arrays and recompute compatibility for the new MC version.
+                SUPPORTED_MODS=()
+                MOD_DESCRIPTIONS=()
+                MOD_URLS=()
+                MOD_IDS=()
+                MOD_TYPES=()
+                MOD_DEPENDENCIES=()
+                FINAL_MOD_INDEXES=()
+                MISSING_MODS=()
+
+                check_mod_compatibility
+
+                # Clear version filter now that we've selected and refreshed.
+                unset EXTRA_REQUIRED_MOD_ID EXTRA_REQUIRED_MOD_PLATFORM EXTRA_REQUIRED_MOD_NAME
+
+                print_info "Minecraft version updated. Restarting mod selection..."
+                select_user_mods
+                return 2
+                ;;
+            3)
+                print_error "Installer stopped by user due to incompatible custom mod."
+                exit 1
+                ;;
+            *)
+                print_info "Skipping incompatible custom mod."
+                ;;
+        esac
+    done
 }
 
 # select_user_mods: Interactive mod selection with intelligent categorization
@@ -1327,6 +1993,13 @@ select_user_mods() {
             fi
         done
     done
+
+    # Optional user-provided custom mods (validated against selected MC version).
+    local custom_prompt_status=0
+    prompt_custom_mods added || custom_prompt_status=$?
+    if [[ $custom_prompt_status -eq 2 ]]; then
+        return 0
+    fi
 
     # Automatically resolve all dependencies using Modrinth/CurseForge APIs
     # This replaces the manual dependency handling with full API-based resolution

@@ -9,7 +9,11 @@
 # Queries APIs for Controllable and Splitscreen Support to find compatible versions
 # Returns: Array of supported Minecraft versions in descending order (newest first)
 get_supported_minecraft_versions() {
-    print_progress "Checking supported Minecraft versions for essential splitscreen mods..." >&2
+    if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
+        print_progress "Checking supported Minecraft versions for core mods + ${EXTRA_REQUIRED_MOD_NAME:-custom mod}..." >&2
+    else
+        print_progress "Checking supported Minecraft versions for essential splitscreen mods..." >&2
+    fi
     
     local -a supported_versions=()
     local -a all_versions=()
@@ -30,8 +34,14 @@ get_supported_minecraft_versions() {
     
     print_info "Checking compatibility for required splitscreen mods..." >&2
     
-    # Check each Minecraft version for compatibility with BOTH required mods
-    # This is the ONLY filter - actual API testing, no hardcoded exclusions
+    # Optional extra required mod constraint (used when user asks to switch versions
+    # to support a specific custom mod in addition to the two required core mods).
+    local extra_mod_id="${EXTRA_REQUIRED_MOD_ID:-}"
+    local extra_mod_platform="${EXTRA_REQUIRED_MOD_PLATFORM:-}"
+    local extra_mod_name="${EXTRA_REQUIRED_MOD_NAME:-Custom mod}"
+
+    # Check each Minecraft version for compatibility with core required mods,
+    # and optionally with an extra custom mod requirement.
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
         
@@ -48,18 +58,39 @@ get_supported_minecraft_versions() {
             splitscreen_compatible=true
         fi
         
-        # Only include versions where BOTH essential mods are available
-        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true ]]; then
+        local extra_mod_compatible=true
+        if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
+            if ! check_mod_version_compatibility "$extra_mod_id" "$extra_mod_platform" "$mc_version" "true"; then
+                extra_mod_compatible=false
+            fi
+        fi
+
+        # Only include versions where core required mods are available,
+        # and custom required mod too when specified.
+        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
             supported_versions+=("$mc_version")
-            print_success "    ✅ $mc_version - Both mods compatible" >&2
+            if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
+                print_success "    ✅ $mc_version - Core mods + $extra_mod_name compatible" >&2
+            else
+                print_success "    ✅ $mc_version - Both core mods compatible" >&2
+            fi
         else
-            print_info "    ❌ $mc_version - Missing essential mod support" >&2
+            if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
+                print_info "    ❌ $mc_version - Missing support for core mods or $extra_mod_name" >&2
+            else
+                print_info "    ❌ $mc_version - Missing essential core mod support" >&2
+            fi
         fi
     done
     
     if [[ ${#supported_versions[@]} -eq 0 ]]; then
-        print_error "No Minecraft versions found with both required mods available!" >&2
-        print_error "This may be due to API issues. Please try again later or check your internet connection." >&2
+        if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
+            print_error "No Minecraft versions found that support both required core mods and $extra_mod_name." >&2
+            print_error "This may be due to exact-version compatibility limits in the selected custom mod." >&2
+        else
+            print_error "No Minecraft versions found with both required mods available!" >&2
+            print_error "This may be due to API issues. Please try again later or check your internet connection." >&2
+        fi
         return 1
     fi
     
@@ -78,6 +109,7 @@ check_mod_version_compatibility() {
     local mod_id="$1"
     local platform="$2"
     local mc_version="$3"
+    local strict_mode="${4:-false}"  # true = exact MC version only
     
     if [[ "$platform" == "modrinth" ]]; then
         # Check Modrinth mod for version compatibility using same logic as check_modrinth_mod
@@ -106,8 +138,8 @@ check_mod_version_compatibility() {
         # STAGE 1: Try exact version match with Fabric loader requirement
         file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
         
-        # STAGE 2: Strict fallback to major.minor version if exact match failed
-        if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+        # STAGE 2: Fallback matching if exact match failed (disabled in strict mode)
+        if [[ "$strict_mode" != "true" ]] && [[ -z "$file_url" || "$file_url" == "null" ]]; then
             local mc_major_minor
             mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
             local requested_patch
@@ -220,17 +252,26 @@ check_mod_version_compatibility() {
         local mc_major_minor_x="$mc_major_minor.x"
         local mc_major_minor_0="$mc_major_minor.0"
         
-        # CurseForge-specific jq filter for version matching (same as in check_curseforge_mod)
-        local jq_filter='
-            .data[]
-            | select(
-                ((.gameVersions[] == $mc_version) or
-                (.gameVersions[] == $mc_major_minor) or
-                (.gameVersions[] == $mc_major_minor_x) or
-                (.gameVersions[] == $mc_major_minor_0))
-              )
-            | .downloadUrl
-        '
+        # CurseForge-specific jq filter for version matching
+        local jq_filter
+        if [[ "$strict_mode" == "true" ]]; then
+            jq_filter='
+                .data[]
+                | select(.gameVersions[] == $mc_version)
+                | .downloadUrl
+            '
+        else
+            jq_filter='
+                .data[]
+                | select(
+                    ((.gameVersions[] == $mc_version) or
+                    (.gameVersions[] == $mc_major_minor) or
+                    (.gameVersions[] == $mc_major_minor_x) or
+                    (.gameVersions[] == $mc_major_minor_0))
+                  )
+                | .downloadUrl
+            '
+        fi
         
         local jq_result
         jq_result=$(printf "%s" "$version_json" | jq -r \
@@ -290,11 +331,15 @@ get_minecraft_version() {
     
     if [[ ${#supported_versions[@]} -eq 0 ]]; then
         print_error "Could not determine supported Minecraft versions. Please check your internet connection and try again."
-        exit 1
+        return 1
     fi
     
     # Display supported versions to user
-    echo "🎮 Available Minecraft versions (with full splitscreen mod support):"
+    if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
+        echo "🎮 Available Minecraft versions (core mods + ${EXTRA_REQUIRED_MOD_NAME:-custom mod} support):"
+    else
+        echo "🎮 Available Minecraft versions (with full splitscreen mod support):"
+    fi
     
     local counter=1
     for version in "${supported_versions[@]}"; do
@@ -307,14 +352,15 @@ get_minecraft_version() {
     echo "These versions have been verified to support both essential splitscreen mods:"
     echo "  ✅ Controllable (controller support)"  
     echo "  ✅ Splitscreen Support (split-screen functionality)"
+    if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
+        echo "  ✅ ${EXTRA_REQUIRED_MOD_NAME:-Requested custom mod}"
+    fi
     
     # Get user choice
     local latest_supported="${supported_versions[0]}"
     echo "Enter your choice:"
     echo "  1-${#supported_versions[@]} = Select a specific version from the list above"
     echo "  [Enter] = Use latest supported version ($latest_supported) [RECOMMENDED]"
-    echo "  custom = Enter a custom version (may not have full mod support)"
-    echo "  Or directly type a Minecraft version (e.g., 1.21.3)"
     
     local user_choice
     read -p "Your choice [latest]: " user_choice
@@ -329,40 +375,6 @@ get_minecraft_version() {
         local selected_index=$((user_choice - 1))
         MC_VERSION="${supported_versions[$selected_index]}"
         print_success "Using selected version: $MC_VERSION"
-        
-    elif [[ "$user_choice" == "custom" ]]; then
-        # User wants to enter a custom version
-        read -p "Enter custom Minecraft version (e.g., 1.21.3): " custom_version
-        if [[ -n "$custom_version" ]]; then
-            MC_VERSION="$custom_version"
-            print_warning "Using custom version: $MC_VERSION"
-            print_warning "⚠️  This version may not support all required splitscreen mods!"
-            print_info "If installation fails, try using a supported version from the list above."
-        else
-            print_warning "No version entered, using latest supported: $latest_supported"
-            MC_VERSION="$latest_supported"
-        fi
-        
-    elif [[ "$user_choice" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-        # User directly entered a version number (e.g., 1.21.3, 1.21, etc.)
-        MC_VERSION="$user_choice"
-        
-        # Check if it's in the supported list
-        local is_supported=false
-        for supported_ver in "${supported_versions[@]}"; do
-            if [[ "$supported_ver" == "$MC_VERSION" ]]; then
-                is_supported=true
-                break
-            fi
-        done
-        
-        if [[ "$is_supported" == true ]]; then
-            print_success "Using directly entered supported version: $MC_VERSION"
-        else
-            print_warning "Using directly entered version: $MC_VERSION"
-            print_warning "⚠️  This version may not support all required splitscreen mods!"
-            print_info "If installation fails, try using a supported version from the list above."
-        fi
         
     else
         # Invalid input, use latest supported

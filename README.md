@@ -7,6 +7,7 @@ Simple installer for running **Minecraft splitscreen (1–4 players)** on Steam 
 - Creates 4 splitscreen instances (`latestUpdate-1` to `latestUpdate-4`)
 - Installs Fabric and required splitscreen mods
 - Lets you choose optional compatible mods
+- Lets you add custom Modrinth/CurseForge mods with compatibility checks
 - Optionally adds launchers to Steam and desktop
 
 ## Core Mods (Required)
@@ -52,9 +53,26 @@ Use this if you want verbose logs:
 2. Lets you pick a compatible Minecraft version
 3. Detects/installs the correct Java version
 4. Checks mod compatibility and lets you choose optional mods
-5. Creates/updates 4 manual PolyMC instances with Fabric
-6. Installs mods and dependencies
-7. Optionally adds Steam + desktop shortcuts
+5. Optionally accepts custom mods (URL/ID), validates compatibility, and warns about risk
+6. Creates/updates 4 manual PolyMC instances with Fabric
+7. Installs mods and dependencies
+8. Optionally adds Steam + desktop shortcuts
+
+### Custom Mod Input Formats
+- Easiest CurseForge format: paste only the numeric project ID (example: `422301`)
+- Easiest Modrinth format: paste mod URL or slug (example: `https://modrinth.com/mod/sodium` or `sodium`)
+- Also supported: `mr:<slug-or-id>` and `cf:<id>`
+
+Quick examples:
+- `422301`
+- `sodium`
+- `https://modrinth.com/mod/sodium`
+- `cf:422301`
+
+Custom mods are validated against Fabric and your exact selected Minecraft version. If incompatible, the installer lets you skip it or stop. If the mod supports Fabric but not your selected Minecraft version, it also offers switching to a supported version.
+
+Minecraft version selection is list-based (no manual custom version entry).  
+If a custom mod is incompatible, you can choose to switch versions and the installer will show only versions that support both core mods and that requested custom mod.
 
 ## Launching
 After install, run:
@@ -93,6 +111,7 @@ Optional uninstall flags:
 - Connect controllers before launching.
 - If controller assignment seems wrong, close all instances and relaunch.
 - Steam Deck users can optionally use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) as a fallback for edge-case controller conflicts.
+- Custom mods are best-effort and untested in this setup; incompatible or conflicting mods can break splitscreen behavior.
 
 ## Credits
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen)
