@@ -95,6 +95,10 @@ Re-run the installer anytime:
 
 The installer updates instance configs and mods for the version you select, while preserving existing instance/user data where possible.
 
+## TODO
+- Explore an optional "fast launch mode" for Steam Deck that reduces startup delays where possible while keeping the current reliable default behavior unchanged.
+- Investigate cross-desktop-environment fullscreen handling (GNOME and others), potentially via an optional nested-session launch mode to avoid taskbars/panels overlapping lower splitscreen instances. Idea: evaluate a lightweight nested tiling DE/compositor approach for more consistent fullscreen splits.
+
 ## Uninstall
 ```sh
 wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/uninstall-minecraft-splitscreen.sh
