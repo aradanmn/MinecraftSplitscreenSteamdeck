@@ -785,7 +785,7 @@ hasKeyboardInput() {
         fi
     fi
     # Fallback: check for common keyboard device paths
-    if [ -e /dev/input/by-path/*-kbd ] 2>/dev/null; then
+    if compgen -G "/dev/input/by-path/*-kbd" > /dev/null 2>&1; then
         return 0
     fi
     return 1
