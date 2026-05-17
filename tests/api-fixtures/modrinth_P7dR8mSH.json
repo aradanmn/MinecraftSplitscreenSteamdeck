@@ -1,0 +1,16 @@
+[
+  {
+    "id": "AABBCCDD",
+    "version_number": "0.110.0+1.21.4",
+    "game_versions": ["1.21.4", "1.21.3"],
+    "loaders": ["fabric"],
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/AABBCCDD/fabric-api-0.110.0+1.21.4.jar",
+        "primary": true,
+        "filename": "fabric-api-0.110.0+1.21.4.jar"
+      }
+    ],
+    "dependencies": []
+  }
+]

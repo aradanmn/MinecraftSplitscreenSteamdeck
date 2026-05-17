@@ -18,3 +18,6 @@ jobs:
 
       - name: Run dynamic mode assertions
         run: bash tests/test_dynamic_mode.sh
+
+      - name: Run API mocking tests
+        run: bash tests/test_api_mocking.sh

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Mock curl executable for API tests.
+# Routes requests to fixture files in tests/api-fixtures/ based on URL pattern.
+# Supports both -o <file> (body to file, status code on stdout) and
+# stdout-only modes (body on stdout, no -w flag).
+
+FIXTURES_DIR="$(cd "$(dirname "$0")/../api-fixtures" && pwd)"
+
+output_file=""
+has_w_flag=0
+args=("$@")
+i=0
+
+while (( i < ${#args[@]} )); do
+    arg="${args[$i]}"
+    case "$arg" in
+        -o)   (( i++ )); output_file="${args[$i]}" ;;
+        -w)   (( i++ )); has_w_flag=1 ;;   # skip format string value
+        -H|-m) (( i++ )) ;;                # skip header/timeout values
+        -s|-L|-l|-f|-S|--silent|--location|--fail) ;;
+        --*)  ;;
+        http*) url="$arg" ;;
+    esac
+    (( i++ )) || true
+done
+
+status_code=200
+fixture=""
+
+case "${url:-}" in
+    *api.modrinth.com/v2/project/*/version*)
+        mod_id="${url##*/project/}"
+        mod_id="${mod_id%%/*}"
+        fixture="$FIXTURES_DIR/modrinth_${mod_id}.json"
+        [[ -f "$fixture" ]] || { status_code=404; fixture=""; }
+        ;;
+    *api.curseforge.com/v1/mods/*/files*)
+        project_id="${url##*/mods/}"
+        project_id="${project_id%%/*}"
+        fixture="$FIXTURES_DIR/curseforge_${project_id}.json"
+        [[ -f "$fixture" ]] || { status_code=404; fixture=""; }
+        ;;
+    *piston-meta.mojang.com*)
+        fixture="$FIXTURES_DIR/mojang_versions.json"
+        ;;
+    *meta.fabricmc.net/v2/versions/loader*)
+        fixture="$FIXTURES_DIR/fabric_loader.json"
+        ;;
+    *)
+        status_code=404
+        ;;
+esac
+
+response=""
+if [[ -n "$fixture" && -f "$fixture" ]]; then
+    response="$(<"$fixture")"
+else
+    response="{}"
+fi
+
+if [[ -n "$output_file" ]]; then
+    printf '%s' "$response" > "$output_file"
+    [[ "$has_w_flag" -eq 1 ]] && echo "$status_code"
+else
+    printf '%s\n' "$response"
+fi
