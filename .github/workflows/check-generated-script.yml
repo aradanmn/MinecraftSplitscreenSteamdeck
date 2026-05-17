@@ -15,3 +15,6 @@ jobs:
 
       - name: Run fixture checks
         run: bash tests/check-fixture.sh
+
+      - name: Run dynamic mode assertions
+        run: bash tests/test_dynamic_mode.sh
