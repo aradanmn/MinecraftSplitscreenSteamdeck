@@ -224,7 +224,7 @@ else
     # FAKE_INPUT instead of /dev/input/.  Each js* event emits one event line.
     # Stderr (startup messages) captured in IW_LOG so we can wait for readiness.
     (
-        inotifywait -m -e create -e delete "$FAKE_INPUT/" 2>"$IW_LOG" \
+        stdbuf -oL inotifywait -m -e create -e delete "$FAKE_INPUT/" 2>"$IW_LOG" \
         | while read -r _ _action file; do
             [[ "$file" =~ ^js[0-9]+$ ]] || continue
             command sleep 0.05
@@ -291,7 +291,7 @@ else
     IW_LOG2="$(mktemp)"
 
     (
-        inotifywait -m -e create "$FAKE_INPUT2/" 2>"$IW_LOG2" \
+        stdbuf -oL inotifywait -m -e create "$FAKE_INPUT2/" 2>"$IW_LOG2" \
         | while read -r _ _action file; do
             [[ "$file" =~ ^js[0-9]+$ ]] || continue
             echo "CONTROLLER_CHANGE:1"
