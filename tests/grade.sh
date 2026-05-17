@@ -55,6 +55,7 @@ run_suite "Mod API compatibility"      "bash tests/test_api_mocking.sh"
 echo ""
 echo "-- Behavioral --"
 run_suite "Dynamic mode event loop"    "bash tests/test_dynamic_mode.sh"
+run_suite "Dynamic session simulation" "bash tests/test_dynamic_session.sh"
 
 echo ""
 echo "-- Integration --"

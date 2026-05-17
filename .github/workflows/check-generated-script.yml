@@ -22,6 +22,9 @@ jobs:
       - name: Run dynamic mode assertions
         run: bash tests/test_dynamic_mode.sh
 
+      - name: Run dynamic session simulation
+        run: bash tests/test_dynamic_session.sh
+
       - name: Run API mocking tests
         run: bash tests/test_api_mocking.sh
 
