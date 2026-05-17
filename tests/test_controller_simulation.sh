@@ -218,12 +218,13 @@ if ! command -v inotifywait >/dev/null 2>&1; then
 else
     FAKE_INPUT="$(mktemp -d)"
     FAKE_OUT="$(mktemp)"
-    _FAKE_COUNT=1
+    IW_LOG="$(mktemp)"
 
     # Run the same inotifywait pipeline as monitorControllers(), watching
     # FAKE_INPUT instead of /dev/input/.  Each js* event emits one event line.
+    # Stderr (startup messages) captured in IW_LOG so we can wait for readiness.
     (
-        inotifywait -m -q -e create -e delete "$FAKE_INPUT/" 2>/dev/null \
+        inotifywait -m -e create -e delete "$FAKE_INPUT/" 2>"$IW_LOG" \
         | while read -r _ _action file; do
             [[ "$file" =~ ^js[0-9]+$ ]] || continue
             command sleep 0.05
@@ -237,9 +238,15 @@ else
 
     echo "1" > "$FAKE_OUT.cnt"
 
+    # Wait for inotifywait to confirm it is watching before triggering events.
+    # This replaces a fixed sleep and eliminates the race on busy CI runners.
+    for _iw_i in $(seq 1 50); do
+        grep -q "Watches established" "$IW_LOG" 2>/dev/null && break
+        command sleep 0.1
+    done
+
     # Simulate: controller connects (js0 appears), second connects (js1 appears),
     # first disconnects (js0 deleted)
-    command sleep 0.15
     touch "$FAKE_INPUT/js0"
     command sleep 0.15
     touch "$FAKE_INPUT/js1"
@@ -251,7 +258,7 @@ else
     wait $WATCHER_PID 2>/dev/null || true
 
     inotify_output=$(<"$FAKE_OUT")
-    rm -rf "$FAKE_INPUT" "$FAKE_OUT" "$FAKE_OUT.cnt"
+    rm -rf "$FAKE_INPUT" "$FAKE_OUT" "$FAKE_OUT.cnt" "$IW_LOG"
 
     assert_contains "js0 create triggers CONTROLLER_CHANGE" "CONTROLLER_CHANGE:" "$inotify_output"
 
@@ -281,9 +288,10 @@ if ! command -v inotifywait >/dev/null 2>&1; then
 else
     FAKE_INPUT2="$(mktemp -d)"
     FAKE_OUT2="$(mktemp)"
+    IW_LOG2="$(mktemp)"
 
     (
-        inotifywait -m -q -e create "$FAKE_INPUT2/" 2>/dev/null \
+        inotifywait -m -e create "$FAKE_INPUT2/" 2>"$IW_LOG2" \
         | while read -r _ _action file; do
             [[ "$file" =~ ^js[0-9]+$ ]] || continue
             echo "CONTROLLER_CHANGE:1"
@@ -291,7 +299,11 @@ else
     ) > "$FAKE_OUT2" &
     WATCHER2_PID=$!
 
-    command sleep 0.15
+    for _iw_i in $(seq 1 50); do
+        grep -q "Watches established" "$IW_LOG2" 2>/dev/null && break
+        command sleep 0.1
+    done
+
     touch "$FAKE_INPUT2/event0"   # should NOT match ^js[0-9]+$
     touch "$FAKE_INPUT2/mouse0"   # should NOT match
     touch "$FAKE_INPUT2/keyboard" # should NOT match
@@ -301,7 +313,7 @@ else
     wait $WATCHER2_PID 2>/dev/null || true
 
     non_js_output=$(<"$FAKE_OUT2")
-    rm -rf "$FAKE_INPUT2" "$FAKE_OUT2"
+    rm -rf "$FAKE_INPUT2" "$FAKE_OUT2" "$IW_LOG2"
 
     if [[ -z "$non_js_output" ]]; then
         (( PASS++ )) || true
