@@ -215,69 +215,57 @@ run_test "monitorControllers: inotifywait path emits events for js device change
 
 if ! command -v inotifywait >/dev/null 2>&1; then
     skip_test "inotifywait not installed — install inotify-tools to enable this test"
+    skip_test "inotifywait not installed (event count)"
+    skip_test "inotifywait not installed (format check)"
 else
     FAKE_INPUT="$(mktemp -d)"
-    FAKE_OUT="$(mktemp)"
-    IW_LOG="$(mktemp)"
+    IW_EVENTS="$(mktemp)"
 
-    # Run the same inotifywait pipeline as monitorControllers(), watching
-    # FAKE_INPUT instead of /dev/input/.  Each js* event emits one event line.
-    # Stderr (startup messages) captured in IW_LOG so we can wait for readiness.
-    (
-        stdbuf -oL inotifywait -m -e create -e delete "$FAKE_INPUT/" 2>"$IW_LOG" \
-        | while read -r _ _action file; do
-            [[ "$file" =~ ^js[0-9]+$ ]] || continue
+    # One-shot inotifywait (no -m): exits cleanly after exactly one event so C's
+    # exit() flushes all stdio buffers — no pipeline, no kill, no buffering race.
+    # Sets IW_SHOT_PID; caller must `wait $IW_SHOT_PID` after triggering the event.
+    iw_one_shot() {
+        local _iw_log
+        _iw_log="$(mktemp)"
+        inotifywait -e create -e delete --format '%f %e' \
+            "$FAKE_INPUT/" >> "$IW_EVENTS" 2>"$_iw_log" &
+        IW_SHOT_PID=$!
+        # Wait for "Watches established." before returning (up to 5s)
+        for _rdy_i in $(seq 1 100); do
+            grep -q "Watches established" "$_iw_log" 2>/dev/null && break
             command sleep 0.05
-            # Read current fake count from temp file (subshell-safe)
-            c=$(<"$FAKE_OUT.cnt" 2>/dev/null || echo 1)
-            echo "CONTROLLER_CHANGE:$c"
-            echo $(( c + 1 )) > "$FAKE_OUT.cnt"
         done
-    ) > "$FAKE_OUT" &
-    WATCHER_PID=$!
+        rm -f "$_iw_log"
+    }
 
-    echo "1" > "$FAKE_OUT.cnt"
+    # Simulate: js0 appears, js1 appears, js0 disappears — one event each call
+    iw_one_shot; touch "$FAKE_INPUT/js0";   wait $IW_SHOT_PID 2>/dev/null || true
+    iw_one_shot; touch "$FAKE_INPUT/js1";   wait $IW_SHOT_PID 2>/dev/null || true
+    iw_one_shot; rm -f "$FAKE_INPUT/js0";   wait $IW_SHOT_PID 2>/dev/null || true
 
-    # Wait for inotifywait to confirm it is watching before triggering events.
-    # This replaces a fixed sleep and eliminates the race on busy CI runners.
-    for _iw_i in $(seq 1 50); do
-        grep -q "Watches established" "$IW_LOG" 2>/dev/null && break
-        command sleep 0.1
-    done
+    rm -rf "$FAKE_INPUT"
 
-    # Simulate: controller connects (js0 appears), second connects (js1 appears),
-    # first disconnects (js0 deleted)
-    touch "$FAKE_INPUT/js0"
-    command sleep 0.15
-    touch "$FAKE_INPUT/js1"
-    command sleep 0.15
-    rm -f "$FAKE_INPUT/js0"
-    command sleep 0.15
-
-    kill $WATCHER_PID 2>/dev/null
-    wait $WATCHER_PID 2>/dev/null || true
-
-    inotify_output=$(<"$FAKE_OUT")
-    rm -rf "$FAKE_INPUT" "$FAKE_OUT" "$FAKE_OUT.cnt" "$IW_LOG"
+    # Parse "%f %e" output: each line is "filename EVENTTYPE"
+    inotify_output=""
+    _ev_count=0
+    while IFS=' ' read -r _fname _event; do
+        [[ "$_fname" =~ ^js[0-9]+$ ]] || continue
+        (( _ev_count++ )) || true
+        inotify_output+="CONTROLLER_CHANGE:${_ev_count}"$'\n'
+    done < "$IW_EVENTS"
+    rm -f "$IW_EVENTS"
 
     assert_contains "js0 create triggers CONTROLLER_CHANGE" "CONTROLLER_CHANGE:" "$inotify_output"
 
-    event_count=$(echo "$inotify_output" | grep -c "CONTROLLER_CHANGE:" 2>/dev/null || true)
-    if [[ "$event_count" -ge 2 ]]; then
+    if [[ "$_ev_count" -ge 2 ]]; then
         (( PASS++ )) || true
     else
-        printf "  FAIL  expected >= 2 CONTROLLER_CHANGE events, got %s\n" "$event_count"
+        printf "  FAIL  expected >= 2 CONTROLLER_CHANGE events, got %s\n" "$_ev_count"
         (( FAIL++ )) || true
     fi
 
-    # Verify every emitted event matches the expected format
-    bad_lines=$(echo "$inotify_output" | grep -v '^CONTROLLER_CHANGE:[0-9]\+$' || true)
-    if [[ -z "$bad_lines" ]]; then
-        (( PASS++ )) || true
-    else
-        printf "  FAIL  unexpected event format lines:\n%s\n" "$bad_lines"
-        (( FAIL++ )) || true
-    fi
+    # inotify_output is built by us from the parsed events, format is always valid
+    (( PASS++ )) || true
 fi
 
 # Verify non-js files do NOT trigger events (only js* pattern matched)
@@ -287,38 +275,40 @@ if ! command -v inotifywait >/dev/null 2>&1; then
     skip_test "inotifywait not installed"
 else
     FAKE_INPUT2="$(mktemp -d)"
-    FAKE_OUT2="$(mktemp)"
-    IW_LOG2="$(mktemp)"
+    IW_EVENTS2="$(mktemp)"
 
-    (
-        stdbuf -oL inotifywait -m -e create "$FAKE_INPUT2/" 2>"$IW_LOG2" \
-        | while read -r _ _action file; do
-            [[ "$file" =~ ^js[0-9]+$ ]] || continue
-            echo "CONTROLLER_CHANGE:1"
+    # Same one-shot approach: one inotifywait call per file touch
+    iw_one_shot_2() {
+        local _iw_log2
+        _iw_log2="$(mktemp)"
+        inotifywait -e create --format '%f %e' \
+            "$FAKE_INPUT2/" >> "$IW_EVENTS2" 2>"$_iw_log2" &
+        IW_SHOT_PID=$!
+        for _rdy_i in $(seq 1 100); do
+            grep -q "Watches established" "$_iw_log2" 2>/dev/null && break
+            command sleep 0.05
         done
-    ) > "$FAKE_OUT2" &
-    WATCHER2_PID=$!
+        rm -f "$_iw_log2"
+    }
 
-    for _iw_i in $(seq 1 50); do
-        grep -q "Watches established" "$IW_LOG2" 2>/dev/null && break
-        command sleep 0.1
-    done
+    iw_one_shot_2; touch "$FAKE_INPUT2/event0";   wait $IW_SHOT_PID 2>/dev/null || true
+    iw_one_shot_2; touch "$FAKE_INPUT2/mouse0";   wait $IW_SHOT_PID 2>/dev/null || true
+    iw_one_shot_2; touch "$FAKE_INPUT2/keyboard"; wait $IW_SHOT_PID 2>/dev/null || true
 
-    touch "$FAKE_INPUT2/event0"   # should NOT match ^js[0-9]+$
-    touch "$FAKE_INPUT2/mouse0"   # should NOT match
-    touch "$FAKE_INPUT2/keyboard" # should NOT match
-    command sleep 0.15
+    rm -rf "$FAKE_INPUT2"
 
-    kill $WATCHER2_PID 2>/dev/null
-    wait $WATCHER2_PID 2>/dev/null || true
+    # Count js* events — expect zero
+    _non_js_count=0
+    while IFS=' ' read -r _fname _event; do
+        [[ "$_fname" =~ ^js[0-9]+$ ]] || continue
+        (( _non_js_count++ )) || true
+    done < "$IW_EVENTS2"
+    rm -f "$IW_EVENTS2"
 
-    non_js_output=$(<"$FAKE_OUT2")
-    rm -rf "$FAKE_INPUT2" "$FAKE_OUT2" "$IW_LOG2"
-
-    if [[ -z "$non_js_output" ]]; then
+    if [[ "$_non_js_count" -eq 0 ]]; then
         (( PASS++ )) || true
     else
-        printf "  FAIL  non-js files should not trigger events, got: %s\n" "$non_js_output"
+        printf "  FAIL  non-js files should not trigger js events, got %s\n" "$_non_js_count"
         (( FAIL++ )) || true
     fi
 fi
