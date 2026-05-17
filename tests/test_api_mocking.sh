@@ -198,6 +198,46 @@ assert_return "return code 1 (API error)"        "1" "$rc"
 assert_eq     "SUPPORTED_MODS is empty"          "0" "${#SUPPORTED_MODS[@]}"
 
 # =============================================================================
+# Test 8: Modrinth — wildcard "1.21.x" game version matches "1.21.4" request
+# Fixture: modrinth_WILDCARD.json lists only "1.21.x" as game_version.
+# Stage 2/3 fallback must resolve this when exact "1.21.4" is not present.
+# =============================================================================
+run_test "Modrinth: wildcard game version (1.21.x) matches requested 1.21.4"
+MC_VERSION="1.21.4"
+reset_mod_globals
+rc=0; check_modrinth_mod "Wildcard Mod" "WILDCARD" || rc=$?
+
+assert_return "return code 0 (compatible)"        "0" "$rc"
+assert_eq     "SUPPORTED_MODS[0] is Wildcard Mod" "Wildcard Mod" "${SUPPORTED_MODS[0]:-}"
+assert_contains "MOD_URLS[0] contains jar"         ".jar" "${MOD_URLS[0]:-}"
+
+# =============================================================================
+# Test 9: Modrinth — lower patch only (1.21.3) does NOT match 1.21.4 request
+# Fixture: modrinth_LOWPATCH.json has only 1.21.3. Fallback safety logic must
+# block the match: highest available patch (3) is lower than requested (4).
+# =============================================================================
+run_test "Modrinth: lower patch only (1.21.3) does not match 1.21.4"
+MC_VERSION="1.21.4"
+reset_mod_globals
+rc=0; check_modrinth_mod "Low Patch Mod" "LOWPATCH" || rc=$?
+
+assert_return "return code 1 (no match)"          "1" "$rc"
+assert_eq     "SUPPORTED_MODS is empty"            "0" "${#SUPPORTED_MODS[@]}"
+
+# =============================================================================
+# Test 10: Modrinth — exact patch match works across minor version boundary
+# Reuse OLDMOD fixture (only has 1.20.4). Requesting 1.20.4 should succeed,
+# confirming exact matching still works for older versions.
+# =============================================================================
+run_test "Modrinth: exact patch match for older version (1.20.4)"
+MC_VERSION="1.20.4"
+reset_mod_globals
+rc=0; check_modrinth_mod "Old Mod" "OLDMOD" || rc=$?
+
+assert_return "return code 0 (compatible)"         "0" "$rc"
+assert_eq     "SUPPORTED_MODS[0] is Old Mod"       "Old Mod" "${SUPPORTED_MODS[0]:-}"
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""

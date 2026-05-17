@@ -47,7 +47,9 @@ run_suite "Fixture integrity"          "bash tests/check-fixture.sh"
 
 echo ""
 echo "-- Unit tests --"
+run_suite "Utility functions (BATS)"   "bats tests/test_utilities.bats"
 run_suite "Path configuration (BATS)"  "bats tests/test_path_configuration.bats"
+run_suite "Instance creation (BATS)"   "bats tests/test_instance_creation.bats"
 run_suite "Mod API compatibility"      "bash tests/test_api_mocking.sh"
 
 echo ""

@@ -25,5 +25,11 @@ jobs:
       - name: Run API mocking tests
         run: bash tests/test_api_mocking.sh
 
+      - name: Run utility function tests
+        run: bats tests/test_utilities.bats
+
       - name: Run path configuration tests
         run: bats tests/test_path_configuration.bats
+
+      - name: Run instance creation tests
+        run: bats tests/test_instance_creation.bats
