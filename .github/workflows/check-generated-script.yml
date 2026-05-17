@@ -33,3 +33,6 @@ jobs:
 
       - name: Run instance creation tests
         run: bats tests/test_instance_creation.bats
+
+      - name: Run integration test
+        run: bash tests/test_integration.sh

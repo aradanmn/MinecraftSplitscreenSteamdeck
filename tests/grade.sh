@@ -57,6 +57,10 @@ echo "-- Behavioral --"
 run_suite "Dynamic mode event loop"    "bash tests/test_dynamic_mode.sh"
 
 echo ""
+echo "-- Integration --"
+run_suite "Full installation workflow" "bash tests/test_integration.sh"
+
+echo ""
 TOTAL=$(( PASS + FAIL ))
 printf "Result: %d/%d suites passed\n" "$PASS" "$TOTAL"
 
