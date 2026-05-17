@@ -61,6 +61,11 @@ echo "-- Integration --"
 run_suite "Full installation workflow" "bash tests/test_integration.sh"
 
 echo ""
+echo "-- Hardware simulation --"
+run_suite "Controller simulation"      "bash tests/test_controller_simulation.sh"
+run_suite "Environment detection"      "bash tests/test_environment_detection.sh"
+
+echo ""
 TOTAL=$(( PASS + FAIL ))
 printf "Result: %d/%d suites passed\n" "$PASS" "$TOTAL"
 

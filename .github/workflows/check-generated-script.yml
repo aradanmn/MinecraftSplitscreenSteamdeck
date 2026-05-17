@@ -36,3 +36,9 @@ jobs:
 
       - name: Run integration test
         run: bash tests/test_integration.sh
+
+      - name: Run controller simulation tests
+        run: bash tests/test_controller_simulation.sh
+
+      - name: Run environment detection tests
+        run: bash tests/test_environment_detection.sh
