@@ -17,6 +17,8 @@
 !modules/**
 !tools/
 !tools/**
+!tests/
+!tests/**
 !.claude/
 !.claude/memory/
 !.claude/memory/**

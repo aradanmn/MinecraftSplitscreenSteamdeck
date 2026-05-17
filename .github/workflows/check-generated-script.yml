@@ -1,0 +1,17 @@
+name: Check generated launcher fixture
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check-fixture:
+    name: Validate fixture script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run fixture checks
+        run: bash tests/check-fixture.sh
