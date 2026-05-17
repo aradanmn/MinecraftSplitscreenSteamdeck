@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install BATS
+        run: sudo apt-get install -y bats
+
       - name: Run fixture checks
         run: bash tests/check-fixture.sh
 
@@ -21,3 +24,6 @@ jobs:
 
       - name: Run API mocking tests
         run: bash tests/test_api_mocking.sh
+
+      - name: Run path configuration tests
+        run: bats tests/test_path_configuration.bats
