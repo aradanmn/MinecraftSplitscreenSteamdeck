@@ -28,7 +28,19 @@ to Controlify, all validated on a real Steam Deck (SteamOS, MC 26.1.2).
 - FlyingEwok's fork still uses **PollyMC as a frontend** (different architecture); not relevant to our PrismLauncher-only path.
 - User confirmed: push directly to `main` is fine for this work ("Main is fine, keep going").
 
+## 4-player hardware test (commit 90dadf0, same date)
+
+Three more bugs found when user ran 4-player splitscreen in Game Mode:
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| All 4 instances used controller 0 | WrapperCommand SDL isolation deleted in 3.3.0; instance.cfg Env= never reaches JVM (PrismLauncher IPC) | Restored `initSdlWrappers()`/`cleanupSdlWrappers()` + per-slot `sdl-wrapper.sh`; `writeInstanceSdlEnv` writes wrapper content (executed at launch time, after IPC) |
+| Game Mode picked wrong device set | `assignControllerToSlot` called `findRealControllerEventDevices()` which FILTERS OUT vendor 28de (Steam virtual pads) | Use `findSteamVirtualEventDevices()` in Game Mode; Controlify always `lwjgl:0` (SDL isolation makes assigned device appear at index 0) |
+| Screens never split into quadrants | Fixed 10s sleep too short — MC 26.x takes 1-3 min to open on Steam Deck with 4 instances | Replaced fixed sleep+3 passes with `waitAndRepositionWindows()` polling every 15s for up to 3 min |
+| "B to Abort game" after session ends | `exec dbus-run-session` exits with Plasma's exit code (possibly non-zero); Java still alive when gamescope reloads | Remove `exec`; `exit 0` after `dbus-run-session`; wait ≤15s for Java to die before `qdbus logout` |
+
 ## Still open
-- **Issue #8 — Microsoft OAuth device-code flow during install** (requested, not yet built). New module `modules/account_setup.sh`. PrismLauncher client ID `c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb`. Flow: devicecode → poll token → Xbox Live → XSTS → Minecraft token → entitlements/profile → write accounts.json.
-- **Stale fixture**: `tests/fixtures/minecraftSplitscreen.sh` is still the old Controllable-based generated launcher. Tests pass (only syntax-validated) but it doesn't exercise the new Controlify path. Regenerate via `tools/update-fixture.sh` sometime.
-- Multi-controller in-game mapping with identical models still unverified on hardware (autoSelect:false set, but per-slot lwjgl index correctness needs a real multi-pad test).
+- **Issue #8 — Microsoft OAuth device-code flow during install** (not yet built). New module `modules/account_setup.sh`. PrismLauncher client ID `c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb`. Flow: devicecode → poll token → Xbox Live → XSTS → Minecraft token → entitlements/profile → write accounts.json.
+- **Stale fixture**: `tests/fixtures/minecraftSplitscreen.sh` is still the old Controllable-based generated launcher. Regenerate via `tools/update-fixture.sh`.
+- **Controlify config path/format unverified**: We write `config/controlify/controlify.json` with `{"currentController":"lwjgl:0","autoSelect":false}`. With SDL isolation, the assigned device is forced to index 0 — even if the format is wrong, Controlify autoSelect picks the one available joystick. `autoSelect:false` is belt-and-suspenders for trackpad non-switching.
+- **4-player hardware test pending** — all above fixes need verification with 4 controllers in Game Mode.
