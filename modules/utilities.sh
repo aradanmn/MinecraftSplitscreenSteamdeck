@@ -3,8 +3,8 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     3.0.2
-# @date        2026-03-15
+# @version     3.1.0
+# @date        2026-05-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -55,6 +55,7 @@
 #     - DYNAMIC_HAS_NOTIFY        : Set by check_dynamic_mode_dependencies()
 #
 # @changelog
+#   3.1.0 (2026-05-31) - Feat: graceful_quit() — typing q/quit/exit at any prompt cleanly halts the installer (only on explicit input, not on timeout)
 #   3.0.2 (2026-03-15) - Fix: SIGSEGV crash from read -t in subshell (prompt_user now uses PROMPT_REPLY global)
 #   3.0.1 (2026-02-07) - Added KWin scripting detection (DYNAMIC_HAS_KWIN_SCRIPTING)
 #   3.0.0 (2026-02-01) - Dynamic splitscreen: players can join/leave mid-session
@@ -149,6 +150,30 @@ get_log_file() {
 # These functions work both in normal execution AND curl | bash mode.
 
 # -----------------------------------------------------------------------------
+# @function    graceful_quit
+# @description Cleanly halt the installer when the user asks to quit. Called by
+#              prompt_user when the user types 'q', 'quit', or 'exit' at any prompt.
+#
+#              Cleanup is NOT duplicated here: `exit 0` triggers the main script's
+#              `trap cleanup EXIT` (install-minecraft-splitscreen.sh), which removes
+#              the temporary modules directory — the same path taken on normal exit
+#              and on the Ctrl+C `interrupt_handler`. Exit 0 (not 130) is used
+#              because a typed quit is a deliberate, clean exit, not an interrupt.
+# @return      Does not return — exits the process.
+# -----------------------------------------------------------------------------
+graceful_quit() {
+    echo "" >&2
+    # print_info is defined in this same module, so it is always available here.
+    print_info "Installation cancelled by user. No changes finalized." >&2
+    log "USER QUIT: user typed quit command at a prompt"
+    exit 0
+}
+
+# Pattern matched (case-insensitive) for quit requests at any prompt.
+# Kept as a global so callers can document it; defined once here.
+QUIT_PATTERN='^[[:space:]]*(q|quit|exit)[[:space:]]*$'
+
+# -----------------------------------------------------------------------------
 # @function    prompt_user
 # @description Get user input. Works with curl | bash by reopening /dev/tty.
 #              IMPORTANT: Result is stored in global PROMPT_REPLY, NOT echoed.
@@ -214,6 +239,14 @@ prompt_user() {
     else
         log "USER INPUT: $response"
     fi
+
+    # Graceful quit: typing q / quit / exit at ANY prompt halts the installer.
+    # Only an explicit, timed-IN response triggers this — a timeout falls back to
+    # the default (which is never a quit token) so unattended runs aren't aborted.
+    if [[ "$timed_out" != true && "${response,,}" =~ $QUIT_PATTERN ]]; then
+        graceful_quit
+    fi
+
     PROMPT_REPLY="$response"
 }
 

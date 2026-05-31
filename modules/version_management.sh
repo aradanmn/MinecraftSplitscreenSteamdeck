@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        version_management.sh
-# @version     3.0.1
-# @date        2026-03-15
+# @version     3.1.0
+# @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -10,7 +10,7 @@
 # @description
 #   Minecraft and Fabric version selection and detection functions.
 #   Implements intelligent version selection based on required mod compatibility,
-#   querying APIs to verify that both essential splitscreen mods (Controllable
+#   querying APIs to verify that both essential splitscreen mods (Controlify
 #   and Splitscreen Support) are available for each version.
 #
 #   Key features:
@@ -38,6 +38,7 @@
 #     - get_fabric_version               : Fetch latest Fabric loader version
 #
 # @changelog
+#   3.1.0 (2026-05-31) - Feat: Check Controlify (modrinth/DOUdJVEm) instead of Controllable (curseforge/317269) for MC version compatibility; update fallback deps and display text
 #   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
@@ -50,7 +51,7 @@
 
 # @function    get_supported_minecraft_versions
 # @description Check what Minecraft versions support both required splitscreen mods
-#              (Controllable and Splitscreen Support). Queries APIs to find compatible versions.
+#              (Controlify and Splitscreen Support). Queries APIs to find compatible versions.
 # @stdout      Array of supported Minecraft versions in descending order (newest first)
 # @stderr      Progress and status messages
 # @return      0 if versions found, 1 if none found or API error
@@ -81,12 +82,12 @@ get_supported_minecraft_versions() {
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
 
-        local controllable_compatible=false
+        local controlify_compatible=false
         local splitscreen_compatible=false
 
-        # Check Controllable (CurseForge mod 317269)
-        if check_mod_version_compatibility "317269" "curseforge" "$mc_version"; then
-            controllable_compatible=true
+        # Check Controlify (Modrinth mod DOUdJVEm)
+        if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
+            controlify_compatible=true
         fi
 
         # Check Splitscreen Support (Modrinth mod yJgqfSDR)
@@ -95,7 +96,7 @@ get_supported_minecraft_versions() {
         fi
 
         # Only include versions where BOTH essential mods are available
-        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true ]]; then
+        if [[ "$controlify_compatible" == true && "$splitscreen_compatible" == true ]]; then
             supported_versions+=("$mc_version")
             print_success "    ✅ $mc_version - Both mods compatible" >&2
         else
@@ -320,8 +321,8 @@ fallback_dependencies() {
         "modrinth:gHvKJofA")  # Legacy4J
             echo "lhGA9TYQ P7dR8mSH nkTZHOLD"  # Architectury API, Fabric API, Factory API
             ;;
-        "curseforge:317269")  # Controllable
-            echo "634179"  # Framework
+        "modrinth:DOUdJVEm")  # Controlify
+            echo "P7dR8mSH"  # Fabric API
             ;;
         *)
             echo ""
@@ -335,7 +336,7 @@ fallback_dependencies() {
 
 # @function    get_minecraft_version
 # @description Interactive Minecraft version selection with intelligent compatibility checking.
-#              Only offers versions that support both Controllable and Splitscreen Support mods.
+#              Only offers versions that support both Controlify and Splitscreen Support mods.
 # @global      MC_VERSION - (output) Set to selected Minecraft version
 # @stdin       User input from /dev/tty (for curl | bash compatibility)
 # @return      0 on success, exits on failure to determine versions
@@ -372,7 +373,7 @@ get_minecraft_version() {
     done
 
     echo "These versions have been verified to support both essential splitscreen mods:"
-    echo "  ✅ Controllable (controller support)"
+    echo "  ✅ Controlify (controller support)"
     echo "  ✅ Splitscreen Support (split-screen functionality)"
 
     # Get user choice
