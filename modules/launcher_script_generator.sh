@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.2.15
-# @date        2026-04-18
+# @version     3.3.0
+# @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.3.0 (2026-05-31) - Feat: Migrate from Controllable to Controlify; use GLFW joystick index for controller isolation; remove SDL2 GUID code and duplicate function definitions; add SDL_JOYSTICK_HIDAPI=0 + SDL_LINUX_JOYSTICK_CLASSIC=1 hints
 #   3.2.15 (2026-04-18) - Fix: placeholder uses python3+GTK (black bg) as primary; yad --css not valid in yad 9.3 caused silent crash
 #   3.2.14 (2026-04-18) - Fix: placeholder window uses yad/zenity fallback chain instead of tkinter-only; KWin script forces position into P4 quadrant on Wayland
 #   3.2.13 (2026-04-18) - Fix: killall plasmashell scoped to current user (-u $USER); numeric comparisons for controller count and player count
@@ -378,17 +379,9 @@ findSteamVirtualEventDevices() {
     done
 }
 
-# Enable or disable Controllable's autoSelect for a slot.
-# Arguments: $1=slot, $2=true|false
-setControllableAutoSelect() {
-    local slot=$1
-    local enabled=$2
-    local toml="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable-client.toml"
-    [ -f "$toml" ] || return 0
-    sed -i "s/^\s*autoSelect = .*/\tautoSelect = $enabled/" "$toml"
-}
-
 # Get the Bluetooth serial (MAC address) for an event device from sysfs.
+# Useful for logging. Outputs lowercase MAC (e.g., "a0:5a:5e:d0:8a:dc"),
+# or empty string if no Bluetooth serial (USB controllers).
 # Arguments: $1=/dev/input/eventN path
 getControllerSerial() {
     local event_dev="$1"
@@ -396,168 +389,59 @@ getControllerSerial() {
     cat "/sys/class/input/$event_name/device/uniq" 2>/dev/null | tr '[:upper:]' '[:lower:]'
 }
 
-# Search all instance selected_controllers.json files for a saved config
-# whose "serial" field matches the given serial. Outputs the full JSON content.
-# Arguments: $1=serial (e.g., "a0:5a:5e:d0:8a:dc")
-findControllableConfigBySerial() {
-    local target_serial="$1"
-    local cfg_dir cfg_file cfg_serial
-    for i in 1 2 3 4; do
-        cfg_file="$INSTANCES_DIR/latestUpdate-$i/.minecraft/config/controllable/selected_controllers.json"
-        [ -f "$cfg_file" ] || continue
-        cfg_serial=$(grep -o '"serial": *"[^"]*"' "$cfg_file" | head -1 | grep -o '"[^"]*"$' | tr -d '"' | tr '[:upper:]' '[:lower:]')
-        if [ "$cfg_serial" = "$target_serial" ]; then
-            cat "$cfg_file"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Write Controllable's selected_controllers.json for a slot using the Bluetooth
-# serial to match a previously-saved controller config.
-# In Game Mode (Steam Virtual Gamepad present), uses autoSelect=true instead
-# so Controllable picks whatever SDL can open (the Steam Input virtual device).
-# Arguments: $1=slot, $2=/dev/input/eventN path
-writeControllableConfigBySerial() {
+# Write Controlify config for a slot, directing it to use a specific GLFW joystick index.
+# Controlify 2.x identifies controllers by GLFW joystick index (0-based), which maps
+# directly to /dev/input/jsN order. Identical-model controllers get distinct indices,
+# solving the SDL2 GUID collision problem entirely.
+# Arguments: $1=slot, $2=joystick_idx (0-based GLFW index)
+writeControlifyConfig() {
     local slot=$1
-    local event_dev="$2"
-    local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable"
-
-    # In Game Mode, Steam Input grabs the raw device and presents a Steam Virtual
-    # Gamepad with a different GUID. Use autoSelect=true so Controllable picks
-    # whatever SDL can actually open.
-    if hasSteamVirtualController; then
-        log_info "Slot $slot: Steam Virtual Gamepad detected — using autoSelect (Game Mode)"
-        setControllableAutoSelect "$slot" "true"
-        return 0
-    fi
-
-    local serial
-    serial=$(getControllerSerial "$event_dev")
-    if [ -z "$serial" ]; then
-        log_warning "Slot $slot: no Bluetooth serial for $event_dev — Controllable will use autoSelect"
-        setControllableAutoSelect "$slot" "true"
-        return 1
-    fi
-
-    local saved_config
-    saved_config=$(findControllableConfigBySerial "$serial")
-    if [ -z "$saved_config" ]; then
-        log_warning "Slot $slot: no saved Controllable config for serial $serial — Controllable will use autoSelect"
-        setControllableAutoSelect "$slot" "true"
-        return 1
-    fi
-
+    local joystick_idx=$2
+    local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controlify"
     mkdir -p "$config_dir"
-    echo "$saved_config" > "$config_dir/selected_controllers.json"
-    setControllableAutoSelect "$slot" "false"
-    log_info "Slot $slot: assigned controller serial $serial via Controllable config (autoSelect=false)"
-    return 0
+    # Controller UID format for Controlify 2.x: "lwjgl:{index}"
+    cat > "$config_dir/controlify.json" <<JSON
+{
+  "currentController": "lwjgl:$joystick_idx"
+}
+JSON
+    log_info "Slot $slot: wrote Controlify config for GLFW joystick index $joystick_idx"
 }
 
-# Assign a specific controller event device to a slot.
-# Enumerates real (non-Steam-virtual) devices, picks the first unclaimed one,
-# writes SDL_JOYSTICK_DEVICE to instance.cfg, and configures Controllable.
-# In Game Mode, skips SDL_JOYSTICK_DEVICE restriction so Steam Virtual Gamepad
-# is accessible to SDL.
+# Clear Controlify controller assignment for a slot (called on instance exit).
+# Arguments: $1=slot
+clearControlifyConfig() {
+    local slot=$1
+    rm -f "$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controlify/controlify.json" 2>/dev/null
+    log_info "Slot $slot: cleared Controlify controller config"
+}
+
+# Assign a specific controller to a player slot.
+# GLFW joystick index = slot - 1 (P1 gets js0/index 0, P2 gets js1/index 1, etc.).
+# Works correctly for identical-model controllers since GLFW uses OS-assigned
+# joystick indices, not GUIDs — no duplicate GUID collision.
 # Arguments: $1=slot
 assignControllerToSlot() {
     local slot=$1
     local idx=$((slot - 1))
+    local joystick_idx=$idx
 
-    # In Game Mode, Steam Input grabs physical devices and presents Steam Virtual
-    # Gamepads (vendor 28de). Assign one virtual device per slot so each instance
-    # only sees its own controller via SDL_JOYSTICK_DEVICE.
-    if hasSteamVirtualController; then
-        local -a virtual_devices
-        mapfile -t virtual_devices < <(findSteamVirtualEventDevices)
-
-        if [ ${#virtual_devices[@]} -eq 0 ]; then
-            log_warning "Slot $slot: no Steam Virtual Gamepad devices found — falling back to autoSelect"
-            setControllableAutoSelect "$slot" "true"
-            return
-        fi
-
-        log_debug "Available Steam Virtual event devices: ${virtual_devices[*]}"
-
-        # Collect virtual devices already claimed by active slots
-        local -a used_devices=()
-        for i in 0 1 2 3; do
-            if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
-                used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
-            fi
-        done
-
-        # Pick first unclaimed virtual device
-        local chosen_device=""
-        for dev in "${virtual_devices[@]}"; do
-            local in_use=false
-            for used in "${used_devices[@]}"; do
-                [[ "$used" == "$dev" ]] && in_use=true && break
-            done
-            if [ "$in_use" = "false" ]; then
-                chosen_device="$dev"
-                break
-            fi
-        done
-
-        if [ -z "$chosen_device" ]; then
-            local dev_idx=$((idx < ${#virtual_devices[@]} ? idx : ${#virtual_devices[@]} - 1))
-            chosen_device="${virtual_devices[$dev_idx]}"
-            log_warning "Slot $slot: all virtual devices claimed — falling back to index $dev_idx"
-        fi
-
-        INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
-        setControllableAutoSelect "$slot" "true"
-        writeInstanceSdlEnv "$slot" "$chosen_device"
-        log_info "Slot $slot: assigned Steam Virtual Gamepad $chosen_device (autoSelect=true)"
-        return
-    fi
-
-    # Desktop Mode: enumerate real (non-Steam-virtual) controller event devices
+    # Track the physical event device for disconnect detection in handleControllerChange
     local -a all_devices
     mapfile -t all_devices < <(findRealControllerEventDevices)
-
-    if [ ${#all_devices[@]} -eq 0 ]; then
-        log_warning "No controller event devices found — slot $slot will use Controllable autoSelect"
-        return
-    fi
-
-    log_debug "Available controller event devices: ${all_devices[*]}"
-
-    # Collect devices already claimed by active slots
-    local -a used_devices=()
-    for i in 0 1 2 3; do
-        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
-            used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
-        fi
-    done
-
-    # Pick the first unclaimed device
-    local chosen_device=""
-    for dev in "${all_devices[@]}"; do
-        local in_use=false
-        for used in "${used_devices[@]}"; do
-            [[ "$used" == "$dev" ]] && in_use=true && break
-        done
-        if [ "$in_use" = "false" ]; then
-            chosen_device="$dev"
-            break
-        fi
-    done
-
-    # Fallback: all devices claimed — use slot-index-based assignment
-    if [ -z "$chosen_device" ]; then
+    if [ ${#all_devices[@]} -gt 0 ]; then
         local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
-        chosen_device="${all_devices[$dev_idx]}"
-        log_warning "Slot $slot: all devices claimed — falling back to device index $dev_idx"
+        INSTANCE_CONTROLLER_DEVICE[$idx]="${all_devices[$dev_idx]}"
+    else
+        INSTANCE_CONTROLLER_DEVICE[$idx]="/dev/input/js${joystick_idx}"
     fi
 
-    INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
-    writeControllableConfigBySerial "$slot" "$chosen_device"
-    writeInstanceSdlEnv "$slot" "$chosen_device"
-    log_info "Slot $slot: assigned controller device $chosen_device"
+    # Primary: Controlify GLFW index config (identical controllers distinguished by index)
+    writeControlifyConfig "$slot" "$joystick_idx"
+    # Secondary: SDL env vars as belt-and-suspenders for any SDL-based components
+    writeInstanceSdlEnv "$slot" "${INSTANCE_CONTROLLER_DEVICE[$idx]}"
+
+    log_info "Slot $slot: assigned GLFW joystick index $joystick_idx (device: ${INSTANCE_CONTROLLER_DEVICE[$idx]})"
 }
 
 # =============================================================================
@@ -630,10 +514,13 @@ writeInstanceSdlEnv() {
     local dev="$2"
     local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
     [ -f "$cfg" ] || { log_warning "No instance.cfg for slot $slot — SDL isolation skipped"; return 1; }
-    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\"}"
+    # HIDAPI=0 + LINUX_JOYSTICK_CLASSIC=1 force SDL into classic joydev path
+    # where SDL_JOYSTICK_DEVICE is enforced by device path (not GUID),
+    # bypassing identical-controller GUID collisions (FlyingEwok v3.3.0 fix).
+    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\",\"SDL_LINUX_JOYSTICK_CLASSIC\":\"1\"}"
     sed -i "s|^Env=.*|Env=$env_json|" "$cfg"
     sed -i "s|^OverrideEnv=.*|OverrideEnv=true|" "$cfg"
-    log_info "Slot $slot: wrote SDL_JOYSTICK_DEVICE=$dev to instance.cfg"
+    log_info "Slot $slot: wrote SDL controller isolation to instance.cfg"
 }
 
 # Clear SDL env vars from instance.cfg when the slot is no longer active.
