@@ -1,0 +1,21 @@
+[
+  {
+    "id": "GGHHIIJJ",
+    "version_number": "2.0.0+1.21.4",
+    "game_versions": ["1.21.4"],
+    "loaders": ["fabric"],
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/WITHDEPS/versions/GGHHIIJJ/mod-2.0.0+1.21.4.jar",
+        "primary": true,
+        "filename": "mod-2.0.0+1.21.4.jar"
+      }
+    ],
+    "dependencies": [
+      {
+        "dependency_type": "required",
+        "project_id": "P7dR8mSH"
+      }
+    ]
+  }
+]

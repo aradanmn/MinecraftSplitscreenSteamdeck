@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub wget for integration tests.
+# Fails silently so callers that handle wget failures gracefully continue.
+# main_workflow.sh uses wget only for accounts.json; the failure path just
+# logs a warning and continues, so returning 1 is safe.
+exit 1

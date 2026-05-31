@@ -17,11 +17,13 @@
 !modules/**
 !tools/
 !tools/**
+!tests/
+!tests/**
 !.claude/
 !.claude/memory/
 !.claude/memory/**
 !PLAN-*.md
-!tests/
-!tests/**
+!TESTING.md
+!MANUAL-TEST-PLAN.md
 tests/bats/
 tests/bats-install/

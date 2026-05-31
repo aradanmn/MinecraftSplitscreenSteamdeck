@@ -666,18 +666,11 @@ PollyMC went offline as of 2026-02-07 (`pollymc.org` does not resolve, GitHub re
 - When a 4th player joins: close the black window
 - When player count drops to 2 or below: close the black window (layout switches to halves)
 
-**Implementation Approach:**
-- Create a lightweight black window using one of:
-  - `python3 -c "import tkinter as tk; r=tk.Tk(); r.configure(bg='black'); r.attributes('-fullscreen',False); r.mainloop()"` — no deps beyond python3
-  - `xterm -bg black -fg black -geometry ...` — X11 only
-  - A small bash script using `/dev/fb0` or a named socket
-- Track the placeholder window PID in a `PLACEHOLDER_PID` variable
-- Launch/kill it in `handleControllerChange()` and `checkForExitedInstances()` based on active count
-- Position it at the P4 quadrant coordinates from `calculateWindowPosition 4 4`
+**Implementation:** python3+GTK (PyGObject/gi) primary — undecorated black GTK window, KWin script positions it into P4 quadrant. yad (no --css), zenity, tkinter as fallbacks. Confirmed working in Desktop Mode 2026-04-18.
 
-**Gamescope note:** In gamescope (Game Mode), external windows can't be created. Skip placeholder in that environment.
+**Note:** `yad --css` is NOT a valid flag in yad 9.3 (Bazzite) — causes silent crash. Always use python3+gi as primary.
 
-**Files to modify:** `modules/launcher_script_generator.sh` — `handleControllerChange()`, `checkForExitedInstances()`, add `showPlaceholderWindow()` / `hidePlaceholderWindow()`
+**Files modified:** `modules/launcher_script_generator.sh` v3.2.15 — `showPlaceholderWindow()`, `hidePlaceholderWindow()`, `updatePlaceholderWindow()`
 
 ---
 

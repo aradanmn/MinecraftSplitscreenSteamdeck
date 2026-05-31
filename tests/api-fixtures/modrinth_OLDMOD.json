@@ -1,0 +1,16 @@
+[
+  {
+    "id": "EEFF0011",
+    "version_number": "1.0.0+1.20.4",
+    "game_versions": ["1.20.4", "1.20.3"],
+    "loaders": ["fabric"],
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/OLDMOD/versions/EEFF0011/mod-1.0.0+1.20.4.jar",
+        "primary": true,
+        "filename": "mod-1.0.0+1.20.4.jar"
+      }
+    ],
+    "dependencies": []
+  }
+]

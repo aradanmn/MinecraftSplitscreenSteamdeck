@@ -1,0 +1,16 @@
+[
+  {
+    "id": "KKLLMMNN",
+    "version_number": "3.0.0+1.21.x",
+    "game_versions": ["1.21.x"],
+    "loaders": ["fabric"],
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/WILDCARD/versions/KKLLMMNN/mod-3.0.0+1.21.x.jar",
+        "primary": true,
+        "filename": "mod-3.0.0+1.21.x.jar"
+      }
+    ],
+    "dependencies": []
+  }
+]

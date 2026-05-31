@@ -1,0 +1,16 @@
+[
+  {
+    "id": "OOPPQQRR",
+    "version_number": "4.0.0+1.21.3",
+    "game_versions": ["1.21.3"],
+    "loaders": ["fabric"],
+    "files": [
+      {
+        "url": "https://cdn.modrinth.com/data/LOWPATCH/versions/OOPPQQRR/mod-4.0.0+1.21.3.jar",
+        "primary": true,
+        "filename": "mod-4.0.0+1.21.3.jar"
+      }
+    ],
+    "dependencies": []
+  }
+]

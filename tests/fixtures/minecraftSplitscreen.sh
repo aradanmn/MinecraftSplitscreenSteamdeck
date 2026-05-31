@@ -1,123 +1,11 @@
 #!/bin/bash
 # =============================================================================
-# @file        launcher_script_generator.sh
-# @version     3.2.15
-# @date        2026-04-18
-# @author      Minecraft Splitscreen Steam Deck Project
-# @license     MIT
-# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
-#
-# @description
-#   Generates the minecraftSplitscreen.sh launcher script with correct paths
-#   baked in based on the detected launcher configuration. The generated script
-#   handles Steam Deck Game Mode detection, controller counting, splitscreen
-#   configuration, and instance launching.
-#
-#   Key features:
-#   - Template-based script generation with placeholder replacement
-#   - Support for both AppImage and Flatpak launchers
-#   - Steam Deck Game Mode detection with nested Plasma session
-#   - Controller detection with Steam Input duplicate handling
-#   - Per-instance splitscreen.properties configuration
-#
-# @dependencies
-#   - git (for commit hash embedding, optional)
-#   - sed (for placeholder replacement)
-#
-# @exports
-#   Functions:
-#     - generate_splitscreen_launcher : Main generation function
-#     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
-#
-# @changelog
-#   3.2.15 (2026-04-18) - Fix: placeholder uses python3+GTK (black bg) as primary; yad --css not valid in yad 9.3 caused silent crash
-#   3.2.14 (2026-04-18) - Fix: placeholder window uses yad/zenity fallback chain instead of tkinter-only; KWin script forces position into P4 quadrant on Wayland
-#   3.2.13 (2026-04-18) - Fix: killall plasmashell scoped to current user (-u $USER); numeric comparisons for controller count and player count
-#   3.2.12 (2026-04-18) - Fix: move CURRENT_PLAYER_COUNT update before updatePlaceholderWindow in scale-up path so placeholder shows correctly when 3rd player joins
-#   3.2.11 (2026-04-18) - Fix: add quick 1s second reposition pass so KWin processes fullscreen clearance before geometry is re-applied; keeps 7s third pass for stragglers
-#   3.2.10 (2026-04-18) - Fix: second reposition pass 8s after first to catch late-opening windows (P3/P4 under load)
-#   3.2.9 (2026-04-18) - Fix: embed is_flatpak_installed() in generated script — was called in validate_launcher() but never defined, causing "prismlauncher not found" error on every launch
-#   3.2.8 (2026-04-17) - Refactor: placeholder window — use calculateWindowPosition for P4 coords; add tkinter pre-check; idempotency guard in updatePlaceholderWindow; remove dead Python lines; cleaner cleanup call
-#   3.2.7 (2026-04-17) - Feat: Issue #11 — black placeholder window fills P4 quadrant in 3-player layout; auto show/hide on join/leave via updatePlaceholderWindow(); works in gamescope via nested X11 display
-#   3.2.6 (2026-04-05) - Fix: markInstanceStopped blocks event loop on recycled wrapper PID — skip wait() if wrapper launched > 30s ago; reduce GPU init sleep 10s→5s and reposition wait 15s→10s
-#   3.2.5 (2026-03-18) - Fix: Issue #10 — require controller disconnect+reconnect after instance exit; remove KNOWN_CONTROLLER_COUNT sync from checkForExitedInstances so spurious CONTROLLER_CHANGE events cannot trigger unintended relaunches
-#   3.2.4 (2026-03-15) - Fix: Extend instance startup grace period from 60s to 180s to allow first-time library downloads to complete before Java starts
-#   3.2.3 (2026-03-15) - Fix: handleControllerChange scale-down stops orphaned instances by checking INSTANCE_CONTROLLER_DEVICE device existence; sync KNOWN_CONTROLLER_COUNT downward in checkForExitedInstances
-#   3.2.2 (2026-03-14) - Fix: Screen blanking during gameplay — session-level kde-inhibit sleep infinity persists for full session; xset fallback for X11
-#   3.2.1 (2026-03-14) - Fix: Controller isolation via Controllable serial matching (Bluetooth MAC from sysfs uniq); SDL_JOYSTICK_DEVICE kept as secondary layer; autoSelect=false per active slot
-#   3.2.0 (2026-03-14) - Fix: Controller isolation via instance.cfg Env/OverrideEnv instead of broken --env= flatpak flags (lost to PrismLauncher single-instance IPC); add writeInstanceSdlEnv/clearInstanceSdlEnv
-#   3.1.0 (2026-03-14) - Feat: Controller-to-session mapping using Controllable's own SDL2; writes correct selected_controllers.json per slot; disables autoSelect on active instances
-#   3.0.10 (2026-03-07) - Fix: Zombie process reaping, cleanup_exit reentrancy guard, gamescope cleanup race prevention; default mode changed to dynamic; remove dead launchGames()
-#   3.0.9 (2026-02-08) - Fix: Pre-warm PrismLauncher on first launch to prevent "still initializing" errors
-#   3.0.8 (2026-02-08) - Fix: Import desktop session env for SSH; stop killing plasmashell; use FullArea in KWin JS; detect WAYLAND_DISPLAY in game mode check
-#   3.0.7 (2026-02-07) - Fix: KDE 6 KWin API compatibility (Object.assign for geometry, tile=null); verbose KWin JS logging
-#   3.0.6 (2026-02-07) - Feat: FULLSCREEN-only mode + KWin positioning (avoids Splitscreen mod Wayland crash); no-restart dynamic scaling
-#   3.0.5 (2026-02-07) - Feat: KWin scripting for Wayland-native window repositioning; block xdotool on Wayland
-#   3.0.4 (2026-02-07) - Feat: Steam Deck handheld vs docked mode detection; single-player in handheld
-#   3.0.3 (2026-02-07) - Fix: Background notify-send to prevent blocking on D-Bus issues
-#   3.0.2 (2026-02-07) - Fix: PID tracking, orphaned process cleanup, clean exit with Steam refocus
-#   3.0.1 (2026-02-01) - Add CLI arguments (--mode=static/dynamic, --help) for non-interactive use
-#   3.0.0 (2026-02-01) - Dynamic splitscreen mode, controller hotplug, window repositioning
-#   2.1.1 (2026-02-01) - Fix: promptControllerMode sends status to stderr, add keyboard/mouse detection
-#   2.1.0 (2026-01-31) - Added Steam Deck OLED (Galileo) detection, improved controller detection
-#   2.0.4 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp/TMPDIR
-#   2.0.3 (2026-01-31) - Fix: Add log_debug() function, debug output now logged to file
-#   2.0.2 (2026-01-31) - Fix: grep -c exit code causing "0\n0" controller count
-#   2.0.1 (2026-01-26) - Added logging system, improved controller/game mode detection
-#   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
-#   1.0.0 (2024-XX-XX) - Initial implementation
-# =============================================================================
-
-# =============================================================================
-# MAIN GENERATOR FUNCTION
-# =============================================================================
-
-# @function    generate_splitscreen_launcher
-# @description Generate the minecraftSplitscreen.sh launcher script with
-#              configuration values baked in via placeholder replacement.
-# @param       $1 - output_path: Path for the generated script
-# @param       $2 - launcher_name: "PrismLauncher"
-# @param       $3 - launcher_type: "appimage" or "flatpak"
-# @param       $4 - launcher_exec: Full path or flatpak command
-# @param       $5 - launcher_dir: Launcher data directory
-# @param       $6 - instances_dir: Instances directory path
-# @global      SCRIPT_VERSION - (input, optional) Version string for embedding
-# @global      REPO_URL - (input, optional) Repository URL for embedding
-# @return      0 on success
-# @example
-#   generate_splitscreen_launcher "/path/to/script.sh" "PrismLauncher" "flatpak" \
-#       "flatpak run org.prismlauncher.PrismLauncher" "/home/user/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher" \
-#       "/home/user/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
-generate_splitscreen_launcher() {
-    local output_path="$1"
-    local launcher_name="$2"
-    local launcher_type="$3"
-    local launcher_exec="$4"
-    local launcher_dir="$5"
-    local instances_dir="$6"
-
-    # Get version info
-    local generation_date
-    local commit_hash
-    generation_date=$(date -Iseconds 2>/dev/null || date "+%Y-%m-%dT%H:%M:%S%z")
-    commit_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-
-    # Ensure output directory exists
-    mkdir -p "$(dirname "$output_path")"
-
-    # Generate the script using heredoc
-    # Note: We use a mix of quoted and unquoted heredoc markers:
-    # - 'EOF' (quoted) prevents variable expansion in the heredoc
-    # - We then use sed to replace placeholders with actual values
-    cat > "$output_path" << 'LAUNCHER_SCRIPT_EOF'
-#!/bin/bash
-# =============================================================================
 # Minecraft Splitscreen Launcher for Steam Deck & Linux
 # =============================================================================
-# Version: __SCRIPT_VERSION__ (commit: __COMMIT_HASH__)
-# Generated: __GENERATION_DATE__
-# Generator: install-minecraft-splitscreen.sh v__SCRIPT_VERSION__
-# Source: __REPO_URL__
+# Version: FIXTURE (commit: 0000000)
+# Generated: 2026-01-01T00:00:00+00:00
+# Generator: install-minecraft-splitscreen.sh v3.1.0
+# Source: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
 # DO NOT EDIT - This file is auto-generated by the installer.
 # To update, re-run the installer script.
@@ -142,11 +30,11 @@ set +e  # Allow script to continue on errors for robustness
 # =============================================================================
 # These values were set by the installer based on your system configuration.
 
-LAUNCHER_NAME="__LAUNCHER_NAME__"
-LAUNCHER_TYPE="__LAUNCHER_TYPE__"
-LAUNCHER_EXEC="__LAUNCHER_EXEC__"
-LAUNCHER_DIR="__LAUNCHER_DIR__"
-INSTANCES_DIR="__INSTANCES_DIR__"
+LAUNCHER_NAME="prismlauncher"
+LAUNCHER_TYPE="flatpak"
+LAUNCHER_EXEC="flatpak run org.prismlauncher.PrismLauncher"
+LAUNCHER_DIR="/home/testuser/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"
+INSTANCES_DIR="/home/testuser/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
 
 # =============================================================================
 # END GENERATED CONFIGURATION
@@ -2645,7 +2533,7 @@ trap cleanup_exit EXIT INT TERM
 
 # Show help/usage
 show_help() {
-    echo "Minecraft Splitscreen Launcher v__SCRIPT_VERSION__"
+    echo "Minecraft Splitscreen Launcher v3.1.0"
     echo ""
     echo "Usage: $(basename "$0") [OPTIONS]"
     echo ""
@@ -2671,12 +2559,9 @@ show_help() {
     exit 0
 }
 
-# Guard: skip entry logic when sourced (e.g. for unit testing)
-[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
-
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
-    log_debug "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+    log_debug "=== Minecraft Splitscreen Launcher v3.1.0 ==="
     log_debug "Launcher: $LAUNCHER_NAME ($LAUNCHER_TYPE)"
     log_debug "Instances: $INSTANCES_DIR"
     log_debug "Environment: XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP DISPLAY=$DISPLAY"
@@ -2730,7 +2615,7 @@ if [ -z "$LAUNCH_MODE" ]; then
         LAUNCH_MODE="dynamic"
     else
         echo ""
-        echo "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
+        echo "=== Minecraft Splitscreen Launcher v3.1.0 ==="
         echo ""
         echo "Launch Modes:"
         echo "  1. Static  - Launch based on current controllers (original behavior)"
@@ -2846,63 +2731,3 @@ STEAMFOCUSEOF
         fi
     fi
 fi
-LAUNCHER_SCRIPT_EOF
-
-    # Replace placeholders with actual values
-    # Use | as delimiter since paths may contain /
-    sed -i "s|__LAUNCHER_NAME__|${launcher_name}|g" "$output_path"
-    sed -i "s|__LAUNCHER_TYPE__|${launcher_type}|g" "$output_path"
-    sed -i "s|__LAUNCHER_EXEC__|${launcher_exec}|g" "$output_path"
-    sed -i "s|__LAUNCHER_DIR__|${launcher_dir}|g" "$output_path"
-    sed -i "s|__INSTANCES_DIR__|${instances_dir}|g" "$output_path"
-    sed -i "s|__SCRIPT_VERSION__|${SCRIPT_VERSION:-3.0.0}|g" "$output_path"
-    sed -i "s|__COMMIT_HASH__|${commit_hash}|g" "$output_path"
-    sed -i "s|__GENERATION_DATE__|${generation_date}|g" "$output_path"
-    sed -i "s|__REPO_URL__|${REPO_URL:-https://github.com/aradanmn/MinecraftSplitscreenSteamdeck}|g" "$output_path"
-
-    # Make executable
-    chmod +x "$output_path"
-
-    print_success "Generated launcher script: $output_path"
-    return 0
-}
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-# @function    verify_generated_script
-# @description Verify that a generated launcher script is valid.
-#              Checks existence, permissions, placeholder replacement, and syntax.
-# @param       $1 - script_path: Path to the generated script
-# @return      0 if valid, 1 if invalid
-# @example
-#   if verify_generated_script "/path/to/script.sh"; then echo "Valid"; fi
-verify_generated_script() {
-    local script_path="$1"
-
-    if [[ ! -f "$script_path" ]]; then
-        print_error "Generated script not found: $script_path"
-        return 1
-    fi
-
-    if [[ ! -x "$script_path" ]]; then
-        print_error "Generated script is not executable: $script_path"
-        return 1
-    fi
-
-    # Check for placeholder remnants
-    if grep -q '__LAUNCHER_' "$script_path"; then
-        print_error "Generated script contains unreplaced placeholders"
-        return 1
-    fi
-
-    # Basic syntax check
-    if ! bash -n "$script_path" 2>/dev/null; then
-        print_error "Generated script has syntax errors"
-        return 1
-    fi
-
-    print_success "Generated script verified: $script_path"
-    return 0
-}

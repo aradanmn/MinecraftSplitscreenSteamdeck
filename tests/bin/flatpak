@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub flatpak for tests — makes `command -v flatpak` succeed.
+# is_flatpak_installed() bypasses the real `flatpak list` call via _FLATPAK_LIST_CACHE,
+# so this stub only needs to handle the unlikely case where the cache is empty.
+case "$1 $2" in
+    "list --app") printf '%s\n' "${FLATPAK_STUB_LIST:-}" ;;
+esac

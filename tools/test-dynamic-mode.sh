@@ -32,12 +32,21 @@ set -uo pipefail   # Note: no -e so sourced script errors don't abort the harnes
 # Locate generated launcher script
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FIXTURE_SCRIPT="$SCRIPT_DIR/../tests/fixtures/minecraftSplitscreen.sh"
+
 GENERATED_SCRIPT="${GENERATED_SCRIPT:-}"
 if [[ -z "$GENERATED_SCRIPT" ]]; then
     if [[ -f "$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/minecraftSplitscreen.sh" ]]; then
         GENERATED_SCRIPT="$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/minecraftSplitscreen.sh"
     elif [[ -f "$HOME/.local/share/PrismLauncher/minecraftSplitscreen.sh" ]]; then
         GENERATED_SCRIPT="$HOME/.local/share/PrismLauncher/minecraftSplitscreen.sh"
+    elif [[ -f "$FIXTURE_SCRIPT" ]]; then
+        GENERATED_SCRIPT="$FIXTURE_SCRIPT"
+        echo "[i] No real installation found — using fixture: $FIXTURE_SCRIPT"
+        echo "[i] Paths inside the fixture point to /home/testuser (non-existent)."
+        echo "[i] All filesystem operations are mocked; this is safe for CI."
+        echo ""
     else
         echo "[!] Cannot find minecraftSplitscreen.sh — run the installer first,"
         echo "    or set GENERATED_SCRIPT=/path/to/minecraftSplitscreen.sh"
@@ -69,7 +78,7 @@ DEFS_END=$(( ENTRY_LINE - 1 ))
 VALIDATE_CHECK_LINE=$(grep -n "if ! validate_launcher" "$GENERATED_SCRIPT" | head -1 | cut -d: -f1)
 VALIDATE_CHECK_LINE=${VALIDATE_CHECK_LINE:-171}
 BEFORE_CHECK=$(( VALIDATE_CHECK_LINE - 1 ))
-AFTER_CHECK=$(( VALIDATE_CHECK_LINE + 2 ))  # skip the "if ! validate_launcher; then" + "exit 1" + "fi" lines
+AFTER_CHECK=$(( VALIDATE_CHECK_LINE + 3 ))  # skip the "if ! validate_launcher; then" + "exit 1" + "fi" lines
 
 echo "Sourcing function definitions (lines 1-${DEFS_END}, skipping validate_launcher check at ${VALIDATE_CHECK_LINE})..."
 

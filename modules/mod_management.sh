@@ -312,6 +312,7 @@ check_modrinth_mod() {
         print_success "✅ $mod_name (Modrinth)"
     else
         print_warning "❌ $mod_name ($mod_id) - not compatible with $MC_VERSION"
+        return 1
     fi
 }
 
@@ -463,6 +464,7 @@ check_curseforge_mod() {
         print_success "✅ $mod_name (CurseForge)"
     else
         print_warning "❌ $mod_name ($cf_project_id) - not compatible with $MC_VERSION"
+        return 1
     fi
 }
 

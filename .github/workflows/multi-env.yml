@@ -1,0 +1,120 @@
+name: Multi-environment tests
+
+# Runs the full test suite across different Linux environments to catch
+# path, package, and OS-detection differences between distro families.
+#
+# Jobs:
+#   ubuntu      — baseline (matches existing CI)
+#   fedora      — tests on rpm-based system without apt
+#   bazzite-sim — ubuntu with /etc/bazzite/image_name created so
+#                 is_immutable_os() detects an immutable OS and the Flatpak
+#                 path in path_configuration.sh is exercised
+#   controller  — ubuntu with inotify-tools installed so the inotifywait
+#                 code path in test_controller_simulation.sh runs fully
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # ubuntu: same environment as the primary CI — sanity baseline
+  # ---------------------------------------------------------------------------
+  ubuntu:
+    name: Tests (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y bats jq
+
+      - name: Run full grade
+        run: bash tests/grade.sh
+
+      - name: Run controller simulation tests
+        run: bash tests/test_controller_simulation.sh
+
+      - name: Run environment detection tests (no simulation)
+        run: bash tests/test_environment_detection.sh
+
+  # ---------------------------------------------------------------------------
+  # fedora: rpm-based container — verifies tests don't assume apt/deb paths
+  # ---------------------------------------------------------------------------
+  fedora:
+    name: Tests (Fedora)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: dnf install -y bats jq bash
+
+      - name: Run full grade
+        run: bash tests/grade.sh
+
+      - name: Run controller simulation tests
+        run: bash tests/test_controller_simulation.sh
+
+      - name: Run environment detection tests (no simulation)
+        run: bash tests/test_environment_detection.sh
+
+  # ---------------------------------------------------------------------------
+  # bazzite-sim: ubuntu with immutable-OS markers pre-created in /etc/
+  #
+  # Verifies that is_immutable_os() and path_configuration.sh both take the
+  # Flatpak-preferred code path when the bazzite marker is present.
+  # ---------------------------------------------------------------------------
+  bazzite-sim:
+    name: Tests (Bazzite simulation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y bats jq
+
+      - name: Create Bazzite immutable-OS marker
+        run: |
+          sudo mkdir -p /etc/bazzite
+          sudo touch /etc/bazzite/image_name
+          test -f /etc/bazzite/image_name
+
+      - name: Run environment detection tests with Bazzite simulation
+        run: SIMULATE_BAZZITE=1 bash tests/test_environment_detection.sh
+
+      - name: Run path configuration tests under simulated immutable OS
+        # The BATS tests mock is_immutable_os() internally, so they also pass
+        # on bazzite-sim without modification.  Running them here confirms the
+        # test suite is portable across environments.
+        run: bats tests/test_path_configuration.bats
+
+      - name: Create SteamOS marker and verify detection
+        run: |
+          sudo touch /etc/steamos-release
+          SIMULATE_STEAMOS=1 bash tests/test_environment_detection.sh
+          sudo rm -f /etc/steamos-release
+
+  # ---------------------------------------------------------------------------
+  # controller: ubuntu with inotify-tools so the full inotifywait path runs
+  # ---------------------------------------------------------------------------
+  controller:
+    name: Tests (controller simulation with inotify-tools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y bats jq inotify-tools
+
+      - name: Verify inotifywait is available
+        run: command -v inotifywait
+
+      - name: Run controller simulation tests (full inotifywait path)
+        run: bash tests/test_controller_simulation.sh
+
+      - name: Run full grade
+        run: bash tests/grade.sh
