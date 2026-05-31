@@ -61,7 +61,7 @@ source_launcher_functions() {
     export ACTIVE_DATA_DIR="$TEST_ROOT"
     export ACTIVE_INSTANCES_DIR="$INSTANCES_DIR"
     export ACTIVE_LAUNCHER_SCRIPT="$generated"
-    export SCRIPT_VERSION="3.2.13"
+    export SCRIPT_VERSION="3.3.0"
     export REPO_URL="https://github.com/aradanmn/MinecraftSplitscreenSteamdeck"
 
     # Source the generator (defines generate_splitscreen_launcher)
@@ -76,6 +76,11 @@ source_launcher_functions() {
         "$TEST_ROOT/PrismLauncher.AppImage" \
         "$TEST_ROOT" \
         "$INSTANCES_DIR"
+
+    # Create a stub AppImage so validate_launcher() passes the -x check
+    # (the generated script calls it at top level before the BASH_SOURCE guard).
+    touch "$TEST_ROOT/PrismLauncher.AppImage"
+    chmod +x "$TEST_ROOT/PrismLauncher.AppImage"
 
     # Source the generated script — BASH_SOURCE guard prevents main loop
     # shellcheck disable=SC1090

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # =============================================================================
 # Unit tests: controller-to-instance assignment
-# Tests the assignControllerToSlot() logic and config file writing.
+# Tests the assignControllerToSlot() logic and Controlify config writing.
 # =============================================================================
 
 load "../helpers"
@@ -42,79 +42,56 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# setControllableAutoSelect
+# writeControlifyConfig
 # ---------------------------------------------------------------------------
 
-@test "setControllableAutoSelect writes false to slot 1 toml" {
-    local toml="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controllable-client.toml"
-    printf '[controller]\n\tautoSelect = true\n' > "$toml"
+@test "writeControlifyConfig writes lwjgl:0 for slot 1" {
+    writeControlifyConfig 1 0
 
-    setControllableAutoSelect 1 false
-
-    assert_file_contains "$toml" "autoSelect = false"
+    local cfg="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controlify/controlify.json"
+    assert_file_contains "$cfg" '"lwjgl:0"'
 }
 
-@test "setControllableAutoSelect writes true to slot 2 toml" {
-    local toml="$INSTANCES_DIR/latestUpdate-2/.minecraft/config/controllable-client.toml"
-    printf '[controller]\n\tautoSelect = false\n' > "$toml"
+@test "writeControlifyConfig writes lwjgl:3 for slot 4" {
+    writeControlifyConfig 4 3
 
-    setControllableAutoSelect 2 true
-
-    assert_file_contains "$toml" "autoSelect = true"
+    local cfg="$INSTANCES_DIR/latestUpdate-4/.minecraft/config/controlify/controlify.json"
+    assert_file_contains "$cfg" '"lwjgl:3"'
 }
 
-@test "setControllableAutoSelect is a no-op when toml missing" {
-    rm -f "$INSTANCES_DIR/latestUpdate-3/.minecraft/config/controllable-client.toml"
+@test "writeControlifyConfig creates config directory if missing" {
+    rm -rf "$INSTANCES_DIR/latestUpdate-2/.minecraft/config/controlify"
+
+    writeControlifyConfig 2 1
+
+    local cfg="$INSTANCES_DIR/latestUpdate-2/.minecraft/config/controlify/controlify.json"
+    [[ -f "$cfg" ]]
+    assert_file_contains "$cfg" '"lwjgl:1"'
+}
+
+# ---------------------------------------------------------------------------
+# clearControlifyConfig
+# ---------------------------------------------------------------------------
+
+@test "clearControlifyConfig removes the config file" {
+    writeControlifyConfig 1 0
+    local cfg="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controlify/controlify.json"
+    [[ -f "$cfg" ]]
+
+    clearControlifyConfig 1
+
+    [[ ! -f "$cfg" ]]
+}
+
+@test "clearControlifyConfig is a no-op when config missing" {
+    rm -f "$INSTANCES_DIR/latestUpdate-3/.minecraft/config/controlify/controlify.json"
     # Should not error
-    run setControllableAutoSelect 3 false
+    run clearControlifyConfig 3
     [[ "$status" -eq 0 ]]
 }
 
 # ---------------------------------------------------------------------------
-# writeControllableConfigBySerial — Desktop Mode (no Steam Virtual Gamepad)
-# ---------------------------------------------------------------------------
-
-@test "writeControllableConfigBySerial sets autoSelect=true when no serial found" {
-    # event99 has no sysfs entry → no serial
-    local toml="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controllable-client.toml"
-    printf '[controller]\n\tautoSelect = false\n' > "$toml"
-
-    writeControllableConfigBySerial 1 "$TEST_ROOT/dev/input/event99"
-
-    assert_file_contains "$toml" "autoSelect = true"
-}
-
-@test "writeControllableConfigBySerial sets autoSelect=true when no saved config exists" {
-    # event0 has a serial but no pre-existing selected_controllers.json for it
-    local toml="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controllable-client.toml"
-    printf '[controller]\n\tautoSelect = false\n' > "$toml"
-
-    writeControllableConfigBySerial 1 "$TEST_ROOT/dev/input/event0"
-
-    assert_file_contains "$toml" "autoSelect = true"
-}
-
-@test "writeControllableConfigBySerial copies saved config and disables autoSelect" {
-    # Plant a fake saved_controllers.json in slot 2 matching event0's serial
-    local serial
-    serial=$(getControllerSerial "$TEST_ROOT/dev/input/event0")
-    local saved="$INSTANCES_DIR/latestUpdate-2/.minecraft/config/controllable/selected_controllers.json"
-    printf '{"serial":"%s","guid":"abc123"}' "$serial" > "$saved"
-
-    local toml="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controllable-client.toml"
-    printf '[controller]\n\tautoSelect = true\n' > "$toml"
-    local dest="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controllable/selected_controllers.json"
-
-    writeControllableConfigBySerial 1 "$TEST_ROOT/dev/input/event0"
-
-    # Config should be copied to slot 1
-    assert_file_contains "$dest" "$serial"
-    # autoSelect should be false
-    assert_file_contains "$toml" "autoSelect = false"
-}
-
-# ---------------------------------------------------------------------------
-# assignControllerToSlot — Desktop Mode sequential assignment
+# assignControllerToSlot — sequential assignment
 # ---------------------------------------------------------------------------
 
 @test "assignControllerToSlot assigns different devices to each slot" {
@@ -143,12 +120,16 @@ teardown() {
     [[ "$unique_count" -eq 4 ]]
 }
 
-@test "assignControllerToSlot does not reuse a device assigned to an active slot" {
-    INSTANCE_CONTROLLER_DEVICE[0]="$TEST_ROOT/dev/input/event0"
-    INSTANCE_ACTIVE[0]=1
-
+@test "assignControllerToSlot writes Controlify config with correct joystick index" {
     assignControllerToSlot 2
 
-    local d1="${INSTANCE_CONTROLLER_DEVICE[1]}"
-    [[ "$d1" != "$TEST_ROOT/dev/input/event0" ]]
+    local cfg="$INSTANCES_DIR/latestUpdate-2/.minecraft/config/controlify/controlify.json"
+    assert_file_contains "$cfg" '"lwjgl:1"'
+}
+
+@test "assignControllerToSlot slot 1 gets joystick index 0" {
+    assignControllerToSlot 1
+
+    local cfg="$INSTANCES_DIR/latestUpdate-1/.minecraft/config/controlify/controlify.json"
+    assert_file_contains "$cfg" '"lwjgl:0"'
 }

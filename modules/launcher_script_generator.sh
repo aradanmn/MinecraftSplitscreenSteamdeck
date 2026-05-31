@@ -996,175 +996,6 @@ stopControllerMonitor() {
 }
 
 # =============================================================================
-# Controller-to-Session Mapping (Issue #9)
-# =============================================================================
-# Uses Controllable's own bundled SDL2 to enumerate controllers and write the
-# correct selected_controllers.json for each slot before launch. This fixes
-# stale Steam Virtual Gamepad GUIDs and assigns unique-model controllers
-# correctly. Identical-model controllers share the same SDL2 GUID; for those,
-# the correct GUID is written but SDL2 will resolve to the first matching
-# physical device (a known SDL2 limitation without device-level isolation).
-
-# Find Controllable's bundled libSDL2.so in the instances directory.
-# This is the same SDL2 the game uses, so GUIDs will match exactly.
-# Outputs the library path, or returns 1 if not found.
-# Enumerate real (non-Steam-virtual) controller event devices from sysfs.
-# Outputs one /dev/input/eventN path per line, sorted by path for stable ordering.
-# Filters out Steam Input virtual gamepads (vendor 28de) so only physical
-# controllers are enumerated.
-findRealControllerEventDevices() {
-    for js in $(ls -d /sys/class/input/js* 2>/dev/null | sort); do
-        local vendor
-        vendor=$(cat "$js/device/id/vendor" 2>/dev/null)
-        # Skip Steam Input virtual gamepads (vendor=28de, Valve)
-        [[ "$vendor" == "28de" ]] && continue
-        # Find the corresponding event device
-        local event_dev
-        event_dev=$(ls "$js/device/" 2>/dev/null | grep "^event" | head -1)
-        if [ -n "$event_dev" ] && [ -e "/dev/input/$event_dev" ]; then
-            echo "/dev/input/$event_dev"
-        fi
-    done
-}
-
-# Enable or disable Controllable's autoSelect for a slot.
-# Arguments: $1=slot, $2=true|false
-setControllableAutoSelect() {
-    local slot=$1
-    local enabled=$2
-    local toml="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable-client.toml"
-    [ -f "$toml" ] || return 0
-    sed -i "s/^\s*autoSelect = .*/\tautoSelect = $enabled/" "$toml"
-}
-
-# Get the Bluetooth serial (MAC address) for an event device from sysfs.
-# Outputs the serial in lowercase (e.g., "a0:5a:5e:d0:8a:dc"), or nothing
-# if not a Bluetooth device (USB controllers may have no serial).
-# Arguments: $1=/dev/input/eventN path
-getControllerSerial() {
-    local event_dev="$1"
-    local event_name="${event_dev##*/}"
-    cat "/sys/class/input/$event_name/device/uniq" 2>/dev/null | tr '[:upper:]' '[:lower:]'
-}
-
-# Search all instance selected_controllers.json files for a saved config
-# whose "serial" field matches the given serial. Outputs the full JSON content.
-# Returns 1 if no match found.
-# Arguments: $1=serial (e.g., "a0:5a:5e:d0:8a:dc")
-findControllableConfigBySerial() {
-    local target_serial="$1"
-    local cfg_dir cfg_file cfg_serial
-    for i in 1 2 3 4; do
-        cfg_file="$INSTANCES_DIR/latestUpdate-$i/.minecraft/config/controllable/selected_controllers.json"
-        [ -f "$cfg_file" ] || continue
-        cfg_serial=$(grep -o '"serial": *"[^"]*"' "$cfg_file" | head -1 | grep -o '"[^"]*"$' | tr -d '"' | tr '[:upper:]' '[:lower:]')
-        if [ "$cfg_serial" = "$target_serial" ]; then
-            cat "$cfg_file"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Write Controllable's selected_controllers.json for a slot using the Bluetooth
-# serial to match a previously-saved controller config. This uniquely identifies
-# physical controllers even when identical models share the same SDL2 GUID.
-# Sets autoSelect=false so Controllable uses our assigned controller.
-# Falls back gracefully (autoSelect=true) if serial or saved config is unavailable.
-# Arguments: $1=slot, $2=/dev/input/eventN path
-writeControllableConfigBySerial() {
-    local slot=$1
-    local event_dev="$2"
-    local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controllable"
-
-    local serial
-    serial=$(getControllerSerial "$event_dev")
-    if [ -z "$serial" ]; then
-        log_warning "Slot $slot: no Bluetooth serial for $event_dev — Controllable will use autoSelect"
-        setControllableAutoSelect "$slot" "true"
-        return 1
-    fi
-
-    local saved_config
-    saved_config=$(findControllableConfigBySerial "$serial")
-    if [ -z "$saved_config" ]; then
-        log_warning "Slot $slot: no saved Controllable config for serial $serial — Controllable will use autoSelect"
-        setControllableAutoSelect "$slot" "true"
-        return 1
-    fi
-
-    mkdir -p "$config_dir"
-    echo "$saved_config" > "$config_dir/selected_controllers.json"
-    setControllableAutoSelect "$slot" "false"
-    log_info "Slot $slot: assigned controller serial $serial via Controllable config (autoSelect=false)"
-    return 0
-}
-
-# Assign a specific controller event device to a slot.
-# Strategy: enumerate real (non-Steam-virtual) controller event devices from sysfs,
-# find the first one not already claimed by an active slot, store it in
-# INSTANCE_CONTROLLER_DEVICE[], and write SDL_JOYSTICK_DEVICE + SDL_JOYSTICK_HIDAPI=0
-# to instance.cfg via writeInstanceSdlEnv(). PrismLauncher reads per-instance env
-# vars at game launch time and injects them into the JVM, so each Minecraft instance
-# sees exactly one controller. Works for identical-model controllers (e.g., 4x DS4)
-# since device isolation is at the OS event device level, not GUID level.
-# Arguments: $1=slot
-assignControllerToSlot() {
-    local slot=$1
-    local idx=$((slot - 1))
-
-    # Enumerate real controller event devices (sorted for stable ordering)
-    local -a all_devices
-    mapfile -t all_devices < <(findRealControllerEventDevices)
-
-    if [ ${#all_devices[@]} -eq 0 ]; then
-        log_warning "No controller event devices found — slot $slot will use Controllable autoSelect"
-        return
-    fi
-
-    log_debug "Available controller event devices: ${all_devices[*]}"
-
-    # Collect devices already claimed by active slots
-    local -a used_devices=()
-    for i in 0 1 2 3; do
-        if [ "${INSTANCE_ACTIVE[$i]}" = "1" ] && [ -n "${INSTANCE_CONTROLLER_DEVICE[$i]}" ]; then
-            used_devices+=("${INSTANCE_CONTROLLER_DEVICE[$i]}")
-        fi
-    done
-
-    # Pick the first unclaimed device
-    local chosen_device=""
-    for dev in "${all_devices[@]}"; do
-        local in_use=false
-        for used in "${used_devices[@]}"; do
-            [[ "$used" == "$dev" ]] && in_use=true && break
-        done
-        if [ "$in_use" = "false" ]; then
-            chosen_device="$dev"
-            break
-        fi
-    done
-
-    # Fallback: all devices claimed — use slot-index-based assignment
-    if [ -z "$chosen_device" ]; then
-        local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
-        chosen_device="${all_devices[$dev_idx]}"
-        log_warning "Slot $slot: all devices claimed — falling back to device index $dev_idx"
-    fi
-
-    INSTANCE_CONTROLLER_DEVICE[$idx]="$chosen_device"
-
-    # Primary isolation: Controllable serial matching (works for identical-model
-    # controllers since Bluetooth MAC uniquely identifies each physical device).
-    # Secondary isolation: SDL_JOYSTICK_DEVICE in instance.cfg as a belt-and-suspenders
-    # layer in case PrismLauncher forwards env vars to the JVM.
-    writeControllableConfigBySerial "$slot" "$chosen_device"
-    writeInstanceSdlEnv "$slot" "$chosen_device"
-
-    log_info "Slot $slot: assigned controller device $chosen_device"
-}
-
-# =============================================================================
 # Instance Lifecycle Management (Dynamic Splitscreen)
 # =============================================================================
 # Functions to track and manage individual Minecraft instance processes
@@ -1316,14 +1147,13 @@ markInstanceStopped() {
     fi
 
     clearInstanceSdlEnv "$slot"
+    clearControlifyConfig "$slot"
     INSTANCE_PIDS[$idx]=""
     INSTANCE_WRAPPER_PIDS[$idx]=""
     INSTANCE_ACTIVE[$idx]=0
     INSTANCE_JAVA_RESOLVED[$idx]=0
     INSTANCE_LAUNCH_TIME[$idx]=0
     INSTANCE_CONTROLLER_DEVICE[$idx]=""
-    clearInstanceSdlEnv "$slot"
-    setControllableAutoSelect "$slot" "true"
     log "Instance $slot marked as stopped (wrapper $wrapper_pid reaped)"
 }
 
@@ -2236,10 +2066,6 @@ runDynamicSplitscreen() {
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
 
-    # Install SDL wrapper scripts and configure WrapperCommand in each instance.cfg.
-    # Must happen BEFORE the first PrismLauncher launch so the path is in its cache.
-    initSdlWrappers
-
     # Start controller monitoring
     if ! startControllerMonitor; then
         log_error "Failed to start controller monitor, falling back to static mode"
@@ -2300,10 +2126,6 @@ runStaticSplitscreen() {
 
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
-
-    # Install SDL wrapper scripts and configure WrapperCommand in each instance.cfg.
-    # Must happen BEFORE the first PrismLauncher launch so the path is in its cache.
-    initSdlWrappers
 
     local numberOfControllers
     numberOfControllers=$(getControllerCount)
@@ -2487,7 +2309,6 @@ perform_cleanup() {
     uninstallBorderEnforcer 2>/dev/null || true
     uninhibitScreen 2>/dev/null || true
     restorePanels 2>/dev/null || true
-    cleanupSdlWrappers 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     rm -f "/tmp/mc-splitscreen-mode"
 

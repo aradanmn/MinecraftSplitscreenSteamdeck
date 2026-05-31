@@ -336,15 +336,15 @@ FABRIC_VERSION=""
 LWJGL_VERSION=""
 
 # Mod configuration arrays
-declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
-declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
+declare -a REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
+declare -a REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
 
 # Master list of all available mods with their metadata
 # Format: "Mod Name|platform|mod_id"
 declare -a MODS=(
     "Better Name Visibility|modrinth|pSfNeCCY"
     "BetterF3|modrinth|8ShgVXvd"
-    "Controllable (Fabric)|curseforge|317269"
+    "Controlify|modrinth|DOUdJVEm"
     "FerriteCore|modrinth|uXXizFIs"
     "Full Brightness Toggle|modrinth|aEK1KhsC"
     "In-Game Account Switcher|modrinth|cudtvDnd"
