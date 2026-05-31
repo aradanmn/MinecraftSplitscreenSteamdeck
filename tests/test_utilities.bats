@@ -201,7 +201,12 @@ setup() {
     [ "$output" = "3.1.2" ]
 }
 
-@test "get_lwjgl_version_for_mc: 25.1 → 3.3.3 (year-based assumed modern)" {
+@test "get_lwjgl_version_for_mc: 25.1 → 3.4.0 (year-based 25.x)" {
     run get_lwjgl_version_for_mc "25.1"
-    [ "$output" = "3.3.3" ]
+    [ "$output" = "3.4.0" ]
+}
+
+@test "get_lwjgl_version_for_mc: 26.1.2 → 3.4.1 (year-based 26.x)" {
+    run get_lwjgl_version_for_mc "26.1.2"
+    [ "$output" = "3.4.1" ]
 }
