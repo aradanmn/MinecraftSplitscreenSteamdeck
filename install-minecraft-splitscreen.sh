@@ -343,9 +343,12 @@ declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
 # Format: "Mod Name|platform|mod_id"
 declare -a MODS=(
     "Better Name Visibility|modrinth|pSfNeCCY"
+    "BetterF3|modrinth|8ShgVXvd"
     "Controllable (Fabric)|curseforge|317269"
+    "FerriteCore|modrinth|uXXizFIs"
     "Full Brightness Toggle|modrinth|aEK1KhsC"
     "In-Game Account Switcher|modrinth|cudtvDnd"
+    "Iris Shaders|modrinth|YL57xq9U"
     "Just Zoom|modrinth|iAiqcykM"
     "Legacy4J|modrinth|gHvKJofA"
     "Mod Menu|modrinth|mOgUt4GM"
