@@ -3,7 +3,7 @@
 # MINECRAFT SPLITSCREEN CLEANUP SCRIPT
 # =============================================================================
 # @file        cleanup-minecraft-splitscreen.sh
-# @version     1.0.1
+# @version     1.0.2
 # @date        2026-05-31
 # @author      aradanmn
 # @license     MIT
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # Configuration
-readonly SCRIPT_VERSION="1.0.1"
+readonly SCRIPT_VERSION="1.0.2"
 DRY_RUN=false
 FORCE=false
 KEEP_JAVA=true  # Default to keeping Java (it's useful for other things)
@@ -155,18 +155,39 @@ cleanup_flatpaks() {
             print_dry "Uninstall Flatpak: PrismLauncher ($PRISM_FLATPAK_ID)"
         else
             print_info "Uninstalling PrismLauncher Flatpak..."
-            # The default installation scope may not match where PrismLauncher
-            # lives (Steam Deck typically uses --user). Try user scope, then
-            # system scope, capturing the real error if both fail.
+            # Determine the actual install scope. A --user install removes
+            # without auth; a system install needs polkit (interactive password
+            # prompt), so we must NOT pass --noninteractive for system scope or
+            # flatpak refuses to prompt and the uninstall fails.
+            local scope=""
+            if flatpak list --user --app 2>/dev/null | grep -q "$PRISM_FLATPAK_ID"; then
+                scope="user"
+            elif flatpak list --system --app 2>/dev/null | grep -q "$PRISM_FLATPAK_ID"; then
+                scope="system"
+            fi
+
             local uninstall_err=""
-            if uninstall_err=$(flatpak uninstall --user -y --noninteractive --delete-data "$PRISM_FLATPAK_ID" 2>&1); then
-                print_success "Removed PrismLauncher Flatpak (user)"
-            elif uninstall_err=$(flatpak uninstall --system -y --noninteractive --delete-data "$PRISM_FLATPAK_ID" 2>&1); then
-                print_success "Removed PrismLauncher Flatpak (system)"
+            if [[ "$scope" == "user" ]]; then
+                if uninstall_err=$(flatpak uninstall --user -y --noninteractive --delete-data "$PRISM_FLATPAK_ID" 2>&1); then
+                    print_success "Removed PrismLauncher Flatpak (user)"
+                else
+                    print_warning "Failed to remove PrismLauncher Flatpak: ${uninstall_err##*$'\n'}"
+                    print_info "  Try manually: flatpak uninstall --user $PRISM_FLATPAK_ID"
+                fi
+            elif [[ "$scope" == "system" ]]; then
+                # System scope needs polkit auth — allow the interactive password
+                # prompt (no --noninteractive). In --force/SSH runs this still
+                # prompts; if it fails, tell the user to run it manually.
+                print_info "  (system install — you may be prompted for your password)"
+                if flatpak uninstall --system -y --delete-data "$PRISM_FLATPAK_ID"; then
+                    print_success "Removed PrismLauncher Flatpak (system)"
+                else
+                    print_warning "Failed to remove system PrismLauncher Flatpak"
+                    print_info "  Run manually: flatpak uninstall --system $PRISM_FLATPAK_ID"
+                fi
             else
-                print_warning "Failed to remove PrismLauncher Flatpak: ${uninstall_err##*$'\n'}"
-                print_info "  Try manually: flatpak uninstall --user $PRISM_FLATPAK_ID"
-                print_info "  Or (system install): sudo flatpak uninstall $PRISM_FLATPAK_ID"
+                print_warning "Could not determine Flatpak scope for $PRISM_FLATPAK_ID"
+                print_info "  Try manually: flatpak uninstall $PRISM_FLATPAK_ID"
             fi
         fi
     else
