@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        desktop_launcher.sh
-# @version     3.0.1
-# @date        2026-04-18
+# @version     3.0.2
+# @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -29,6 +29,7 @@
 #     - create_desktop_launcher : Main function to create desktop integration
 #
 # @changelog
+#   3.0.2 (2026-05-31) - Fix: unquote Icon= field (quotes broke KDE icon lookup → white paper icon); add Pillow + direct-PNG-download fallbacks for systems without ImageMagick (SteamOS/Bazzite)
 #   3.0.1 (2026-04-18) - Fix: convert .ico to .png via ImageMagick before writing .desktop file; Linux desktops don't render .ico reliably
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_yes_no function
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
@@ -131,16 +132,33 @@ create_desktop_launcher() {
         local icon_desktop
         local instance_icon_path="$ACTIVE_INSTANCES_DIR/latestUpdate-1/icon.png"
 
-        # Convert .ico to .png for desktop environments that don't render .ico reliably
+        # Convert .ico to .png for desktop environments that don't render .ico reliably.
+        # SteamOS/Bazzite typically lack ImageMagick, so we try several converters in
+        # order and, as a last resort, download a PNG icon directly.
         local icon_png_path="$HOME/.local/share/MinecraftSplitscreen/icons/minecraft-splitscreen.png"
+        local icon_png_url="https://cdn2.steamgriddb.com/icon_thumb/add7a048049671970976f3e18f21ade3.png"
         if [[ -f "$icon_path" ]] && [[ ! -f "$icon_png_path" || "$icon_path" -nt "$icon_png_path" ]]; then
             mkdir -p "$(dirname "$icon_png_path")"
             if command -v magick >/dev/null 2>&1; then
                 magick "${icon_path}[4]" "$icon_png_path" 2>/dev/null && \
-                    print_info "   → Converted icon to PNG for desktop compatibility"
+                    print_info "   → Converted icon to PNG (ImageMagick)"
             elif command -v convert >/dev/null 2>&1; then
                 convert "${icon_path}[4]" "$icon_png_path" 2>/dev/null && \
-                    print_info "   → Converted icon to PNG for desktop compatibility"
+                    print_info "   → Converted icon to PNG (ImageMagick)"
+            elif command -v python3 >/dev/null 2>&1 && python3 -c 'import PIL' 2>/dev/null; then
+                # Pillow is widely available where ImageMagick is not
+                python3 -c "from PIL import Image; Image.open('$icon_path').save('$icon_png_path')" 2>/dev/null && \
+                    print_info "   → Converted icon to PNG (Pillow)"
+            fi
+            # Last resort: pull a PNG straight from SteamGridDB so we never have to
+            # ship a raw .ico to the desktop file.
+            if [[ ! -f "$icon_png_path" ]]; then
+                if command -v wget >/dev/null 2>&1; then
+                    wget -O "$icon_png_path" "$icon_png_url" >/dev/null 2>&1 || rm -f "$icon_png_path"
+                elif command -v curl >/dev/null 2>&1; then
+                    curl -fsSL -o "$icon_png_path" "$icon_png_url" 2>/dev/null || rm -f "$icon_png_path"
+                fi
+                [[ -f "$icon_png_path" ]] && print_info "   → Downloaded PNG icon directly from SteamGridDB"
             fi
         fi
 
@@ -192,13 +210,16 @@ create_desktop_launcher() {
         # - Terminal: Whether to run in terminal (false for GUI applications)
         # - Categories: Menu categories for proper organization
 
-        cat > "$desktop_file_path" <<EOF
+        # Note: the Icon field must NOT be quoted — the freedesktop spec treats the
+# value literally, so quotes make KDE/Plasma look for an icon whose name
+# includes the quote characters and it falls back to a blank/paper icon.
+cat > "$desktop_file_path" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Minecraft Splitscreen
 Comment=$launcher_comment
 Exec="$launcher_script_path"
-Icon="$icon_desktop"
+Icon=$icon_desktop
 Terminal=false
 Categories=Game;
 EOF
