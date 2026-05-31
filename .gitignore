@@ -25,5 +25,7 @@
 !PLAN-*.md
 !TESTING.md
 !MANUAL-TEST-PLAN.md
+!Vagrantfile
 tests/bats/
 tests/bats-install/
+.vagrant/
