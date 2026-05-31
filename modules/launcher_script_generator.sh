@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.3.0
+# @version     3.3.1
 # @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.3.1 (2026-05-31) - Fix: add autoSelect:false to Controlify config to prevent Steam Deck trackpad mouse events from hijacking controller assignment
 #   3.3.0 (2026-05-31) - Feat: Migrate from Controllable to Controlify; use GLFW joystick index for controller isolation; remove SDL2 GUID code and duplicate function definitions; add SDL_JOYSTICK_HIDAPI=0 + SDL_LINUX_JOYSTICK_CLASSIC=1 hints
 #   3.2.15 (2026-04-18) - Fix: placeholder uses python3+GTK (black bg) as primary; yad --css not valid in yad 9.3 caused silent crash
 #   3.2.14 (2026-04-18) - Fix: placeholder window uses yad/zenity fallback chain instead of tkinter-only; KWin script forces position into P4 quadrant on Wayland
@@ -399,13 +400,16 @@ writeControlifyConfig() {
     local joystick_idx=$2
     local config_dir="$INSTANCES_DIR/latestUpdate-$slot/.minecraft/config/controlify"
     mkdir -p "$config_dir"
-    # Controller UID format for Controlify 2.x: "lwjgl:{index}"
+    # Controller UID format for Controlify 3.x: "lwjgl:{index}"
+    # autoSelect:false prevents Controlify from switching to keyboard+mouse mode
+    # when the Steam Deck trackpad generates mouse events.
     cat > "$config_dir/controlify.json" <<JSON
 {
-  "currentController": "lwjgl:$joystick_idx"
+  "currentController": "lwjgl:$joystick_idx",
+  "autoSelect": false
 }
 JSON
-    log_info "Slot $slot: wrote Controlify config for GLFW joystick index $joystick_idx"
+    log_info "Slot $slot: wrote Controlify config for GLFW joystick index $joystick_idx (autoSelect=false)"
 }
 
 # Clear Controlify controller assignment for a slot (called on instance exit).
