@@ -8,6 +8,7 @@
 - [Session 2026-03-15 afternoon — generator fixes, dead code, README](project_session_2026_03_15b.md) — inhibitScreen back-port, 449-line dead code purge, README rewrite
 - [Session 2026-03-15 evening — merge rev3 into main, resync](project_session_2026_03_15c.md) — Merged rev3 into main; resolved 3.2.x conflicts; WrapperCommand SDL reverted to instance.cfg approach; open issues #5/#6/#8/#10/#11
 - [Session 2026-03-19 — Issue #10 fix, test harness, Controllable research](project_session_2026_03_19.md) — Removed KNOWN_CONTROLLER_COUNT sync; tools/test-dynamic-mode.sh for SSH testing; Controllable upstream not viable for identical-controller fix
+- [Session 2026-05-31 — Controlify migration fallout fixes (hardware-confirmed)](project_session_2026_05_31.md) — LWJGL 3.4.1 for MC 26.x (crash), Controlify autoSelect:false (trackpad), removed Legacy4J (black-screen hang), cleanup flatpak scope, desktop icon, CI fix. All confirmed working on Steam Deck.
 
 ## Feedback
 - [Generated script vs generator source out of sync](feedback_generated_script.md) — Always back-port fixes to `launcher_script_generator.sh` heredoc, not just the generated script
