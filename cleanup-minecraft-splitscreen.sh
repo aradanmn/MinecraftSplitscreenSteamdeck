@@ -3,8 +3,8 @@
 # MINECRAFT SPLITSCREEN CLEANUP SCRIPT
 # =============================================================================
 # @file        cleanup-minecraft-splitscreen.sh
-# @version     1.0.0
-# @date        2026-02-01
+# @version     1.0.1
+# @date        2026-05-31
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # Configuration
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 DRY_RUN=false
 FORCE=false
 KEEP_JAVA=true  # Default to keeping Java (it's useful for other things)
@@ -155,10 +155,18 @@ cleanup_flatpaks() {
             print_dry "Uninstall Flatpak: PrismLauncher ($PRISM_FLATPAK_ID)"
         else
             print_info "Uninstalling PrismLauncher Flatpak..."
-            if flatpak uninstall -y --noninteractive "$PRISM_FLATPAK_ID" 2>/dev/null; then
-                print_success "Removed PrismLauncher Flatpak"
+            # The default installation scope may not match where PrismLauncher
+            # lives (Steam Deck typically uses --user). Try user scope, then
+            # system scope, capturing the real error if both fail.
+            local uninstall_err=""
+            if uninstall_err=$(flatpak uninstall --user -y --noninteractive --delete-data "$PRISM_FLATPAK_ID" 2>&1); then
+                print_success "Removed PrismLauncher Flatpak (user)"
+            elif uninstall_err=$(flatpak uninstall --system -y --noninteractive --delete-data "$PRISM_FLATPAK_ID" 2>&1); then
+                print_success "Removed PrismLauncher Flatpak (system)"
             else
-                print_warning "Failed to remove PrismLauncher Flatpak (may need: flatpak uninstall $PRISM_FLATPAK_ID)"
+                print_warning "Failed to remove PrismLauncher Flatpak: ${uninstall_err##*$'\n'}"
+                print_info "  Try manually: flatpak uninstall --user $PRISM_FLATPAK_ID"
+                print_info "  Or (system install): sudo flatpak uninstall $PRISM_FLATPAK_ID"
             fi
         fi
     else
