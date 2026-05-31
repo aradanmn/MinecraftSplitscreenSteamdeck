@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        version_management.sh
-# @version     3.1.0
+# @version     3.1.1
 # @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -38,6 +38,7 @@
 #     - get_fabric_version               : Fetch latest Fabric loader version
 #
 # @changelog
+#   3.1.1 (2026-05-31) - Fix: Remove Legacy4J dependency mapping — Legacy4J conflicts with required Controlify mod (keyboard_layout format mismatch hangs game on black screen)
 #   3.1.0 (2026-05-31) - Feat: Check Controlify (modrinth/DOUdJVEm) instead of Controllable (curseforge/317269) for MC version compatibility; update fallback deps and display text
 #   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
@@ -318,9 +319,10 @@ fallback_dependencies() {
         "modrinth:yJgqfSDR")  # Splitscreen Support
             echo "P7dR8mSH" # Fabric API
             ;;
-        "modrinth:gHvKJofA")  # Legacy4J
-            echo "lhGA9TYQ P7dR8mSH nkTZHOLD"  # Architectury API, Fabric API, Factory API
-            ;;
+        # NOTE: Legacy4J (gHvKJofA) was removed — it ships keyboard_layout/en_us.json
+        # in the old flat format, which Controlify 3.x's KeyboardLayoutManager fails
+        # to parse, hanging the resource reload on a black screen. Since Controlify is
+        # a required mod, Legacy4J can never coexist. Do not re-add.
         "modrinth:DOUdJVEm")  # Controlify
             echo "P7dR8mSH"  # Fabric API
             ;;

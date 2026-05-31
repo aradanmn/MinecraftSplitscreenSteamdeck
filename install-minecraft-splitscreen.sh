@@ -341,6 +341,9 @@ declare -a REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
 
 # Master list of all available mods with their metadata
 # Format: "Mod Name|platform|mod_id"
+# NOTE: Legacy4J (gHvKJofA) is intentionally excluded — it conflicts with the
+# required Controlify mod (keyboard_layout format mismatch hangs the game on a
+# black screen). See version_management.sh fallback_dependencies() for details.
 declare -a MODS=(
     "Better Name Visibility|modrinth|pSfNeCCY"
     "BetterF3|modrinth|8ShgVXvd"
@@ -350,7 +353,6 @@ declare -a MODS=(
     "In-Game Account Switcher|modrinth|cudtvDnd"
     "Iris Shaders|modrinth|YL57xq9U"
     "Just Zoom|modrinth|iAiqcykM"
-    "Legacy4J|modrinth|gHvKJofA"
     "Mod Menu|modrinth|mOgUt4GM"
     "Old Combat Mod|modrinth|dZ1APLkO"
     "Reese's Sodium Options|modrinth|Bh37bMuy"
