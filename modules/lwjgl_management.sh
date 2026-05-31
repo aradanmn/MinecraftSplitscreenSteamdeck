@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        lwjgl_management.sh
-# @version     3.0.1
-# @date        2026-03-15
+# @version     3.0.2
+# @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -35,6 +35,7 @@
 #     - validate_lwjgl_version   : Version format validation
 #
 # @changelog
+#   3.0.2 (2026-05-31) - Fix: Update fallback default from 3.3.3 to 3.4.1 (MC 26.x requires 3.4.1)
 #   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
@@ -102,7 +103,7 @@ get_lwjgl_version() {
     # Final fallback
     if [[ -z "$LWJGL_VERSION" ]]; then
         print_warning "Could not detect LWJGL version, using fallback"
-        LWJGL_VERSION="3.3.3"
+        LWJGL_VERSION="3.4.1"
     fi
 
     print_success "Using LWJGL version: $LWJGL_VERSION"

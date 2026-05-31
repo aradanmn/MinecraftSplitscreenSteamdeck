@@ -3,7 +3,7 @@
 # UTILITY FUNCTIONS MODULE
 # =============================================================================
 # @file        utilities.sh
-# @version     3.1.0
+# @version     3.1.1
 # @date        2026-05-31
 # @author      aradanmn
 # @license     MIT
@@ -55,6 +55,7 @@
 #     - DYNAMIC_HAS_NOTIFY        : Set by check_dynamic_mode_dependencies()
 #
 # @changelog
+#   3.1.1 (2026-05-31) - Fix: get_lwjgl_version_for_mc() now returns 3.4.1 for 26.x and 3.4.0 for 25.x year-based MC versions (was wrong 3.3.3 for all year-based)
 #   3.1.0 (2026-05-31) - Feat: graceful_quit() — typing q/quit/exit at any prompt cleanly halts the installer (only on explicit input, not on timeout)
 #   3.0.2 (2026-03-15) - Fix: SIGSEGV crash from read -t in subshell (prompt_user now uses PROMPT_REPLY global)
 #   3.0.1 (2026-02-07) - Added KWin scripting detection (DYNAMIC_HAS_KWIN_SCRIPTING)
@@ -723,7 +724,8 @@ get_java_version_for_mc() {
 # @example
 #   get_lwjgl_version_for_mc "1.21.3"  # Returns "3.3.3"
 #   get_lwjgl_version_for_mc "1.20.4"  # Returns "3.3.1"
-#   get_lwjgl_version_for_mc "25.1"    # Returns "3.3.3" (year-based assumed modern)
+#   get_lwjgl_version_for_mc "25.1"    # Returns "3.4.0"
+#   get_lwjgl_version_for_mc "26.1.2"  # Returns "3.4.1"
 # -----------------------------------------------------------------------------
 get_lwjgl_version_for_mc() {
     local mc_version="$1"
@@ -731,8 +733,14 @@ get_lwjgl_version_for_mc() {
     format=$(detect_version_format "$mc_version")
 
     if [[ "$format" == "year" ]]; then
-        # Year-based versions (25.x and beyond) will use latest LWJGL
-        echo "3.3.3"
+        # Year-based versions: extract the year component (first segment)
+        local year
+        year=$(echo "$mc_version" | cut -d. -f1)
+        if [[ "$year" -ge 26 ]]; then
+            echo "3.4.1"  # MC 26.x+ uses LWJGL 3.4.1
+        else
+            echo "3.4.0"  # MC 25.x uses LWJGL 3.4.0
+        fi
         return 0
     fi
 
