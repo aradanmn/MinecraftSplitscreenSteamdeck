@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.3.1
+# @version     3.3.2
 # @date        2026-05-31
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.3.2 (2026-05-31) - Fix: restore WrapperCommand SDL isolation (removed in 3.3.0); use findSteamVirtualEventDevices in Game Mode; Controlify always lwjgl:0 with SDL isolation; polling repositioning (15s×12 passes); clean exit from nestedPlasma (no exec, wait for Java before qdbus logout)
 #   3.3.1 (2026-05-31) - Fix: add autoSelect:false to Controlify config to prevent Steam Deck trackpad mouse events from hijacking controller assignment
 #   3.3.0 (2026-05-31) - Feat: Migrate from Controllable to Controlify; use GLFW joystick index for controller isolation; remove SDL2 GUID code and duplicate function definitions; add SDL_JOYSTICK_HIDAPI=0 + SDL_LINUX_JOYSTICK_CLASSIC=1 hints
 #   3.2.15 (2026-04-18) - Fix: placeholder uses python3+GTK (black bg) as primary; yad --css not valid in yad 9.3 caused silent crash
@@ -336,8 +337,11 @@ Type=Application
 X-KDE-AutostartScript=true
 EOF
 
-    # Start nested Plasma session (never returns)
-    exec dbus-run-session startplasma-wayland
+    # Run nested Plasma session and block until it ends.
+    # Not exec'd so the outer script exits with code 0 — prevents Steam from
+    # showing the "B to Abort game" dialog after gamescope reloads.
+    dbus-run-session startplasma-wayland || true
+    exit 0
 }
 
 # =============================================================================
@@ -428,24 +432,32 @@ clearControlifyConfig() {
 assignControllerToSlot() {
     local slot=$1
     local idx=$((slot - 1))
-    local joystick_idx=$idx
 
-    # Track the physical event device for disconnect detection in handleControllerChange
+    # In Game Mode Steam presents controllers as virtual Xbox pads (vendor 28de).
+    # In Desktop Mode use physical controllers (exclude virtual).
     local -a all_devices
-    mapfile -t all_devices < <(findRealControllerEventDevices)
+    if hasSteamVirtualController; then
+        mapfile -t all_devices < <(findSteamVirtualEventDevices)
+    else
+        mapfile -t all_devices < <(findRealControllerEventDevices)
+    fi
+
     if [ ${#all_devices[@]} -gt 0 ]; then
         local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
         INSTANCE_CONTROLLER_DEVICE[$idx]="${all_devices[$dev_idx]}"
     else
-        INSTANCE_CONTROLLER_DEVICE[$idx]="/dev/input/js${joystick_idx}"
+        INSTANCE_CONTROLLER_DEVICE[$idx]="/dev/input/js${idx}"
     fi
 
-    # Primary: Controlify GLFW index config (identical controllers distinguished by index)
-    writeControlifyConfig "$slot" "$joystick_idx"
-    # Secondary: SDL env vars as belt-and-suspenders for any SDL-based components
+    # SDL WrapperCommand isolation: each JVM sees only its assigned device.
+    # With one joystick visible, GLFW index 0 == that device inside the isolated JVM.
     writeInstanceSdlEnv "$slot" "${INSTANCE_CONTROLLER_DEVICE[$idx]}"
 
-    log_info "Slot $slot: assigned GLFW joystick index $joystick_idx (device: ${INSTANCE_CONTROLLER_DEVICE[$idx]})"
+    # Controlify: always lwjgl:0 — SDL isolation makes the assigned controller appear
+    # at index 0 in each JVM.  autoSelect:false stops trackpad from switching to K+M mode.
+    writeControlifyConfig "$slot" 0
+
+    log_info "Slot $slot: assigned ${INSTANCE_CONTROLLER_DEVICE[$idx]} (isolated as lwjgl:0)"
 }
 
 # =============================================================================
@@ -513,34 +525,85 @@ prewarmLauncher() {
 # and exits). Per-instance Env/OverrideEnv in instance.cfg is read at launch
 # time by the running PrismLauncher and injected directly into the game JVM.
 # Arguments: $1=slot, $2=/dev/input/eventN path
+# Write SDL isolation env vars into a per-slot wrapper script.
+# PrismLauncher caches the wrapper PATH at startup (constant) but executes
+# wrapper CONTENT at launch time — so updating the script content here takes
+# effect even when PrismLauncher is already running via single-instance IPC.
+# HIDAPI=0 + LINUX_JOYSTICK_CLASSIC=1 force SDL into classic joydev mode where
+# SDL_JOYSTICK_DEVICE restricts visibility to exactly one physical device.
 writeInstanceSdlEnv() {
     local slot=$1
     local dev="$2"
-    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
-    [ -f "$cfg" ] || { log_warning "No instance.cfg for slot $slot — SDL isolation skipped"; return 1; }
-    # HIDAPI=0 + LINUX_JOYSTICK_CLASSIC=1 force SDL into classic joydev path
-    # where SDL_JOYSTICK_DEVICE is enforced by device path (not GUID),
-    # bypassing identical-controller GUID collisions (FlyingEwok v3.3.0 fix).
-    local env_json="{\"SDL_JOYSTICK_DEVICE\":\"$dev\",\"SDL_JOYSTICK_HIDAPI\":\"0\",\"SDL_LINUX_JOYSTICK_CLASSIC\":\"1\"}"
-    sed -i "s|^Env=.*|Env=$env_json|" "$cfg"
-    sed -i "s|^OverrideEnv=.*|OverrideEnv=true|" "$cfg"
-    log_info "Slot $slot: wrote SDL controller isolation to instance.cfg"
+    local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+    if [ ! -f "$wrapper" ]; then
+        log_warning "Slot $slot: SDL wrapper missing — initSdlWrappers not called before launch"
+        return 1
+    fi
+    cat > "$wrapper" <<WRAPPEREOF
+#!/usr/bin/env bash
+export SDL_JOYSTICK_DEVICE="$dev"
+export SDL_JOYSTICK_HIDAPI=0
+export SDL_LINUX_JOYSTICK_CLASSIC=1
+exec "\$@"
+WRAPPEREOF
+    chmod +x "$wrapper"
+    log_info "Slot $slot: wrote SDL isolation to wrapper ($dev)"
 }
 
-# Clear SDL env vars from instance.cfg when the slot is no longer active.
-# Arguments: $1=slot
+# Reset wrapper to a passthrough after the slot's game exits.
 clearInstanceSdlEnv() {
     local slot=$1
-    local cfg="$INSTANCES_DIR/latestUpdate-$slot/instance.cfg"
-    [ -f "$cfg" ] || return 0
-    sed -i "s|^Env=.*|Env={}|" "$cfg"
-    sed -i "s|^OverrideEnv=.*|OverrideEnv=false|" "$cfg"
-    log_info "Slot $slot: cleared SDL env vars from instance.cfg"
+    local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+    [ -f "$wrapper" ] || return 0
+    printf '#!/usr/bin/env bash\nexec "$@"\n' > "$wrapper"
+    chmod +x "$wrapper"
+    log_info "Slot $slot: cleared SDL env from wrapper"
+}
+
+# Create per-slot SDL wrapper scripts and set WrapperCommand in instance.cfg.
+# MUST be called before the first game launch so PrismLauncher caches the
+# wrapper path at startup.  Wrapper content is updated per-slot by writeInstanceSdlEnv.
+initSdlWrappers() {
+    log_info "Initializing per-slot SDL wrapper scripts..."
+    for slot in 1 2 3 4; do
+        local cfg="$INSTANCES_DIR/latestUpdate-${slot}/instance.cfg"
+        local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+        [ -f "$cfg" ] || continue
+        # Start with passthrough; writeInstanceSdlEnv fills in the real device before launch
+        printf '#!/usr/bin/env bash\nexec "$@"\n' > "$wrapper"
+        chmod +x "$wrapper"
+        # Write wrapper path into instance.cfg so PrismLauncher picks it up at startup
+        if grep -q "^WrapperCommand=" "$cfg" 2>/dev/null; then
+            sed -i "s|^WrapperCommand=.*|WrapperCommand=$wrapper|" "$cfg"
+        else
+            echo "WrapperCommand=$wrapper" >> "$cfg"
+        fi
+        if grep -q "^OverrideCommands=" "$cfg" 2>/dev/null; then
+            sed -i "s|^OverrideCommands=.*|OverrideCommands=true|" "$cfg"
+        else
+            echo "OverrideCommands=true" >> "$cfg"
+        fi
+        log_info "Slot $slot: SDL wrapper ready at $wrapper"
+    done
+}
+
+# Remove SDL wrapper scripts and disable WrapperCommand in instance.cfg.
+cleanupSdlWrappers() {
+    for slot in 1 2 3 4; do
+        local cfg="$INSTANCES_DIR/latestUpdate-${slot}/instance.cfg"
+        local wrapper="$INSTANCES_DIR/latestUpdate-${slot}/sdl-wrapper.sh"
+        if [ -f "$cfg" ]; then
+            sed -i "s|^WrapperCommand=.*|WrapperCommand=|" "$cfg" 2>/dev/null || true
+            sed -i "s|^OverrideCommands=.*|OverrideCommands=false|" "$cfg" 2>/dev/null || true
+        fi
+        rm -f "$wrapper"
+    done
 }
 
 # Launch a single Minecraft instance with KDE inhibition.
-# SDL controller isolation is handled via instance.cfg (writeInstanceSdlEnv),
-# not via command-line env flags which are lost to PrismLauncher's single-instance IPC.
+# SDL controller isolation is handled via the per-slot wrapper script (writeInstanceSdlEnv).
+# The wrapper is executed by PrismLauncher at launch time, so env vars reach Java even
+# when subsequent slots are dispatched via single-instance IPC.
 # Arguments:
 #   $1 = Instance name (e.g., latestUpdate-1)
 #   $2 = Player name (e.g., Player1)
@@ -1621,6 +1684,58 @@ calculateWindowPosition() {
 # Reposition all active windows for new player count
 # Arguments:
 #   $1 = new total player count
+# Attempt repositioning every interval_s until all expected Java PIDs are
+# found (then do two more cleanup passes) or max_s seconds elapse.
+# Replaces the old fixed sleep+3-pass approach with an adaptive wait so
+# repositioning still works when Minecraft takes > 30 s to load on Game Mode.
+waitAndRepositionWindows() {
+    local expected=$1
+    local max_s=${2:-180}
+    local interval_s=${3:-15}
+    local elapsed=0
+
+    log_info "Waiting for $expected Minecraft window(s) — repositioning every ${interval_s}s (max ${max_s}s)..."
+
+    while [ "$elapsed" -lt "$max_s" ]; do
+        sleep "$interval_s"
+        elapsed=$((elapsed + interval_s))
+
+        # Force-resolve Java PIDs for all active slots so KWin can match them
+        local resolved=0
+        for _i in 1 2 3 4; do
+            local _ix=$((_i - 1))
+            if [ "${INSTANCE_ACTIVE[$_ix]}" = "1" ]; then
+                if [ "${INSTANCE_JAVA_RESOLVED[$_ix]}" = "0" ]; then
+                    local _jp
+                    _jp=$(pgrep -f "java.*instances/latestUpdate-${_i}/" 2>/dev/null | head -1)
+                    if [ -n "$_jp" ]; then
+                        INSTANCE_PIDS[$_ix]=$_jp
+                        INSTANCE_JAVA_RESOLVED[$_ix]=1
+                    fi
+                fi
+                [ "${INSTANCE_JAVA_RESOLVED[$_ix]}" = "1" ] && resolved=$((resolved + 1))
+            fi
+        done
+
+        log_info "Repositioning at ${elapsed}s ($resolved/$expected PIDs found)..."
+        repositionAllWindows "$expected"
+
+        if [ "$resolved" -ge "$expected" ]; then
+            # All PIDs known — two more passes then exit
+            sleep 5
+            repositionAllWindows "$expected"
+            sleep 5
+            repositionAllWindows "$expected"
+            log_info "All PIDs resolved — repositioning complete"
+            return 0
+        fi
+    done
+
+    # Final attempt after timeout
+    repositionAllWindows "$expected"
+    log_info "Repositioning complete (timeout at ${max_s}s)"
+}
+
 repositionAllWindows() {
     local new_total=$1
 
@@ -1974,20 +2089,12 @@ handleControllerChange() {
         fi
     done
 
-    # Wait for new instance(s) to finish loading, then reposition ALL via KWin.
-    # A second pass runs 8s later to catch instances whose windows opened after the first pass
-    # (common when 2+ instances are already running and competing for RAM/CPU).
-    log_info "Waiting 10 seconds for new instance(s) to load before repositioning..."
-    sleep 10
     CURRENT_PLAYER_COUNT=$current_active
-    repositionAllWindows "$new_total"
     updatePlaceholderWindow
-    sleep 1
-    log_info "Quick second reposition pass (allows KWin to process fullscreen clearance)..."
-    repositionAllWindows "$new_total"
-    sleep 7
-    log_info "Third reposition pass (catching late-opening windows)..."
-    repositionAllWindows "$new_total"
+
+    # Poll-reposition: Minecraft takes 1-3 min to open its window on Game Mode.
+    # Retry every 15 s until all Java PIDs are resolved, then do 2 final passes.
+    waitAndRepositionWindows "$new_total" 180 15
 }
 
 # Check for and handle exited instances
@@ -2067,6 +2174,10 @@ runDynamicSplitscreen() {
         installBorderEnforcer
     fi
 
+    # Set up per-slot SDL wrappers BEFORE PrismLauncher starts.
+    # PrismLauncher caches WrapperCommand paths at startup; wrapper content
+    # is updated per-slot in assignControllerToSlot → writeInstanceSdlEnv.
+    initSdlWrappers
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
 
@@ -2128,6 +2239,8 @@ runStaticSplitscreen() {
         installBorderEnforcer
     fi
 
+    # Set up per-slot SDL wrappers BEFORE PrismLauncher starts.
+    initSdlWrappers
     # Enforce memory settings before PrismLauncher loads configs
     enforceMemorySettings
 
@@ -2155,18 +2268,9 @@ runStaticSplitscreen() {
         launchInstanceForSlot "$player" "$numberOfControllers"
     done
 
-    # Reposition windows via KWin after all instances are launched.
-    # Three passes: first clears fullscreen, quick second lets KWin process it, third catches stragglers.
+    # Poll-reposition until all windows open (Minecraft takes 1-3 min on Steam Deck).
     if [ "$numberOfControllers" -gt 1 ] && canUseKWinScripting; then
-        log_info "Waiting 10 seconds for instances to load before KWin repositioning..."
-        sleep 10
-        repositionAllWindows "$numberOfControllers"
-        sleep 1
-        log_info "Quick second reposition pass (allows KWin to process fullscreen clearance)..."
-        repositionAllWindows "$numberOfControllers"
-        sleep 7
-        log_info "Third reposition pass (catching late-opening windows)..."
-        repositionAllWindows "$numberOfControllers"
+        waitAndRepositionWindows "$numberOfControllers" 180 15
     fi
 
     echo "[Info] All instances launched. Waiting for games to exit..."
@@ -2313,6 +2417,7 @@ perform_cleanup() {
     uninstallBorderEnforcer 2>/dev/null || true
     uninhibitScreen 2>/dev/null || true
     restorePanels 2>/dev/null || true
+    cleanupSdlWrappers 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     rm -f "/tmp/mc-splitscreen-mode"
 
@@ -2492,6 +2597,19 @@ if isSteamDeckGameMode; then
         # Disable traps — cleanup is done, don't let EXIT/TERM re-run it
         # during Plasma's shutdown sequence
         trap - EXIT INT TERM
+
+        # Wait for Java processes to fully exit before triggering Plasma logout.
+        # If any Java processes are still alive when gamescope reloads, Steam shows
+        # the "B to Abort game" dialog instead of returning cleanly to the library.
+        log_info "Waiting for Minecraft Java processes to exit..."
+        local _jw=0
+        while pgrep -f "java.*${INSTANCES_DIR}/latestUpdate" >/dev/null 2>&1 && [ "$_jw" -lt 15 ]; do
+            sleep 1
+            _jw=$((_jw + 1))
+        done
+        # Force-kill any survivors (shouldn't be needed — killAllInstances already ran)
+        pkill -9 -f "java.*${INSTANCES_DIR}/latestUpdate" 2>/dev/null || true
+        sleep 1
 
         qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
     else
