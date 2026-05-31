@@ -1,0 +1,22 @@
+name: Unit Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  bats:
+    name: bats unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats-core
+        run: |
+          git clone --depth=1 https://github.com/bats-core/bats-core tests/bats
+          tests/bats/install.sh tests/bats-install
+
+      - name: Run unit tests
+        run: tests/run_tests.sh unit

@@ -2594,6 +2594,9 @@ show_help() {
     exit 0
 }
 
+# Guard: skip entry logic when sourced (e.g. for unit testing)
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+
 # Enable debug output with SPLITSCREEN_DEBUG=1
 if [ "${SPLITSCREEN_DEBUG:-0}" = "1" ]; then
     log_debug "=== Minecraft Splitscreen Launcher v__SCRIPT_VERSION__ ==="
