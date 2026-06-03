@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        mod_management.sh
-# @version     3.1.0
-# @date        2026-05-31
+# @version     3.2.0
+# @date        2026-06-03
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -50,6 +50,7 @@
 #     - get_curseforge_download_url: Get download URL for CurseForge mod
 #
 # @changelog
+#   3.2.0 (2026-06-03) - Feat: Show dependency names in mod selection UI; Fix: Use REPO_RAW_URL for token.enc
 #   3.1.0 (2026-05-31) - Feat: Controlify migration — remove Controllable/Framework special-case in add_mod_dependencies (Modrinth resolves deps dynamically); update user-facing text
 #   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
 #   2.0.1 (2026-01-26) - Refactored to use centralized prompt_user function
@@ -330,7 +331,7 @@ _get_curseforge_token() {
         return 0
     fi
 
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="${REPO_RAW_URL}/token.enc"
     local tmp_file
     tmp_file=$(mktemp) || return 1
 
@@ -1191,7 +1192,25 @@ select_user_mods() {
         done
 
         if [[ "$skip" == false ]]; then
-            echo "  $counter. ${SUPPORTED_MODS[$i]}"
+            local dep_display=""
+            local dep_ids="${MOD_DEPENDENCIES[$i]:-}"
+            if [[ -n "$dep_ids" ]]; then
+                local dep_names=()
+                for dep_id in $dep_ids; do
+                    [[ -z "$dep_id" ]] && continue
+                    for j in "${!MOD_IDS[@]}"; do
+                        if [[ "${MOD_IDS[$j]}" == "$dep_id" ]]; then
+                            dep_names+=("${SUPPORTED_MODS[$j]}")
+                            break
+                        fi
+                    done
+                done
+                if [[ ${#dep_names[@]} -gt 0 ]]; then
+                    local joined="${dep_names[0]}"; for _n in "${dep_names[@]:1}"; do joined+=", $_n"; done
+                    dep_display="  [requires: ${joined}]"
+                fi
+            fi
+            printf "  %2d. %-38s%s\n" "$counter" "${SUPPORTED_MODS[$i]}" "$dep_display"
             user_mod_indexes+=("$i")
             ((counter++))
         fi

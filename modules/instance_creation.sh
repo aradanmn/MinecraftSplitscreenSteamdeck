@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file instance_creation.sh
-# @version     3.0.3
-# @date        2026-04-18
+# @version     3.0.4
+# @date        2026-06-03
 # @author      aradanmn (forked from FlyingEwok)
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -35,6 +35,7 @@
 #   - handle_instance_update(): Handle updating an existing instance
 #
 # @changelog
+#   3.0.4 (2026-06-03) - Fix: Clean up partial instance directory on creation failure
 #   3.0.3 (2026-04-18) - Fix: guiScale was mistakenly set to 4 despite changelog saying 2; corrected to 2 (max usable at quarter-screen)
 #   3.0.2 (2026-04-18) - Fix: Set guiScale:2 in options.txt so HUD is readable at TV-viewing distance (quarter-screen instances)
 #   2.0.1 (2026-01-31) - Fix: Replace hardcoded /tmp with mktemp for debug files
@@ -212,6 +213,8 @@ create_instances() {
             # Create .minecraft subdirectory
             mkdir -p "$instance_dir/.minecraft" || {
                 print_error "Failed to create .minecraft directory in $instance_dir"
+                rm -rf "$instance_dir"
+                print_warning "Cleaned up partial instance: $instance_name"
                 continue  # Skip to next instance
             }
 
@@ -235,6 +238,8 @@ EOF
 
             if [[ $? -ne 0 ]]; then
                 print_error "Failed to create instance.cfg for $instance_name"
+                rm -rf "$instance_dir"
+                print_warning "Cleaned up partial instance: $instance_name"
                 continue  # Skip to next instance
             fi
 
@@ -297,6 +302,8 @@ EOF
 
             if [[ $? -ne 0 ]]; then
                 print_error "Failed to create mmc-pack.json for $instance_name"
+                rm -rf "$instance_dir"
+                print_warning "Cleaned up partial instance: $instance_name"
                 continue  # Skip to next instance
             fi
 

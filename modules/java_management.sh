@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        java_management.sh
-# @version     3.0.0
-# @date        2026-01-25
+# @version     3.1.0
+# @date        2026-06-03
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -21,9 +21,9 @@
 #
 # @dependencies
 #   - utilities.sh (for print_header, print_success, print_warning, print_error, print_info, print_progress)
-#   - curl (for Mojang API requests)
+#   - curl or wget (for Mojang API requests and JDK download)
 #   - jq (for JSON parsing)
-#   - git (for downloading JDK installer)
+#   - tar (for JDK archive extraction)
 #
 # @global_outputs
 #   - JAVA_PATH: Path to the detected/installed Java executable
@@ -37,6 +37,7 @@
 #     - detect_java : Legacy alias for detect_and_install_java
 #
 # @changelog
+#   3.1.0 (2026-06-03) - Feat: Internalize JDK install — download Eclipse Temurin directly from Adoptium, remove external git clone dependency
 #   2.0.0 (2026-01-25) - Added comprehensive JSDoc documentation
 #   1.0.0 (2024-XX-XX) - Initial implementation
 # =============================================================================
@@ -109,70 +110,120 @@ get_required_java_version() {
 # =============================================================================
 
 # @function    download_and_run_jdk_installer
-# @description Download and execute the automatic JDK installer from GitHub.
-#              Installs Java to ~/.local/jdk/ without requiring root access.
+# @description Download Eclipse Temurin JDK from Adoptium and install to ~/.local/jdk/.
+#              No external scripts or git required — pure curl/wget + tar.
 # @param       $1 - required_version: Required Java major version (e.g., "21", "17", "8")
-# @env         JDK_VERSION - Set to required_version for automated installation
 # @return      0 on successful installation, 1 on failure
 # @example
 #   download_and_run_jdk_installer "21"
 download_and_run_jdk_installer() {
     local required_version="$1"
+
+    # Map architecture to Adoptium arch name
+    local arch
+    case "$(uname -m)" in
+        x86_64)         arch="x64" ;;
+        aarch64|arm64)  arch="aarch64" ;;
+        armv7l)         arch="arm" ;;
+        *)
+            print_error "Unsupported architecture: $(uname -m)"
+            return 1
+            ;;
+    esac
+
+    local install_dir="$HOME/.local/jdk"
+    mkdir -p "$install_dir" || { print_error "Cannot create $install_dir"; return 1; }
+
     local temp_dir
-    temp_dir=$(mktemp -d)
-    local original_dir="$PWD"
+    temp_dir=$(mktemp -d) || { print_error "Cannot create temp directory"; return 1; }
 
-    if [[ -z "$temp_dir" ]]; then
-        print_error "Failed to create temporary directory for JDK installer"
-        return 1
-    fi
+    local adoptium_url="https://api.adoptium.net/v3/binary/latest/${required_version}/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
 
-    # Check if git is available
-    if ! command -v git >/dev/null 2>&1; then
-        print_error "Git is required to download the JDK installer but is not installed"
-        print_error "Please install git first: sudo pacman -S git"
+    print_progress "Downloading Java ${required_version} (Eclipse Temurin) for ${arch}..."
+    print_info "   Source: Adoptium API (adoptium.net)"
+
+    local tarball="$temp_dir/jdk-${required_version}.tar.gz"
+
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -fsSL --max-time 120 -o "$tarball" "$adoptium_url" 2>/dev/null; then
+            print_error "Failed to download JDK ${required_version} from Adoptium"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -q --timeout=120 -O "$tarball" "$adoptium_url" 2>/dev/null; then
+            print_error "Failed to download JDK ${required_version} from Adoptium"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+    else
+        print_error "Neither curl nor wget is available — cannot download JDK"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    cd "$temp_dir" || {
-        print_error "Failed to enter temporary directory"
+    if [[ ! -s "$tarball" ]]; then
+        print_error "Downloaded JDK archive is empty"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    print_progress "Installing Java ${required_version} to ${install_dir}..."
+
+    local extract_dir="$temp_dir/extracted"
+    mkdir -p "$extract_dir"
+
+    if ! tar -xzf "$tarball" -C "$extract_dir" 2>/dev/null; then
+        print_error "Failed to extract JDK archive"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Find the extracted JDK directory (Adoptium archives have one top-level dir)
+    local extracted_jdk
+    extracted_jdk=$(find "$extract_dir" -maxdepth 1 -mindepth 1 -type d | head -1)
+
+    if [[ -z "$extracted_jdk" ]]; then
+        print_error "Could not locate extracted JDK directory"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Install to ~/.local/jdk/<dirname> — remove any previous install for this version
+    local jdk_dest="$install_dir/$(basename "$extracted_jdk")"
+    rm -rf "$jdk_dest"
+    mv "$extracted_jdk" "$jdk_dest" || {
+        print_error "Failed to move JDK to $jdk_dest"
         rm -rf "$temp_dir"
         return 1
     }
 
-    print_progress "Downloading automatic JDK installer..."
+    rm -rf "$temp_dir"
 
-    # Clone the JDK installer repository
-    if ! git clone --quiet https://github.com/FlyingEwok/install-jdk-on-steam-deck.git 2>/dev/null; then
-        print_error "Failed to download JDK installer from GitHub"
-        print_error "Please check your internet connection and try again"
-        cd "$original_dir"
-        rm -rf "$temp_dir"
+    if [[ ! -x "$jdk_dest/bin/java" ]]; then
+        print_error "Java binary not found in installed JDK: $jdk_dest/bin/java"
         return 1
     fi
 
-    # Make the install script executable
-    chmod +x install-jdk-on-steam-deck/scripts/install-jdk.sh
+    # Export JAVA_N_HOME and persist to ~/.profile for future shells
+    local env_var="JAVA_${required_version}_HOME"
+    export "${env_var}=${jdk_dest}"
 
-    print_info "Running automatic JDK $required_version installer..."
-    print_info "This will install Java $required_version to ~/.local/jdk/ (no root access required)"
-
-    # Set environment variable to install specific version automatically
-    export JDK_VERSION="$required_version"
-
-    # Run the installer in automated mode
-    if ./install-jdk-on-steam-deck/scripts/install-jdk.sh; then
-        print_success "Java $required_version installed successfully!"
-        cd "$original_dir"
-        rm -rf "$temp_dir"
-        return 0
+    # Add to ~/.profile if not already present
+    local profile_line="export ${env_var}=\"${jdk_dest}\""
+    if [[ -f "$HOME/.profile" ]]; then
+        # Remove any stale entry for this variable before adding the updated one
+        local tmp_profile
+        tmp_profile=$(mktemp)
+        grep -v "export ${env_var}=" "$HOME/.profile" > "$tmp_profile" 2>/dev/null || true
+        echo "$profile_line" >> "$tmp_profile"
+        mv "$tmp_profile" "$HOME/.profile" || { rm -f "$tmp_profile"; print_warning "Could not persist ${env_var} to ~/.profile"; }
     else
-        print_error "JDK installer failed"
-        cd "$original_dir"
-        rm -rf "$temp_dir"
-        return 1
+        echo "$profile_line" >> "$HOME/.profile"
     fi
+
+    print_success "Java ${required_version} installed to ${jdk_dest}"
+    return 0
 }
 
 # =============================================================================
@@ -495,8 +546,7 @@ detect_and_install_java() {
                 ;;
         esac
         print_info "  • Or run the JDK installer separately:"
-        print_info "    git clone https://github.com/FlyingEwok/install-jdk-on-steam-deck.git"
-        print_info "    JDK_VERSION=$required_java_version ./install-jdk-on-steam-deck/scripts/install-jdk.sh"
+        print_info "    See: ${REPO_URL}#java-installation for manual instructions"
         exit 1
     fi
 }

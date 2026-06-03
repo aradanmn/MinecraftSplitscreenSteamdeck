@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        version_management.sh
-# @version     3.1.1
-# @date        2026-05-31
+# @version     3.1.2
+# @date        2026-06-03
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -38,6 +38,7 @@
 #     - get_fabric_version               : Fetch latest Fabric loader version
 #
 # @changelog
+#   3.1.2 (2026-06-03) - Fix: Use REPO_RAW_URL for token.enc download instead of stale FlyingEwok URL
 #   3.1.1 (2026-05-31) - Fix: Remove Legacy4J dependency mapping — Legacy4J conflicts with required Controlify mod (keyboard_layout format mismatch hangs game on black screen)
 #   3.1.0 (2026-05-31) - Feat: Check Controlify (modrinth/DOUdJVEm) instead of Controllable (curseforge/317269) for MC version compatibility; update fallback deps and display text
 #   3.0.1 (2026-03-15) - Fix: Use PROMPT_REPLY instead of subshell to avoid SIGSEGV
@@ -221,7 +222,7 @@ check_mod_version_compatibility() {
     elif [[ "$platform" == "curseforge" ]]; then
         # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
         # First get the encrypted API token
-        local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+        local token_url="${REPO_RAW_URL}/token.enc"
         local encrypted_token_file=$(mktemp)
 
         if command -v curl >/dev/null 2>&1; then
