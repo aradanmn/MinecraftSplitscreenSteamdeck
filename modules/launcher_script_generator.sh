@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        launcher_script_generator.sh
-# @version     3.3.2
-# @date        2026-05-31
+# @version     3.3.3
+# @date        2026-06-04
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -30,6 +30,7 @@
 #     - verify_generated_script       : Validates generated script (executable, no placeholders, syntax)
 #
 # @changelog
+#   3.3.3 (2026-06-04) - Fix: assignControllerToSlot uses isGameMode() (XDG session) instead of hasSteamVirtualController() (vendor ID) to select device set; GLFW index computed from position in full js list (not slot-1); add findRealJsDevices/findSteamVirtualJsDevices
 #   3.3.2 (2026-05-31) - Fix: restore WrapperCommand SDL isolation (removed in 3.3.0); use findSteamVirtualEventDevices in Game Mode; Controlify always lwjgl:0 with SDL isolation; polling repositioning (15s×12 passes); clean exit from nestedPlasma (no exec, wait for Java before qdbus logout)
 #   3.3.1 (2026-05-31) - Fix: add autoSelect:false to Controlify config to prevent Steam Deck trackpad mouse events from hijacking controller assignment
 #   3.3.0 (2026-05-31) - Feat: Migrate from Controllable to Controlify; use GLFW joystick index for controller isolation; remove SDL2 GUID code and duplicate function definitions; add SDL_JOYSTICK_HIDAPI=0 + SDL_LINUX_JOYSTICK_CLASSIC=1 hints
@@ -384,6 +385,32 @@ findSteamVirtualEventDevices() {
     done
 }
 
+# Returns /dev/input/jsN paths for physical controllers (non-28de vendor), sorted.
+# Used in Desktop Mode where Steam Input is not active.
+findRealJsDevices() {
+    for js_path in $(ls -d /sys/class/input/js* 2>/dev/null | sort -V); do
+        local vendor
+        vendor=$(cat "$js_path/device/id/vendor" 2>/dev/null)
+        [[ "$vendor" == "28de" ]] && continue
+        local js_name
+        js_name=$(basename "$js_path")
+        [[ -e "/dev/input/$js_name" ]] && echo "/dev/input/$js_name"
+    done
+}
+
+# Returns /dev/input/jsN paths for Steam Input virtual gamepads (vendor 28de), sorted.
+# Used in Game Mode where Steam presents all controllers as virtual Xbox pads.
+findSteamVirtualJsDevices() {
+    for js_path in $(ls -d /sys/class/input/js* 2>/dev/null | sort -V); do
+        local vendor
+        vendor=$(cat "$js_path/device/id/vendor" 2>/dev/null)
+        [[ "$vendor" != "28de" ]] && continue
+        local js_name
+        js_name=$(basename "$js_path")
+        [[ -e "/dev/input/$js_name" ]] && echo "/dev/input/$js_name"
+    done
+}
+
 # Get the Bluetooth serial (MAC address) for an event device from sysfs.
 # Useful for logging. Outputs lowercase MAC (e.g., "a0:5a:5e:d0:8a:dc"),
 # or empty string if no Bluetooth serial (USB controllers).
@@ -433,31 +460,64 @@ assignControllerToSlot() {
     local slot=$1
     local idx=$((slot - 1))
 
-    # In Game Mode Steam presents controllers as virtual Xbox pads (vendor 28de).
-    # In Desktop Mode use physical controllers (exclude virtual).
-    local -a all_devices
-    if hasSteamVirtualController; then
-        mapfile -t all_devices < <(findSteamVirtualEventDevices)
+    # Select js device set for this environment:
+    # Game Mode:    Steam Input presents all controllers as virtual Xbox pads (vendor 28de)
+    # Desktop Mode: physical controllers have their own vendor IDs
+    # Use XDG session type to detect gamescope — NOT hasSteamVirtualController(), which
+    # is also true on Steam Deck Desktop Mode (built-in gamepad is always vendor 28de).
+    local -a js_devices
+    if isGameMode; then
+        mapfile -t js_devices < <(findSteamVirtualJsDevices)
     else
-        mapfile -t all_devices < <(findRealControllerEventDevices)
+        mapfile -t js_devices < <(findRealJsDevices)
     fi
 
-    if [ ${#all_devices[@]} -gt 0 ]; then
-        local dev_idx=$((idx < ${#all_devices[@]} ? idx : ${#all_devices[@]} - 1))
-        INSTANCE_CONTROLLER_DEVICE[$idx]="${all_devices[$dev_idx]}"
+    # Get the js device for this slot (positional within the filtered list)
+    local js_dev
+    if [ "${#js_devices[@]}" -gt "$idx" ]; then
+        js_dev="${js_devices[$idx]}"
+    elif [ "${#js_devices[@]}" -gt 0 ]; then
+        js_dev="${js_devices[-1]}"  # clamp: fewer devices than slots
     else
-        INSTANCE_CONTROLLER_DEVICE[$idx]="/dev/input/js${idx}"
+        js_dev="/dev/input/js${idx}"  # fallback when no devices found
     fi
+    local js_name
+    js_name=$(basename "$js_dev")  # e.g. "js2"
 
-    # SDL WrapperCommand isolation: each JVM sees only its assigned device.
-    # With one joystick visible, GLFW index 0 == that device inside the isolated JVM.
-    writeInstanceSdlEnv "$slot" "${INSTANCE_CONTROLLER_DEVICE[$idx]}"
+    # Compute the GLFW joystick index by finding where this jsN sits in the FULL
+    # /dev/input/js* list. LWJGL/GLFW enumerates ALL js devices on startup and
+    # assigns sequential internal indices starting at 0 — so a device at sorted
+    # position N in the full list is lwjgl:N, regardless of the jsN device number.
+    # This correctly handles gaps (e.g., built-in at js0, externals at js2, js3)
+    # and Steam Deck's own gamepad occupying an early js slot.
+    local -a all_js
+    mapfile -t all_js < <(ls /dev/input/js* 2>/dev/null | sort -V)
+    local glfw_idx=0
+    local _i
+    for _i in "${!all_js[@]}"; do
+        if [ "$(basename "${all_js[$_i]}")" = "$js_name" ]; then
+            glfw_idx=$_i
+            break
+        fi
+    done
 
-    # Controlify: always lwjgl:0 — SDL isolation makes the assigned controller appear
-    # at index 0 in each JVM.  autoSelect:false stops trackpad from switching to K+M mode.
-    writeControlifyConfig "$slot" 0
+    # Resolve the corresponding event device for the SDL wrapper.
+    # GLFW/Controlify does not use SDL hints, but the event device is needed
+    # for disconnect detection and for any SDL-using code in the JVM.
+    local event_name
+    event_name=$(ls "/sys/class/input/$js_name/device/" 2>/dev/null | grep "^event" | head -1)
+    local event_dev
+    if [ -n "$event_name" ] && [ -e "/dev/input/$event_name" ]; then
+        event_dev="/dev/input/$event_name"
+    else
+        event_dev="$js_dev"
+    fi
+    INSTANCE_CONTROLLER_DEVICE[$idx]="$event_dev"
 
-    log_info "Slot $slot: assigned ${INSTANCE_CONTROLLER_DEVICE[$idx]} (isolated as lwjgl:0)"
+    writeControlifyConfig "$slot" "$glfw_idx"
+    writeInstanceSdlEnv "$slot" "$event_dev"
+
+    log_info "Slot $slot: GLFW index $glfw_idx (/dev/input/$js_name → $event_dev)"
 }
 
 # =============================================================================
@@ -751,6 +811,8 @@ isSteamDeckDocked() {
 # Returns 0 (true) if a Steam Input virtual gamepad is detected.
 # Detects by Valve vendor ID (28de) on a joystick device — more reliable than
 # name matching since Steam presents virtual pads as "Microsoft X-Box 360 pad".
+# NOTE: This returns true on Steam Deck Desktop Mode too (built-in pad is 28de).
+# Use isGameMode() when you need to distinguish Game Mode from Desktop Mode.
 hasSteamVirtualController() {
     for js in $(ls -d /sys/class/input/js* 2>/dev/null); do
         local vendor
@@ -758,6 +820,14 @@ hasSteamVirtualController() {
         [[ "$vendor" == "28de" ]] && return 0
     done
     return 1
+}
+
+# Returns 0 (true) when running inside a gamescope session (Steam Game Mode / Bazzite).
+# Uses XDG session variables — more reliable than vendor ID checks, which fire on
+# Steam Deck Desktop Mode too (built-in gamepad is always vendor 28de).
+isGameMode() {
+    [ "${XDG_SESSION_DESKTOP:-}" = "gamescope" ] || \
+    [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ]
 }
 
 # =============================================================================
