@@ -167,10 +167,14 @@ stopControllerMonitor() {
 # Game "process": runs for 2 real seconds (using `command sleep` to bypass
 # the sleep() no-op), then exits.  Called inside ( ... ) & by
 # launchInstanceForSlot(), so the subshell PID is what INSTANCE_PIDS tracks.
+#
+# flock serializes the read-modify-write so concurrent subshells (Scenario 6
+# launches all 4 at once) don't race on the counter file.
 launchGame() {
-    local n
-    n=$(cat "$_LAUNCH_COUNT_FILE" 2>/dev/null || echo 0)
-    echo $(( n + 1 )) > "$_LAUNCH_COUNT_FILE"
+    ( flock -x 9
+      local n; n=$(cat "$_LAUNCH_COUNT_FILE" 2>/dev/null || echo 0)
+      echo $(( n + 1 )) > "$_LAUNCH_COUNT_FILE"
+    ) 9>"${_LAUNCH_COUNT_FILE}.lock"
     command sleep 2
 }
 
@@ -186,6 +190,7 @@ reset_state() {
     CURRENT_PLAYER_COUNT=0
     DYNAMIC_MODE=0
     echo "0" > "$_LAUNCH_COUNT_FILE"
+    rm -f "${_LAUNCH_COUNT_FILE}.lock"
     exec 3<&- 2>/dev/null || true
 }
 
@@ -398,7 +403,7 @@ rm -f "$_SESSION_EVENTS"
 # Cleanup
 # =============================================================================
 
-rm -f "$_LAUNCH_COUNT_FILE"
+rm -f "$_LAUNCH_COUNT_FILE" "${_LAUNCH_COUNT_FILE}.lock"
 
 # =============================================================================
 # Summary
