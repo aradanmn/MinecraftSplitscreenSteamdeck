@@ -331,6 +331,14 @@ _write_prism_account() {
 # @global ACTIVE_DATA_DIR - path to PrismLauncher data directory
 # @return 0 always (failure is non-fatal; user can log in manually later)
 setup_microsoft_account() {
+    # Skip silently if no real client ID has been configured yet
+    local _client_id="${MS_AUTH_CLIENT_ID:-}"
+    if [[ -z "$_client_id" || "$_client_id" == TODO_* ]]; then
+        print_info "Microsoft account setup not available in this build."
+        print_info "   → Log in manually: open PrismLauncher → Accounts → Add Microsoft"
+        return 0
+    fi
+
     print_header "MICROSOFT ACCOUNT SETUP (optional)"
     echo ""
     echo "  Log in now to skip the manual login step after installation."
