@@ -66,7 +66,7 @@ _ms_device_code_flow() {
     device_response=$(curl -s --max-time 15 -X POST "$_MS_DEVICE_URL" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "client_id=${client_id}&scope=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$_MS_SCOPE" 2>/dev/null || echo "XboxLive.signin%20offline_access")" \
-        2>/dev/null) || { print_error "Network error requesting device code"; return 1; }
+        2>/dev/null) || { print_error "Network error requesting device code" >&2; return 1; }
 
     local user_code device_code interval expires_in
     user_code=$(echo "$device_response" | jq -r '.user_code // empty' 2>/dev/null)
@@ -75,20 +75,20 @@ _ms_device_code_flow() {
     expires_in=$(echo "$device_response" | jq -r '.expires_in // 300' 2>/dev/null)
 
     if [[ -z "$user_code" || -z "$device_code" ]]; then
-        print_error "Failed to get device code from Microsoft"
-        print_info "   Response: $(echo "$device_response" | jq -r '.error_description // .error // "unknown"' 2>/dev/null)"
+        print_error "Failed to get device code from Microsoft" >&2
+        print_info "   Response: $(echo "$device_response" | jq -r '.error_description // .error // "unknown"' 2>/dev/null)" >&2
         return 1
     fi
 
-    echo ""
-    print_header "MICROSOFT ACCOUNT LOGIN"
-    echo ""
-    echo "  1. Open a browser on any device (phone, PC, etc.)"
-    echo "  2. Visit: https://microsoft.com/devicelogin"
-    echo "  3. Enter code: ${user_code}"
-    echo ""
-    print_info "Waiting for you to complete login (expires in ${expires_in}s)..."
-    echo ""
+    echo "" >&2
+    print_header "MICROSOFT ACCOUNT LOGIN" >&2
+    echo "" >&2
+    echo "  1. Open a browser on any device (phone, PC, etc.)" >&2
+    echo "  2. Visit: https://microsoft.com/devicelogin" >&2
+    echo "  3. Enter code: ${user_code}" >&2
+    echo "" >&2
+    print_info "Waiting for you to complete login (expires in ${expires_in}s)..." >&2
+    echo "" >&2
 
     # Step 2: Poll for token
     local elapsed=0
@@ -114,13 +114,13 @@ _ms_device_code_flow() {
         case "$error" in
             authorization_pending) continue ;;
             slow_down) interval=$((interval + 5)); continue ;;
-            authorization_declined) print_error "Login was declined"; return 1 ;;
-            expired_token) print_error "Login code expired"; return 1 ;;
-            *) print_error "Auth error: $error"; return 1 ;;
+            authorization_declined) print_error "Login was declined" >&2; return 1 ;;
+            expired_token) print_error "Login code expired" >&2; return 1 ;;
+            *) print_error "Auth error: $error" >&2; return 1 ;;
         esac
     done
 
-    print_error "Login timed out (${expires_in}s)"
+    print_error "Login timed out (${expires_in}s)" >&2
     return 1
 }
 
@@ -295,6 +295,9 @@ _write_prism_account() {
             }
         }' 2>/dev/null) || { print_error "Failed to build account JSON"; return 1; }
 
+    # Ensure the parent directory exists (won't be there on a fresh AppImage install)
+    mkdir -p "$(dirname "$accounts_path")" || { print_error "Cannot create PrismLauncher data dir"; return 1; }
+
     # Create or merge accounts.json
     if [[ ! -f "$accounts_path" ]]; then
         jq -n --argjson entry "$new_entry" \
@@ -308,7 +311,7 @@ _write_prism_account() {
             '.accounts = [$entry] + (.accounts | map(select(.profile.name != $name))) |
              .formatVersion = 3' \
             "$accounts_path" > "$tmp" 2>/dev/null; then
-            mv "$tmp" "$accounts_path"
+            mv "$tmp" "$accounts_path" || { rm -f "$tmp"; print_error "Failed to write accounts.json"; return 1; }
         else
             rm -f "$tmp"
             print_error "Failed to merge accounts.json"

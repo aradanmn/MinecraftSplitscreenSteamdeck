@@ -1206,7 +1206,8 @@ select_user_mods() {
                     done
                 done
                 if [[ ${#dep_names[@]} -gt 0 ]]; then
-                    dep_display="  [requires: $(IFS=', '; echo "${dep_names[*]}")]"
+                    local joined="${dep_names[0]}"; for _n in "${dep_names[@]:1}"; do joined+=", $_n"; done
+                    dep_display="  [requires: ${joined}]"
                 fi
             fi
             printf "  %2d. %-38s%s\n" "$counter" "${SUPPORTED_MODS[$i]}" "$dep_display"

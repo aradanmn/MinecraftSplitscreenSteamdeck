@@ -217,7 +217,7 @@ download_and_run_jdk_installer() {
         tmp_profile=$(mktemp)
         grep -v "export ${env_var}=" "$HOME/.profile" > "$tmp_profile" 2>/dev/null || true
         echo "$profile_line" >> "$tmp_profile"
-        mv "$tmp_profile" "$HOME/.profile"
+        mv "$tmp_profile" "$HOME/.profile" || { rm -f "$tmp_profile"; print_warning "Could not persist ${env_var} to ~/.profile"; }
     else
         echo "$profile_line" >> "$HOME/.profile"
     fi
