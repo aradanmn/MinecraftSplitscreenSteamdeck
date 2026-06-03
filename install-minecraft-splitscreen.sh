@@ -192,6 +192,7 @@ readonly MODULE_FILES=(
     "lwjgl_management.sh"
     "mod_management.sh"
     "instance_creation.sh"
+    "account_setup.sh"
     "steam_integration.sh"
     "desktop_launcher.sh"
     "main_workflow.sh"

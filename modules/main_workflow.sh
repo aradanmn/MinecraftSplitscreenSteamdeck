@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # @file        main_workflow.sh
-# @version     3.0.3
-# @date        2026-03-07
+# @version     3.1.0
+# @date        2026-06-03
 # @author      Minecraft Splitscreen Steam Deck Project
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -38,6 +38,7 @@
 #     - generate_launcher_script: Generate minecraftSplitscreen.sh
 #
 # @changelog
+#   3.1.0 (2026-06-03) - Feat: Post-instance validation, merge_accounts_json failure warning, MS auth phase wiring
 #   3.0.3 (2026-03-07) - Removed PollyMC; PrismLauncher is now the sole launcher
 #   3.0.2 (2026-02-07) - Updated dynamic mode summary to show KWin scripting status
 #   3.0.1 (2026-02-01) - Updated launch instructions to show CLI arguments
@@ -160,6 +161,9 @@ main() {
                     print_info "   → Preserved $existing_count existing account(s)"
                 fi
             fi
+        else
+            print_warning "Failed to merge accounts.json — splitscreen accounts may need manual setup"
+            print_info "   → Edit manually: $accounts_path"
         fi
     else
         print_warning "⚠️  Failed to download accounts.json from repository"
@@ -184,6 +188,23 @@ main() {
 
 
     create_instances             # Create 4 splitscreen instances using PrismLauncher CLI with comprehensive fallbacks
+
+    local missing_instances=0
+    for i in {1..4}; do
+        if [[ ! -d "$ACTIVE_INSTANCES_DIR/latestUpdate-$i" ]]; then
+            print_error "Instance $i missing: $ACTIVE_INSTANCES_DIR/latestUpdate-$i"
+            ((missing_instances++)) || true
+        fi
+    done
+    if [[ $missing_instances -gt 0 ]]; then
+        print_warning "$missing_instances instance(s) not created — launcher may not work correctly"
+    fi
+
+    # =============================================================================
+    # MICROSOFT ACCOUNT SETUP PHASE (optional, skippable)
+    # =============================================================================
+
+    setup_microsoft_account
 
     # =============================================================================
     # LAUNCHER SCRIPT GENERATION PHASE: Generate splitscreen launcher with correct paths

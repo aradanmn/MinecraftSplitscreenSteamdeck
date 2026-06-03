@@ -3,8 +3,8 @@
 # VERSION INFORMATION MODULE
 # =============================================================================
 # @file        version_info.sh
-# @version     3.1.1
-# @date        2026-03-15
+# @version     3.1.2
+# @date        2026-06-03
 # @author      aradanmn
 # @license     MIT
 # @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
@@ -36,6 +36,7 @@
 #     - verify_repo_source     : Verify running from expected repo
 #
 # @changelog
+#   3.1.2 (2026-06-03) - Feat: Add MS_AUTH_CLIENT_ID constant for Microsoft account setup
 #   3.1.0 (2026-03-07) - Release: v3.1.0 — dynamic splitscreen stable, zombie/race fixes, pauseOnLostFocus, PrismLauncher-only
 #   3.0.8 (2026-02-08) - Fix: SSH session detection, stop killing plasmashell, FullArea KWin, WAYLAND_DISPLAY check
 #   3.0.5 (2026-02-07) - KWin scripting for Wayland window management
@@ -61,6 +62,11 @@ readonly REPO_BRANCH="main"
 readonly REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 readonly REPO_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}"
 readonly REPO_MODULES_URL="${REPO_RAW_URL}/modules"
+
+# Azure app client ID for Microsoft OAuth device code flow (Issue #8)
+# Register at portal.azure.com — public client, XboxLive.signin + offline_access scopes
+# TODO: Replace with actual registered client ID before shipping
+readonly MS_AUTH_CLIENT_ID="${MS_AUTH_CLIENT_ID:-TODO_REGISTER_AZURE_APP_CLIENT_ID}"
 
 # =============================================================================
 # VERSION UTILITY FUNCTIONS
