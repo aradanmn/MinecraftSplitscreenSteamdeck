@@ -66,7 +66,7 @@ readonly REPO_MODULES_URL="${REPO_RAW_URL}/modules"
 # Azure app client ID for Microsoft OAuth device code flow (Issue #8)
 # Register at portal.azure.com — public client, XboxLive.signin + offline_access scopes
 # TODO: Replace with actual registered client ID before shipping
-readonly MS_AUTH_CLIENT_ID="${MS_AUTH_CLIENT_ID:-TODO_REGISTER_AZURE_APP_CLIENT_ID}"
+readonly MS_AUTH_CLIENT_ID="${MS_AUTH_CLIENT_ID:c44b4083-3bb0-49c1-b47d-974e53cbdf3c}"
 
 # =============================================================================
 # VERSION UTILITY FUNCTIONS
