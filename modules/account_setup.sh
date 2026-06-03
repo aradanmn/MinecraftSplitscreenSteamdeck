@@ -1,422 +1,562 @@
 #!/usr/bin/env bash
-# =============================================================================
-# @file        account_setup.sh
-# @version     1.0.0
-# @date        2026-06-03
-# @author      Minecraft Splitscreen Steam Deck Project
-# @license     MIT
-# @repository  https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+#
+# @file account_setup.sh
+# @version 1.0.0
+# @date 2026-06-03
+# @author aradanmn
+# @license MIT
+# @repository https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
 #
 # @description
-#   Microsoft account authentication during installation via OAuth 2.0
-#   Device Code Flow. Allows users to log in on any device (phone, PC) by
-#   visiting microsoft.com/devicelogin and entering a short code — no browser
-#   required on the Steam Deck itself.
+#   Microsoft OAuth 2.0 device-code flow for Minecraft Java Edition account
+#   authentication. Walks the full chain: device code → MS token → Xbox Live →
+#   XSTS → Minecraft token → entitlement check → profile fetch → accounts.json.
 #
-#   On success, writes a valid MSA entry to PrismLauncher's accounts.json so
-#   Minecraft launches immediately without a manual login step.
+#   Uses PrismLauncher's public OAuth client ID — no Azure App Registration is
+#   required. The /consumers/ endpoint is used throughout; /common/ returns
+#   AAD-flavoured tokens that Xbox Live rejects.
 #
-#   The entire flow is pure bash + curl + jq (no extra dependencies).
+#   The resulting MSA account is merged into PrismLauncher's accounts.json
+#   alongside the existing P1-P4 offline splitscreen accounts.
 #
 # @dependencies
-#   - utilities.sh  (print_* functions, prompt_yes_no)
-#   - path_configuration.sh  (ACTIVE_DATA_DIR)
-#   - version_info.sh  (MS_AUTH_CLIENT_ID)
-#   - curl
-#   - jq
+#   - curl     (HTTP requests)
+#   - jq       (JSON parsing and construction)
+#   - utilities.sh        (print_*, prompt_yes_no)
+#   - path_configuration.sh (CREATION_DATA_DIR)
 #
 # @exports
-#   Functions:
-#     - setup_microsoft_account : Main entry point (called from main_workflow.sh)
-#
-# @changelog
-#   1.0.0 (2026-06-03) - Initial implementation: device code flow, token chain, accounts.json write
-# =============================================================================
+#   - run_account_setup()        Main entry point (called from main_workflow.sh)
+#   - check_microsoft_account()  Returns 0 if an MSA account already exists
 
-# =============================================================================
-# MICROSOFT OAUTH ENDPOINTS
-# =============================================================================
+# Guard against double-sourcing
+[[ -n "${_ACCOUNT_SETUP_LOADED:-}" ]] && return 0
+readonly _ACCOUNT_SETUP_LOADED=1
 
-readonly _MS_TENANT="consumers"
-readonly _MS_DEVICE_URL="https://login.microsoftonline.com/${_MS_TENANT}/oauth2/v2.0/devicecode"
-readonly _MS_TOKEN_URL="https://login.microsoftonline.com/${_MS_TENANT}/oauth2/v2.0/token"
-readonly _XBL_URL="https://user.auth.xboxlive.com/user/authenticate"
-readonly _XSTS_URL="https://xsts.auth.xboxlive.com/xsts/authorize"
-readonly _MC_AUTH_URL="https://api.minecraftservices.com/authentication/login_with_xbox"
+# PrismLauncher's registered public OAuth client ID.
+# Using this ID means we inherit PrismLauncher's trusted app relationship with
+# Microsoft — no Azure registration needed for this open-source project.
+readonly _MSA_CLIENT_ID="c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"
+
+# Must use /consumers/ (personal Microsoft accounts).
+# /common/ can return AAD tokens that Xbox Live rejects with HTTP 400.
+readonly _MS_DEVICECODE_URL="https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
+readonly _MS_TOKEN_URL="https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+readonly _XBL_AUTH_URL="https://user.auth.xboxlive.com/user/authenticate"
+readonly _XSTS_AUTH_URL="https://xsts.auth.xboxlive.com/xsts/authorize"
+readonly _MC_LOGIN_URL="https://api.minecraftservices.com/authentication/login_with_xbox"
+readonly _MC_ENTITLEMENT_URL="https://api.minecraftservices.com/entitlements/mcstore"
 readonly _MC_PROFILE_URL="https://api.minecraftservices.com/minecraft/profile"
-readonly _MS_SCOPE="XboxLive.signin offline_access"
 
 # =============================================================================
-# INTERNAL HELPERS
+# PUBLIC: check_microsoft_account
+# Returns 0 if at least one MSA account already exists in accounts.json.
 # =============================================================================
+check_microsoft_account() {
+    local accounts_path="${CREATION_DATA_DIR}/accounts.json"
+    [[ -f "$accounts_path" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    local count
+    count=$(jq '[.accounts[] | select(.type == "MSA")] | length' "$accounts_path" 2>/dev/null || echo 0)
+    [[ "${count:-0}" -gt 0 ]]
+}
 
-# @function _ms_device_code_flow
-# @description Initiate device code flow and poll until user completes auth.
-# @stdout      JSON: {"access_token":"...","refresh_token":"..."}
-# @return      0 on success, 1 on timeout or error
-_ms_device_code_flow() {
-    local client_id="${MS_AUTH_CLIENT_ID:-}"
-    if [[ -z "$client_id" ]]; then
-        print_error "MS_AUTH_CLIENT_ID is not set — cannot authenticate"
-        return 1
-    fi
-
-    # Step 1: Request device code
-    local device_response
-    device_response=$(curl -s --max-time 15 -X POST "$_MS_DEVICE_URL" \
+# =============================================================================
+# PRIVATE: Step 1 — Request device code
+# Sets module-level vars: _MSA_DEVICE_CODE, _MSA_USER_CODE,
+#   _MSA_VERIFICATION_URI, _MSA_EXPIRES_IN, _MSA_POLL_INTERVAL
+# =============================================================================
+_request_device_code() {
+    local response
+    response=$(curl -s --fail-with-body -X POST "$_MS_DEVICECODE_URL" \
         -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "client_id=${client_id}&scope=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$_MS_SCOPE" 2>/dev/null || echo "XboxLive.signin%20offline_access")" \
-        2>/dev/null) || { print_error "Network error requesting device code" >&2; return 1; }
+        -d "client_id=${_MSA_CLIENT_ID}&scope=XboxLive.signin%20offline_access") || {
+        print_error "❌ Could not reach Microsoft authentication servers."
+        return 1
+    }
 
-    local user_code device_code interval expires_in
-    user_code=$(echo "$device_response" | jq -r '.user_code // empty' 2>/dev/null)
-    device_code=$(echo "$device_response" | jq -r '.device_code // empty' 2>/dev/null)
-    interval=$(echo "$device_response" | jq -r '.interval // 5' 2>/dev/null)
-    expires_in=$(echo "$device_response" | jq -r '.expires_in // 300' 2>/dev/null)
-
-    if [[ -z "$user_code" || -z "$device_code" ]]; then
-        print_error "Failed to get device code from Microsoft" >&2
-        print_info "   Response: $(echo "$device_response" | jq -r '.error_description // .error // "unknown"' 2>/dev/null)" >&2
+    # Validate we got a device_code back
+    if ! jq -e '.device_code' <<< "$response" >/dev/null 2>&1; then
+        local err_desc
+        err_desc=$(jq -r '.error_description // .error // "unknown error"' <<< "$response" 2>/dev/null)
+        print_error "❌ Device code request failed: ${err_desc}"
         return 1
     fi
 
-    echo "" >&2
-    print_header "MICROSOFT ACCOUNT LOGIN" >&2
-    echo "" >&2
-    echo "  1. Open a browser on any device (phone, PC, etc.)" >&2
-    echo "  2. Visit: https://microsoft.com/devicelogin" >&2
-    echo "  3. Enter code: ${user_code}" >&2
-    echo "" >&2
-    print_info "Waiting for you to complete login (expires in ${expires_in}s)..." >&2
-    echo "" >&2
+    _MSA_DEVICE_CODE=$(jq -r '.device_code' <<< "$response")
+    _MSA_USER_CODE=$(jq -r '.user_code' <<< "$response")
+    _MSA_VERIFICATION_URI=$(jq -r '.verification_uri' <<< "$response")
+    _MSA_EXPIRES_IN=$(jq -r '.expires_in' <<< "$response")
+    _MSA_POLL_INTERVAL=$(jq -r '.interval // 5' <<< "$response")
+}
 
-    # Step 2: Poll for token
-    local elapsed=0
-    while [[ $elapsed -lt $expires_in ]]; do
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
+# =============================================================================
+# PRIVATE: Step 2 — Poll for Microsoft access token
+# Args: <device_code> <expires_in_seconds> <poll_interval_seconds>
+# Sets: _MSA_ACCESS_TOKEN, _MSA_REFRESH_TOKEN, _MSA_TOKEN_EXPIRES_IN
+# Returns: 0=success 1=error/timeout 2=access_denied
+# =============================================================================
+_poll_ms_token() {
+    local device_code="$1"
+    local expires_in="$2"
+    local interval="${3:-5}"
 
-        local poll_response
-        poll_response=$(curl -s --max-time 15 -X POST "$_MS_TOKEN_URL" \
+    local deadline=$(( $(date +%s) + expires_in ))
+    local current_interval="$interval"
+    local response error elapsed last_dot=0
+
+    while [[ $(date +%s) -lt $deadline ]]; do
+        sleep "$current_interval"
+
+        response=$(curl -s -X POST "$_MS_TOKEN_URL" \
             -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=${client_id}&device_code=${device_code}" \
-            2>/dev/null) || continue
+            -d "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=${_MSA_CLIENT_ID}&device_code=${device_code}") || continue
 
-        local error
-        error=$(echo "$poll_response" | jq -r '.error // empty' 2>/dev/null)
-
-        if [[ -z "$error" ]]; then
-            # Success — return the token JSON
-            echo "$poll_response" | jq '{access_token: .access_token, refresh_token: .refresh_token}' 2>/dev/null
-            return 0
-        fi
+        error=$(jq -r '.error // empty' <<< "$response" 2>/dev/null)
 
         case "$error" in
-            authorization_pending) continue ;;
-            slow_down) interval=$((interval + 5)); continue ;;
-            authorization_declined) print_error "Login was declined" >&2; return 1 ;;
-            expired_token) print_error "Login code expired" >&2; return 1 ;;
-            *) print_error "Auth error: $error" >&2; return 1 ;;
+            authorization_pending)
+                # Print a dot every ~15s so the user knows we're alive
+                elapsed=$(date +%s)
+                if (( elapsed - last_dot >= 15 )); then
+                    printf '.' >&2
+                    last_dot=$elapsed
+                fi
+                continue
+                ;;
+            slow_down)
+                current_interval=$(( current_interval + 5 ))
+                continue
+                ;;
+            expired_token)
+                echo "" >&2
+                print_error "❌ Authentication code expired. Please run the installer again to get a new code."
+                return 1
+                ;;
+            access_denied)
+                echo "" >&2
+                print_error "❌ Authentication was cancelled or denied."
+                return 2
+                ;;
+            "")
+                echo "" >&2
+                _MSA_ACCESS_TOKEN=$(jq -r '.access_token' <<< "$response")
+                _MSA_REFRESH_TOKEN=$(jq -r '.refresh_token // ""' <<< "$response")
+                _MSA_TOKEN_EXPIRES_IN=$(jq -r '.expires_in // 3600' <<< "$response")
+                return 0
+                ;;
+            *)
+                echo "" >&2
+                local err_desc
+                err_desc=$(jq -r '.error_description // .error' <<< "$response" 2>/dev/null)
+                print_error "❌ Token error: ${err_desc}"
+                return 1
+                ;;
         esac
     done
 
-    print_error "Login timed out (${expires_in}s)" >&2
+    echo "" >&2
+    print_error "❌ Timed out waiting for authentication."
     return 1
 }
 
-# @function _ms_to_xbl
-# @description Exchange MS access token for Xbox Live token.
-# @param $1 - ms_access_token
-# @stdout JSON with xbl_token and user_hash
-_ms_to_xbl() {
+# =============================================================================
+# PRIVATE: Step 3 — Xbox Live authentication
+# Args: <ms_access_token>
+# Sets: _XBL_TOKEN, _XBL_UHS
+# =============================================================================
+_auth_xbox_live() {
     local ms_token="$1"
+
+    local body
+    body=$(jq -n --arg tok "d=${ms_token}" '{
+        Properties: {
+            AuthMethod: "RPS",
+            SiteName:   "user.auth.xboxlive.com",
+            RpsTicket:  $tok
+        },
+        RelyingParty: "http://auth.xboxlive.com",
+        TokenType: "JWT"
+    }')
+
     local response
-    response=$(curl -s --max-time 15 -X POST "$_XBL_URL" \
+    response=$(curl -s --fail-with-body -X POST "$_XBL_AUTH_URL" \
         -H "Content-Type: application/json" \
         -H "Accept: application/json" \
-        -d "{
-            \"Properties\": {
-                \"AuthMethod\": \"RPS\",
-                \"SiteName\": \"user.auth.xboxlive.com\",
-                \"RpsTicket\": \"d=${ms_token}\"
-            },
-            \"RelyingParty\": \"http://auth.xboxlive.com\",
-            \"TokenType\": \"JWT\"
-        }" 2>/dev/null) || return 1
+        -d "$body") || {
+        print_error "❌ Xbox Live authentication request failed."
+        return 1
+    }
 
-    local xbl_token user_hash
-    xbl_token=$(echo "$response" | jq -r '.Token // empty' 2>/dev/null)
-    user_hash=$(echo "$response" | jq -r '.DisplayClaims.xui[0].uhs // empty' 2>/dev/null)
+    _XBL_TOKEN=$(jq -r '.Token // empty' <<< "$response")
+    _XBL_UHS=$(jq -r '.DisplayClaims.xui[0].uhs // empty' <<< "$response")
 
-    if [[ -z "$xbl_token" ]]; then
-        print_error "Failed to get Xbox Live token"
+    if [[ -z "$_XBL_TOKEN" ]]; then
+        local err
+        err=$(jq -r '.Message // .message // "unknown"' <<< "$response" 2>/dev/null)
+        print_error "❌ Xbox Live authentication failed: ${err}"
         return 1
     fi
-
-    echo "{\"xbl_token\": \"${xbl_token}\", \"user_hash\": \"${user_hash}\"}"
 }
 
-# @function _xbl_to_xsts
-# @description Exchange XBL token for XSTS token (Minecraft service audience).
-# @param $1 - xbl_token
-# @stdout XSTS token string
-_xbl_to_xsts() {
+# =============================================================================
+# PRIVATE: Step 4 — XSTS token
+# Args: <xbl_token>
+# Sets: _XSTS_TOKEN, _XSTS_UHS
+# Returns: 0=ok 1=generic 2=no Xbox account 3=child account 4=region blocked
+# =============================================================================
+_auth_xsts() {
     local xbl_token="$1"
-    local response
-    response=$(curl -s --max-time 15 -X POST "$_XSTS_URL" \
+
+    local body
+    body=$(jq -n --arg tok "$xbl_token" '{
+        Properties: {
+            SandboxId:  "RETAIL",
+            UserTokens: [$tok]
+        },
+        RelyingParty: "rp://api.minecraftservices.com/",
+        TokenType: "JWT"
+    }')
+
+    local response http_code
+    response=$(curl -s -w $'\n%{http_code}' -X POST "$_XSTS_AUTH_URL" \
         -H "Content-Type: application/json" \
         -H "Accept: application/json" \
-        -d "{
-            \"Properties\": {
-                \"SandboxId\": \"RETAIL\",
-                \"UserTokens\": [\"${xbl_token}\"]
-            },
-            \"RelyingParty\": \"rp://api.minecraftservices.com/\",
-            \"TokenType\": \"JWT\"
-        }" 2>/dev/null) || return 1
+        -d "$body")
+    http_code=$(tail -1 <<< "$response")
+    response=$(sed '$d' <<< "$response")
 
-    local xsts_token
-    xsts_token=$(echo "$response" | jq -r '.Token // empty' 2>/dev/null)
-
-    if [[ -z "$xsts_token" ]]; then
-        local err_code
-        err_code=$(echo "$response" | jq -r '.XErr // empty' 2>/dev/null)
-        case "$err_code" in
-            2148916233) print_error "Microsoft account has no Xbox profile. Visit xbox.com to create one." ;;
-            2148916235) print_error "Xbox Live is not available in your region." ;;
-            2148916238) print_error "Child accounts require parental consent." ;;
-            *) print_error "XSTS auth failed (XErr: ${err_code:-unknown})" ;;
+    if [[ "$http_code" != "200" ]]; then
+        local xerr
+        xerr=$(jq -r '.XErr // empty' <<< "$response" 2>/dev/null)
+        case "$xerr" in
+            2148916233)
+                print_error "❌ No Xbox profile found for this Microsoft account."
+                print_info "   → Visit https://xbox.com, create an Xbox profile, then re-run setup."
+                return 2
+                ;;
+            2148916238)
+                print_error "❌ This Microsoft account is a child account."
+                print_info "   → Parental consent or an adult account is required to play Minecraft."
+                return 3
+                ;;
+            2148916235|2148916236|2148916237)
+                print_error "❌ Xbox Live is not available in your region (XErr ${xerr})."
+                return 4
+                ;;
+            *)
+                print_error "❌ XSTS authentication failed (HTTP ${http_code}, XErr: ${xerr:-none})."
+                return 1
+                ;;
         esac
-        return 1
     fi
 
-    echo "$xsts_token"
+    _XSTS_TOKEN=$(jq -r '.Token // empty' <<< "$response")
+    _XSTS_UHS=$(jq -r '.DisplayClaims.xui[0].uhs // empty' <<< "$response")
+
+    if [[ -z "$_XSTS_TOKEN" ]]; then
+        print_error "❌ XSTS response missing Token field."
+        return 1
+    fi
 }
 
-# @function _xsts_to_minecraft
-# @description Exchange XSTS token + user hash for Minecraft access token.
-# @param $1 - xsts_token
-# @param $2 - user_hash
-# @stdout Minecraft access token string
-_xsts_to_minecraft() {
-    local xsts_token="$1"
-    local user_hash="$2"
+# =============================================================================
+# PRIVATE: Step 5 — Minecraft authentication
+# Args: <uhs> <xsts_token>
+# Sets: _MC_ACCESS_TOKEN, _MC_TOKEN_EXPIRES_IN
+# The identityToken format is literal:
+#   "XBL:uhs=<uhs> XBL3.0 x=<uhs>;<xsts_token>"
+# (space before XBL3.0; semicolon before xsts_token; uhs appears twice)
+# =============================================================================
+_auth_minecraft() {
+    local uhs="$1"
+    local xsts_token="$2"
+
+    local identity_token="XBL:uhs=${uhs} XBL3.0 x=${uhs};${xsts_token}"
+    local body
+    body=$(jq -n --arg it "$identity_token" '{"identityToken": $it}')
+
     local response
-    response=$(curl -s --max-time 15 -X POST "$_MC_AUTH_URL" \
+    response=$(curl -s --fail-with-body -X POST "$_MC_LOGIN_URL" \
         -H "Content-Type: application/json" \
-        -d "{\"identityToken\": \"XBL3.0 x=${user_hash};${xsts_token}\"}" \
-        2>/dev/null) || return 1
+        -d "$body") || {
+        print_error "❌ Minecraft authentication request failed."
+        return 1
+    }
 
-    local mc_token
-    mc_token=$(echo "$response" | jq -r '.access_token // empty' 2>/dev/null)
+    _MC_ACCESS_TOKEN=$(jq -r '.access_token // empty' <<< "$response")
+    _MC_TOKEN_EXPIRES_IN=$(jq -r '.expires_in // 86400' <<< "$response")
 
-    if [[ -z "$mc_token" ]]; then
-        print_error "Failed to get Minecraft access token"
+    if [[ -z "$_MC_ACCESS_TOKEN" ]]; then
+        local err
+        err=$(jq -r '.error // .errorMessage // "unknown"' <<< "$response" 2>/dev/null)
+        print_error "❌ Minecraft authentication failed: ${err}"
         return 1
     fi
-
-    echo "$mc_token"
 }
 
-# @function _get_minecraft_profile
-# @description Fetch Minecraft profile (username + UUID) from access token.
-# @param $1 - mc_access_token
-# @stdout JSON: {"name":"...","id":"..."}
-_get_minecraft_profile() {
+# =============================================================================
+# PRIVATE: Step 6 — Entitlement check
+# Args: <minecraft_access_token>
+# Returns 0 if Minecraft Java Edition is owned (or Game Pass).
+# Non-fatal: caller shows a warning but continues on failure.
+# =============================================================================
+_check_entitlement() {
     local mc_token="$1"
     local response
-    response=$(curl -s --max-time 15 -H "Authorization: Bearer ${mc_token}" \
-        "$_MC_PROFILE_URL" 2>/dev/null) || return 1
+    response=$(curl -s "$_MC_ENTITLEMENT_URL" \
+        -H "Authorization: Bearer ${mc_token}") || return 1
 
-    local username uuid
-    username=$(echo "$response" | jq -r '.name // empty' 2>/dev/null)
-    uuid=$(echo "$response" | jq -r '.id // empty' 2>/dev/null)
-
-    if [[ -z "$username" || -z "$uuid" ]]; then
-        # Account exists but may not own Minecraft Java Edition
-        local err
-        err=$(echo "$response" | jq -r '.errorMessage // .error // "unknown"' 2>/dev/null)
-        print_error "Could not retrieve Minecraft profile: $err"
-        print_info "   Ensure this Microsoft account has purchased Minecraft Java Edition."
-        return 1
-    fi
-
-    echo "{\"name\": \"${username}\", \"id\": \"${uuid}\"}"
+    local has_game
+    has_game=$(jq '[.items[]? | .name | test("minecraft"; "i")] | any' \
+        <<< "$response" 2>/dev/null)
+    [[ "$has_game" == "true" ]]
 }
 
-# @function _write_prism_account
-# @description Write or merge MSA entry into PrismLauncher's accounts.json.
-# @param $1 - accounts_path: path to PrismLauncher accounts.json
-# @param $2 - mc_token: Minecraft access token
-# @param $3 - ms_token: Microsoft access token
-# @param $4 - refresh_token: Microsoft refresh token
-# @param $5 - username: Minecraft IGN
-# @param $6 - uuid: Minecraft UUID (no dashes)
-_write_prism_account() {
-    local accounts_path="$1"
-    local mc_token="$2"
-    local ms_token="$3"
-    local refresh_token="$4"
-    local username="$5"
-    local uuid="$6"
-    local client_id="${MS_AUTH_CLIENT_ID:-}"
-    local validity
-    validity=$(date -d "+3600 seconds" +%s 2>/dev/null || date -v +3600S +%s 2>/dev/null || echo "0")
+# =============================================================================
+# PRIVATE: Step 7 — Minecraft profile
+# Args: <minecraft_access_token>
+# Sets: _MC_PROFILE_ID, _MC_PROFILE_NAME
+# =============================================================================
+_get_mc_profile() {
+    local mc_token="$1"
+    local response
+    response=$(curl -s --fail-with-body "$_MC_PROFILE_URL" \
+        -H "Authorization: Bearer ${mc_token}") || {
+        print_error "❌ Failed to fetch Minecraft profile."
+        return 1
+    }
 
-    local new_entry
-    new_entry=$(jq -n \
-        --arg mc_token "$mc_token" \
-        --arg ms_token "$ms_token" \
-        --arg refresh_token "$refresh_token" \
-        --arg username "$username" \
-        --arg uuid "$uuid" \
-        --arg client_id "$client_id" \
-        --argjson validity "$validity" \
-        '{
-            "active": true,
-            "type": "MSA",
-            "userType": "msa",
-            "ygg": {
-                "token": $mc_token,
-                "userName": $username,
-                "profileName": $username
-            },
-            "profile": {
-                "id": $uuid,
-                "name": $username,
-                "capes": [],
-                "skin": {"id": "", "url": "", "variant": "CLASSIC"}
-            },
-            "msaToken": {
-                "extra": {"client_id": $client_id, "redirect_uri": "https://login.microsoftonline.com/common/oauth2/nativeclient"},
-                "token": $ms_token,
-                "refresh_token": $refresh_token,
-                "validity": $validity
-            }
-        }' 2>/dev/null) || { print_error "Failed to build account JSON"; return 1; }
+    _MC_PROFILE_ID=$(jq -r '.id // empty' <<< "$response")
+    _MC_PROFILE_NAME=$(jq -r '.name // empty' <<< "$response")
 
-    # Ensure the parent directory exists (won't be there on a fresh AppImage install)
-    mkdir -p "$(dirname "$accounts_path")" || { print_error "Cannot create PrismLauncher data dir"; return 1; }
+    if [[ -z "$_MC_PROFILE_ID" || -z "$_MC_PROFILE_NAME" ]]; then
+        local err
+        err=$(jq -r '.error // .errorMessage // "no profile found"' <<< "$response" 2>/dev/null)
+        print_error "❌ Minecraft profile missing: ${err}"
+        print_info "   → Ensure your account has a Java Edition profile at minecraft.net"
+        return 1
+    fi
+}
 
-    # Create or merge accounts.json
-    if [[ ! -f "$accounts_path" ]]; then
-        jq -n --argjson entry "$new_entry" \
-            '{"accounts": [$entry], "formatVersion": 3}' > "$accounts_path" 2>/dev/null \
-            || { print_error "Failed to create accounts.json"; return 1; }
+# =============================================================================
+# PRIVATE: Step 8 — Write account to PrismLauncher's accounts.json
+# Removes any existing MSA account, sets P1-P4 offline accounts to
+# active=false, and inserts the new MSA account as active=true.
+# =============================================================================
+_write_msa_to_accounts_json() {
+    local accounts_path="${CREATION_DATA_DIR}/accounts.json"
+    local now
+    now=$(date +%s)
+
+    # Random UUID-style client token
+    local client_token
+    if command -v uuidgen >/dev/null 2>&1; then
+        client_token=$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')
+    elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+        client_token=$(tr -d '-' < /proc/sys/kernel/random/uuid)
     else
-        local tmp
-        tmp=$(mktemp) || return 1
-        # Remove any existing MSA entry for this username, then prepend new one
-        if jq --argjson entry "$new_entry" --arg name "$username" \
-            '.accounts = [$entry] + (.accounts | map(select(.profile.name != $name))) |
-             .formatVersion = 3' \
-            "$accounts_path" > "$tmp" 2>/dev/null; then
-            mv "$tmp" "$accounts_path" || { rm -f "$tmp"; print_error "Failed to write accounts.json"; return 1; }
-        else
+        client_token=$(printf '%08x%08x%08x%08x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")
+    fi
+
+    local ms_expiry=$(( now + _MSA_TOKEN_EXPIRES_IN ))
+    local mc_expiry=$(( now + _MC_TOKEN_EXPIRES_IN ))
+
+    # Build the full MSA account object PrismLauncher expects (formatVersion 3)
+    local new_account
+    new_account=$(jq -n \
+        --arg  profile_id    "$_MC_PROFILE_ID" \
+        --arg  profile_name  "$_MC_PROFILE_NAME" \
+        --arg  mc_token      "$_MC_ACCESS_TOKEN" \
+        --arg  client_token  "$client_token" \
+        --arg  ms_token      "$_MSA_ACCESS_TOKEN" \
+        --arg  refresh_token "$_MSA_REFRESH_TOKEN" \
+        --arg  xbl_token     "$_XBL_TOKEN" \
+        --arg  xbl_uhs       "$_XBL_UHS" \
+        --arg  xsts_token    "$_XSTS_TOKEN" \
+        --argjson now         "$now" \
+        --argjson ms_expiry   "$ms_expiry" \
+        --argjson mc_expiry   "$mc_expiry" \
+        '{
+            active: true,
+            type:   "MSA",
+            profile: {
+                id:    $profile_id,
+                name:  $profile_name,
+                capes: [],
+                skin:  {id: "", url: "", variant: ""}
+            },
+            ygg: {
+                token:  $mc_token,
+                iat:    $now,
+                expiry: $mc_expiry,
+                extra:  {clientToken: $client_token, userName: $profile_name}
+            },
+            msa: {
+                token:         $ms_token,
+                refresh_token: $refresh_token,
+                iat:           $now,
+                expiry:        $ms_expiry,
+                extra:         {userName: $profile_name}
+            },
+            xbl: {
+                token: $xbl_token,
+                iat:   $now,
+                extra: {userName: $xbl_uhs}
+            },
+            xsts: {
+                token: $xsts_token,
+                iat:   $now,
+                extra: {userName: ""}
+            },
+            entitlement: {
+                canPlayMinecraft: true,
+                ownsMinecraft:    true
+            }
+        }') || {
+        print_error "❌ Failed to build account JSON."
+        return 1
+    }
+
+    local tmp
+    tmp=$(mktemp)
+
+    if [[ -f "$accounts_path" ]]; then
+        # Remove any existing MSA accounts; mark all others inactive; append new MSA
+        jq --argjson msa "$new_account" '
+            .accounts = (
+                [.accounts[] | select(.type != "MSA") | .active = false]
+                + [$msa]
+            )
+        ' "$accounts_path" > "$tmp" && mv "$tmp" "$accounts_path" || {
             rm -f "$tmp"
-            print_error "Failed to merge accounts.json"
+            print_error "❌ Failed to write accounts.json."
             return 1
+        }
+    else
+        # No existing accounts.json — create one from scratch
+        jq -n \
+            --argjson msa "$new_account" \
+            '{"accounts": [$msa], "formatVersion": 3}' > "$accounts_path" || {
+            rm -f "$tmp"
+            print_error "❌ Failed to create accounts.json."
+            return 1
+        }
+        rm -f "$tmp"
+    fi
+}
+
+# =============================================================================
+# PRIVATE: Full OAuth flow (Steps 1-8)
+# =============================================================================
+_do_microsoft_oauth() {
+    # Step 1: device code
+    print_progress "Contacting Microsoft authentication servers..."
+    _request_device_code || return 1
+
+    # Display sign-in instructions prominently
+    print_header "Microsoft Account Sign-In"
+    echo ""
+    print_info "Open this URL on any device (phone, tablet, or another PC):"
+    echo ""
+    echo "    https://microsoft.com/devicelogin"
+    echo ""
+    print_info "Then enter this code when prompted:"
+    echo ""
+    echo "    ╔══════════════╗"
+    echo "    ║  ${_MSA_USER_CODE}  ║"
+    echo "    ╚══════════════╝"
+    echo ""
+    print_info "Waiting for sign-in (code expires in ${_MSA_EXPIRES_IN}s)..."
+    printf '    '
+
+    # Step 2: poll for token
+    _poll_ms_token "$_MSA_DEVICE_CODE" "$_MSA_EXPIRES_IN" "$_MSA_POLL_INTERVAL" || return $?
+
+    print_success "✅ Microsoft sign-in confirmed."
+
+    # Step 3: Xbox Live
+    print_progress "Authenticating with Xbox Live..."
+    _auth_xbox_live "$_MSA_ACCESS_TOKEN" || return 1
+
+    # Step 4: XSTS
+    print_progress "Requesting XSTS security token..."
+    _auth_xsts "$_XBL_TOKEN" || return $?
+
+    # Step 5: Minecraft token
+    print_progress "Obtaining Minecraft access token..."
+    _auth_minecraft "$_XSTS_UHS" "$_XSTS_TOKEN" || return 1
+
+    # Step 6: entitlement (non-fatal)
+    print_progress "Verifying Minecraft ownership..."
+    if ! _check_entitlement "$_MC_ACCESS_TOKEN"; then
+        print_warning "⚠️  Minecraft ownership could not be confirmed via entitlement API."
+        print_info "   → Game Pass subscriptions may show this — the account will still work."
+        print_info "   → If you don't own Minecraft, launching will fail at runtime."
+    fi
+
+    # Step 7: profile
+    print_progress "Fetching Minecraft profile..."
+    _get_mc_profile "$_MC_ACCESS_TOKEN" || return 1
+
+    # Step 8: write accounts.json
+    print_progress "Saving account to PrismLauncher..."
+    _write_msa_to_accounts_json || return 1
+
+    print_success "✅ Microsoft account configured successfully!"
+    print_info "   → Signed in as: ${_MC_PROFILE_NAME}"
+    print_info "   → Account written to PrismLauncher's accounts.json"
+    print_info "   → P1-P4 offline profiles preserved for splitscreen identity"
+}
+
+# =============================================================================
+# PUBLIC: run_account_setup
+# Called from main_workflow.sh after offline accounts are merged.
+# =============================================================================
+run_account_setup() {
+    if ! command -v jq >/dev/null 2>&1; then
+        print_warning "⚠️  jq not found — Microsoft account setup skipped."
+        print_info "   → Install jq and re-run the installer, or add your account in PrismLauncher."
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        print_warning "⚠️  curl not found — Microsoft account setup skipped."
+        return 0
+    fi
+
+    # --- Already authenticated? ---
+    if check_microsoft_account; then
+        local existing_name
+        existing_name=$(jq -r '
+            [.accounts[] | select(.type == "MSA")][0].profile.name // "unknown"
+        ' "${CREATION_DATA_DIR}/accounts.json" 2>/dev/null)
+
+        print_success "✅ Microsoft account already configured: ${existing_name}"
+
+        if ! prompt_yes_no "Authenticate a different Microsoft account?" "n"; then
+            return 0
         fi
     fi
 
-    print_success "Microsoft account saved: ${username}"
-    return 0
-}
-
-# =============================================================================
-# PUBLIC ENTRY POINT
-# =============================================================================
-
-# @function setup_microsoft_account
-# @description Interactive Microsoft account setup during installation.
-#              Prompts the user, runs device code flow, and writes the account
-#              to PrismLauncher's accounts.json. Safe to skip.
-# @global ACTIVE_DATA_DIR - path to PrismLauncher data directory
-# @return 0 always (failure is non-fatal; user can log in manually later)
-setup_microsoft_account() {
-    # Skip silently if no real client ID has been configured yet
-    local _client_id="${MS_AUTH_CLIENT_ID:-}"
-    if [[ -z "$_client_id" || "$_client_id" == TODO_* ]]; then
-        print_info "Microsoft account setup not available in this build."
-        print_info "   → Log in manually: open PrismLauncher → Accounts → Add Microsoft"
-        return 0
-    fi
-
-    print_header "MICROSOFT ACCOUNT SETUP (optional)"
-    echo ""
-    echo "  Log in now to skip the manual login step after installation."
-    echo "  You will be shown a code to enter on any device with a browser."
+    # --- Prompt to set up now ---
+    print_header "Microsoft Account Setup"
+    print_info "A Microsoft account with Minecraft Java Edition is required to play."
+    print_info "You can sign in now, or add your account manually in PrismLauncher later."
     echo ""
 
-    prompt_yes_no "Set up Microsoft account now?" "y"
-    if [[ "$PROMPT_REPLY" != "y" && "$PROMPT_REPLY" != "yes" ]]; then
-        print_info "Skipping Microsoft account setup — log in via PrismLauncher after install."
+    if ! prompt_yes_no "Set up Microsoft account now?" "y"; then
+        print_warning "⚠️  Microsoft account setup skipped."
+        print_info "   → Open PrismLauncher after installation: Accounts → Add Microsoft."
         return 0
     fi
 
-    local accounts_path="${ACTIVE_DATA_DIR}/accounts.json"
-
-    # Run device code flow
-    local ms_tokens
-    if ! ms_tokens=$(_ms_device_code_flow); then
-        print_warning "Microsoft authentication failed — skipping account setup."
-        print_info "   → Log in manually: open PrismLauncher → Accounts → Add Microsoft"
+    # --- Run the OAuth flow (failure is non-fatal; installer continues) ---
+    if ! _do_microsoft_oauth; then
+        echo ""
+        print_warning "⚠️  Microsoft account setup did not complete."
+        print_info "   → You can still sign in manually inside PrismLauncher."
+        print_info "   → Splitscreen offline mode (P1-P4) will work without this account."
         return 0
     fi
-
-    local ms_access_token refresh_token
-    ms_access_token=$(echo "$ms_tokens" | jq -r '.access_token' 2>/dev/null)
-    refresh_token=$(echo "$ms_tokens" | jq -r '.refresh_token' 2>/dev/null)
-
-    print_progress "Exchanging tokens with Xbox Live..."
-
-    # XBL
-    local xbl_data xbl_token user_hash
-    if ! xbl_data=$(_ms_to_xbl "$ms_access_token"); then
-        print_warning "Xbox Live token exchange failed — skipping account setup."
-        print_info "   → Log in manually via PrismLauncher after install."
-        return 0
-    fi
-    xbl_token=$(echo "$xbl_data" | jq -r '.xbl_token' 2>/dev/null)
-    user_hash=$(echo "$xbl_data" | jq -r '.user_hash' 2>/dev/null)
-
-    # XSTS
-    local xsts_token
-    if ! xsts_token=$(_xbl_to_xsts "$xbl_token"); then
-        print_warning "XSTS token exchange failed — skipping account setup."
-        print_info "   → Log in manually via PrismLauncher after install."
-        return 0
-    fi
-
-    # Minecraft token
-    local mc_token
-    if ! mc_token=$(_xsts_to_minecraft "$xsts_token" "$user_hash"); then
-        print_warning "Minecraft token exchange failed — skipping account setup."
-        print_info "   → Log in manually via PrismLauncher after install."
-        return 0
-    fi
-
-    print_progress "Fetching Minecraft profile..."
-
-    # Profile
-    local profile_json username uuid
-    if ! profile_json=$(_get_minecraft_profile "$mc_token"); then
-        print_warning "Could not fetch Minecraft profile — skipping account setup."
-        print_info "   → Log in manually via PrismLauncher after install."
-        return 0
-    fi
-    username=$(echo "$profile_json" | jq -r '.name' 2>/dev/null)
-    uuid=$(echo "$profile_json" | jq -r '.id' 2>/dev/null)
-
-    # Write to PrismLauncher
-    if ! _write_prism_account "$accounts_path" "$mc_token" "$ms_access_token" \
-            "$refresh_token" "$username" "$uuid"; then
-        print_warning "Could not write account to PrismLauncher — skipping."
-        print_info "   → Log in manually via PrismLauncher after install."
-        return 0
-    fi
-
-    print_success "Microsoft account configured successfully: ${username}"
-    print_info "   → PrismLauncher will use this account automatically on launch."
-    return 0
 }

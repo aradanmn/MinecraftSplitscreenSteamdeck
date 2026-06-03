@@ -318,6 +318,7 @@ source "$MODULES_DIR/instance_creation.sh"
 source "$MODULES_DIR/account_setup.sh"
 source "$MODULES_DIR/steam_integration.sh"
 source "$MODULES_DIR/desktop_launcher.sh"
+source "$MODULES_DIR/account_setup.sh"
 source "$MODULES_DIR/main_workflow.sh"
 
 # Now that version_info.sh is loaded, we can use REPO_MODULES_URL
