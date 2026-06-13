@@ -37,7 +37,7 @@ No manual Java setup is required. The installer detects and installs the needed 
 
 ## Install
 ```sh
-wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
+wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
 chmod +x install-minecraft-splitscreen.sh
 ./install-minecraft-splitscreen.sh
 ```
@@ -101,7 +101,7 @@ The installer updates instance configs and mods for the version you select, whil
 
 ## Uninstall
 ```sh
-wget https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/uninstall-minecraft-splitscreen.sh
+wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/uninstall-minecraft-splitscreen.sh
 chmod +x uninstall-minecraft-splitscreen.sh
 ./uninstall-minecraft-splitscreen.sh
 ```
@@ -119,6 +119,6 @@ Optional uninstall flags:
 
 ## Credits
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen)
-- Built and maintained by [FlyingEwok](https://github.com/FlyingEwok) and contributors
+- Built and maintained by [aradanmn](https://github.com/aradanmn), originally forked from [FlyingEwok](https://github.com/FlyingEwok)
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC)
 - Uses [install-jdk-on-steam-deck](https://github.com/FlyingEwok/install-jdk-on-steam-deck) for Java setup on Steam Deck/Linux

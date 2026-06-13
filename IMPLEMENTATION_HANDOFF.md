@@ -1217,6 +1217,271 @@ bash tests/test_instance_lifecycle.sh
 
 ---
 
+## Style Guide
+
+Every file produced for this project must follow these rules without exception.
+Reviewers will reject code that violates them regardless of whether it works correctly.
+
+---
+
+### Bash Style
+
+#### Shebang and shell options
+Every `.sh` file must begin with exactly these two lines, with no blank line between
+them:
+```bash
+#!/bin/bash
+set -euo pipefail
+```
+
+When a specific block must tolerate failures, disable locally and re-enable immediately:
+```bash
+set +e
+some_command_that_may_fail
+set -e
+```
+Never disable `set -u` (undefined variable detection) or `set -o pipefail` locally.
+
+#### No magic numbers
+Every numeric literal that represents a threshold, limit, timeout, or configuration
+value must be assigned to a named constant at the top of the file in which it is used.
+Naming convention: `SCREAMING_SNAKE_CASE` prefixed with the module name.
+
+**Wrong:**
+```bash
+[ "$count" -gt 4 ] && count=4
+sleep 0.5
+for _i in $(seq 1 120); do
+```
+
+**Right:**
+```bash
+readonly MAX_PLAYERS=4
+readonly LAUNCH_POLL_INTERVAL_S=0.5
+readonly LAUNCH_POLL_TIMEOUT_ITERATIONS=120   # 60s total at 0.5s intervals
+
+[ "$count" -gt "$MAX_PLAYERS" ] && count=$MAX_PLAYERS
+sleep "$LAUNCH_POLL_INTERVAL_S"
+for _i in $(seq 1 "$LAUNCH_POLL_TIMEOUT_ITERATIONS"); do
+```
+
+Required named constants (define these in `instance_lifecycle.sh`):
+```bash
+readonly MAX_PLAYERS=4
+readonly LAUNCH_POLL_INTERVAL_S=0.5
+readonly LAUNCH_POLL_TIMEOUT_S=60
+readonly WINDOW_WAIT_TIMEOUT_S=30
+readonly TEARDOWN_GRACE_S=10
+readonly CONTROLLER_DEBOUNCE_MS=500
+readonly DOCK_POLL_INTERVAL_S=3
+readonly DEFAULT_SCREEN_W=1280
+readonly DEFAULT_SCREEN_H=800
+```
+
+#### Naming conventions
+| Thing | Convention | Example |
+|---|---|---|
+| Functions | `snake_case` | `get_display_mode` |
+| Local variables | `snake_case` | `local event_node` |
+| Module-level constants | `MODULE_SCREAMING_SNAKE` | `DOCK_DETECTION_DRM_PATH` |
+| Loop counters / throwaway | `_name` prefix | `local _i` |
+| Boolean-intent variables | name as a predicate | `local is_docked=0` |
+
+Function names must be verbs or verb phrases: `get_`, `set_`, `is_`, `has_`,
+`compute_`, `apply_`, `spawn_`, `teardown_`, `list_`, `watch_`, `start_`, `kill_`.
+Internal/private functions (not part of a module's public API) must be prefixed
+with `_`: `_parse_steam_virtual_devices`, `_write_splitscreen_properties`.
+
+#### Variable quoting
+Always double-quote variable expansions unless you specifically need word-splitting:
+```bash
+# Wrong
+cp $src $dest
+[ $count -gt 0 ]
+
+# Right
+cp "$src" "$dest"
+[ "$count" -gt 0 ]
+```
+
+Arrays must use `"${array[@]}"` (with quotes) in all expansions:
+```bash
+# Wrong
+for item in ${array[*]}; do
+
+# Right
+for item in "${array[@]}"; do
+```
+
+#### Local variables
+Every variable inside a function must be declared `local`. No function may set or
+modify global/module-level variables except through an explicit `export` statement
+that is documented in the function's header comment.
+
+```bash
+# Wrong
+my_function() {
+    result="something"   # leaks into global scope
+}
+
+# Right
+my_function() {
+    local result="something"
+}
+```
+
+#### Function header comments
+Every public function (those in the module's public API section) must have a header
+comment block immediately above the `function_name()` line:
+```bash
+# Brief one-line description of what this function does.
+# Arguments:
+#   $1  slot       — integer 1-4
+#   $2  event_node — full path, e.g. /dev/input/event3
+# Outputs:
+#   stdout: nothing
+#   stderr: progress log lines
+# Returns:
+#   0 on success
+#   1 if bwrap is not installed
+#   2 if the slot is already active
+spawn_instance() {
+```
+
+Internal (`_`-prefixed) functions do not require header comments unless the logic
+is non-obvious.
+
+#### Command substitution
+Use `$(...)` not backticks:
+```bash
+# Wrong
+result=`some_command`
+
+# Right
+result=$(some_command)
+```
+
+#### Conditionals
+Use `[[ ]]` for string/file tests, `(( ))` for arithmetic:
+```bash
+# Wrong
+if [ "$mode" = "docked" ]; then
+if [ $count -gt 0 ]; then
+
+# Right
+if [[ "$mode" == "docked" ]]; then
+if (( count > 0 )); then
+```
+
+#### Process substitution for arrays
+Use `mapfile` / `readarray` for populating arrays from command output:
+```bash
+# Wrong
+devices=$(ls /dev/input/js*)
+
+# Right
+mapfile -t devices < <(ls /dev/input/js* 2>/dev/null)
+```
+
+#### Error messages
+All error messages must go to stderr and include the function name:
+```bash
+echo "[spawn_instance] ERROR: bwrap not found. Cannot sandbox instance." >&2
+```
+
+Use `return 1` (not `exit 1`) from functions, so the caller can decide whether
+the error is fatal.
+
+#### No `cd` inside functions
+Functions must never `cd` without saving and restoring the original directory.
+Prefer constructing absolute paths instead:
+```bash
+# Wrong
+cd "$target_dir"
+some_command file.txt
+
+# Right
+some_command "$target_dir/file.txt"
+```
+
+#### Pipelines and error checking
+Never discard pipeline failures silently. When using pipelines in conditions,
+rely on `set -o pipefail` (already required). When capturing pipeline output,
+use a temp variable and check it:
+```bash
+# Wrong
+result=$(cat file | grep pattern | head -1)
+
+# Right
+result=$(grep pattern file 2>/dev/null | head -1) || true
+```
+
+---
+
+### Python Style (controller_proxy.py if needed in future)
+
+If any Python files are added, they must:
+- Target Python 3.8+ (SteamOS ships Python 3.10+)
+- Use type hints on all function signatures
+- Follow PEP 8 (4-space indent, max 100 chars per line)
+- Have no magic numbers — use `SCREAMING_SNAKE_CASE` module-level constants
+- Have no `print()` for logging — use `logging.getLogger(__name__)`
+
+---
+
+### Repository References
+
+The canonical repository URL for this project is:
+```
+https://github.com/aradanmn/MinecraftSplitscreenSteamdeck
+```
+
+The raw content base URL is:
+```
+https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/
+```
+
+**Never hardcode the FlyingEwok GitHub username in any new or modified file.**
+The `install-jdk-on-steam-deck` dependency at
+`https://github.com/FlyingEwok/install-jdk-on-steam-deck` is the only exception —
+it is an external dependency, not this project.
+
+---
+
+### Commit Message Style
+
+Format:
+```
+<type>(<scope>): <short summary in imperative mood, ≤72 chars>
+
+<body: explain WHY, not what — optional if summary is self-explanatory>
+```
+
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+Scopes: `dock-detection`, `controller-monitor`, `window-manager`, `instance-lifecycle`,
+`orchestrator`, `tests`, `readme`
+
+Examples:
+```
+feat(dock-detection): add DRM sysfs fallback when wlr-randr unavailable
+
+fix(controller-monitor): debounce rapid plug/unplug within 500ms window
+
+test(window-manager): add T3.6 for odd-resolution truncation behaviour
+```
+
+---
+
+### What Never Belongs in Code
+
+- Commented-out code blocks — delete dead code, use git history to recover it
+- `TODO` comments — open a GitHub issue instead
+- Inline explanations of what the code does — rename the variable/function instead
+- Author names or dates in comments — git blame has this
+- Logging of sensitive paths or environment variables that could expose user data
+
+---
+
 ## Key Constraints Summary
 
 1. Maximum 4 simultaneous Minecraft instances.

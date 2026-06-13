@@ -69,7 +69,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
 # GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/modules"
+readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
 
 # List of required module files
 readonly MODULE_FILES=(
@@ -165,7 +165,7 @@ download_modules() {
         echo "    mkdir -p '$SCRIPT_DIR/modules'"
         echo "    # Then copy all .sh module files to that directory"
         echo ""
-        echo "🌐 Or check if the repository exists at: https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck"
+        echo "🌐 Or check if the repository exists at: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck"
         exit 1
     fi
     
