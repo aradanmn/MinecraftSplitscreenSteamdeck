@@ -6,9 +6,9 @@
 # Handles both Modrinth and CurseForge platforms
 
 # API timeout configuration variables
-readonly API_SHORT_TIMEOUT_SECONDS=10
-readonly API_MEDIUM_TIMEOUT_SECONDS=12
-readonly API_DOWNLOAD_TIMEOUT_SECONDS=15
+: "${API_SHORT_TIMEOUT_SECONDS:=10}"
+: "${API_MEDIUM_TIMEOUT_SECONDS:=12}"
+: "${API_DOWNLOAD_TIMEOUT_SECONDS:=15}"
 
 # check_mod_compatibility: Main coordination function for mod compatibility checking
 # Iterates through all mods and delegates to platform-specific checkers

@@ -23,7 +23,13 @@ get_required_java_version() {
     
     if [[ -z "$manifest_json" ]]; then
         # Fallback logic based on known Minecraft Java requirements
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
+        if [[ "$mc_version" =~ ^26(\\.|$) ]]; then
+            echo "25"  # MC 26.x requires Java 25
+        elif [[ "$mc_version" =~ ^25(\\.|$) ]]; then
+            echo "25"  # MC 25.x requires Java 25
+        elif [[ "$mc_version" =~ ^24(\\.|$) ]]; then
+            echo "24"  # MC 24.x requires Java 24
+        elif [[ "$mc_version" =~ ^1\\.2[1-9](\\.|$) ]]; then
             echo "21"  # 1.21+ requires Java 21
         elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
             echo "17"  # 1.18-1.20 requires Java 17
@@ -131,7 +137,7 @@ download_and_run_jdk_installer() {
     print_progress "Downloading automatic JDK installer..."
     
     # Clone the JDK installer repository
-    if ! git clone --quiet https://github.com/aradanmn/install-jdk-on-steam-deck.git 2>/dev/null; then
+    if ! git clone --quiet https://github.com/FlyingEwok/install-jdk-on-steam-deck.git 2>/dev/null; then
         print_error "Failed to download JDK installer from GitHub"
         print_error "Please check your internet connection and try again"
         cd "$original_dir"
@@ -396,6 +402,11 @@ detect_and_install_java() {
                     version_matches=true
                 fi
                 ;;
+            25)
+                if echo "$java_version_output" | grep -q "openjdk version \"25\|java version \"25"; then
+                    version_matches=true
+                fi
+                ;;
         esac
         
         if [[ "$version_matches" == true ]]; then
@@ -464,7 +475,7 @@ detect_and_install_java() {
                 ;;
         esac
         print_info "  • Or run the JDK installer separately:"
-        print_info "    git clone https://github.com/aradanmn/install-jdk-on-steam-deck.git"
+        print_info "    git clone https://github.com/FlyingEwok/install-jdk-on-steam-deck.git"
         print_info "    JDK_VERSION=$required_java_version ./install-jdk-on-steam-deck/scripts/install-jdk.sh"
         exit 1
     fi

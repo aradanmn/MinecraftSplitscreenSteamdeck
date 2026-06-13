@@ -13,9 +13,9 @@
 #\n# =============================================================================
 
 # Configuration variables
-readonly DEFAULT_MIN_MEM_MB=512
-readonly DEFAULT_MAX_MEM_MB=4096
-readonly API_DOWNLOAD_TIMEOUT_SECONDS=15
+: "${DEFAULT_MIN_MEM_MB:=512}"
+: "${DEFAULT_MAX_MEM_MB:=4096}"
+: "${API_DOWNLOAD_TIMEOUT_SECONDS:=15}"
 
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
