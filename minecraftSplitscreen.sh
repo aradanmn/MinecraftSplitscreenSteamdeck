@@ -216,14 +216,14 @@ clearControllableSelection() {
 # =============================
 hidePanels() {
     if command -v plasmashell >/dev/null 2>&1; then
-        pkill plasmashell
+        pkill plasmashell || true
         sleep 1
         if pgrep -u "$USER" plasmashell >/dev/null; then
-            killall plasmashell
+            killall plasmashell || true
             sleep 1
         fi
         if pgrep -u "$USER" plasmashell >/dev/null; then
-            pkill -9 plasmashell
+            pkill -9 plasmashell || true
             sleep 1
         fi
     else
