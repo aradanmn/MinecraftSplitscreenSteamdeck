@@ -12,6 +12,12 @@
 #
 # =============================================================================
 
+# Steam shutdown timing variables
+: "${STEAM_SHUTDOWN_GRACE_SECONDS:=3}"
+: "${STEAM_FORCE_KILL_WAIT_SECONDS:=2}"
+: "${STEAM_POLL_INTERVAL_SECONDS:=1}"
+: "${STEAM_MAX_SHUTDOWN_ATTEMPTS:=10}"
+
 # setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
 #
 # STEAM INTEGRATION BENEFITS:
@@ -86,13 +92,13 @@ setup_steam_integration() {
             # Steam Deck-aware shutdown approach
             print_info "   → Attempting graceful Steam shutdown..."
             steam -shutdown 2>/dev/null || true
-            sleep 3
+            sleep "$STEAM_SHUTDOWN_GRACE_SECONDS"
             
             # Only force close the actual Steam client process, avoiding SteamOS components
             print_info "   → Force closing Steam client process (preserving SteamOS)..."
             # Use exact process name matching to avoid killing SteamOS processes
             pkill -x "steam" 2>/dev/null || true
-            sleep 2
+            sleep "$STEAM_FORCE_KILL_WAIT_SECONDS"
             
             # Re-enable strict error handling
             set -e
@@ -101,7 +107,7 @@ setup_steam_integration() {
             # Check for Steam processes and wait until Steam fully exits
             # This prevents corruption of the shortcuts database during modification
             local shutdown_attempts=0
-            local max_attempts=10
+            local max_attempts="$STEAM_MAX_SHUTDOWN_ATTEMPTS"
             
             while [[ $shutdown_attempts -lt $max_attempts ]]; do
                 # Check for Steam client processes (Steam Deck-safe approach)
@@ -128,7 +134,7 @@ setup_steam_integration() {
                     break
                 fi
                 
-                sleep 1
+                sleep "$STEAM_POLL_INTERVAL_SECONDS"
                 ((shutdown_attempts++))
             done
             
