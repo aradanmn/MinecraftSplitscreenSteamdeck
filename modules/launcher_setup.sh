@@ -5,6 +5,10 @@
 # PolyMC setup functions
 # PolyMC is used as the primary launcher for splitscreen gameplay
 
+# Memory configuration variables
+DEFAULT_MIN_MEM_MB=512
+DEFAULT_MAX_MEM_MB=4096
+
 # download_prism_launcher: Download the latest PolyMC AppImage
 # We download it to the target directory for splitscreen launcher usage
 download_prism_launcher() {
@@ -67,8 +71,8 @@ IconTheme=pe_colored
 JavaPath=${java_cfg_path}
 Language=en_US
 LastHostname=${current_hostname}
-MaxMemAlloc=4096
-MinMemAlloc=512
+MaxMemAlloc=${DEFAULT_MAX_MEM_MB}
+MinMemAlloc=${DEFAULT_MIN_MEM_MB}
 ToolbarsLocked=false
 EOF
 

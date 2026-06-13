@@ -5,6 +5,11 @@
 # Mod compatibility checking, dependency resolution, and user selection functions
 # Handles both Modrinth and CurseForge platforms
 
+# API timeout configuration variables
+readonly API_SHORT_TIMEOUT_SECONDS=10
+readonly API_MEDIUM_TIMEOUT_SECONDS=12
+readonly API_DOWNLOAD_TIMEOUT_SECONDS=15
+
 # check_mod_compatibility: Main coordination function for mod compatibility checking
 # Iterates through all mods and delegates to platform-specific checkers
 check_mod_compatibility() {
@@ -279,7 +284,7 @@ check_curseforge_mod() {
     local cf_api_key=""
     
     # Try to use a simple decryption method for the token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
     local tmp_token_file
     
     # Create temporary file for encrypted token download with timeout
@@ -683,7 +688,7 @@ resolve_curseforge_dependencies() {
     local mod_name="$2"
     
     # Download and decrypt CurseForge API token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
     local tmp_token_file
     tmp_token_file=$(mktemp)
     if [[ -z "$tmp_token_file" ]]; then
@@ -788,7 +793,7 @@ resolve_modrinth_dependencies_api() {
             return 0
         fi
     elif command -v wget >/dev/null 2>&1; then
-        if ! wget -q -O "$tmp_file" --timeout=10 "$versions_url" 2>/dev/null; then
+        if ! wget -q -O "$tmp_file" --timeout="$API_SHORT_TIMEOUT_SECONDS" "$versions_url" 2>/dev/null; then
             rm -f "$tmp_file"
             echo ""
             return 0
@@ -848,7 +853,7 @@ resolve_curseforge_dependencies_api() {
     local dependencies=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -1039,7 +1044,7 @@ fetch_and_add_external_mod() {
             local download_url=""
             
             # Download encrypted CurseForge API token from GitHub repository
-            local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+            local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
             local encrypted_token_file=$(mktemp)
             local http_code
             
@@ -1139,7 +1144,7 @@ get_curseforge_download_url() {
     local download_url=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -1260,7 +1265,7 @@ get_curseforge_download_url() {
 # get_curseforge_api_token: Download and decrypt CurseForge API token
 # Returns: token string on stdout, or empty on failure
 get_curseforge_api_token() {
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
     local encrypted_token_file
     encrypted_token_file=$(mktemp)
     local http_code=""
@@ -1398,7 +1403,7 @@ get_custom_mod_display_name() {
             if command -v curl >/dev/null 2>&1; then
                 curl -s -m 12 -o "$tmp_file" "$api_url" 2>/dev/null
             elif command -v wget >/dev/null 2>&1; then
-                wget -q -O "$tmp_file" --timeout=12 "$api_url" 2>/dev/null
+                wget -q -O "$tmp_file" --timeout="$API_MEDIUM_TIMEOUT_SECONDS" "$api_url" 2>/dev/null
             fi
 
             if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
@@ -1428,7 +1433,7 @@ get_custom_mod_display_name() {
             if command -v curl >/dev/null 2>&1; then
                 curl -s -m 12 -H "x-api-key: $api_token" -o "$tmp_file" "$cf_api_url" 2>/dev/null
             elif command -v wget >/dev/null 2>&1; then
-                wget -q --timeout=12 --header="x-api-key: $api_token" -O "$tmp_file" "$cf_api_url" 2>/dev/null
+                wget -q --timeout="$API_MEDIUM_TIMEOUT_SECONDS" --header="x-api-key: $api_token" -O "$tmp_file" "$cf_api_url" 2>/dev/null
             fi
 
             if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then

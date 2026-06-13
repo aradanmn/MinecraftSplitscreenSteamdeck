@@ -10,8 +10,12 @@
 # Functions provided:
 # - create_instances: Main function to create 4 splitscreen instances
 # - install_fabric_and_mods: Install Fabric loader and mods for an instance
-#
-# =============================================================================
+#\n# =============================================================================
+
+# Configuration variables
+readonly DEFAULT_MIN_MEM_MB=512
+readonly DEFAULT_MAX_MEM_MB=4096
+readonly API_DOWNLOAD_TIMEOUT_SECONDS=15
 
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
@@ -108,8 +112,8 @@ OverrideMemory=true
 OverrideNativeWorkarounds=false
 OverrideWindow=false
 JavaPath=$JAVA_PATH
-MinMemAlloc=512
-MaxMemAlloc=4096
+MinMemAlloc=${DEFAULT_MIN_MEM_MB}
+MaxMemAlloc=${DEFAULT_MAX_MEM_MB}
 IntendedVersion=$MC_VERSION
 EOF
 
@@ -332,7 +336,7 @@ EOF
                 fi
             elif command -v wget >/dev/null 2>&1; then
                 print_debug "Trying wget for $mod_name"
-                if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
+                if wget -q -O "$temp_resolve_file" --timeout="$API_DOWNLOAD_TIMEOUT_SECONDS" "$versions_url" 2>/dev/null; then
                     if [[ -s "$temp_resolve_file" ]]; then
                         resolve_data=$(cat "$temp_resolve_file")
                         print_debug "wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
@@ -715,10 +719,10 @@ handle_instance_update() {
         fi
 
         if ! grep -q "^MinMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MinMemAlloc=512" >> "$instance_dir/instance.cfg"
+            echo "MinMemAlloc=${DEFAULT_MIN_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         if ! grep -q "^MaxMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MaxMemAlloc=4096" >> "$instance_dir/instance.cfg"
+            echo "MaxMemAlloc=${DEFAULT_MAX_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         print_success "✅ Instance configuration updated"
     fi

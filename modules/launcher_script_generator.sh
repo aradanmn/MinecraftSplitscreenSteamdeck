@@ -51,6 +51,11 @@ INSTANCE_STARTUP_GRACE_SECONDS=180
 REPOSITION_MAX_SECONDS=30
 REPOSITION_INTERVAL_SECONDS=2
 CONTROLLER_RECONNECT_GRACE_SECONDS=60
+PREWARM_TIMEOUT_SECONDS=60
+SPLITSCREEN_SYNC_SECONDS=0.5
+NESTED_PLASMA_FALLBACK_RESOLUTION="1280x800"
+DEFAULT_MIN_MEM_MB=512
+DEFAULT_MAX_MEM_MB=4096
 
 # =============================================================================
 # Environment Detection
@@ -536,6 +541,16 @@ GENHEADER
     cat >> "$output_path" << 'RUNTIMEFUNCS'
 
 # =============================================================================
+# Runtime Configuration Variables
+# =============================================================================
+readonly PREWARM_TIMEOUT_SECONDS=60
+readonly PREWARM_POLL_SECONDS=1
+readonly SPLITSCREEN_SYNC_SECONDS=0.5
+readonly NESTED_PLASMA_FALLBACK_RESOLUTION="1280x800"
+readonly DEFAULT_MIN_MEM_MB=512
+readonly DEFAULT_MAX_MEM_MB=4096
+
+# =============================================================================
 # Environment Detection
 # =============================================================================
 isSteamDeckHardware() {
@@ -865,7 +880,7 @@ setSplitscreenModeForPlayer() {
     esac
     echo -e "gap=1\\nmode=$mode" > "$config_path"
     sync
-    sleep 0.5
+    sleep "$SPLITSCREEN_SYNC_SECONDS"
 }
 
 # =============================================================================
@@ -876,13 +891,13 @@ prewarmLauncher() {
     echo "[Info] Pre-warming $LAUNCHER_NAME..."
     "$LAUNCHER_EXEC" --no-single-instance >/dev/null 2>&1 &
     local _i
-    for _i in $(seq 1 60); do
+    for _i in $(seq 1 "$PREWARM_TIMEOUT_SECONDS"); do
         if ls /tmp/qtsingleapp-* 2>/dev/null | grep -q .; then
             LAUNCHER_PREWARMED=1
             echo "[Info] $LAUNCHER_NAME pre-warmed"
             return 0
         fi
-        sleep 1
+        sleep "$PREWARM_POLL_SECONDS"
     done
     echo "[Warning] $LAUNCHER_NAME pre-warm timed out, continuing anyway"
     LAUNCHER_PREWARMED=1
@@ -910,7 +925,7 @@ nestedPlasma() {
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH
     local RES
     RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')
-    [ -z "$RES" ] && RES="1280x800"
+    [ -z "$RES" ] && RES="$NESTED_PLASMA_FALLBACK_RESOLUTION"
     cat <<EOF > /tmp/kwin_wayland_wrapper
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${RES%x*} --height ${RES#*x} --no-lockscreen \\\$@
