@@ -574,7 +574,7 @@ main() {
 
     # Create FIFO and hold a write end open so readers never block on open()
     mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
-    exec 9>"$SPLITSCREEN_FIFO"
+    exec 9<>"$SPLITSCREEN_FIFO"
 
     # Start watchdog before display watcher
     start_watchdog &
