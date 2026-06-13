@@ -4,9 +4,8 @@ set -euo pipefail
 # =============================================================================
 # Test Suite: watchdog.sh
 # =============================================================================
-# Tests the bwrap PID watchdog module.
-# Uses real background processes and temp FIFOs.
-# No hardware, root, or Steam client required.
+# All tests mock $SPLITSCREEN_STATE with crafted JSON files.
+# No hardware, root, or real processes required.
 # Run: bash tests/test_watchdog.sh
 # =============================================================================
 
@@ -23,306 +22,335 @@ TESTS_FAILED=0
 _pass() { echo "[PASS] $1"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
 _fail() { echo "[FAIL] $1 — $2"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
-# _dead_pid: spawn a process, kill it, return its PID (guaranteed dead)
-_dead_pid() {
-    local pid
-    sleep 300 &
-    pid=$!
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    echo "$pid"
-}
-
-# _make_state: write a minimal state JSON to $1
-# Usage: _make_state <file> <slot> <active> <bwrap_pid_value>
-# bwrap_pid_value: an integer, or the literal string "null"
-_make_state() {
-    local file="$1"
-    local slot="$2"
-    local active="$3"
-    local bwrap_pid="$4"   # integer or "null"
-    local bwrap_json="$bwrap_pid"
-    cat > "$file" <<JSON
-{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
-JSON
-    # Patch the target slot using jq
-    local tmp_file="${file}.tmp.$$"
-    jq --arg slot "$slot" \
-       --argjson active "$active" \
-       --argjson bwrap_json "$bwrap_json" \
-       '.slots[$slot].active = $active | .slots[$slot].bwrap_pid = $bwrap_json' \
-       "$file" > "$tmp_file" && mv "$tmp_file" "$file"
-}
-
 # =============================================================================
-# T5.1 — SLOT_DIED emitted for dead bwrap PID
+# T5.1 — dead PID → SLOT_DIED emitted
 # =============================================================================
 test_t5_1() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
 
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
     mkfifo "$fifo"
-    exec 9>"$fifo"   # keep write end open so watchdog can open FIFO
+    exec 9<>"$fifo"  # keep write end open
 
-    local dead="$(_dead_pid)"
-    _make_state "$state" "1" "true" "$dead"
+    # Spawn a short-lived process, capture its PID, let it die
+    sleep 0.1 &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true  # ensure it's dead
 
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
-
-    local msg=""
-    if read -r -t 3 msg < "$fifo"; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        if [[ "$msg" == "SLOT_DIED 1" ]]; then
-            _pass "T5.1 — SLOT_DIED emitted for dead bwrap PID"
-        else
-            _fail "T5.1" "expected 'SLOT_DIED 1', got '$msg'"
-        fi
-    else
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.1" "timed out waiting for SLOT_DIED message"
-    fi
-}
-
-# =============================================================================
-# T5.2 — No SLOT_DIED when bwrap PID is alive
-# =============================================================================
-test_t5_2() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
-
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
-    mkfifo "$fifo"
-    exec 9>"$fifo"
-
-    _make_state "$state" "1" "true" "$$"   # $$ = current shell, definitely alive
-
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
-
-    # Wait a few poll cycles, then check nothing arrived
-    local msg=""
-    if read -r -t 0.5 msg < "$fifo" 2>/dev/null; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.2" "unexpected FIFO message for alive PID: '$msg'"
-    else
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _pass "T5.2 — no SLOT_DIED for alive bwrap PID"
-    fi
-}
-
-# =============================================================================
-# T5.3 — No SLOT_DIED for inactive slot (active=false)
-# =============================================================================
-test_t5_3() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
-
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
-    mkfifo "$fifo"
-    exec 9>"$fifo"
-
-    local dead="$(_dead_pid)"
-    _make_state "$state" "1" "false" "$dead"   # inactive, dead PID — should be ignored
-
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
-
-    local msg=""
-    if read -r -t 0.5 msg < "$fifo" 2>/dev/null; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.3" "unexpected SLOT_DIED for inactive slot: '$msg'"
-    else
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _pass "T5.3 — no SLOT_DIED for inactive slot (active=false)"
-    fi
-}
-
-# =============================================================================
-# T5.4 — No SLOT_DIED when bwrap_pid is null
-# =============================================================================
-test_t5_4() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
-
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
-    mkfifo "$fifo"
-    exec 9>"$fifo"
-
-    _make_state "$state" "1" "true" "null"   # active but no PID yet
-
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
-
-    local msg=""
-    if read -r -t 0.5 msg < "$fifo" 2>/dev/null; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.4" "unexpected SLOT_DIED for null bwrap_pid: '$msg'"
-    else
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _pass "T5.4 — no SLOT_DIED when bwrap_pid is null"
-    fi
-}
-
-# =============================================================================
-# T5.5 — Message format: "SLOT_DIED <digit>" (exact, no extra whitespace)
-# =============================================================================
-test_t5_5() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
-
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
-    mkfifo "$fifo"
-    exec 9>"$fifo"
-
-    local dead="$(_dead_pid)"
-    _make_state "$state" "2" "true" "$dead"
-
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
-
-    local msg=""
-    if read -r -t 3 msg < "$fifo"; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        if [[ "$msg" =~ ^SLOT_DIED\ [1-4]$ ]]; then
-            _pass "T5.5 — SLOT_DIED message format: '$msg'"
-        else
-            _fail "T5.5" "format wrong: '$msg' (expected SLOT_DIED <1-4>)"
-        fi
-    else
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.5" "timed out waiting for SLOT_DIED message"
-    fi
-}
-
-# =============================================================================
-# T5.6 — Multiple dead slots emit multiple SLOT_DIED messages
-# =============================================================================
-test_t5_6() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
-
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
-    mkfifo "$fifo"
-    exec 9>"$fifo"
-
-    local dead1; dead1=$(_dead_pid)
-    local dead3; dead3=$(_dead_pid)
-
-    # Slots 1 and 3 active with dead PIDs; 2 and 4 inactive
-    cat > "$state" <<JSON
-{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":${dead1}},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":true,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":${dead3}},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$dead_pid},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
 JSON
 
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
 
-    local msg1="" msg2=""
-    local got=0
-    if read -r -t 3 msg1 < "$fifo"; then
-        got=$((got + 1))
-        if read -r -t 2 msg2 < "$fifo"; then
-            got=$((got + 1))
-        fi
-    fi
-
-    kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-    exec 9>&-
-
-    if (( got == 2 )); then
-        local slots_found=""
-        for m in "$msg1" "$msg2"; do
-            if [[ "$m" =~ ^SLOT_DIED\ ([1-4])$ ]]; then
-                slots_found="$slots_found ${BASH_REMATCH[1]}"
-            fi
-        done
-        # Both slot 1 and slot 3 should appear
-        if [[ "$slots_found" == *"1"* && "$slots_found" == *"3"* ]]; then
-            _pass "T5.6 — multiple dead slots: got SLOT_DIED for slots 1 and 3"
+    local line
+    if read -r -t 3 line < "$fifo"; then
+        if [[ "$line" == "SLOT_DIED 1" ]]; then
+            _pass "T5.1 — SLOT_DIED 1 emitted for dead bwrap PID"
         else
-            _fail "T5.6" "expected slots 1 and 3, got:$slots_found"
+            _fail "T5.1" "expected 'SLOT_DIED 1', got '$line'"
         fi
     else
-        _fail "T5.6" "expected 2 SLOT_DIED messages, got $got (msg1='$msg1' msg2='$msg2')"
+        _fail "T5.1" "timed out waiting for SLOT_DIED"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# T5.2 — alive PID ($$) → no message
+# =============================================================================
+test_t5_2() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    exec 9<>"$fifo"
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$$},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
+
+    sleep 0.4
+
+    local line
+    if read -r -t 0.3 line < "$fifo"; then
+        _fail "T5.2" "unexpected message: '$line'"
+    else
+        _pass "T5.2 — no SLOT_DIED for alive bwrap PID ($$)"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# T5.3 — inactive slot → no message
+# =============================================================================
+test_t5_3() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    exec 9<>"$fifo"
+
+    # Dead PID but slot is inactive
+    sleep 0.1 &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":$dead_pid},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
+
+    sleep 0.4
+
+    local line
+    if read -r -t 0.3 line < "$fifo"; then
+        _fail "T5.3" "unexpected message for inactive slot: '$line'"
+    else
+        _pass "T5.3 — no SLOT_DIED for inactive slot (active: false)"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# T5.4 — bwrap_pid null → no message
+# =============================================================================
+test_t5_4() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    exec 9<>"$fifo"
+
+    cat > "$state_file" <<'JSON'
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
+
+    sleep 0.4
+
+    local line
+    if read -r -t 0.3 line < "$fifo"; then
+        _fail "T5.4" "unexpected message for null bwrap_pid: '$line'"
+    else
+        _pass "T5.4 — no SLOT_DIED when bwrap_pid is null"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# T5.5 — exact format: ^SLOT_DIED [1-4]$
+# =============================================================================
+test_t5_5() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    exec 9<>"$fifo"
+
+    sleep 0.1 &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$dead_pid},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
+
+    local line
+    if read -r -t 3 line < "$fifo"; then
+        if [[ "$line" =~ ^SLOT_DIED\ [1-4]$ ]]; then
+            _pass "T5.5 — exact format: '$line' matches ^SLOT_DIED [1-4]\$"
+        else
+            _fail "T5.5" "format mismatch: '$line'"
+        fi
+    else
+        _fail "T5.5" "timed out waiting for SLOT_DIED"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# T5.6 — multiple dead slots emit multiple SLOT_DIED in one cycle
+# =============================================================================
+test_t5_6() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    exec 9<>"$fifo"
+
+    sleep 0.1 &
+    local dead1=$!
+    sleep 0.1 &
+    local dead2=$!
+    wait "$dead1" 2>/dev/null || true
+    wait "$dead2" 2>/dev/null || true
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$dead1},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":true,"pid":null,"event_node":"/dev/input/event5","js_node":"/dev/input/js2","bwrap_pid":$dead2},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
+
+    local lines=()
+    local l
+    while IFS= read -r -t 3 l; do
+        lines+=("$l")
+        if (( ${#lines[@]} >= 2 )); then
+            break
+        fi
+    done < "$fifo"
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+
+    local has_1=0 has_3=0
+    for l in "${lines[@]}"; do
+        [[ "$l" == "SLOT_DIED 1" ]] && has_1=1
+        [[ "$l" == "SLOT_DIED 3" ]] && has_3=1
+    done
+
+    if (( has_1 == 1 && has_3 == 1 )); then
+        _pass "T5.6 — both SLOT_DIED 1 and SLOT_DIED 3 emitted"
+    else
+        _fail "T5.6" "got ${#lines[@]} lines: ${lines[*]}"
     fi
 }
 
 # =============================================================================
-# T5.7 — Deduplication: SLOT_DIED not re-emitted until slot is reset
+# T5.7 — dedup: no re-emit until slot reset (active: false)
 # =============================================================================
 test_t5_7() {
-    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
 
-    local fifo="$tmpdir/splitscreen.fifo"
-    local state="$tmpdir/state.json"
+    local state_file="$tmpdir/state.json"
+    local fifo="$tmpdir/fifo"
     mkfifo "$fifo"
-    exec 9>"$fifo"
+    exec 9<>"$fifo"
 
-    local dead; dead=$(_dead_pid)
-    _make_state "$state" "1" "true" "$dead"
+    sleep 0.1 &
+    local dead_pid=$!
+    wait "$dead_pid" 2>/dev/null || true
 
-    SPLITSCREEN_STATE="$state" \
-    SPLITSCREEN_FIFO="$fifo" \
-    WATCHDOG_POLL_INTERVAL_S=0.1 \
-    start_watchdog &
-    local watchdog_pid=$!
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":null,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$dead_pid},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
 
-    # Read the first SLOT_DIED
-    local first_msg=""
-    if ! read -r -t 3 first_msg < "$fifo"; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.7" "timed out waiting for first SLOT_DIED"
-        return
-    fi
+    SPLITSCREEN_STATE="$state_file" \
+        SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 \
+        start_watchdog &
+    local wd_pid=$!
 
-    # State file unchanged (orchestrator hasn't cleared it yet).
-    # Wait several more poll cycles. Should NOT get a second SLOT_DIED.
-    local second_msg=""
-    if read -r -t 0.7 second_msg < "$fifo" 2>/dev/null; then
-        kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-        exec 9>&-
-        _fail "T5.7" "SLOT_DIED re-emitted before slot was reset (dedup failed): '$second_msg'"
-        return
-    fi
-
-    kill "$watchdog_pid" 2>/dev/null || true; wait "$watchdog_pid" 2>/dev/null || true
-    exec 9>&-
-
-    if [[ "$first_msg" == "SLOT_DIED 1" ]]; then
-        _pass "T5.7 — deduplication: SLOT_DIED emitted once, not repeated (first='$first_msg')"
+    # Read first SLOT_DIED
+    local first_line
+    if read -r -t 3 first_line < "$fifo"; then
+        if [[ "$first_line" != "SLOT_DIED 1" ]]; then
+            _fail "T5.7" "expected SLOT_DIED 1, got '$first_line'"
+        fi
     else
-        _fail "T5.7" "unexpected first message: '$first_msg'"
+        _fail "T5.7" "timed out waiting for first SLOT_DIED"
     fi
+
+    # Wait for several more poll cycles — should NOT re-emit
+    sleep 0.6
+
+    local extra_line
+    if read -r -t 0.3 extra_line < "$fifo"; then
+        _fail "T5.7" "SLOT_DIED re-emitted before reset: '$extra_line'"
+    fi
+
+    # Now reset slot to inactive
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+JSON
+
+    sleep 0.4
+
+    # Should be ready to emit again (no actual re-emit since inactive)
+    # Verify the watchdog didn't crash — it's still running
+    if kill -0 "$wd_pid" 2>/dev/null; then
+        _pass "T5.7 — dedup: no re-emit before reset, watchdog still alive after reset"
+    else
+        _fail "T5.7" "watchdog died"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true
+    wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
 }
 
 # =============================================================================
@@ -330,7 +358,6 @@ test_t5_7() {
 # =============================================================================
 echo "=== watchdog test suite ==="
 echo ""
-
 test_t5_1
 test_t5_2
 test_t5_3
@@ -338,7 +365,6 @@ test_t5_4
 test_t5_5
 test_t5_6
 test_t5_7
-
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
