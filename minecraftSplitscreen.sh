@@ -1,50 +1,51 @@
 #!/bin/bash
-
-set +e  # Allow script to continue on errors for robustness
+set -euo pipefail
 
 # =============================
 # Minecraft Splitscreen Launcher for Steam Deck & Linux
 # =============================
-# This script launches 1–4 Minecraft instances in splitscreen mode.
-# On Steam Deck Game Mode, it launches a nested KDE Plasma session for clean splitscreen.
-# On desktop mode, it launches Minecraft instances directly.
-# Handles controller detection, per-instance mod config, KDE panel hiding/restoring, and reliable autostart in a nested session.
+# Dynamic launcher: detects handheld vs docked mode, spawns/tears down
+# Minecraft instances inside bwrap sandboxes as controllers are hot-plugged.
+# Uses the modules/ system for dock detection, controller monitoring,
+# window management, and instance lifecycle.
 #
-# HOW IT WORKS:
-# 1. If in Steam Deck Game Mode, launches a nested Plasma Wayland session (if not already inside).
-# 2. Sets up an autostart .desktop file to re-invoke itself inside the nested session.
-# 3. Detects how many controllers are connected (1–4, with Steam Input quirks handled).
-# 4. For each player, writes the correct splitscreen mod config and launches a Minecraft instance.
-# 5. Hides KDE panels for a clean splitscreen experience (by killing plasmashell), then restores them.
-# 6. Logs out of the nested session when done.
-#
-# NOTE: This script is robust and heavily commented for clarity and future maintainers!
-# The main script file should be named minecraftSplitscreen.sh for clarity and version-agnostic usage.
+# Preserved functions (unchanged from original static launcher):
+#   detectLauncher, selfUpdate, nestedPlasma, pruneLauncherFrontends,
+#   hidePanels, restorePanels, isSteamDeckGameMode,
+#   setInstanceCfgValue, configureInstanceControllerWrapper, clearControllableSelection
 
-# Set a temporary directory for intermediate files (used for wrappers, etc)
-export target=/tmp
-LAUNCH_DEBUG_LOG="$HOME/.local/share/PolyMC/splitscreen-launch-debug.log"
+# --- Source new modules ---
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+source "$SCRIPT_DIR/modules/dock_detection.sh"
+source "$SCRIPT_DIR/modules/controller_monitor.sh"
+source "$SCRIPT_DIR/modules/window_manager.sh"
+source "$SCRIPT_DIR/modules/instance_lifecycle.sh"
+
+# --- Environment ---
+export LAUNCH_DEBUG_LOG="$HOME/.local/share/PolyMC/splitscreen-launch-debug.log"
+export SPLITSCREEN_FIFO="$HOME/.local/share/PolyMC/splitscreen.fifo"
+export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
+
+# Background process PIDs (for cleanup trap)
+_WATCH_DISPLAY_PID=""
+_CONTROLLER_MONITOR_PID=""
 
 # =============================
-# Function: detectLauncher
+# Function: detectLauncher (PRESERVED)
 # =============================
-# Detects PolyMC launcher for splitscreen gameplay.
-# Returns launcher paths and executable info.
 detectLauncher() {
-    # Check if PolyMC is available.
     if [ -f "$HOME/.local/share/PolyMC/PolyMC.AppImage" ] && [ -x "$HOME/.local/share/PolyMC/PolyMC.AppImage" ]; then
         export LAUNCHER_DIR="$HOME/.local/share/PolyMC"
         export LAUNCHER_EXEC="$HOME/.local/share/PolyMC/PolyMC.AppImage"
         export LAUNCHER_NAME="PolyMC"
         return 0
     fi
-    
+
     echo "[Error] PolyMC not found at $HOME/.local/share/PolyMC/" >&2
     echo "[Error] Please run the Minecraft Splitscreen installer to set up PolyMC" >&2
     return 1
 }
 
-# Detect and set launcher variables at startup
 if ! detectLauncher; then
     echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
     exit 1
@@ -53,35 +54,25 @@ fi
 echo "[Info] Using $LAUNCHER_NAME for splitscreen gameplay"
 
 # =============================
-# Function: selfUpdate
+# Function: selfUpdate (PRESERVED)
 # =============================
-# Checks if this script is the latest version from GitHub. If not, downloads and replaces itself.
 selfUpdate() {
     local repo_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
     local tmpfile
     tmpfile=$(mktemp)
     local script_path
     script_path="$(readlink -f "$0")"
-    # Download the latest version
     if ! curl -fsSL "$repo_url" -o "$tmpfile"; then
         echo "[Self-Update] Failed to check for updates." >&2
         rm -f "$tmpfile"
         return
     fi
-    # Compare files byte-for-byte
     if ! cmp -s "$tmpfile" "$script_path"; then
-        # --- Terminal Detection and Relaunch Logic ---
-        # If not running in an interactive shell (no $PS1), not launched by a terminal program, and not attached to a tty,
-        # then we are likely running from a GUI (e.g., .desktop launcher) and cannot prompt the user for input.
         if [ -z "$PS1" ] && [ -z "$TERM_PROGRAM" ] && ! tty -s; then
-            # Non-interactive launch (desktop shortcut/autostart/Game Mode path):
-            # do not block or abort gameplay flow for an update prompt.
             echo "[Self-Update] Update available. Skipping prompt in non-interactive mode."
             rm -f "$tmpfile"
             return
         fi
-        # --- Interactive Update Prompt ---
-        # If we are running in a terminal, prompt the user for update confirmation.
         echo "[Self-Update] A new version is available. Update now? [y/N]"
         read -r answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
@@ -101,32 +92,23 @@ selfUpdate() {
     fi
 }
 
-# Call selfUpdate at the very start of the script, except in the nested
-# autostart handoff path where we want deterministic immediate launch.
 if [ "${1:-}" != "launchFromPlasma" ]; then
     selfUpdate
 fi
 
 # =============================
-# Function: nestedPlasma
+# Function: nestedPlasma (PRESERVED)
 # =============================
-# Launches a nested KDE Plasma Wayland session and sets up Minecraft autostart.
-# Needed so Minecraft can run in a clean, isolated desktop environment (avoiding SteamOS overlays, etc).
-# The autostart .desktop file ensures Minecraft launches automatically inside the nested session.
 nestedPlasma() {
-    # Unset variables that may interfere with launching a nested session
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH
-    # Get current screen resolution (e.g., 1280x800)
     RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')
     [ -z "$RES" ] && RES="1280x800"
-    # Create a wrapper for kwin_wayland with the correct resolution
-    cat <<EOF > $target/kwin_wayland_wrapper
+    cat <<EOF > /tmp/kwin_wayland_wrapper
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${RES%x*} --height ${RES#*x} --no-lockscreen \$@
 EOF
-    chmod +x $target/kwin_wayland_wrapper
-    export PATH=$target:$PATH
-    # Write an autostart .desktop file that will re-invoke this script with a special argument
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
     SCRIPT_PATH="$(readlink -f "$0")"
     mkdir -p ~/.config/autostart
     cat <<EOF > ~/.config/autostart/minecraft-launch.desktop
@@ -136,94 +118,12 @@ Exec=$SCRIPT_PATH launchFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 EOF
-    # Start nested Plasma session (never returns)
     exec dbus-run-session startplasma-wayland
 }
 
 # =============================
-# Function: launchGame
+# Function: pruneLauncherFrontends (PRESERVED)
 # =============================
-# Launches a single Minecraft instance using the detected launcher, with KDE inhibition to prevent
-# the system from sleeping, activating the screensaver, or changing color profiles.
-# Arguments:
-#   $1 = Launcher instance name (e.g., latestUpdate-1)
-#   $2 = Player name (e.g., P1)
-launchGame() {
-    local instance_name="$1"
-    local account_name="$2"
-    local joystick_device="${3:-}"
-
-    echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
-    if [ -n "$joystick_device" ]; then
-        echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
-    fi
-
-    local -a launch_cmd
-    launch_cmd=("$LAUNCHER_EXEC" -l "$instance_name" -a "$account_name")
-
-    # SDL hint used by Controllable's bundled SDL backend. This constrains each process
-    # to a single joystick path to reduce cross-instance controller collisions.
-    local -a launch_env
-    launch_env=(env)
-    if [ -n "$joystick_device" ]; then
-        launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device")
-    fi
-    # Steam can inject a very large SDL_GAMECONTROLLER_IGNORE_DEVICES blacklist that may
-    # include perfectly valid controllers. Clear it for launched instances.
-    launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
-    # Prefer physical controllers over Steam virtual pads in Controllable.
-    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0")
-    # Force SDL to use Linux joystick devices instead of HIDAPI so SDL_JOYSTICK_DEVICE
-    # pinning is applied per instance.
-    launch_env+=("SDL_JOYSTICK_HIDAPI=0")
-    # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
-    # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
-    launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
-
-    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
-    {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
-        echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
-        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
-        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0"
-        echo "  SDL_JOYSTICK_HIDAPI=0"
-        echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
-        echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
-        echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
-    } >> "$LAUNCH_DEBUG_LOG"
-
-    # Only use kde-inhibit inside KDE/Plasma sessions.
-    # On GNOME and other desktops it can exist but fail over DBus.
-    if command -v kde-inhibit >/dev/null 2>&1 && \
-       [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|PLASMA ]] ; then
-        (
-            kde-inhibit --power --screenSaver --colorCorrect --notifications \
-                "${launch_env[@]}" "${launch_cmd[@]}" || \
-                "${launch_env[@]}" "${launch_cmd[@]}"
-        ) >/dev/null 2>&1 &
-    else
-        # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
-        "${launch_env[@]}" "${launch_cmd[@]}" &
-    fi
-    # Wait for this specific instance's Java process to appear so the next
-    # player's pre-launch frontend prune won't kill this launch too early.
-    local launch_started=0
-    local _i
-    for _i in $(seq 1 120); do
-        if pgrep -af "instances/${instance_name}/natives" >/dev/null 2>&1; then
-            launch_started=1
-            break
-        fi
-        sleep 0.5
-    done
-    if [ "$launch_started" -eq 0 ]; then
-        {
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Java process for ${instance_name} not detected within 60s"
-        } >> "$LAUNCH_DEBUG_LOG"
-    fi
-}
-
-# Kill PolyMC frontend wrapper processes without touching running Java game processes.
 pruneLauncherFrontends() {
     local reason="${1:-manual}"
     local launcher_pids=""
@@ -251,54 +151,8 @@ pruneLauncherFrontends() {
 }
 
 # =============================
-# Function: getControllerDevices
+# Function: setInstanceCfgValue (PRESERVED)
 # =============================
-# Builds an ordered list of joystick devices to map to players. When Steam is running
-# and duplicate joystick nodes appear, we pick every second entry to align with the
-# existing controller count halving behavior.
-getControllerDevices() {
-    local -a js_devices
-    local -a external_devices
-    local -a deck_devices
-    local -a steam_virtual_devices
-    local js
-    local vendor
-    local product
-    local base
-    local id_dir
-
-    mapfile -t js_devices < <(ls /dev/input/js* 2>/dev/null | sort -V)
-
-    for js in "${js_devices[@]}"; do
-        base="$(basename "$js")"
-        id_dir="/sys/class/input/$base/device/id"
-        vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
-        product="$(cat "$id_dir/product" 2>/dev/null || true)"
-        # Steam virtual pads are 28de:11ff and often appear in duplicate.
-        if [ "$vendor" = "28de" ] && [ "$product" = "11ff" ]; then
-            steam_virtual_devices+=("$js")
-        # On Steam Deck, vendor 28de (non-11ff) is Deck/Valve-origin input.
-        elif [ "$vendor" = "28de" ]; then
-            deck_devices+=("$js")
-        # Prefer third-party external controllers whenever present.
-        else
-            external_devices+=("$js")
-        fi
-    done
-
-    if [ "${#external_devices[@]}" -gt 0 ]; then
-        printf '%s\n' "${external_devices[@]}"
-    elif [ "${#deck_devices[@]}" -gt 0 ]; then
-        printf '%s\n' "${deck_devices[@]}"
-    elif [ "${#steam_virtual_devices[@]}" -gt 0 ]; then
-        # Only expose one virtual pad node to avoid duplicate assignment.
-        printf '%s\n' "${steam_virtual_devices[0]}"
-    else
-        printf '%s\n' "${js_devices[@]}"
-    fi
-}
-
-# Upsert a key/value in a PolyMC instance.cfg file.
 setInstanceCfgValue() {
     local cfg_path="$1"
     local key="$2"
@@ -313,7 +167,6 @@ setInstanceCfgValue() {
         printf '%s=%s\n' "$key" "$value" >> "$cfg_path"
     fi
 
-    # Verify write; if it did not stick, use a full-file rewrite fallback.
     if grep -Fqx "${key}=${value}" "$cfg_path"; then
         return 0
     fi
@@ -330,8 +183,9 @@ setInstanceCfgValue() {
     grep -Fqx "${key}=${value}" "$cfg_path"
 }
 
-# Configure per-instance wrapper command so controller pinning is applied at the
-# actual game process level (instead of only the launcher process environment).
+# =============================
+# Function: configureInstanceControllerWrapper (PRESERVED — not called by new code)
+# =============================
 configureInstanceControllerWrapper() {
     local instance_name="$1"
     local joystick_device="${2:-}"
@@ -345,12 +199,10 @@ configureInstanceControllerWrapper() {
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
     else
-        # No pinning target for this instance; clear wrapper override.
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "false"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" ""
     fi
 
-    # Log what ended up in the config so we can diagnose any launcher-side override.
     mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
     {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Wrapper config for ${instance_name}"
@@ -359,9 +211,9 @@ configureInstanceControllerWrapper() {
     } >> "$LAUNCH_DEBUG_LOG"
 }
 
-# Controllable persists manually selected controllers per instance. If this file
-# is stale (e.g., both instances saved as Steam Deck), it can override launch-time
-# device filtering and cause every instance to grab the same controller.
+# =============================
+# Function: clearControllableSelection (PRESERVED)
+# =============================
 clearControllableSelection() {
     local instance_name="$1"
     local selected_file="$LAUNCHER_DIR/instances/${instance_name}/.minecraft/config/controllable/selected_controllers.json"
@@ -369,10 +221,8 @@ clearControllableSelection() {
 }
 
 # =============================
-# Function: hidePanels
+# Function: hidePanels (PRESERVED)
 # =============================
-# Kills all plasmashell processes to remove KDE panels and widgets. This is a brute-force workaround
-# that works even in nested Plasma Wayland sessions, where scripting APIs may not work.
 hidePanels() {
     if command -v plasmashell >/dev/null 2>&1; then
         pkill plasmashell
@@ -391,9 +241,8 @@ hidePanels() {
 }
 
 # =============================
-# Function: restorePanels
+# Function: restorePanels (PRESERVED)
 # =============================
-# Restarts plasmashell to restore all KDE panels and widgets after gameplay.
 restorePanels() {
     if command -v plasmashell >/dev/null 2>&1; then
         nohup plasmashell >/dev/null 2>&1 &
@@ -404,124 +253,8 @@ restorePanels() {
 }
 
 # =============================
-# Function: getControllerCount
+# Function: isSteamDeckGameMode (PRESERVED)
 # =============================
-# Detects the number of controllers (1–4) by counting /dev/input/js* devices.
-# Steam Input (when Steam is running) creates duplicate devices, so we halve the count (rounding up).
-# Ensures at least 1 and at most 4 controllers are reported.
-# Logic:
-#   - Counts all /dev/input/js* devices (joysticks/gamepads recognized by the system)
-#   - Checks if the main Steam client is running (native or Flatpak)
-#   - Only halves the count if the main Steam client is running (not just helpers)
-#   - Returns a value between 1 and 4 (inclusive)
-getControllerCount() {
-    local count
-    local steam_running=0
-    # Count all joystick/gamepad devices
-    count=$(ls /dev/input/js* 2>/dev/null | wc -l)
-    # Only halve if the main Steam client is running (native or Flatpak)
-    #   - pgrep -x steam: native Steam client
-    #   - pgrep -f '^/app/bin/steam$': Flatpak Steam binary
-    #   - pgrep -f 'flatpak run com.valvesoftware.Steam': Flatpak Steam launcher
-    if pgrep -x steam >/dev/null \
-        || pgrep -f '^/app/bin/steam$' >/dev/null \
-        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null; then
-        steam_running=1
-    fi
-    # If Steam is running, halve the count (rounding up) to account for Steam Input duplicates
-    if [ "$steam_running" -eq 1 ]; then
-        count=$(( (count + 1) / 2 ))
-    fi
-    # Clamp the count between 1 and 4
-    [ "$count" -gt 4 ] && count=4
-    [ "$count" -lt 1 ] && count=1
-    # Output the detected controller count
-    echo "$count"
-}
-
-# =============================
-# Function: setSplitscreenModeForPlayer
-# =============================
-# Writes the splitscreen.properties config for the splitscreen mod for each player instance.
-# This tells the mod which part of the screen each instance should use.
-# Arguments:
-#   $1 = Player number (1–4)
-#   $2 = Total number of controllers/players
-setSplitscreenModeForPlayer() {
-    local player=$1
-    local numberOfControllers=$2
-    local config_path="$LAUNCHER_DIR/instances/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
-    mkdir -p "$(dirname $config_path)"
-    local mode="FULLSCREEN"
-    # Decide the splitscreen mode for this player based on total controllers
-    case "$numberOfControllers" in
-        1)
-            mode="FULLSCREEN" # Single player: use whole screen
-            ;;
-        2)
-            if [ "$player" = 1 ]; then mode="TOP"; else mode="BOTTOM"; fi # 2 players: split top/bottom
-            ;;
-        3)
-            if [ "$player" = 1 ]; then mode="TOP";
-            elif [ "$player" = 2 ]; then mode="BOTTOM_LEFT";
-            else mode="BOTTOM_RIGHT"; fi # 3 players: 1 top, 2 bottom corners
-            ;;
-        4)
-            if [ "$player" = 1 ]; then mode="TOP_LEFT";
-            elif [ "$player" = 2 ]; then mode="TOP_RIGHT";
-            elif [ "$player" = 3 ]; then mode="BOTTOM_LEFT";
-            else mode="BOTTOM_RIGHT"; fi # 4 players: 4 corners
-            ;;
-    esac
-    # Write the config file for the mod
-    echo -e "gap=1\nmode=$mode" > "$config_path"
-    sync
-    sleep 0.5
-}
-
-# =============================
-# Function: launchGames
-# =============================
-# Hides panels, launches the correct number of Minecraft instances, and restores panels after.
-# Handles all splitscreen logic and per-player config.
-launchGames() {
-    hidePanels # Remove KDE panels for a clean game view
-    local -a controller_devices
-    numberOfControllers=$(getControllerCount) # Detect how many players
-    mapfile -t controller_devices < <(getControllerDevices)
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        numberOfControllers="${#controller_devices[@]}"
-        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
-    fi
-
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
-    else
-        echo "[Info] No joystick devices detected for per-instance input pinning"
-    fi
-
-    for player in $(seq 1 $numberOfControllers); do
-        local joystick_device=""
-        if [ "$player" -le "${#controller_devices[@]}" ]; then
-            joystick_device="${controller_devices[$((player-1))]}"
-        fi
-        if [ "$player" -gt 1 ]; then
-            pruneLauncherFrontends "pre-launch latestUpdate-$player"
-        fi
-        clearControllableSelection "latestUpdate-$player"
-        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
-    done
-    wait # Wait for all Minecraft instances to exit
-    restorePanels # Bring back KDE panels
-    sleep 2 # Give time for panels to reappear
-}
-
-# =============================
-# Function: isSteamDeckGameMode
-# =============================
-# Returns 0 if running on Steam Deck in Game Mode, 1 otherwise.
 isSteamDeckGameMode() {
     local dmi_file="/sys/class/dmi/id/product_name"
     local dmi_contents=""
@@ -536,11 +269,9 @@ isSteamDeckGameMode() {
             return 0
         fi
     else
-        # Fallback: If both XDG vars are gamescope and user is deck, assume Steam Deck Game Mode
         if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] && [ "$USER" = "deck" ]; then
             return 0
         fi
-        # Additional fallback: nested session (gamescope+KDE, user deck)
         if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "KDE" ] && [ "$USER" = "deck" ]; then
             return 0
         fi
@@ -549,55 +280,283 @@ isSteamDeckGameMode() {
 }
 
 # =============================
-# Always remove the autostart file on script exit to prevent unwanted autostart on boot
-cleanup_autostart() {
-    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+# NEW: handheld_flow
+# =============================
+# Launches exactly one Minecraft instance using the built-in gamepad.
+# Static — no dynamic join/leave.
+handheld_flow() {
+    echo "[orchestrator] Entering handheld mode" >&2
+
+    local device_line
+    device_line=$(list_eligible_controllers handheld)
+
+    if [[ -z "$device_line" ]]; then
+        echo "[orchestrator] ERROR: No gamepad-capable device found for handheld mode" >&2
+        exit 1
+    fi
+
+    local event_node js_node
+    event_node=$(echo "$device_line" | awk '{print $1}')
+    js_node=$(echo "$device_line" | awk '{print $2}')
+
+    echo "[orchestrator] Handheld device: $event_node $js_node" >&2
+
+    spawn_instance 1 "$event_node" "$js_node"
+
+    # Wait for the instance to exit
+    local poll_interval_s=2
+    while slot_is_active 1; do
+        sleep "$poll_interval_s"
+    done
+
+    teardown_all_instances
+    restorePanels
+    echo "[orchestrator] Handheld session ended" >&2
+    exit 0
 }
-trap cleanup_autostart EXIT
-
 
 # =============================
-# MAIN LOGIC: Entry Point
+# NEW: docked_flow
 # =============================
-# Universal: Steam Deck Game Mode = nested KDE, else just launch on current desktop
+# Runs an event loop: spawns/tears down instances as external controllers
+# are added/removed. Built-in Steam Deck gamepad is never used in docked mode.
+docked_flow() {
+    echo "[orchestrator] Entering docked mode" >&2
+
+    # Start controller monitor in background
+    start_controller_monitor docked &
+    _CONTROLLER_MONITOR_PID=$!
+    echo "[orchestrator] Controller monitor PID: $_CONTROLLER_MONITOR_PID" >&2
+
+    # Initial scan and spawn
+    local device_line
+    while IFS= read -r device_line; do
+        [[ -z "$device_line" ]] && continue
+
+        local event_node js_node
+        event_node=$(echo "$device_line" | awk '{print $1}')
+        js_node=$(echo "$device_line" | awk '{print $2}')
+
+        # Find the next free slot
+        local active_slots
+        active_slots=$(get_active_slots)
+
+        local slot
+        local assigned=0
+        for slot in 1 2 3 4; do
+            local already_active=0
+            local as
+            for as in $active_slots; do
+                if [[ "$as" == "$slot" ]]; then
+                    already_active=1
+                    break
+                fi
+            done
+            if (( already_active == 0 )); then
+                echo "[orchestrator] Assigning controller to slot $slot ($event_node $js_node)" >&2
+                spawn_instance "$slot" "$event_node" "$js_node" &
+                assigned=1
+                break
+            fi
+        done
+        if (( assigned == 0 )); then
+            echo "[orchestrator] No free slot for $event_node $js_node (max 4)" >&2
+        fi
+    done < <(list_eligible_controllers docked)
+
+    # Event loop: read FIFO
+    echo "[orchestrator] Entering event loop, reading from $SPLITSCREEN_FIFO" >&2
+    local line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+
+        local action
+        action=$(echo "$line" | awk '{print $1}')
+
+        case "$action" in
+            CONTROLLER_ADD)
+                local add_event add_js add_vendor add_product
+                add_event=$(echo "$line" | awk '{print $2}')
+                add_js=$(echo "$line" | awk '{print $3}')
+                add_vendor=$(echo "$line" | awk '{print $4}')
+                add_product=$(echo "$line" | awk '{print $5}')
+
+                # Check if we're at max capacity
+                local active_count
+                active_count=$(get_active_slots | wc -w)
+
+                if (( active_count >= 4 )); then
+                    echo "[orchestrator] Max 4 players, ignoring new controller ($add_event)" >&2
+                    continue
+                fi
+
+                # Find next free slot
+                local current_active
+                current_active=$(get_active_slots)
+                local add_slot
+                local add_assigned=0
+                for add_slot in 1 2 3 4; do
+                    local taken=0
+                    local as2
+                    for as2 in $current_active; do
+                        if [[ "$as2" == "$add_slot" ]]; then
+                            taken=1
+                            break
+                        fi
+                    done
+                    if (( taken == 0 )); then
+                        echo "[orchestrator] CONTROLLER_ADD: slot $add_slot ($add_event $add_js)" >&2
+                        spawn_instance "$add_slot" "$add_event" "$add_js" &
+                        add_assigned=1
+                        break
+                    fi
+                done
+                if (( add_assigned == 0 )); then
+                    echo "[orchestrator] No free slot for added controller $add_event" >&2
+                fi
+                ;;
+
+            CONTROLLER_REMOVE)
+                local remove_event
+                remove_event=$(echo "$line" | awk '{print $2}')
+
+                # Find which slot has this event node
+                local rem_slot=""
+                local rem_slot_num
+                for rem_slot_num in 1 2 3 4; do
+                    if ! slot_is_active "$rem_slot_num"; then
+                        continue
+                    fi
+                    local slot_event
+                    slot_event=$(jq -r ".slots[\"$rem_slot_num\"].event_node // empty" "$SPLITSCREEN_STATE" 2>/dev/null || true)
+                    if [[ "$slot_event" == "$remove_event" ]]; then
+                        rem_slot="$rem_slot_num"
+                        break
+                    fi
+                done
+
+                if [[ -n "$rem_slot" ]]; then
+                    echo "[orchestrator] CONTROLLER_REMOVE: slot $rem_slot ($remove_event)" >&2
+                    teardown_instance "$rem_slot"
+
+                    # Check if no players remain
+                    local remaining
+                    remaining=$(get_active_slots)
+                    if [[ -z "$remaining" ]]; then
+                        echo "[orchestrator] No players remaining, waiting for controllers..." >&2
+                    fi
+                else
+                    echo "[orchestrator] CONTROLLER_REMOVE: no active slot found for $remove_event" >&2
+                fi
+                ;;
+
+            DISPLAY_MODE_CHANGE)
+                local new_mode
+                new_mode=$(echo "$line" | awk '{print $2}')
+
+                echo "[orchestrator] DISPLAY_MODE_CHANGE: $new_mode" >&2
+
+                if [[ "$new_mode" == "handheld" ]]; then
+                    echo "[orchestrator] Switching from docked to handheld" >&2
+                    teardown_all_instances
+
+                    # Kill controller monitor
+                    if [[ -n "$_CONTROLLER_MONITOR_PID" ]]; then
+                        kill "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
+                        _CONTROLLER_MONITOR_PID=""
+                    fi
+
+                    handheld_flow
+                    # handheld_flow calls exit, never returns
+                fi
+                # If switching to docked, we're already in docked_flow — just continue
+                ;;
+
+            *)
+                echo "[orchestrator] Unknown FIFO message: $line" >&2
+                ;;
+        esac
+    done < "$SPLITSCREEN_FIFO"
+
+    # FIFO closed — clean exit
+    echo "[orchestrator] FIFO closed, exiting event loop" >&2
+    teardown_all_instances
+    restorePanels
+    exit 0
+}
+
+# =============================
+# Cleanup trap
+# =============================
+cleanup() {
+    echo "[orchestrator] Cleanup: shutting down" >&2
+
+    # Kill background monitors
+    if [[ -n "$_CONTROLLER_MONITOR_PID" ]]; then
+        kill "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$_WATCH_DISPLAY_PID" ]]; then
+        kill "$_WATCH_DISPLAY_PID" 2>/dev/null || true
+    fi
+
+    # Tear down all instances
+    teardown_all_instances 2>/dev/null || true
+
+    # Kill all placeholders
+    kill_all_placeholders 2>/dev/null || true
+
+    # Restore panels
+    restorePanels 2>/dev/null || true
+
+    # Remove autostart file and FIFO
+    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+    rm -f "$SPLITSCREEN_FIFO"
+
+    echo "[orchestrator] Cleanup complete" >&2
+}
+trap cleanup EXIT
+
+# =============================
+# MAIN LOGIC
+# =============================
+
+# Steam Deck Game Mode: launch nested Plasma session
 if isSteamDeckGameMode; then
-    if [ "$1" = launchFromPlasma ]; then
-        # Inside nested Plasma session: launch Minecraft splitscreen and logout when done
-        rm ~/.config/autostart/minecraft-launch.desktop
-        launchGames
-        qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
+    if [ "${1:-}" = "launchFromPlasma" ]; then
+        # Inside nested Plasma session — clean autostart and proceed
+        rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     else
-        # Not yet in nested session: start it
+        # Not yet in nested session — start it (never returns)
         nestedPlasma
     fi
-else
-    # Not in Game Mode: just launch Minecraft instances directly
-    local -a controller_devices
-    numberOfControllers=$(getControllerCount)
-    mapfile -t controller_devices < <(getControllerDevices)
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        numberOfControllers="${#controller_devices[@]}"
-        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
-    fi
-
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
-    else
-        echo "[Info] No joystick devices detected for per-instance input pinning"
-    fi
-
-    for player in $(seq 1 $numberOfControllers); do
-        local joystick_device=""
-        if [ "$player" -le "${#controller_devices[@]}" ]; then
-            joystick_device="${controller_devices[$((player-1))]}"
-        fi
-        if [ "$player" -gt 1 ]; then
-            pruneLauncherFrontends "pre-launch latestUpdate-$player"
-        fi
-        clearControllableSelection "latestUpdate-$player"
-        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
-    done
-    wait
 fi
+
+# --- Startup sequence ---
+
+# Create FIFO
+mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
+
+# Start display mode watcher
+watch_display_mode &
+_WATCH_DISPLAY_PID=$!
+echo "[orchestrator] Display watcher PID: $_WATCH_DISPLAY_PID" >&2
+
+# Hide KDE panels
+hidePanels
+
+# Determine mode and branch
+display_mode=$(get_display_mode)
+echo "[orchestrator] Display mode: $display_mode" >&2
+
+case "$display_mode" in
+    handheld)
+        handheld_flow
+        ;;
+    docked)
+        docked_flow
+        ;;
+    *)
+        echo "[orchestrator] ERROR: unknown display mode '$display_mode'" >&2
+        exit 1
+        ;;
+esac
