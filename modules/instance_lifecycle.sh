@@ -166,6 +166,7 @@ _build_bwrap_command() {
 bwrap \
   --dev-bind / / \
   --dev /dev \
+  --dev-bind /dev/fuse /dev/fuse \
   --dev-bind "${event_node}" "${event_node}" \
   --dev-bind "${js_node}" "${js_node}" \
   -- \
