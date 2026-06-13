@@ -523,29 +523,31 @@ start_controller_monitor() {
     if command -v "$udevadm_cmd" >/dev/null 2>&1; then
         echo "[controller_monitor] Using $udevadm_cmd for device monitoring" >&2
         "$udevadm_cmd" monitor --subsystem-match=input --udev 2>/dev/null | while IFS= read -r raw_line; do
-            # udevadm output lines:
-            # UDEV  [timestamp] ACTION  /devices/... (action_type)
-            # Parse ACTION=add or ACTION=remove
-            if [[ "$raw_line" =~ ACTION=([a-z]+) ]]; then
-                local action="${BASH_REMATCH[1]}"
+            # udevadm output lines (real format):
+            # UDEV  [1701234567.123456] add      /devices/virtual/input/input652 (input)
+            # UDEV  [1701234567.456789] remove   /devices/virtual/input/input652 (input)
+            # Extract action from column 3
+            local action=""
+            if [[ "$raw_line" =~ ^UDEV[[:space:]]+\[[0-9.]+\][[:space:]]+(add|remove) ]]; then
+                action="${BASH_REMATCH[1]}"
+            fi
 
-                if [[ "$action" == "add" || "$action" == "remove" ]]; then
-                    # Brief settle time for the device to appear in /proc
-                    sleep 0.1
+            if [[ "$action" == "add" || "$action" == "remove" ]]; then
+                # Brief settle time for the device to appear in /proc
+                sleep 0.1
 
-                    # Re-enumerate and check for changes
-                    local new_nodes=""
-                    local nline
-                    while IFS= read -r nline; do
-                        [[ -z "$nline" ]] && continue
-                        local ev
-                        ev=$(echo "$nline" | awk '{print $1}')
-                        new_nodes="$new_nodes $ev"
-                    done < <(list_eligible_controllers "$mode")
+                # Re-enumerate and check for changes
+                local new_nodes=""
+                local nline
+                while IFS= read -r nline; do
+                    [[ -z "$nline" ]] && continue
+                    local ev
+                    ev=$(echo "$nline" | awk '{print $1}')
+                    new_nodes="$new_nodes $ev"
+                done < <(list_eligible_controllers "$mode")
 
-                    _check_devices_changed "$mode" "$prev_nodes"
-                    prev_nodes="$new_nodes"
-                fi
+                _check_devices_changed "$mode" "$prev_nodes"
+                prev_nodes="$new_nodes"
             fi
         done
     else
