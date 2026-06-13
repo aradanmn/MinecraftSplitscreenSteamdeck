@@ -169,6 +169,7 @@ bwrap \
   --dev-bind /dev/fuse /dev/fuse \
   --dev-bind /tmp/.X11-unix /tmp/.X11-unix \
   --dev-bind /tmp /tmp \
+  --dev-bind /home /home \
   --dev-bind "${event_node}" "${event_node}" \
   --dev-bind "${js_node}" "${js_node}" \
   -- \
