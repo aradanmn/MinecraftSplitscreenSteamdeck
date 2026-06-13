@@ -83,7 +83,7 @@ setup_splitscreen_launcher_script() {
 
     local launcher_script="$TARGET_DIR/minecraftSplitscreen.sh"
     local local_script="${SCRIPT_DIR:-}/minecraftSplitscreen.sh"
-    local remote_script="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
+    local remote_script="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
 
     if [[ -f "$local_script" ]]; then
         cp "$local_script" "$launcher_script"
