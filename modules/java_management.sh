@@ -137,7 +137,7 @@ download_and_run_jdk_installer() {
     print_progress "Downloading automatic JDK installer..."
     
     # Clone the JDK installer repository
-    if ! git clone --quiet https://github.com/FlyingEwok/install-jdk-on-steam-deck.git 2>/dev/null; then
+    if ! git clone --quiet https://github.com/aradanmn/install-jdk-on-steam-deck.git 2>/dev/null; then
         print_error "Failed to download JDK installer from GitHub"
         print_error "Please check your internet connection and try again"
         cd "$original_dir"
@@ -475,7 +475,7 @@ detect_and_install_java() {
                 ;;
         esac
         print_info "  • Or run the JDK installer separately:"
-        print_info "    git clone https://github.com/FlyingEwok/install-jdk-on-steam-deck.git"
+        print_info "    git clone https://github.com/aradanmn/install-jdk-on-steam-deck.git"
         print_info "    JDK_VERSION=$required_java_version ./install-jdk-on-steam-deck/scripts/install-jdk.sh"
         exit 1
     fi
