@@ -45,12 +45,12 @@ get_supported_minecraft_versions() {
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
         
-        local controllable_compatible=false
+        local controller_mod_compatible=false
         local splitscreen_compatible=false
         
         # Check Controlify (Modrinth mod DOUdJVEm)
         if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
-            controllable_compatible=true
+            controller_mod_compatible=true
         fi
         
         # Check Splitscreen Support (Modrinth mod yJgqfSDR)  
@@ -67,7 +67,7 @@ get_supported_minecraft_versions() {
 
         # Only include versions where core required mods are available,
         # and custom required mod too when specified.
-        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
+        if [[ "$controller_mod_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
             supported_versions+=("$mc_version")
             if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
                 print_success "    ✅ $mc_version - Core mods + $extra_mod_name compatible" >&2

@@ -110,7 +110,12 @@ main() {
     
     
     create_instances             # Create 4 splitscreen instances using manual configuration
-    setup_splitscreen_launcher_script   # Install minecraftSplitscreen.sh into launcher directory
+    generate_splitscreen_launcher \
+        "$TARGET_DIR/minecraftSplitscreen.sh" \
+        polymc appimage \
+        "$TARGET_DIR/PolyMC.AppImage" \
+        "$TARGET_DIR" \
+        "$TARGET_DIR/instances"
     
     # =============================================================================
     # SYSTEM INTEGRATION PHASE: Optional platform integration

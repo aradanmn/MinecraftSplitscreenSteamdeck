@@ -76,27 +76,9 @@ EOF
     return 0
 }
 
-# setup_splitscreen_launcher_script: Install minecraftSplitscreen.sh into TARGET_DIR
-# Prefer local repository copy when available, fall back to GitHub download.
+# setup_splitscreen_launcher_script: Launcher generation now handled by
+# launcher_script_generator.sh. Kept as no-op for backward compatibility.
 setup_splitscreen_launcher_script() {
-    print_progress "Installing splitscreen launcher script..."
-
-    local launcher_script="$TARGET_DIR/minecraftSplitscreen.sh"
-    local local_script="${SCRIPT_DIR:-}/minecraftSplitscreen.sh"
-    local remote_script="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
-
-    if [[ -f "$local_script" ]]; then
-        cp "$local_script" "$launcher_script"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$remote_script" -o "$launcher_script"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$launcher_script" "$remote_script"
-    else
-        print_error "Neither curl nor wget is available to fetch minecraftSplitscreen.sh"
-        return 1
-    fi
-
-    chmod +x "$launcher_script"
-    print_success "Splitscreen launcher script installed: $launcher_script"
+    print_debug "Launcher generation handled by launcher_script_generator.sh"
     return 0
 }

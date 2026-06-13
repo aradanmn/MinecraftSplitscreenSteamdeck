@@ -11,7 +11,7 @@ Simple installer for running **Minecraft splitscreen (1–4 players)** on Steam 
 - Optionally adds launchers to Steam and desktop
 
 ## Core Mods (Required)
-- [Controllable](https://www.curseforge.com/minecraft/mc-mods/controllable)
+- [Controlify](https://modrinth.com/mod/controlify) — controller support with per-instance isolation
 - [Splitscreen Support](https://modrinth.com/mod/splitscreen)
 
 ## Optional Mods
@@ -30,8 +30,9 @@ Simple installer for running **Minecraft splitscreen (1–4 players)** on Steam 
 ## Requirements
 - Linux (Steam Deck or desktop Linux)
 - Internet connection for install/update
-- `bash`, `curl` or `wget`, and `jq`
-- Python 3 only if you want automatic Steam shortcut integration
+- `bash`, `curl` or `wget`, `jq`, `bwrap` (bubblewrap, for controller isolation)
+- Python 3 only if you want automatic Steam shortcut integration or SDL3 controller enumeration
+- On Steam Deck / SteamOS: `bwrap` is pre-installed. On other distros: `sudo apt install bubblewrap` or equivalent.
 
 No manual Java setup is required. The installer detects and installs the needed Java version automatically.
 
@@ -112,10 +113,12 @@ Optional uninstall flags:
 - `--keep-data`
 
 ## Troubleshooting
-- Connect controllers before launching.
+- **Connect all controllers before launching** — hotplug after launch is not supported.
 - If controller assignment seems wrong, close all instances and relaunch.
-- Steam Deck users can optionally use [Steam-Deck.Auto-Disable-Steam-Controller](https://github.com/scawp/Steam-Deck.Auto-Disable-Steam-Controller) as a fallback for edge-case controller conflicts.
-- Custom mods are best-effort and untested in this setup; incompatible or conflicting mods can break splitscreen behavior.
+- Controller isolation uses bwrap (bubblewrap) sandboxes. Each instance can only see its assigned controller.
+- If bwrap is unavailable, falls back to SDL_JOYSTICK_DEVICE — less reliable isolation.
+- Handheld mode (Steam Deck undocked): launches 1 instance with built-in controls.
+- Docked mode: launches 1-4 instances, one per external controller.
 
 ## Credits
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen)
