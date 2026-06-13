@@ -264,6 +264,20 @@ apply_layout() {
 
     echo "[window_manager] Applying layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
 
+    # In full mode, only slot 1 matters — no placeholders needed for other slots
+    if [[ "$grid_mode" == "full" ]]; then
+        local wid
+        wid=$(xdotool search --name "SplitscreenP1" 2>/dev/null || true)
+        if [[ -n "$wid" ]]; then
+            echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
+            xdotool windowmove "$wid" 0 0 2>/dev/null || true
+            xdotool windowsize "$wid" "$screen_w" "$screen_h" 2>/dev/null || true
+            xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+            xdotool windowraise "$wid" 2>/dev/null || true
+        fi
+        return 0
+    fi
+
     local -a active_array=($active_slots)
 
     # Process all 4 slots
