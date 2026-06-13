@@ -1516,3 +1516,378 @@ test(window-manager): add T3.6 for odd-resolution truncation behaviour
 8. All JSON state writes must be atomic (tmp + mv).
 9. All module files must be sourceable without side effects.
 10. All tests must pass without hardware, root, or a running Steam client.
+---
+
+## Phase 6: Crash Recovery & Handheld↔Docked Hot-Swap
+
+### Overview
+
+Phase 6 closes two remaining gaps in the runtime:
+
+1. **Zombie slot recovery**: When a player closes Minecraft without disconnecting
+   their controller, the bwrap process exits but `docked_flow` never learns — the
+   slot stays `active: true`, locking it for the rest of the session. A new watchdog
+   module polls active bwrap PIDs and writes `SLOT_DIED <slot>` to the FIFO when a
+   process is gone.
+
+2. **Handheld→docked hot-swap**: `handheld_flow` currently polls `slot_is_active 1`
+   in a 2-second sleep loop and cannot react to `DISPLAY_MODE_CHANGE docked` events
+   written to the FIFO by `watch_display_mode`. Phase 6 replaces that poll loop with a
+   FIFO-reading event loop so docking is detected and the session transitions live.
+
+### New files
+
+```
+modules/watchdog.sh          ← NEW (Phase 6)
+tests/test_watchdog.sh       ← NEW (Phase 6)
+tests/test_orchestrator.sh   ← NEW (Phase 6)
+```
+
+### Modified files
+
+- `minecraftSplitscreen.sh` — source watchdog; start watchdog before branching;
+  add `SLOT_DIED` to `docked_flow`; replace `handheld_flow` poll loop with FIFO read;
+  wrap all main-block code in `main()` with BASH_SOURCE guard; fix `SCRIPT_DIR` to use
+  `${BASH_SOURCE[0]}`; kill `_WATCHDOG_PID` in cleanup.
+
+### New FIFO message type
+
+```
+SLOT_DIED <slot>
+```
+
+Emitted by `start_watchdog()` when an active slot's bwrap process exits without a
+corresponding `CONTROLLER_REMOVE` event. `<slot>` is a single digit 1–4.
+
+Example:
+```
+SLOT_DIED 2
+```
+
+Add this to the IPC section of this document as well. The complete set of FIFO messages
+is now:
+```
+CONTROLLER_ADD <event_node> <js_node> <physical_vendor> <physical_product>
+CONTROLLER_REMOVE <event_node>
+DISPLAY_MODE_CHANGE <handheld|docked>
+SLOT_DIED <slot>
+```
+
+---
+
+## Phase 6a: `modules/watchdog.sh`
+
+### Purpose
+
+Poll `$SPLITSCREEN_STATE` on a fixed interval. For each slot marked `active: true`,
+check whether its `bwrap_pid` is still a live process (`kill -0`). If not, write
+`SLOT_DIED <slot>` to `$SPLITSCREEN_FIFO`. Deduplicate: emit `SLOT_DIED` at most once
+per death event; stop suppressing once the orchestrator clears the slot
+(`active: false`).
+
+### Constants
+
+```bash
+readonly WATCHDOG_DEFAULT_POLL_INTERVAL_S=2
+readonly WATCHDOG_MAX_SLOT=4
+```
+
+### Environment overrides (for testing)
+
+```bash
+WATCHDOG_POLL_INTERVAL_S   # override poll interval (default: WATCHDOG_DEFAULT_POLL_INTERVAL_S)
+```
+
+### Internal state
+
+```bash
+declare -A _WATCHDOG_REPORTED   # key=slot, value=1 if SLOT_DIED already emitted
+```
+
+### Public API
+
+```bash
+source modules/watchdog.sh
+
+# Start monitoring. Blocks indefinitely.
+# Reads $SPLITSCREEN_STATE directly with jq (no other module dependencies).
+# Writes SLOT_DIED <slot> to $SPLITSCREEN_FIFO.
+# Must be run as a background process by the orchestrator.
+start_watchdog()
+```
+
+### Logic
+
+```
+declare -A _WATCHDOG_REPORTED
+loop:
+    sleep $WATCHDOG_POLL_INTERVAL_S
+    if [ ! -f "$SPLITSCREEN_STATE" ]: continue
+    for slot in 1 2 3 4:
+        active   = jq -r ".slots[\"$slot\"].active // false" "$SPLITSCREEN_STATE"
+        bwrap_pid = jq -r ".slots[\"$slot\"].bwrap_pid // empty" "$SPLITSCREEN_STATE"
+
+        if active == "true" AND bwrap_pid is non-empty AND NOT kill -0 "$bwrap_pid":
+            if slot NOT in _WATCHDOG_REPORTED:
+                echo "SLOT_DIED $slot" >> "$SPLITSCREEN_FIFO"
+                _WATCHDOG_REPORTED[$slot]=1
+        elif active == "false":
+            unset _WATCHDOG_REPORTED[$slot]   # ready to monitor again on reuse
+```
+
+### Logging
+
+```bash
+[watchdog] Slot $slot bwrap PID $bwrap_pid gone → SLOT_DIED   # to stderr
+[watchdog] Slot $slot reset (active=false), clearing dedup cache  # to stderr
+```
+
+### Dependencies
+
+`jq`, `$SPLITSCREEN_STATE`, `$SPLITSCREEN_FIFO`. No module sources.
+
+---
+
+## Phase 6b: Changes to `minecraftSplitscreen.sh`
+
+### Change 1: Fix SCRIPT_DIR to use BASH_SOURCE[0]
+
+```bash
+# Old:
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+# New:
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+```
+
+This makes the orchestrator safely sourceable from test files.
+
+### Change 2: Source the watchdog module
+
+Add after the existing four `source` lines:
+```bash
+source "$SCRIPT_DIR/modules/watchdog.sh"
+```
+
+### Change 3: Declare _WATCHDOG_PID
+
+Add with the other PID globals:
+```bash
+_WATCHDOG_PID=""
+```
+
+### Change 4: Wrap main block in main() with BASH_SOURCE guard
+
+Wrap ALL top-level executable code (everything after the function definitions, starting
+from `if ! detectLauncher` through the final `esac`) in a `main()` function. Move the
+`trap cleanup EXIT` statement inside `main()`. At the very end of the file, add:
+
+```bash
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
+```
+
+This allows `tests/test_orchestrator.sh` to `source minecraftSplitscreen.sh`, override
+functions, and call `handheld_flow`/`docked_flow` directly without triggering startup.
+
+### Change 5: Start watchdog in startup sequence (inside main())
+
+After the FIFO creation and `exec 9>"$SPLITSCREEN_FIFO"`, and BEFORE `watch_display_mode`:
+```bash
+start_watchdog &
+_WATCHDOG_PID=$!
+echo "[orchestrator] Watchdog PID: $_WATCHDOG_PID" >&2
+```
+
+### Change 6: Kill _WATCHDOG_PID in cleanup()
+
+```bash
+if [[ -n "$_WATCHDOG_PID" ]]; then
+    kill "$_WATCHDOG_PID" 2>/dev/null || true
+fi
+```
+
+### Change 7: Add SLOT_DIED handler to docked_flow event loop
+
+```bash
+SLOT_DIED)
+    local died_slot
+    died_slot=$(echo "$line" | awk '{print $2}')
+    echo "[orchestrator] SLOT_DIED: slot $died_slot" >&2
+    if slot_is_active "$died_slot"; then
+        teardown_instance "$died_slot"
+    fi
+    ;;
+```
+
+### Change 8: Replace handheld_flow poll loop with FIFO event loop
+
+Replace:
+```bash
+# old: while slot_is_active 1; do sleep 2; done
+```
+
+With:
+```bash
+local line
+while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local action
+    action=$(echo "$line" | awk '{print $1}')
+    case "$action" in
+        SLOT_DIED)
+            local died_slot
+            died_slot=$(echo "$line" | awk '{print $2}')
+            if [[ "$died_slot" == "1" ]]; then
+                break
+            fi
+            ;;
+        DISPLAY_MODE_CHANGE)
+            local new_mode
+            new_mode=$(echo "$line" | awk '{print $2}')
+            if [[ "$new_mode" == "docked" ]]; then
+                echo "[orchestrator] handheld→docked hot-swap" >&2
+                teardown_all_instances
+                docked_flow
+                return
+            fi
+            ;;
+        *)
+            ;;
+    esac
+done < "$SPLITSCREEN_FIFO"
+```
+
+---
+
+## Phase 6 Tests
+
+### Tests: `tests/test_watchdog.sh` (T5.1–T5.7)
+
+**T5.1** — `start_watchdog` writes `SLOT_DIED 1` when slot 1's bwrap PID is not running
+
+Set up `$SPLITSCREEN_STATE` with slot 1 `active: true` and a `bwrap_pid` from a process
+that has already exited. Start `start_watchdog` in background with
+`WATCHDOG_POLL_INTERVAL_S=0.1`. Read from FIFO with `read -r -t 3`. Expect
+`SLOT_DIED 1`.
+
+**T5.2** — `start_watchdog` does NOT write `SLOT_DIED` when bwrap PID is alive
+
+Set `bwrap_pid` to `$$` (the test process, definitely alive). Start watchdog with
+poll interval 0.1s. Wait 0.4s. Try `read -r -t 0.3` — expect timeout (no message).
+
+**T5.3** — `start_watchdog` does NOT write `SLOT_DIED` for inactive slot (`active: false`)
+
+Set slot 1 `active: false` with a dead bwrap PID. Watchdog should never emit for it.
+Same timeout test as T5.2.
+
+**T5.4** — `start_watchdog` does NOT write `SLOT_DIED` when `bwrap_pid` is null
+
+Set slot 1 `active: true`, `bwrap_pid: null`. Watchdog should skip. Same timeout test.
+
+**T5.5** — Message format is exactly `SLOT_DIED <digit>` (no extra whitespace)
+
+Same setup as T5.1. Verify received line matches regex `^SLOT_DIED [1-4]$`.
+
+**T5.6** — Multiple dead slots emit multiple `SLOT_DIED` messages in one poll cycle
+
+Set slots 1 and 3 active with dead PIDs; slots 2 and 4 inactive.
+Read two lines from FIFO (with timeout). Expect both `SLOT_DIED 1` and `SLOT_DIED 3`
+in any order.
+
+**T5.7** — Deduplication: `SLOT_DIED` is not re-emitted until slot is reset
+
+Set slot 1 active with dead PID. Start watchdog at 0.1s interval.
+Read first `SLOT_DIED 1`. Do NOT update the state file (simulate slow orchestrator).
+Wait 0.5s (5 more poll cycles). Try another `read -r -t 0.3` — expect timeout (no
+second message). Then update state to `active: false`. Wait 0.3s. Re-run a new watchdog
+pass — it should clear the dedup cache entry and be ready to emit again if slot
+becomes active with a new dead PID.
+
+**All 7 tests must pass.**
+
+---
+
+### Tests: `tests/test_orchestrator.sh` (T6.1–T6.7)
+
+This test suite uses two approaches:
+
+- **Static** (T6.1–T6.3, T6.6–T6.7): grep or `declare -f` checks after sourcing the
+  orchestrator with a pre-mocked environment.
+- **Behavioral** (T6.4–T6.5): source the orchestrator, override module functions,
+  call `handheld_flow` in background, inject FIFO messages, assert the result.
+
+Sourcing requires the BASH_SOURCE guard from Change 4 to be in place; without it the
+test shell exits when `detectLauncher` fails.
+
+**T6.1** — `start_watchdog` is defined after sourcing the orchestrator
+
+Source `minecraftSplitscreen.sh` with stub functions pre-defined
+(`detectLauncher`, `selfUpdate`, `isSteamDeckGameMode`, etc.). After source, run
+`declare -f start_watchdog`. Expect exit code 0.
+
+**T6.2** — `_WATCHDOG_PID` variable is declared in the orchestrator
+
+`grep -q '_WATCHDOG_PID=""' minecraftSplitscreen.sh` — expect exit code 0.
+
+**T6.3** — `docked_flow` contains a `SLOT_DIED` handler
+
+`grep -q 'SLOT_DIED' minecraftSplitscreen.sh` — expect exit code 0.
+
+**T6.4** — `handheld_flow` exits cleanly when `SLOT_DIED 1` is written to FIFO
+
+Source the orchestrator with stubs. Override:
+- `list_eligible_controllers()` → echoes `/dev/input/event3 /dev/input/js0 28de 11ff`
+- `spawn_instance()` → returns 0 (writes slot 1 active to state file)
+- `teardown_all_instances()` → returns 0
+- `restorePanels()` → returns 0
+- `docked_flow()` → returns 0
+
+Keep `exec 9>"$SPLITSCREEN_FIFO"` open. Start `handheld_flow &`. After 0.2s, write
+`SLOT_DIED 1` to FIFO. Wait for `handheld_flow` with `wait -t 3`. Expect exit code 0.
+
+**T6.5** — `handheld_flow` calls `docked_flow` when `DISPLAY_MODE_CHANGE docked` received
+
+Same setup as T6.4. Override `docked_flow()` to write a sentinel to a temp file and
+return 0. Start `handheld_flow &`. After 0.2s, write `DISPLAY_MODE_CHANGE docked` to
+FIFO. Wait 2s. Assert sentinel file exists (meaning `docked_flow` was called).
+
+**T6.6** — `cleanup()` kills `_WATCHDOG_PID`
+
+`grep -q '_WATCHDOG_PID' minecraftSplitscreen.sh` (check it's referenced in cleanup).
+Additionally: `awk '/^cleanup\(\)/,/^\}/' minecraftSplitscreen.sh | grep -q '_WATCHDOG_PID'`
+— expect exit code 0.
+
+**T6.7** — `main()` function exists and is guarded by BASH_SOURCE check
+
+```bash
+grep -q 'main()' minecraftSplitscreen.sh
+grep -q 'BASH_SOURCE\[0\]' minecraftSplitscreen.sh
+```
+Both must return exit code 0.
+
+**All 7 tests must pass.**
+
+---
+
+## Phase 6 Deliverable Checklist
+
+Phase 6 complete when:
+- [ ] `modules/watchdog.sh` exists and is non-empty
+- [ ] `minecraftSplitscreen.sh` sources `watchdog.sh`, starts watchdog, handles
+      `SLOT_DIED` in both flows, uses FIFO event loop in `handheld_flow`, has
+      `main()` + BASH_SOURCE guard, uses `${BASH_SOURCE[0]}` for SCRIPT_DIR
+- [ ] `tests/test_watchdog.sh` exits 0 with output `7/7 tests passed.`
+- [ ] `tests/test_orchestrator.sh` exits 0 with output `7/7 tests passed.`
+- [ ] All prior test suites still pass (34/34)
+
+**Final gate**: Run all six test suites in sequence. Total must be 48/48 tests passed.
+```bash
+bash tests/test_dock_detection.sh && \
+bash tests/test_controller_monitor.sh && \
+bash tests/test_window_manager.sh && \
+bash tests/test_instance_lifecycle.sh && \
+bash tests/test_watchdog.sh && \
+bash tests/test_orchestrator.sh
+```
