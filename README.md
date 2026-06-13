@@ -121,4 +121,4 @@ Optional uninstall flags:
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen)
 - Built and maintained by [aradanmn](https://github.com/aradanmn), originally forked from [FlyingEwok](https://github.com/FlyingEwok)
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC)
-- Uses [install-jdk-on-steam-deck](https://github.com/FlyingEwok/install-jdk-on-steam-deck) for Java setup on Steam Deck/Linux
+- Uses [Eclipse Temurin (Adoptium)](https://adoptium.net) for automatic JDK installation

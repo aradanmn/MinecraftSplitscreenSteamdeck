@@ -1442,9 +1442,8 @@ https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/
 ```
 
 **Never hardcode the FlyingEwok GitHub username in any new or modified file.**
-The `install-jdk-on-steam-deck` dependency at
-`https://github.com/FlyingEwok/install-jdk-on-steam-deck` is the only exception —
-it is an external dependency, not this project.
+There are no exceptions — the `install-jdk-on-steam-deck` dependency has been
+removed; JDK installation now goes directly to the Eclipse Temurin (Adoptium) API.
 
 ---
 
