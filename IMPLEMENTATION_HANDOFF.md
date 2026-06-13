@@ -345,9 +345,10 @@ is_handheld()
 is_docked()
 
 # Watches for display mode changes. Blocks indefinitely.
-# On each change, prints "handheld" or "docked" to stdout and flushes.
+# On each change, writes a DISPLAY_MODE_CHANGE message to the FIFO at
+# $SPLITSCREEN_FIFO (e.g. "DISPLAY_MODE_CHANGE docked").
 # Uses inotifywait on /sys/class/drm/ if available, otherwise polls every 3s.
-# Intended to be run in a background subshell.
+# Intended to be run as a background process by the orchestrator.
 watch_display_mode()
 ```
 
@@ -450,9 +451,15 @@ A device is eligible in docked mode if ALL of the following are true:
 3. The `28de:11ff` virtual device is not a duplicate of one already assigned.
 
 A device is eligible in handheld mode if:
-1. It is the first (lowest-numbered) gamepad-capable device visible, OR
-2. `SPLITSCREEN_MODE=handheld` is set and there is at least one input device.
-   (Handheld mode always uses exactly one device regardless of what is connected.)
+1. It is any gamepad-capable device (has a `jsN` handler in `/proc/bus/input/devices`)
+   regardless of vendor or product ID.
+2. Handheld mode always uses exactly the FIRST eligible device (lowest `jsN` number)
+   and ignores all others.
+
+**Important**: In handheld mode do NOT filter to only `28de:11ff`. InputPlumber's
+virtual output device for the built-in Deck gamepad may use a different VID:PID than
+Steam Input's virtual devices. Accept any `jsN`-capable device as the handheld
+controller and let the system pick the first one.
 
 ### Identifying the built-in Deck gamepad virtual device in docked mode
 
@@ -554,21 +561,23 @@ sysfs path.
 ```bash
 source modules/controller_monitor.sh
 
-# Write current eligible virtual device list to stdout.
+# Write current eligible device list to stdout.
 # Each line: "<event_node> <js_node> <physical_vendor> <physical_product>"
-# In docked mode, excludes the internal Deck gamepad.
-# In handheld mode, returns exactly one line (the first available device).
+# $1 = mode ("handheld" or "docked")
+# In docked mode: only 28de:11ff devices, excluding the internal gamepad, max 4 lines.
+# In handheld mode: exactly one line — the first gamepad-capable device (any VID:PID).
 list_eligible_controllers()
 
 # Start monitoring. Blocks. Writes CONTROLLER_ADD / CONTROLLER_REMOVE
-# messages to the FIFO at SPLITSCREEN_FIFO path.
-# Must be run as a background process.
+# messages to the FIFO at $SPLITSCREEN_FIFO.
+# Must be run as a background process by the orchestrator.
 # $1 = mode ("handheld" or "docked")
 start_controller_monitor()
 
 # Return the event node and js node for the Nth eligible controller (1-based).
-# Output: "<event_node> <js_node>" or empty if not found.
-get_controller_by_index() # $1 = index (1-4)
+# $1 = index (1-4), $2 = mode ("handheld" or "docked")
+# Output: "<event_node> <js_node>" on stdout, or empty string if not found.
+get_controller_by_index()
 ```
 
 ### Tests: `tests/test_controller_monitor.sh`
@@ -1026,6 +1035,13 @@ Remove or replace:
 - `launchGame()` — replaced by instance_lifecycle.sh
 - `launchGames()` — replaced by the new event loop
 
+Do NOT call `configureInstanceControllerWrapper()` in the new code. In the old
+static launcher it set `WrapperCommand` in `instance.cfg` to pass SDL env vars,
+but the new architecture uses `bwrap` for isolation — those SDL vars are already
+set inside the bwrap command. Calling it would write a redundant WrapperCommand
+that could interfere. Leave the function in place (it is used by the installer),
+just do not invoke it from the new runtime code.
+
 ### Source the new modules at the top
 
 ```bash
@@ -1046,9 +1062,11 @@ source "$SCRIPT_DIR/modules/instance_lifecycle.sh"
          if launchFromPlasma: continue below
    NO  → continue below
 4. Create FIFO: mkfifo "$SPLITSCREEN_FIFO" (if not exists)
-5. hidePanels()
-6. get_display_mode() → "handheld" or "docked"
-7. Branch to handheld_flow() or docked_flow()
+5. Start watch_display_mode in background — it writes DISPLAY_MODE_CHANGE
+   messages directly to $SPLITSCREEN_FIFO. Record its PID.
+6. hidePanels()
+7. get_display_mode() → "handheld" or "docked"
+8. Branch to handheld_flow() or docked_flow()
 ```
 
 ### handheld_flow()
@@ -1093,8 +1111,8 @@ source "$SCRIPT_DIR/modules/instance_lifecycle.sh"
            handheld_flow   # switch modes live
      esac
    done
-4. On exit trap: teardown_all_instances, kill controller_monitor, restorePanels,
-   rm -f "$SPLITSCREEN_FIFO"
+4. On exit trap: teardown_all_instances, kill controller_monitor PID,
+   kill watch_display_mode PID, restorePanels, rm -f "$SPLITSCREEN_FIFO"
 ```
 
 ### Environment variables the orchestrator must set/export
@@ -1149,10 +1167,12 @@ Check at startup (before any instance is spawned):
 command -v bwrap >/dev/null 2>&1 || { echo "[Error] bwrap (bubblewrap) is required." >&2; exit 1; }
 ```
 
-### No global state mutation in modules
-Module files must not execute any code when sourced — only define functions.
-Any variable they set must be prefixed with the module name, e.g.
-`DOCK_DETECTION_DRM_PATH`, `CONTROLLER_MONITOR_FIFO`, etc.
+### No side effects when sourced
+Module files must not spawn processes, write files, make network calls, or print
+output when sourced. Only two things are allowed at the top level of a module file:
+function definitions and `readonly` constant declarations (e.g.
+`readonly MAX_PLAYERS=4`). All module-level variables must be prefixed with the
+module name: `DOCK_DETECTION_DRM_PATH`, `CONTROLLER_MONITOR_FIFO`, etc.
 
 ### Test harness requirements
 Every test file must:
