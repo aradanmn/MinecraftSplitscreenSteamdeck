@@ -579,6 +579,17 @@ main() {
 
     # --- Startup sequence ---
 
+    # Detect XAUTHORITY if not set (SSH sessions lack it)
+    if [[ -z "${XAUTHORITY:-}" ]]; then
+        for _xa in /run/user/1000/xauth_* ~/.Xauthority; do
+            if [[ -f "$_xa" ]]; then
+                export XAUTHORITY="$_xa"
+                echo "[orchestrator] Auto-detected XAUTHORITY=$_xa" >&2
+                break
+            fi
+        done
+    fi
+
     # Create FIFO and hold a write end open so readers never block on open()
     mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
     exec 9<>"$SPLITSCREEN_FIFO"
