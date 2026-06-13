@@ -268,76 +268,46 @@ test_t4_7() {
     SPLITSCREEN_STATE="$state_file"
     INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
 
-    # Create mock bwrap: echoes its own PID and sleeps (acts like a long-running process)
-    cat > "$tmpdir/mock_bwrap" <<'MOCKEOF'
-#!/bin/bash
-echo "mock_bwrap running" >&2
-# Simulate the Java process appearing as a child
-sleep 60 &
-echo $!
-wait
-MOCKEOF
-    chmod +x "$tmpdir/mock_bwrap"
-
-    # Create mock launcher
-    cat > "$tmpdir/mock_launcher" <<'MOCKEOF'
-#!/bin/bash
-echo "mock_launcher: $@" >&2
-sleep 60 &
-echo $!
-wait
-MOCKEOF
-    chmod +x "$tmpdir/mock_launcher"
-
-    # Override: use our mock bwrap (which is not actually bwrap, but the function
-    # checks for the command name. We need to be creative.)
-    # Instead, let bwrap be found (use /bin/true as bwrap since we just need it
-    # to exist for the check), but override the actual command construction.
-    # Simpler: use BWRAP_CMD pointing to the mock, but the _build_bwrap_command
-    # hardcodes "bwrap" in the command string. We need it to use the mock.
-
-    # The _build_bwrap_command outputs "bwrap ..." literally. We can't override
-    # that in the command string. Let's test differently: mock bwrap at the PATH level
-    # by creating a real "bwrap" script in a temp PATH entry.
-
     local mock_bin="$tmpdir/mock_bin"
     mkdir -p "$mock_bin"
 
+    # Mock bwrap: immediately exits with success (simulates short-lived process)
     cat > "$mock_bin/bwrap" <<'MOCKBWRAP'
 #!/bin/bash
-# Fake bwrap: just echo the command and spawn a fake child
-echo "bwrap: $@" >&2
-sleep 60 &
-echo $!
-wait
+echo "mock bwrap: $@" >&2
+exit 0
 MOCKBWRAP
     chmod +x "$mock_bin/bwrap"
 
+    # Mock pgrep: returns a fake PID
     cat > "$mock_bin/pgrep" <<'MOCKPGREP'
 #!/bin/bash
-# pgrep mock: return PID 12345 for Java search
-# The real pgrep is called for the java poll
 echo "12345"
 MOCKPGREP
     chmod +x "$mock_bin/pgrep"
 
-    # Set PATH to include our mocks first
-    # But wait — spawn_instance calls _poll_for_java which runs pgrep.
-    # The mock pgrep returns 12345, which would be set as the java PID.
-    # But pgrep also needs to exist for normal operations.
+    # Mock xdotool: returns a fake window ID
+    cat > "$mock_bin/xdotool" <<'MOCKXDOTOOL'
+#!/bin/bash
+echo "99999"
+MOCKXDOTOOL
+    chmod +x "$mock_bin/xdotool"
 
-    # Let's just test the state fields directly without actually spawning.
-    # The spec says "Mock bwrap and PolyMC to return immediately with PID 12345."
-    # We'll use BWRAP_CMD to point to a simple script.
+    # Mock PolyMC launcher
+    cat > "$tmpdir/PolyMC.AppImage" <<'MOCKPOLY'
+#!/bin/bash
+exit 0
+MOCKPOLY
+    chmod +x "$tmpdir/PolyMC.AppImage"
 
+    # Run spawn_instance synchronously (it will exit quickly since mocks are fast)
+    # Suppress stderr noise, capture the exit code
+    set +e
     BWRAP_CMD="$mock_bin/bwrap" \
-        LAUNCHER_EXEC="$tmpdir/mock_launcher" \
+        LAUNCHER_EXEC="$tmpdir/PolyMC.AppImage" \
         PATH="$mock_bin:$PATH" \
-        spawn_instance 2 /dev/input/event4 /dev/input/js1 2>/dev/null &
-    local spawner_pid=$!
-
-    # Give it a moment to write state
-    sleep 0.5
+        spawn_instance 2 /dev/input/event4 /dev/input/js1 >/dev/null 2>&1
+    set -e
 
     # Check state file for slot 2
     local active event_node js_node bwrap_pid
@@ -345,13 +315,6 @@ MOCKPGREP
     event_node=$(jq -r '.slots["2"].event_node' "$state_file" 2>/dev/null || echo "null")
     js_node=$(jq -r '.slots["2"].js_node' "$state_file" 2>/dev/null || echo "null")
     bwrap_pid=$(jq -r '.slots["2"].bwrap_pid' "$state_file" 2>/dev/null || echo "null")
-
-    # Kill the spawner and its children
-    kill "$spawner_pid" 2>/dev/null || true
-    wait "$spawner_pid" 2>/dev/null || true
-
-    # Kill any lingering mock processes
-    pkill -P $$ -f "mock_bwrap\|mock_launcher\|mock_bin/bwrap" 2>/dev/null || true
 
     if [[ "$active" == "true" && "$event_node" == "/dev/input/event4" && "$js_node" == "/dev/input/js1" && "$bwrap_pid" != "null" ]]; then
         _pass "T4.7 — spawn_instance writes correct state fields"
