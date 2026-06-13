@@ -36,6 +36,13 @@ _WATCHDOG_PID=""
 # Function: detectLauncher (PRESERVED)
 # =============================
 detectLauncher() {
+    # Prefer extracted squashfs-root (no FUSE needed inside bwrap)
+    if [ -f "$HOME/.local/share/PolyMC/squashfs-root/AppRun" ] && [ -x "$HOME/.local/share/PolyMC/squashfs-root/AppRun" ]; then
+        export LAUNCHER_DIR="$HOME/.local/share/PolyMC"
+        export LAUNCHER_EXEC="$HOME/.local/share/PolyMC/squashfs-root/AppRun"
+        export LAUNCHER_NAME="PolyMC"
+        return 0
+    fi
     if [ -f "$HOME/.local/share/PolyMC/PolyMC.AppImage" ] && [ -x "$HOME/.local/share/PolyMC/PolyMC.AppImage" ]; then
         export LAUNCHER_DIR="$HOME/.local/share/PolyMC"
         export LAUNCHER_EXEC="$HOME/.local/share/PolyMC/PolyMC.AppImage"
