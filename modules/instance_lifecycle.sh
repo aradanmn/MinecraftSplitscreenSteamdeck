@@ -372,14 +372,14 @@ spawn_instance() {
 
     # 6. Poll for Java process
     local java_pid
-    java_pid=$(_poll_for_java "$slot")
+    java_pid=$(_poll_for_java "$slot" || true)
     if [[ -n "$java_pid" ]]; then
         update_slot_state "$slot" "{\"pid\": ${java_pid}}"
         echo "[spawn_instance] Java PID: $java_pid" >&2
     fi
 
     # 7. Wait for window to appear
-    _poll_for_window "$slot" >/dev/null
+    _poll_for_window "$slot" >/dev/null || true
 
     # 8. Apply layout with all currently active slots
     local updated_active
