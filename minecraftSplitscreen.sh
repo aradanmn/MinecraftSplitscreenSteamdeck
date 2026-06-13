@@ -15,11 +15,12 @@ set -euo pipefail
 #   setInstanceCfgValue, configureInstanceControllerWrapper, clearControllableSelection
 
 # --- Source new modules ---
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$SCRIPT_DIR/modules/dock_detection.sh"
 source "$SCRIPT_DIR/modules/controller_monitor.sh"
 source "$SCRIPT_DIR/modules/window_manager.sh"
 source "$SCRIPT_DIR/modules/instance_lifecycle.sh"
+source "$SCRIPT_DIR/modules/watchdog.sh"
 
 # --- Environment ---
 export LAUNCH_DEBUG_LOG="$HOME/.local/share/PolyMC/splitscreen-launch-debug.log"
@@ -29,6 +30,7 @@ export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 # Background process PIDs (for cleanup trap)
 _WATCH_DISPLAY_PID=""
 _CONTROLLER_MONITOR_PID=""
+_WATCHDOG_PID=""
 
 # =============================
 # Function: detectLauncher (PRESERVED)
@@ -45,13 +47,6 @@ detectLauncher() {
     echo "[Error] Please run the Minecraft Splitscreen installer to set up PolyMC" >&2
     return 1
 }
-
-if ! detectLauncher; then
-    echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
-    exit 1
-fi
-
-echo "[Info] Using $LAUNCHER_NAME for splitscreen gameplay"
 
 # =============================
 # Function: selfUpdate (PRESERVED)
@@ -91,10 +86,6 @@ selfUpdate() {
         echo "[Self-Update] Already up to date."
     fi
 }
-
-if [ "${1:-}" != "launchFromPlasma" ]; then
-    selfUpdate
-fi
 
 # =============================
 # Function: nestedPlasma (PRESERVED)
@@ -303,11 +294,34 @@ handheld_flow() {
 
     spawn_instance 1 "$event_node" "$js_node"
 
-    # Wait for the instance to exit
-    local poll_interval_s=2
-    while slot_is_active 1; do
-        sleep "$poll_interval_s"
-    done
+    # Wait for instance to exit via FIFO events (supports SLOT_DIED and hot-swap)
+    local line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local action
+        action=$(echo "$line" | awk '{print $1}')
+        case "$action" in
+            SLOT_DIED)
+                local died_slot
+                died_slot=$(echo "$line" | awk '{print $2}')
+                if [[ "$died_slot" == "1" ]]; then
+                    break
+                fi
+                ;;
+            DISPLAY_MODE_CHANGE)
+                local new_mode
+                new_mode=$(echo "$line" | awk '{print $2}')
+                if [[ "$new_mode" == "docked" ]]; then
+                    echo "[orchestrator] handheld→docked hot-swap" >&2
+                    teardown_all_instances
+                    docked_flow
+                    return
+                fi
+                ;;
+            *)
+                ;;
+        esac
+    done < "$SPLITSCREEN_FIFO"
 
     teardown_all_instances
     restorePanels
@@ -450,6 +464,15 @@ docked_flow() {
                 fi
                 ;;
 
+            SLOT_DIED)
+                local died_slot
+                died_slot=$(echo "$line" | awk '{print $2}')
+                echo "[orchestrator] SLOT_DIED: slot $died_slot" >&2
+                if slot_is_active "$died_slot"; then
+                    teardown_instance "$died_slot"
+                fi
+                ;;
+
             DISPLAY_MODE_CHANGE)
                 local new_mode
                 new_mode=$(echo "$line" | awk '{print $2}')
@@ -498,6 +521,9 @@ cleanup() {
     if [[ -n "$_WATCH_DISPLAY_PID" ]]; then
         kill "$_WATCH_DISPLAY_PID" 2>/dev/null || true
     fi
+    if [[ -n "$_WATCHDOG_PID" ]]; then
+        kill "$_WATCHDOG_PID" 2>/dev/null || true
+    fi
 
     # Tear down all instances
     teardown_all_instances 2>/dev/null || true
@@ -515,50 +541,72 @@ cleanup() {
 
     echo "[orchestrator] Cleanup complete" >&2
 }
-trap cleanup EXIT
 
 # =============================
-# MAIN LOGIC
+# MAIN
 # =============================
+main() {
+    trap cleanup EXIT
 
-# Steam Deck Game Mode: launch nested Plasma session
-if isSteamDeckGameMode; then
-    if [ "${1:-}" = "launchFromPlasma" ]; then
-        # Inside nested Plasma session — clean autostart and proceed
-        rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
-    else
-        # Not yet in nested session — start it (never returns)
-        nestedPlasma
-    fi
-fi
-
-# --- Startup sequence ---
-
-# Create FIFO and hold a write end open so readers never block on open()
-mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
-exec 9>"$SPLITSCREEN_FIFO"
-
-# Start display mode watcher
-watch_display_mode &
-_WATCH_DISPLAY_PID=$!
-echo "[orchestrator] Display watcher PID: $_WATCH_DISPLAY_PID" >&2
-
-# Hide KDE panels
-hidePanels
-
-# Determine mode and branch
-display_mode=$(get_display_mode)
-echo "[orchestrator] Display mode: $display_mode" >&2
-
-case "$display_mode" in
-    handheld)
-        handheld_flow
-        ;;
-    docked)
-        docked_flow
-        ;;
-    *)
-        echo "[orchestrator] ERROR: unknown display mode '$display_mode'" >&2
+    if ! detectLauncher; then
+        echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
         exit 1
-        ;;
-esac
+    fi
+
+    echo "[Info] Using $LAUNCHER_NAME for splitscreen gameplay"
+
+    if [ "${1:-}" != "launchFromPlasma" ]; then
+        selfUpdate
+    fi
+
+    # Steam Deck Game Mode: launch nested Plasma session
+    if isSteamDeckGameMode; then
+        if [ "${1:-}" = "launchFromPlasma" ]; then
+            # Inside nested Plasma session — clean autostart and proceed
+            rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+        else
+            # Not yet in nested session — start it (never returns)
+            nestedPlasma
+        fi
+    fi
+
+    # --- Startup sequence ---
+
+    # Create FIFO and hold a write end open so readers never block on open()
+    mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
+    exec 9>"$SPLITSCREEN_FIFO"
+
+    # Start watchdog before display watcher
+    start_watchdog &
+    _WATCHDOG_PID=$!
+    echo "[orchestrator] Watchdog PID: $_WATCHDOG_PID" >&2
+
+    # Start display mode watcher
+    watch_display_mode &
+    _WATCH_DISPLAY_PID=$!
+    echo "[orchestrator] Display watcher PID: $_WATCH_DISPLAY_PID" >&2
+
+    # Hide KDE panels
+    hidePanels
+
+    # Determine mode and branch
+    display_mode=$(get_display_mode)
+    echo "[orchestrator] Display mode: $display_mode" >&2
+
+    case "$display_mode" in
+        handheld)
+            handheld_flow
+            ;;
+        docked)
+            docked_flow
+            ;;
+        *)
+            echo "[orchestrator] ERROR: unknown display mode '$display_mode'" >&2
+            exit 1
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
