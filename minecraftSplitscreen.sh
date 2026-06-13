@@ -260,10 +260,10 @@ isSteamDeckGameMode() {
             return 0
         fi
     else
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] && [ "$USER" = "deck" ]; then
+        if [ "${XDG_SESSION_DESKTOP:-}" = "gamescope" ] && [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ] && [ "$USER" = "deck" ]; then
             return 0
         fi
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "KDE" ] && [ "$USER" = "deck" ]; then
+        if [ "${XDG_SESSION_DESKTOP:-}" = "gamescope" ] && [ "${XDG_CURRENT_DESKTOP:-}" = "KDE" ] && [ "$USER" = "deck" ]; then
             return 0
         fi
     fi
