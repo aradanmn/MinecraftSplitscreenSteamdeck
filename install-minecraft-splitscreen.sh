@@ -26,6 +26,13 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # Runtime flags
 DEBUG_MODE=false
+INSTALL_LOG="$HOME/.local/share/PolyMC/install.log"
+
+# Log a message to the install log file
+_install_log() {
+    mkdir -p "$(dirname "$INSTALL_LOG")" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$INSTALL_LOG"
+}
 
 # Parse installer flags early so startup/module logs can respect debug mode.
 declare -a FORWARDED_ARGS=()
@@ -58,13 +65,14 @@ cleanup() {
 
 # Set up trap to cleanup on script exit (normal or error)
 trap cleanup EXIT INT TERM
+_install_log "Installer started (PID $$, DEBUG_MODE=$DEBUG_MODE)"
 
 # =============================================================================
 # MODULE DOWNLOADING AND LOADING
 # =============================================================================
 
 # Get the directory where this script is located
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
@@ -97,7 +105,7 @@ _detect_repo_base_url() {
         return 0
     fi
     # Fallback
-    echo "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
+    echo "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/feat/controlify-isolation/modules"
 }
 readonly REPO_BASE_URL="$(_detect_repo_base_url)"
 
@@ -319,7 +327,9 @@ declare -a MISSING_MODS=()
 # Execute main function if script is run directly
 # This allows the script to be sourced for testing without auto-execution
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
+    _install_log "Calling main with args: $*"
     main "$@"
+    _install_log "Installer completed successfully"
 fi
 
 # =============================================================================
