@@ -88,7 +88,15 @@ _detect_repo_base_url() {
             fi
         fi
     fi
-    # Fallback — user should set INSTALLER_SOURCE_URL or run from a git clone.
+    # Running via curl|bash (no git) — check if user set INSTALLER_SOURCE_URL.
+    if [[ -n "${INSTALLER_SOURCE_URL:-}" ]]; then
+        # Strip filename, append /modules — e.g.
+        # https://.../feat/controlify-isolation/install-minecraft-splitscreen.sh
+        # → https://.../feat/controlify-isolation/modules
+        echo "${INSTALLER_SOURCE_URL%/*}/modules"
+        return 0
+    fi
+    # Fallback
     echo "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
 }
 readonly REPO_BASE_URL="$(_detect_repo_base_url)"
