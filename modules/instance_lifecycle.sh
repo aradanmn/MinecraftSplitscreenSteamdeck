@@ -360,6 +360,14 @@ spawn_instance() {
     launcher_dir=$(_get_launcher_dir)
     rm -f "${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/controllable/selected_controllers.json"
 
+    # 2.5 Set window title via instance.cfg JvmArgs
+    local cfg_path="${launcher_dir}/instances/latestUpdate-${slot}/instance.cfg"
+    if [[ -f "$cfg_path" ]]; then
+        setInstanceCfgValue "$cfg_path" "OverrideJavaArgs" "true"
+        setInstanceCfgValue "$cfg_path" "JvmArgs" "-Dorg.lwjgl.opengl.Window.title=SplitscreenP${slot}"
+        echo "[spawn_instance] Set window title SplitscreenP${slot} via instance.cfg" >&2
+    fi
+
     # 3. Build the bwrap command
     local bwrap_command
     bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
