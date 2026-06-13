@@ -508,7 +508,8 @@ cleanup() {
     # Restore panels
     restorePanels 2>/dev/null || true
 
-    # Remove autostart file and FIFO
+    # Close persistent FIFO write fd, then remove FIFO
+    exec 9>&- 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     rm -f "$SPLITSCREEN_FIFO"
 
@@ -533,8 +534,9 @@ fi
 
 # --- Startup sequence ---
 
-# Create FIFO
+# Create FIFO and hold a write end open so readers never block on open()
 mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
+exec 9>"$SPLITSCREEN_FIFO"
 
 # Start display mode watcher
 watch_display_mode &
