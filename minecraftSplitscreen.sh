@@ -375,6 +375,8 @@ docked_flow() {
             done
             if (( already_active == 0 )); then
                 echo "[orchestrator] Assigning controller to slot $slot ($event_node $js_node)" >&2
+                # Pre-reserve the slot so next iteration sees it as taken
+                update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
                 spawn_instance "$slot" "$event_node" "$js_node" &
                 assigned=1
                 break
