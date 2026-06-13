@@ -1857,8 +1857,9 @@ select_user_mods() {
         supported_count=${#SUPPORTED_MODS[@]}
     fi
     if [[ $supported_count -eq 0 ]]; then
-        print_error "No compatible mods found for Minecraft $MC_VERSION"
-        exit 1
+        print_warning "No optional mods compatible with Minecraft $MC_VERSION"
+        print_info "Installing required mods only (Controlify + Splitscreen Support)"
+        return 0
     fi
     
     # Build list of user-selectable mods by filtering out framework and required mods
