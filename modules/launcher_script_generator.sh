@@ -41,7 +41,7 @@
 # =============================================================================
 
 # Prevent direct execution — this module is meant to be sourced
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
     echo "This module is meant to be sourced, not executed directly." >&2
     exit 1
 fi

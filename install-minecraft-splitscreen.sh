@@ -284,7 +284,7 @@ _load_mods_from_json() {
     return 0
 }
 
-_MODS_JSON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo "$SCRIPT_DIR")"
+_MODS_JSON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || echo "$SCRIPT_DIR")"
 if ! _load_mods_from_json "$_MODS_JSON_DIR/mods.json"; then
     # Hardcoded fallback — kept in sync with mods.json
     declare -a REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
@@ -326,7 +326,7 @@ declare -a MISSING_MODS=()
 
 # Execute main function if script is run directly
 # This allows the script to be sourced for testing without auto-execution
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
     _install_log "Calling main with args: $*"
     main "$@"
     _install_log "Installer completed successfully"
