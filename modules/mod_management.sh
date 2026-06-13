@@ -1903,8 +1903,10 @@ select_user_mods() {
     echo "  -1 = Install only required mods (Controlify and Splitscreen Support)"
     echo ""
     
-    local mod_selection
-    read -p "Your choice [0]: " mod_selection
+    local mod_selection=""
+    if [[ -e /dev/tty ]]; then
+        read -p "Your choice [0]: " mod_selection < /dev/tty || true
+    fi
     
     # Process user selection
     if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then

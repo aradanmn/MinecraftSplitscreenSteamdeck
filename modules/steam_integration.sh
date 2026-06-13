@@ -54,7 +54,10 @@ setup_steam_integration() {
     print_info "Steam integration adds Minecraft Splitscreen to your Steam library."
     print_info "Benefits: Easy access from Steam, Big Picture mode support, Steam Deck Game Mode integration"
     echo ""
-    read -p "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " add_to_steam
+    local add_to_steam=""
+    if [[ -e /dev/tty ]]; then
+        read -p "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " add_to_steam < /dev/tty || true
+    fi
     if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
         
         # =============================================================================

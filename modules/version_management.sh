@@ -282,8 +282,10 @@ get_minecraft_version() {
     echo "  1-${#supported_versions[@]} = Select a specific version from the list above"
     echo "  [Enter] = Use latest supported version ($latest_supported) [RECOMMENDED]"
     
-    local user_choice
-    read -p "Your choice [latest]: " user_choice
+    local user_choice=""
+    if [[ -e /dev/tty ]]; then
+        read -p "Your choice [latest]: " user_choice < /dev/tty || true
+    fi
     
     if [[ -z "$user_choice" || "$user_choice" == "latest" ]]; then
         # Use latest supported version
