@@ -182,8 +182,7 @@ bwrap \
     SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 \
   "${launcher_exec}" \
     -l "latestUpdate-${slot}" \
-    -a "P${slot}" \
-    --jvm-args "-Dorg.lwjgl.opengl.Window.title=SplitscreenP${slot}"
+    -a "P${slot}"
 CMDEOF
 }
 
