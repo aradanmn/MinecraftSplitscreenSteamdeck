@@ -69,7 +69,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
 # GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
+readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/feat/controlify-isolation/modules"
 
 # List of required module files
 readonly MODULE_FILES=(
