@@ -1,0 +1,23 @@
+{
+    "description": "Mod list for Minecraft Splitscreen. Format: [\"Display Name\", \"platform\", \"mod_id\"]. Platform is modrinth or curseforge.",
+    "required": [
+        ["Controlify", "modrinth", "DOUdJVEm"],
+        ["Splitscreen Support", "modrinth", "yJgqfSDR"]
+    ],
+    "optional": [
+        ["Better Name Visibility", "modrinth", "pSfNeCCY"],
+        ["BetterF3", "modrinth", "8ShgVXvd"],
+        ["FerriteCore", "modrinth", "uXXizFIs"],
+        ["Full Brightness Toggle", "modrinth", "aEK1KhsC"],
+        ["In-Game Account Switcher", "modrinth", "cudtvDnd"],
+        ["Just Zoom", "modrinth", "iAiqcykM"],
+        ["Mod Menu", "modrinth", "mOgUt4GM"],
+        ["Old Combat Mod", "modrinth", "dZ1APLkO"],
+        ["Reese's Sodium Options", "modrinth", "Bh37bMuy"],
+        ["Sodium", "modrinth", "AANobbMI"],
+        ["Sodium Dynamic Lights", "modrinth", "PxQSWIcD"],
+        ["Sodium Extra", "modrinth", "PtjYWJkn"],
+        ["Sodium Extras", "modrinth", "vqqx0QiE"],
+        ["Sodium Options API", "modrinth", "Es5v4eyq"]
+    ]
+}

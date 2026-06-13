@@ -6,7 +6,7 @@
 # Intelligent version selection based on required mod compatibility
 
 # get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for Controllable and Splitscreen Support to find compatible versions
+# Queries APIs for Controlify and Splitscreen Support to find compatible versions
 # Returns: Array of supported Minecraft versions in descending order (newest first)
 get_supported_minecraft_versions() {
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
@@ -48,8 +48,8 @@ get_supported_minecraft_versions() {
         local controllable_compatible=false
         local splitscreen_compatible=false
         
-        # Check Controllable (CurseForge mod 317269)
-        if check_mod_version_compatibility "317269" "curseforge" "$mc_version"; then
+        # Check Controlify (Modrinth mod DOUdJVEm)
+        if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
             controllable_compatible=true
         fi
         
@@ -202,89 +202,9 @@ check_mod_version_compatibility() {
         fi
         
     elif [[ "$platform" == "curseforge" ]]; then
-        # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
-        # First get the encrypted API token
-        local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
-        local encrypted_token_file=$(mktemp)
-        
-        if command -v curl >/dev/null 2>&1; then
-            curl -s -L -o "$encrypted_token_file" "$token_url" 2>/dev/null
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q -O "$encrypted_token_file" "$token_url" 2>/dev/null
-        else
-            rm -f "$encrypted_token_file"
-            return 1
-        fi
-        
-        # Decrypt the API token
-        local fixed_passphrase="MinecraftSplitscreenSteamDeck2025"
-        local cf_api_key
-        cf_api_key=$(openssl enc -aes-256-cbc -d -a -pbkdf2 -pass pass:"$fixed_passphrase" -in "$encrypted_token_file" 2>/dev/null)
-        rm -f "$encrypted_token_file"
-        
-        if [[ -z "$cf_api_key" ]]; then
-            return 1  # Can't get API key
-        fi
-        
-        # Query CurseForge API with Fabric loader filter
-        local cf_api_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
-        local tmp_body
-        tmp_body=$(mktemp)
-        if [[ -z "$tmp_body" ]]; then
-            return 1
-        fi
-        
-        # Make authenticated API request
-        local http_code
-        http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url")
-        local version_json
-        version_json=$(cat "$tmp_body")
-        rm "$tmp_body"
-        
-        # Validate API response
-        if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
-            return 1
-        fi
-        
-        # Version compatibility checking using same logic as check_curseforge_mod
-        local mc_major_minor
-        mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
-        local mc_major_minor_x="$mc_major_minor.x"
-        local mc_major_minor_0="$mc_major_minor.0"
-        
-        # CurseForge-specific jq filter for version matching
-        local jq_filter
-        if [[ "$strict_mode" == "true" ]]; then
-            jq_filter='
-                .data[]
-                | select(.gameVersions[] == $mc_version)
-                | .downloadUrl
-            '
-        else
-            jq_filter='
-                .data[]
-                | select(
-                    ((.gameVersions[] == $mc_version) or
-                    (.gameVersions[] == $mc_major_minor) or
-                    (.gameVersions[] == $mc_major_minor_x) or
-                    (.gameVersions[] == $mc_major_minor_0))
-                  )
-                | .downloadUrl
-            '
-        fi
-        
-        local jq_result
-        jq_result=$(printf "%s" "$version_json" | jq -r \
-            --arg mc_version "$mc_version" \
-            --arg mc_major_minor "$mc_major_minor" \
-            --arg mc_major_minor_x "$mc_major_minor_x" \
-            --arg mc_major_minor_0 "$mc_major_minor_0" \
-            "$jq_filter" 2>/dev/null | head -n1)
-        
-        # Return success if we found a compatible version
-        if [[ -n "$jq_result" && "$jq_result" != "null" ]]; then
-            return 0  # Compatible
-        fi
+        # CurseForge path: requires API token (token.enc). Since Controlify moved
+        # to Modrinth, this path is dead code but preserved for future mods.
+        return 1
     fi
     
     return 1  # Not compatible
@@ -302,8 +222,8 @@ fallback_dependencies() {
         "modrinth:yJgqfSDR")  # Splitscreen Support
             echo "P7dR8mSH" # Fabric API
             ;;
-        "curseforge:317269")  # Controllable
-            echo "634179"  # Framework
+        "modrinth:DOUdJVEm")  # Controlify
+            echo ""  # No framework dependency needed on Modrinth
             ;;
         *)
             echo ""
@@ -312,7 +232,7 @@ fallback_dependencies() {
 }
 
 # get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support both Controllable and Splitscreen Support mods
+# Only offers versions that support both Controlify and Splitscreen Support mods
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
     
@@ -350,7 +270,7 @@ get_minecraft_version() {
     done
     
     echo "These versions have been verified to support both essential splitscreen mods:"
-    echo "  ✅ Controllable (controller support)"  
+    echo "  ✅ Controlify (controller support)"  
     echo "  ✅ Splitscreen Support (split-screen functionality)"
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
         echo "  ✅ ${EXTRA_REQUIRED_MOD_NAME:-Requested custom mod}"

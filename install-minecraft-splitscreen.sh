@@ -224,28 +224,51 @@ MC_VERSION=""
 FABRIC_VERSION=""
 LWJGL_VERSION=""
 
-# Mod configuration arrays
-declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
-declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
+# Mod configuration arrays — loaded from mods.json with hardcoded fallback
+_load_mods_from_json() {
+    local json_file="$1"
+    [[ -f "$json_file" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    local mods_json
+    mods_json=$(jq -c '.required[]' "$json_file" 2>/dev/null) || return 1
+    REQUIRED_SPLITSCREEN_MODS=()
+    REQUIRED_SPLITSCREEN_IDS=()
+    while IFS= read -r entry; do
+        local name platform id
+        name=$(echo "$entry" | jq -r '.[0]')
+        platform=$(echo "$entry" | jq -r '.[1]')
+        id=$(echo "$entry" | jq -r '.[2]')
+        REQUIRED_SPLITSCREEN_MODS+=("$name")
+        REQUIRED_SPLITSCREEN_IDS+=("$id")
+    done <<< "$mods_json"
+    return 0
+}
 
-# Master list of all available mods with their metadata
-# Format: "Mod Name|platform|mod_id"
-declare -a MODS=(
-    "Better Name Visibility|modrinth|pSfNeCCY"
-    "Controllable (Fabric)|curseforge|317269"
-    "Full Brightness Toggle|modrinth|aEK1KhsC"
-    "In-Game Account Switcher|modrinth|cudtvDnd"
-    "Just Zoom|modrinth|iAiqcykM"
-    "Mod Menu|modrinth|mOgUt4GM"
-    "Old Combat Mod|modrinth|dZ1APLkO"
-    "Reese's Sodium Options|modrinth|Bh37bMuy"
-    "Sodium|modrinth|AANobbMI"
-    "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-    "Sodium Extra|modrinth|PtjYWJkn"
-    "Sodium Extras|modrinth|vqqx0QiE"
-    "Sodium Options API|modrinth|Es5v4eyq"
-    "Splitscreen Support|modrinth|yJgqfSDR"
-)
+_MODS_JSON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo "$SCRIPT_DIR")"
+if ! _load_mods_from_json "$_MODS_JSON_DIR/mods.json"; then
+    # Hardcoded fallback — kept in sync with mods.json
+    declare -a REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
+    declare -a REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
+
+    # Master list of all available mods with their metadata
+    # Format: "Mod Name|platform|mod_id"
+    declare -a MODS=(
+        "Better Name Visibility|modrinth|pSfNeCCY"
+        "Controlify|modrinth|DOUdJVEm"
+        "Full Brightness Toggle|modrinth|aEK1KhsC"
+        "In-Game Account Switcher|modrinth|cudtvDnd"
+        "Just Zoom|modrinth|iAiqcykM"
+        "Mod Menu|modrinth|mOgUt4GM"
+        "Old Combat Mod|modrinth|dZ1APLkO"
+        "Reese's Sodium Options|modrinth|Bh37bMuy"
+        "Sodium|modrinth|AANobbMI"
+        "Sodium Dynamic Lights|modrinth|PxQSWIcD"
+        "Sodium Extra|modrinth|PtjYWJkn"
+        "Sodium Extras|modrinth|vqqx0QiE"
+        "Sodium Options API|modrinth|Es5v4eyq"
+        "Splitscreen Support|modrinth|yJgqfSDR"
+    )
+fi
 
 # Runtime mod tracking arrays (populated during execution)
 declare -a SUPPORTED_MODS=()

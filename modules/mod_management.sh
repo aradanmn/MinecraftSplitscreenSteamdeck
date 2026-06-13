@@ -956,19 +956,11 @@ resolve_curseforge_dependencies_api() {
     # Critical dependency fallbacks for 1.21.1
     if [[ -z "$dependencies" ]]; then
         case "$mod_id" in
-            "317269")  # Controllable
-                dependencies="634179"  # Framework
-                ;;
-        esac
-    fi
-        case "$mod_id" in
             "238222")  # JEI
                 dependencies="306612"  # Fabric API
                 ;;
-            "325471")  # Controllable  
-                dependencies="634179"  # Framework
-                ;;
         esac
+    fi
     fi
     
     echo "$dependencies"
@@ -1097,8 +1089,8 @@ fetch_and_add_external_mod() {
             # Fallback for known mods if API fails
             if [[ -z "$mod_title" ]]; then
                 case "$ext_mod_id" in
-                    "317269")  # Controllable
-                        mod_title="Controllable (Fabric)"
+                    "DOUdJVEm")  # Controlify
+                        mod_title="Controlify"
                         mod_description="Adds controller support to Minecraft"
                         ;;
                     "306612")  # Fabric API
@@ -1871,7 +1863,7 @@ select_user_mods() {
     
     # Build list of user-selectable mods by filtering out framework and required mods
     # Framework mods (Fabric API, etc.) are installed automatically as dependencies
-    # Required mods (Controllable, Splitscreen Support) are always installed
+    # Required mods (Controlify, Splitscreen Support) are always installed
     local user_mod_indexes=()    # Indexes of mods user can choose from
     local install_all_mods=false # Flag for "install all" option
     
@@ -1902,7 +1894,7 @@ select_user_mods() {
     echo ""
     echo "Enter the numbers of the mods you want to install (e.g., '1 3 5' or '1-5'):"
     echo "  0 = Install all available mods (default)"
-    echo "  -1 = Install only required mods (Controllable and Splitscreen Support)"
+    echo "  -1 = Install only required mods (Controlify and Splitscreen Support)"
     echo ""
     
     local mod_selection
@@ -2016,21 +2008,6 @@ select_user_mods() {
 add_mod_dependencies() {
     local mod_idx="$1"
     local -n added_ref="$2"
-    
-    # Handle special case for Controllable (needs Framework)
-    if [[ "${SUPPORTED_MODS[$mod_idx]}" == "Controllable (Fabric)"* ]]; then
-        for j in "${!MODS[@]}"; do
-            IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "${MODS[$j]}"
-            if [[ "$MOD_NAME" == "Framework (Fabric)"* ]]; then
-                for k in "${!MOD_IDS[@]}"; do
-                    if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [[ -z "${added_ref[$k]:-}" ]]; then
-                        FINAL_MOD_INDEXES+=("$k")
-                        added_ref[$k]=1
-                    fi
-                done
-            fi
-        done
-    fi
     
     # Add Modrinth dependencies
     local dep_string="${MOD_DEPENDENCIES[$mod_idx]}"
