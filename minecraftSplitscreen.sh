@@ -512,7 +512,6 @@ cleanup() {
     exec 9>&- 2>/dev/null || true
     rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
     rm -f "$SPLITSCREEN_FIFO"
-    exec 9>&- 2>/dev/null || true
 
     echo "[orchestrator] Cleanup complete" >&2
 }
@@ -537,10 +536,6 @@ fi
 
 # Create FIFO and hold a write end open so readers never block on open()
 mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
-exec 9>"$SPLITSCREEN_FIFO"
-
-# Keep a persistent write fd open so docked_flow's read doesn't block
-# in stable states when no monitor is writing
 exec 9>"$SPLITSCREEN_FIFO"
 
 # Start display mode watcher
