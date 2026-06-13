@@ -340,10 +340,16 @@ spawn_instance() {
         return 1
     fi
 
-    # Check if slot is already active
+    # Check if slot is already active with a running instance
     if slot_is_active "$slot"; then
-        echo "[spawn_instance] ERROR: slot $slot is already active" >&2
-        return 2
+        local existing_bwrap
+        existing_bwrap=$(get_bwrap_pid "$slot")
+        if [[ -n "$existing_bwrap" ]]; then
+            echo "[spawn_instance] ERROR: slot $slot is already active (bwrap_pid=$existing_bwrap)" >&2
+            return 2
+        fi
+        # Slot was pre-reserved (active but no bwrap_pid) — continue
+        echo "[spawn_instance] Slot $slot pre-reserved, proceeding with launch" >&2
     fi
 
     echo "[spawn_instance] Launching instance for slot $slot ($event_node, $js_node)" >&2
