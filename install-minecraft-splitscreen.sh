@@ -68,8 +68,30 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
-# GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/feat/controlify-isolation/modules"
+# Detect repository URL from git remote, or use a sensible default.
+# This avoids hardcoding a branch name — works on any branch.
+_detect_repo_base_url() {
+    # If we're in a git clone, derive URL from the origin remote.
+    if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        local origin_url
+        origin_url=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)
+        if [[ -n "$origin_url" ]]; then
+            # Convert git@github.com:user/repo.git → raw.githubusercontent.com/user/repo/main/modules
+            # Also handle https://github.com/user/repo.git
+            local repo_path
+            repo_path=$(echo "$origin_url" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+            if [[ -n "$repo_path" ]]; then
+                local branch
+                branch=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+                echo "https://raw.githubusercontent.com/${repo_path}/${branch}/modules"
+                return 0
+            fi
+        fi
+    fi
+    # Fallback — user should set INSTALLER_SOURCE_URL or run from a git clone.
+    echo "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
+}
+readonly REPO_BASE_URL="$(_detect_repo_base_url)"
 
 # List of required module files
 readonly MODULE_FILES=(
