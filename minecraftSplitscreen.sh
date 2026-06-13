@@ -606,8 +606,10 @@ main() {
     _WATCH_DISPLAY_PID=$!
     echo "[orchestrator] Display watcher PID: $_WATCH_DISPLAY_PID" >&2
 
-    # Hide KDE panels
-    hidePanels
+    # Hide KDE panels (only in Game Mode / gamescope — Desktop Mode has a full desktop)
+    if isSteamDeckGameMode; then
+        hidePanels
+    fi
 
     # Determine mode and branch
     display_mode=$(get_display_mode)
