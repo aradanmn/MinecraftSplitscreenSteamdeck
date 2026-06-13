@@ -176,7 +176,7 @@ bwrap \
   --dev-bind "${js_node}" "${js_node}" \
   -- \
   env \
-    SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT="0x28DE/0x11FF" \
+    SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT="" \
     SDL_JOYSTICK_DEVICE="${js_node}" \
     SDL_JOYSTICK_HIDAPI=0 \
     SDL_LINUX_JOYSTICK_CLASSIC=1 \
