@@ -62,28 +62,27 @@ _get_launcher_exec() {
     echo "${LAUNCHER_EXEC:-$(_get_launcher_dir)/PolyMC.AppImage}"
 }
 
-# _ensure_state_file: Create the state file with default structure if it doesn't exist.
+# _ensure_state_file: Reset the state file to default (all slots inactive).
+# Called on every startup to guarantee a known clean state.
 _ensure_state_file() {
     local state_file
     state_file=$(_get_state_file)
 
-    if [[ ! -f "$state_file" ]]; then
-        local dir
-        dir=$(dirname "$state_file")
-        mkdir -p "$dir"
+    local dir
+    dir=$(dirname "$state_file")
+    mkdir -p "$dir"
 
-        # Initialize with all 4 slots inactive
-        jq -n '{
-            mode: "handheld",
-            slots: {
-                "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-                "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-                "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-                "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null}
-            }
-        }' > "$state_file"
-        echo "[instance_lifecycle] Initialized state file: $state_file" >&2
-    fi
+    # Always reset — stale state from a previous crashed session poisons the next
+    jq -n '{
+        mode: "handheld",
+        slots: {
+            "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
+            "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
+            "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
+            "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null}
+        }
+    }' > "$state_file"
+    echo "[instance_lifecycle] Reset state file: $state_file" >&2
 }
 
 # _atomic_write: Write JSON content atomically to a file.
@@ -247,8 +246,6 @@ read_state() {
     local state_file
     state_file=$(_get_state_file)
 
-    _ensure_state_file
-
     jq -c '.' "$state_file" 2>/dev/null || echo "null"
 }
 
@@ -261,7 +258,10 @@ update_slot_state() {
     local state_file
     state_file=$(_get_state_file)
 
-    _ensure_state_file
+    # Only initialize if missing — main() calls _ensure_state_file at startup
+    if [[ ! -f "$state_file" ]]; then
+        _ensure_state_file
+    fi
 
     local updated
     updated=$(jq --arg slot "$slot" --argjson merge "$merge_json" \

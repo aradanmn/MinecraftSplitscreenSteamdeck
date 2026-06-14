@@ -592,6 +592,9 @@ main() {
 
     # --- Startup sequence ---
 
+    # Reset state file to known clean state (stale PIDs from crashed sessions)
+    _ensure_state_file
+
     # Detect XAUTHORITY if not set (SSH sessions lack it)
     if [[ -z "${XAUTHORITY:-}" ]]; then
         for _xa in /run/user/1000/xauth_* ~/.Xauthority; do
