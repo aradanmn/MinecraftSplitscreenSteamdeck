@@ -70,7 +70,7 @@ selfUpdate() {
         return
     fi
     if ! cmp -s "$tmpfile" "$script_path"; then
-        if [ -z "$PS1" ] && [ -z "$TERM_PROGRAM" ] && ! tty -s; then
+        if [ -z "${PS1:-}" ] && [ -z "${TERM_PROGRAM:-}" ] && ! tty -s; then
             echo "[Self-Update] Update available. Skipping prompt in non-interactive mode."
             rm -f "$tmpfile"
             return
