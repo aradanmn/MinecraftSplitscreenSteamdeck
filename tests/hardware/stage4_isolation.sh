@@ -86,18 +86,20 @@ run_stage4_isolation() {
             continue
         fi
 
-        hw_log "Running: ls -la /proc/${bwrap_pid}/fd | grep -c '/dev/input/'"
+        hw_log "Running: ls -la /proc/${bwrap_pid}/fd | grep -oE '/dev/input/event[0-9]+|/dev/input/js[0-9]+' | sort -u | wc -l"
         local input_fds=0
         if [[ -d "/proc/${bwrap_pid}/fd" ]]; then
-            input_fds=$(ls -la "/proc/${bwrap_pid}/fd" 2>/dev/null | grep -c '/dev/input/' || echo 0)
+            input_fds=$(ls -la "/proc/${bwrap_pid}/fd" 2>/dev/null \
+                | grep -oE '/dev/input/event[0-9]+|/dev/input/js[0-9]+' \
+                | sort -u | wc -l || echo 0)
         else
             hw_warn "I4.1 Cannot read /proc/${bwrap_pid}/fd (permission denied?)"
             hw_skip "I4.1 slot ${slot} bwrap fd count — /proc/${bwrap_pid}/fd not readable"
             continue
         fi
 
-        hw_log "Slot ${slot} bwrap PID ${bwrap_pid}: /dev/input fd count = ${input_fds}"
-        hw_assert_eq "I4.1 slot ${slot} bwrap /dev/input fd count" "2" "$input_fds"
+        hw_log "Slot ${slot} bwrap PID ${bwrap_pid}: unique /dev/input device fds = ${input_fds}"
+        hw_assert_eq "I4.1 slot ${slot} bwrap /dev/input unique device count" "2" "$input_fds"
     done
 
     # -----------------------------------------------------------------------

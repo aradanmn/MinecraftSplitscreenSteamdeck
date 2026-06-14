@@ -37,7 +37,7 @@ run_stage0_prereqs() {
     # P0.1 — Required commands present
     # -----------------------------------------------------------------------
     hw_info "P0.1 — Checking required commands"
-    local required_cmds=(bwrap jq xdotool python3 busctl)
+    local required_cmds=(bwrap jq xdotool python3 busctl bc)
     for cmd in "${required_cmds[@]}"; do
         hw_log "Running: command -v ${cmd}"
         if command -v "$cmd" >/dev/null 2>&1; then

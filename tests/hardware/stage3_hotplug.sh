@@ -212,10 +212,9 @@ run_stage3_hotplug() {
         hw_skip "D3.9 — max-4 cap test skipped (no 5th controller)"
     fi
 
-    hw_stop_orchestrator
     hw_dump_state
     hw_dump_processes
-    hw_info "Stage 3 complete"
+    hw_info "Stage 3 complete — orchestrator left running for stages 4 and 5"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
