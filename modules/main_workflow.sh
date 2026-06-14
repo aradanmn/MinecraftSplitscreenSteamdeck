@@ -63,6 +63,7 @@ main() {
     # CORE SYSTEM REQUIREMENTS VALIDATION
     # =============================================================================
     
+    ensure_bwrap_installed         # Verify/install bubblewrap (required by the launcher sandbox)
     download_prism_launcher        # Download PolyMC AppImage for splitscreen launcher usage
     
     # =============================================================================
@@ -111,6 +112,7 @@ main() {
     
     create_instances             # Create 4 splitscreen instances using manual configuration
     setup_splitscreen_launcher_script   # Install minecraftSplitscreen.sh into launcher directory
+    install_runtime_modules      # Deploy dock_detection, controller_monitor, etc. to TARGET_DIR/modules/
     
     # =============================================================================
     # SYSTEM INTEGRATION PHASE: Optional platform integration
