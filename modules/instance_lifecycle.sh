@@ -163,6 +163,8 @@ _build_bwrap_command() {
     # PolyMC's AppImage supports --jvm-args for passing JVM flags.
     cat <<CMDEOF
 bwrap \
+  --uid 1000 \
+  --gid 1000 \
   --dev-bind / / \
   --dev /dev \
   --dev-bind /dev/fuse /dev/fuse \
