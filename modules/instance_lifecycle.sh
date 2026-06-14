@@ -177,12 +177,16 @@ bwrap \
   --dev-bind /dev/hidraw1 /dev/hidraw1 \
   --dev-bind /dev/hidraw2 /dev/hidraw2 \
   -- \
-  env \
-    SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
-    SDL_HIDAPI_LIBUSB_WHITELIST=0 \
-  "${launcher_exec}" \
-    -l "latestUpdate-${slot}" \
-    -a "P${slot}"
+  bash -c "
+    # Disable all X11 keyboard keys for this client (per-connection, does not affect host)
+    for kc in \$(seq 0 255); do xmodmap -e \"keycode \$kc = NoSymbol\" 2>/dev/null; done
+    exec env \
+      SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
+      SDL_HIDAPI_LIBUSB_WHITELIST=0 \
+      \"${launcher_exec}\" \
+        -l \"latestUpdate-${slot}\" \
+        -a \"P${slot}\"
+  "
 CMDEOF
 }
 
