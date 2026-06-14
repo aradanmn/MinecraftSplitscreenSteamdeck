@@ -263,6 +263,10 @@ apply_layout() {
     grid_mode=$(compute_grid_mode "$active_slots")
 
     echo "[window_manager] Applying layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
+    echo "[window_manager] All visible windows:" >&2
+    xdotool search --name "." 2>/dev/null | while read w; do
+        echo "  $w: $(xdotool getwindowname $w 2>/dev/null || echo '?')" >&2
+    done
 
     # In full mode, only slot 1 matters — no placeholders needed for other slots
     if [[ "$grid_mode" == "full" ]]; then
