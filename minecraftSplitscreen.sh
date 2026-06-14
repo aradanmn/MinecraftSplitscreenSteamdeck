@@ -562,6 +562,13 @@ cleanup() {
 main() {
     trap cleanup EXIT
 
+    # --native: bare PolyMC launch, no orchestration, for testing controller
+    if [ "${1:-}" = "--native" ]; then
+        detectLauncher
+        echo "[native-test] Launching bare PolyMC: ${LAUNCHER_EXEC} -l latestUpdate-1 -a P1"
+        exec "${LAUNCHER_EXEC}" -l latestUpdate-1 -a P1
+    fi
+
     # --- Session logging: tee stderr to persistent log for post-mortem ---
     local SESSION_LOG="$HOME/splitscreen-session.log"
     exec 2> >(tee -a "$SESSION_LOG" >&2)
