@@ -242,6 +242,9 @@ LWJGL_VERSION=""
 declare -a REQUIRED_SPLITSCREEN_MODS=()
 declare -a REQUIRED_SPLITSCREEN_IDS=()
 declare -a MODS=()
+# Dependency map: mod name → comma-separated names of mods it requires.
+# Used by resolve_conf_dependencies() in mod_management.sh.
+declare -A MOD_DEPS_BY_NAME=()
 
 # load_mods_config: Populate MODS, REQUIRED_SPLITSCREEN_MODS, and
 # REQUIRED_SPLITSCREEN_IDS from mods.conf (next to this script).
@@ -251,24 +254,30 @@ load_mods_config() {
 
     if [[ ! -f "$conf" ]]; then
         echo "[mods] mods.conf not found at ${conf} — using built-in defaults" >&2
-        # Built-in defaults (mirror of what mods.conf ships with)
         REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
         REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
         MODS=(
             "Controlify|modrinth|DOUdJVEm"
             "Splitscreen Support|modrinth|yJgqfSDR"
+            "Sodium|modrinth|AANobbMI"
+            "Sodium Options API|modrinth|Es5v4eyq"
+            "Reese's Sodium Options|modrinth|Bh37bMuy"
+            "Sodium Extra|modrinth|PtjYWJkn"
+            "Sodium Extras|modrinth|vqqx0QiE"
+            "Sodium Dynamic Lights|modrinth|PxQSWIcD"
             "Better Name Visibility|modrinth|pSfNeCCY"
             "Full Brightness Toggle|modrinth|aEK1KhsC"
             "In-Game Account Switcher|modrinth|cudtvDnd"
             "Just Zoom|modrinth|iAiqcykM"
             "Mod Menu|modrinth|mOgUt4GM"
             "Old Combat Mod|modrinth|dZ1APLkO"
-            "Reese's Sodium Options|modrinth|Bh37bMuy"
-            "Sodium|modrinth|AANobbMI"
-            "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-            "Sodium Extra|modrinth|PtjYWJkn"
-            "Sodium Extras|modrinth|vqqx0QiE"
-            "Sodium Options API|modrinth|Es5v4eyq"
+        )
+        MOD_DEPS_BY_NAME=(
+            ["Sodium Options API"]="Sodium"
+            ["Reese's Sodium Options"]="Sodium,Sodium Options API"
+            ["Sodium Extra"]="Sodium"
+            ["Sodium Extras"]="Sodium"
+            ["Sodium Dynamic Lights"]="Sodium"
         )
         return 0
     fi
@@ -281,11 +290,13 @@ load_mods_config() {
         line="${line%"${line##*[![:space:]]}"}"
         [[ -z "$line" ]] && continue
 
-        local type name platform id
-        IFS='|' read -r type name platform id <<< "$line"
+        local type name platform id deps
+        IFS='|' read -r type name platform id deps <<< "$line"
         # Trim whitespace from each field
-        type="${type// /}"; name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        type="${type// /}"
+        name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
         platform="${platform// /}"; id="${id// /}"
+        deps="${deps#"${deps%%[![:space:]]*}"}"; deps="${deps%"${deps##*[![:space:]]}"}"
 
         MODS+=("${name}|${platform}|${id}")
 
@@ -293,9 +304,13 @@ load_mods_config() {
             REQUIRED_SPLITSCREEN_MODS+=("$name")
             REQUIRED_SPLITSCREEN_IDS+=("$id")
         fi
+
+        if [[ -n "$deps" ]]; then
+            MOD_DEPS_BY_NAME["$name"]="$deps"
+        fi
     done < "$conf"
 
-    echo "[mods] Loaded ${#MODS[@]} mods (${#REQUIRED_SPLITSCREEN_MODS[@]} required)" >&2
+    echo "[mods] Loaded ${#MODS[@]} mods (${#REQUIRED_SPLITSCREEN_MODS[@]} required, ${#MOD_DEPS_BY_NAME[@]} with declared deps)" >&2
 }
 
 load_mods_config

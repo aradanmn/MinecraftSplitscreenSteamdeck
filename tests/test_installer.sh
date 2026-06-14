@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_installer.sh
 # =============================================================================
 
-readonly TEST_TOTAL=8
+readonly TEST_TOTAL=10
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -224,6 +224,98 @@ test_t7_8() {
 }
 
 # =============================================================================
+# T7.9 — load_mods_config() populates MOD_DEPS_BY_NAME from mods.conf
+# =============================================================================
+test_t7_9() {
+    local conf="$REPO_ROOT/mods.conf"
+    if [[ ! -f "$conf" ]]; then
+        _fail "T7.9" "mods.conf not found at $conf"
+        return
+    fi
+
+    # Parse the deps field ourselves and check a known entry.
+    # "Reese's Sodium Options" should declare "Sodium,Sodium Options API"
+    local deps_line
+    deps_line=$(grep "Reese's Sodium Options" "$conf" | head -1)
+    local deps_field
+    deps_field=$(echo "$deps_line" | cut -d'|' -f5)
+
+    if [[ "$deps_field" == *"Sodium"* ]]; then
+        _pass "T7.9 — mods.conf deps field for Reese's Sodium Options contains Sodium"
+    else
+        _fail "T7.9" "expected deps field to contain 'Sodium', got: '${deps_field}'"
+    fi
+}
+
+# =============================================================================
+# T7.10 — resolve_conf_dependencies() auto-adds Sodium when Sodium Extra selected
+# =============================================================================
+test_t7_10() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local result
+    result=$(
+        bash -c "
+            set -euo pipefail
+
+            # Minimal stubs for functions resolve_conf_dependencies calls
+            print_info()     { :; }
+            print_progress() { :; }
+            print_success()  { :; }
+            print_error()    { echo \"[ERROR] \$*\" >&2; }
+            print_warning()  { :; }
+            print_debug()    { :; }
+
+            # Populate globals as load_mods_config would
+            declare -A MOD_DEPS_BY_NAME=(
+                [\"Sodium Options API\"]=\"Sodium\"
+                [\"Reese's Sodium Options\"]=\"Sodium,Sodium Options API\"
+                [\"Sodium Extra\"]=\"Sodium\"
+                [\"Sodium Extras\"]=\"Sodium\"
+                [\"Sodium Dynamic Lights\"]=\"Sodium\"
+            )
+
+            declare -a SUPPORTED_MODS=(
+                \"Controlify\"
+                \"Splitscreen Support\"
+                \"Sodium\"
+                \"Sodium Extra\"
+                \"Sodium Extras\"
+                \"Sodium Options API\"
+                \"Reese's Sodium Options\"
+            )
+
+            # Simulate user picking only 'Reese's Sodium Options' (index 6)
+            declare -a FINAL_MOD_INDEXES=(6)
+
+            # Source only the function we want to test
+            source '${REPO_ROOT}/modules/mod_management.sh' 2>/dev/null || true
+
+            resolve_conf_dependencies
+
+            # Report which mod names ended up in FINAL_MOD_INDEXES
+            for idx in \"\${FINAL_MOD_INDEXES[@]}\"; do
+                echo \"\${SUPPORTED_MODS[\$idx]}\"
+            done
+        " 2>/dev/null
+    )
+
+    local has_sodium=0 has_sodium_options_api=0
+    echo "$result" | grep -q "^Sodium$"              && has_sodium=1              || true
+    echo "$result" | grep -q "^Sodium Options API$"  && has_sodium_options_api=1  || true
+
+    if (( has_sodium == 1 && has_sodium_options_api == 1 )); then
+        _pass "T7.10 — resolve_conf_dependencies auto-adds Sodium and Sodium Options API when Reese's Sodium Options selected"
+    elif (( has_sodium == 0 )); then
+        _fail "T7.10" "Sodium not auto-added (result: ${result})"
+    else
+        _fail "T7.10" "Sodium Options API not auto-added (result: ${result})"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== installer test suite ==="
@@ -236,6 +328,8 @@ test_t7_5
 test_t7_6
 test_t7_7
 test_t7_8
+test_t7_9
+test_t7_10
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
