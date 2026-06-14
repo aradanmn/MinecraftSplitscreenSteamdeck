@@ -376,22 +376,11 @@ spawn_instance() {
     # 4. Mark slot as active in state file (preliminary, bwrap_pid filled after launch)
     update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
 
-    # 5. Grab Steam Controller keyboard to block X11 keyboard events
-    local grab_pid=""
-    if [[ -e /dev/input/event14 ]]; then
-        evtest --grab /dev/input/event14 >/dev/null 2>&1 &
-        grab_pid=$!
-        echo "[spawn_instance] Grabbed event14 (Steam Controller kbd), PID $grab_pid" >&2
-    fi
-
-    # 6. Spawn the instance
+    # 5. Spawn the instance
     eval "$bwrap_command" &
     local bwrap_pid=$!
 
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
-    if [[ -n "$grab_pid" ]]; then
-        update_slot_state "$slot" "{\"grab_pid\": ${grab_pid}}"
-    fi
     echo "[spawn_instance] bwrap PID: $bwrap_pid" >&2
 
     # 6. Poll for Java process
@@ -427,14 +416,6 @@ teardown_instance() {
     bwrap_pid=$(get_bwrap_pid "$slot")
     local java_pid
     java_pid=$(get_java_pid "$slot")
-    local grab_pid
-    grab_pid=$(jq -r ".slots[\"$slot\"].grab_pid // empty" "$SPLITSCREEN_STATE" 2>/dev/null || true)
-
-    # 1. Release evtest grab on Steam Controller keyboard
-    if [[ -n "$grab_pid" ]] && kill -0 "$grab_pid" 2>/dev/null; then
-        kill "$grab_pid" 2>/dev/null || true
-        echo "[teardown_instance] Released event14 grab (PID $grab_pid)" >&2
-    fi
 
     # 1. Send SIGTERM to bwrap_pid
     if [[ -n "$bwrap_pid" ]]; then
