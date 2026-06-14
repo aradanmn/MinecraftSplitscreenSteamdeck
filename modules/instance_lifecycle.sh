@@ -163,8 +163,6 @@ _build_bwrap_command() {
     # PolyMC's AppImage supports --jvm-args for passing JVM flags.
     cat <<CMDEOF
 bwrap \
-  --uid 1000 \
-  --gid 1000 \
   --dev-bind / / \
   --dev /dev \
   --dev-bind /dev/fuse /dev/fuse \
@@ -173,12 +171,13 @@ bwrap \
   --dev-bind /home /home \
   --dev-bind /run /run \
   --dev-bind /dev/dri /dev/dri \
-  --dev-bind /dev/hidraw0 /dev/hidraw0 \
-  --dev-bind /dev/hidraw1 /dev/hidraw1 \
-  --dev-bind /dev/hidraw2 /dev/hidraw2 \
+  --dev-bind "${js_node}" "${js_node}" \
   -- \
-  /home/deck/.local/share/PolyMC/splitscreen-launch-wrapper.sh \
-    "latestUpdate-${slot}" "P${slot}"
+  env \
+    SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
+  "${launcher_exec}" \
+    -l "latestUpdate-${slot}" \
+    -a "P${slot}"
 CMDEOF
 }
 
