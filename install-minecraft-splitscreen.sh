@@ -71,8 +71,8 @@ MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 # GitHub repository information (modify these URLs to match your actual repository)
 readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
 
-# List of required module files
-readonly MODULE_FILES=(
+# Installer modules — sourced during installation to run the setup workflow.
+readonly INSTALLER_MODULE_FILES=(
     "utilities.sh"
     "java_management.sh"
     "launcher_setup.sh"
@@ -84,6 +84,19 @@ readonly MODULE_FILES=(
     "desktop_launcher.sh"
     "main_workflow.sh"
 )
+
+# Runtime orchestrator modules — deployed to TARGET_DIR/modules/ so the launcher
+# can source them at play time. NOT sourced by the installer.
+readonly RUNTIME_MODULE_FILES=(
+    "dock_detection.sh"
+    "controller_monitor.sh"
+    "window_manager.sh"
+    "instance_lifecycle.sh"
+    "watchdog.sh"
+)
+
+# Combined list used by download_modules and the presence check below.
+readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
 
 # Function to download modules if they don't exist
 download_modules() {
@@ -198,8 +211,9 @@ for module in "${MODULE_FILES[@]}"; do
     fi
 done
 
-# Source all module files to load their functions
-# Load modules in dependency order
+# Source installer modules to load their functions (dependency order).
+# Runtime orchestrator modules (dock_detection, controller_monitor, etc.) are
+# deployed to TARGET_DIR/modules/ by install_runtime_modules() — not sourced here.
 source "$MODULES_DIR/utilities.sh"
 source "$MODULES_DIR/java_management.sh"
 source "$MODULES_DIR/launcher_setup.sh"
@@ -225,14 +239,14 @@ FABRIC_VERSION=""
 LWJGL_VERSION=""
 
 # Mod configuration arrays
-declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
-declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
+declare -a REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
+declare -a REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
 
 # Master list of all available mods with their metadata
 # Format: "Mod Name|platform|mod_id"
 declare -a MODS=(
     "Better Name Visibility|modrinth|pSfNeCCY"
-    "Controllable (Fabric)|curseforge|317269"
+    "Controlify|modrinth|DOUdJVEm"
     "Full Brightness Toggle|modrinth|aEK1KhsC"
     "In-Game Account Switcher|modrinth|cudtvDnd"
     "Just Zoom|modrinth|iAiqcykM"

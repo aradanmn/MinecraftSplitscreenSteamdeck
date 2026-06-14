@@ -952,20 +952,13 @@ resolve_curseforge_dependencies_api() {
     if [[ -z "$dependencies" ]]; then
         dependencies=$(fallback_dependencies "$mod_id" "curseforge")
     fi
-    if [[ -z "$dependencies" ]]; then
     # Critical dependency fallbacks for 1.21.1
     if [[ -z "$dependencies" ]]; then
-        case "$mod_id" in
-            "317269")  # Controllable
-                dependencies="634179"  # Framework
-                ;;
-        esac
-    fi
         case "$mod_id" in
             "238222")  # JEI
                 dependencies="306612"  # Fabric API
                 ;;
-            "325471")  # Controllable  
+            "325471")  # Controllable (legacy)
                 dependencies="634179"  # Framework
                 ;;
         esac
@@ -1097,8 +1090,8 @@ fetch_and_add_external_mod() {
             # Fallback for known mods if API fails
             if [[ -z "$mod_title" ]]; then
                 case "$ext_mod_id" in
-                    "317269")  # Controllable
-                        mod_title="Controllable (Fabric)"
+                    "DOUdJVEm")  # Controlify
+                        mod_title="Controlify"
                         mod_description="Adds controller support to Minecraft"
                         ;;
                     "306612")  # Fabric API

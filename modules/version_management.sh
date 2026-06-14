@@ -6,7 +6,7 @@
 # Intelligent version selection based on required mod compatibility
 
 # get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for Controllable and Splitscreen Support to find compatible versions
+# Queries APIs for Controlify and Splitscreen Support to find compatible versions
 # Returns: Array of supported Minecraft versions in descending order (newest first)
 get_supported_minecraft_versions() {
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
@@ -45,19 +45,19 @@ get_supported_minecraft_versions() {
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
         
-        local controllable_compatible=false
+        local controlify_compatible=false
         local splitscreen_compatible=false
-        
-        # Check Controllable (CurseForge mod 317269)
-        if check_mod_version_compatibility "317269" "curseforge" "$mc_version"; then
-            controllable_compatible=true
+
+        # Check Controlify (Modrinth mod DOUdJVEm)
+        if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
+            controlify_compatible=true
         fi
-        
-        # Check Splitscreen Support (Modrinth mod yJgqfSDR)  
+
+        # Check Splitscreen Support (Modrinth mod yJgqfSDR)
         if check_mod_version_compatibility "yJgqfSDR" "modrinth" "$mc_version"; then
             splitscreen_compatible=true
         fi
-        
+
         local extra_mod_compatible=true
         if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
             if ! check_mod_version_compatibility "$extra_mod_id" "$extra_mod_platform" "$mc_version" "true"; then
@@ -67,7 +67,7 @@ get_supported_minecraft_versions() {
 
         # Only include versions where core required mods are available,
         # and custom required mod too when specified.
-        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
+        if [[ "$controlify_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
             supported_versions+=("$mc_version")
             if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
                 print_success "    ✅ $mc_version - Core mods + $extra_mod_name compatible" >&2
@@ -302,8 +302,8 @@ fallback_dependencies() {
         "modrinth:yJgqfSDR")  # Splitscreen Support
             echo "P7dR8mSH" # Fabric API
             ;;
-        "curseforge:317269")  # Controllable
-            echo "634179"  # Framework
+        "modrinth:DOUdJVEm")  # Controlify
+            echo "P7dR8mSH"  # Fabric API
             ;;
         *)
             echo ""

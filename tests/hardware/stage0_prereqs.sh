@@ -170,6 +170,42 @@ run_stage0_prereqs() {
     fi
 
     # -----------------------------------------------------------------------
+    # P0.9 — Runtime orchestrator modules present in TARGET_DIR/modules/
+    # -----------------------------------------------------------------------
+    hw_info "P0.9 — Checking runtime modules in ~/.local/share/PolyMC/modules/"
+    local runtime_modules_dir="$HOME/.local/share/PolyMC/modules"
+    local runtime_mods=(
+        "dock_detection.sh"
+        "controller_monitor.sh"
+        "window_manager.sh"
+        "instance_lifecycle.sh"
+        "watchdog.sh"
+    )
+    local all_runtime_ok=1
+    for mod in "${runtime_mods[@]}"; do
+        local mod_path="$runtime_modules_dir/$mod"
+        hw_log "Checking: ${mod_path}"
+        if [[ -f "$mod_path" ]]; then
+            local bash_mod_out
+            bash_mod_out=$(bash -n "$mod_path" 2>&1 || true)
+            if bash -n "$mod_path" 2>/dev/null; then
+                hw_pass "P0.9 runtime module OK: ${mod}"
+            else
+                hw_fail "P0.9 runtime module syntax error: ${mod}: ${bash_mod_out}"
+                prereq_failed=1
+                all_runtime_ok=0
+            fi
+        else
+            hw_fail "P0.9 runtime module MISSING: ${mod_path}"
+            prereq_failed=1
+            all_runtime_ok=0
+        fi
+    done
+    if (( all_runtime_ok == 1 )); then
+        hw_info "All 5 runtime modules present and syntactically valid"
+    fi
+
+    # -----------------------------------------------------------------------
     # Final verdict
     # -----------------------------------------------------------------------
     hw_dump_input_devices

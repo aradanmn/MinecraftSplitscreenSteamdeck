@@ -24,12 +24,13 @@ Usage:
   bash run_all.sh --help       Print this help.
 
 Stages:
-  stage0  Prerequisites check (automated)
-  stage1  Module smoke tests (automated)
-  stage2  Handheld mode (operator prompts)
-  stage3  Docked hot-plug (operator prompts)
-  stage4  Controller isolation verification
-  stage5  Crash recovery (mostly automated)
+  stage0   Prerequisites check (automated)
+  stage0b  Full installer verification (operator + automated) — run before stage1
+  stage1   Module smoke tests (automated)
+  stage2   Handheld mode (operator prompts)
+  stage3   Docked hot-plug (operator prompts)
+  stage4   Controller isolation verification
+  stage5   Crash recovery (mostly automated)
 
 Environment:
   DISPLAY      X display to use (auto-detected if not set)
@@ -138,6 +139,7 @@ else
         exit 1
     fi
 
+    run_stage "stage0b_install"
     run_stage "stage1_modules"
     run_stage "stage2_handheld"
     run_stage "stage3_hotplug"
