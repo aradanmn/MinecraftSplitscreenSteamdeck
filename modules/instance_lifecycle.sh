@@ -171,7 +171,6 @@ bwrap \
   --dev-bind /home /home \
   --dev-bind /run /run \
   --dev-bind /dev/dri /dev/dri \
-  --dev-bind "${event_node}" "${event_node}" \
   --dev-bind "${js_node}" "${js_node}" \
   -- \
   env \
