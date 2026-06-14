@@ -69,18 +69,19 @@ check_modrinth_mod() {
     local dep_ids=""      # Space-separated list of dependency mod IDs
     
     # STAGE 1: Try exact version match with Fabric loader requirement
-    # Example: Looking for exactly "1.21.3" with "fabric" loader
+    # Legacy example: "1.21.3". New yearly-format example: "26.1.1" or "26.1".
     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
     if [[ -n "$file_url" && "$file_url" != "null" ]]; then
         dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
     fi
     
-    # STAGE 2: Try major.minor version match if exact match failed
-    # Example: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    # STAGE 2: Try major.minor version match if exact match failed.
+    # Legacy: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    # New:    "26.1.1" -> try "26.1", "26.1.x", "26.1.0" (same logic, format-agnostic)
     # BUT ONLY if no specific patch version exists that's higher than what we're looking for
     if [[ -z "$file_url" || "$file_url" == "null" ]]; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # "1.21" from "1.21.3" or "26.1" from "26.1.1"
         
         # Before trying major.minor match, check if this version is higher than existing patch versions
         # This prevents matching 1.21 when looking for 1.21.6 if the highest patch version is only 1.21.5
@@ -805,7 +806,7 @@ resolve_modrinth_dependencies_api() {
     # Use simpler approach: find fabric versions for our Minecraft version
     if command -v jq >/dev/null 2>&1; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # "1.21" from "1.21.3" or "26.1" from "26.1.1"
         
         # Simple jq filter to get dependencies from compatible fabric versions with strict matching
         # Use temporary file to avoid command line length limits
@@ -952,14 +953,11 @@ resolve_curseforge_dependencies_api() {
     if [[ -z "$dependencies" ]]; then
         dependencies=$(fallback_dependencies "$mod_id" "curseforge")
     fi
-    # Critical dependency fallbacks for 1.21.1
+    # Critical dependency fallbacks (legacy 1.21.1 era — kept for backward compat)
     if [[ -z "$dependencies" ]]; then
         case "$mod_id" in
             "238222")  # JEI
                 dependencies="306612"  # Fabric API
-                ;;
-            "325471")  # Controllable (legacy)
-                dependencies="634179"  # Framework
                 ;;
         esac
     fi
@@ -2009,21 +2007,6 @@ select_user_mods() {
 add_mod_dependencies() {
     local mod_idx="$1"
     local -n added_ref="$2"
-    
-    # Handle special case for Controllable (needs Framework)
-    if [[ "${SUPPORTED_MODS[$mod_idx]}" == "Controllable (Fabric)"* ]]; then
-        for j in "${!MODS[@]}"; do
-            IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "${MODS[$j]}"
-            if [[ "$MOD_NAME" == "Framework (Fabric)"* ]]; then
-                for k in "${!MOD_IDS[@]}"; do
-                    if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [[ -z "${added_ref[$k]:-}" ]]; then
-                        FINAL_MOD_INDEXES+=("$k")
-                        added_ref[$k]=1
-                    fi
-                done
-            fi
-        done
-    fi
     
     # Add Modrinth dependencies
     local dep_string="${MOD_DEPENDENCIES[$mod_idx]}"

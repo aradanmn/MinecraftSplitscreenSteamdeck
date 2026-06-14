@@ -238,28 +238,67 @@ MC_VERSION=""
 FABRIC_VERSION=""
 LWJGL_VERSION=""
 
-# Mod configuration arrays
-declare -a REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
-declare -a REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
+# Mod configuration arrays — populated by load_mods_config() below.
+declare -a REQUIRED_SPLITSCREEN_MODS=()
+declare -a REQUIRED_SPLITSCREEN_IDS=()
+declare -a MODS=()
 
-# Master list of all available mods with their metadata
-# Format: "Mod Name|platform|mod_id"
-declare -a MODS=(
-    "Better Name Visibility|modrinth|pSfNeCCY"
-    "Controlify|modrinth|DOUdJVEm"
-    "Full Brightness Toggle|modrinth|aEK1KhsC"
-    "In-Game Account Switcher|modrinth|cudtvDnd"
-    "Just Zoom|modrinth|iAiqcykM"
-    "Mod Menu|modrinth|mOgUt4GM"
-    "Old Combat Mod|modrinth|dZ1APLkO"
-    "Reese's Sodium Options|modrinth|Bh37bMuy"
-    "Sodium|modrinth|AANobbMI"
-    "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-    "Sodium Extra|modrinth|PtjYWJkn"
-    "Sodium Extras|modrinth|vqqx0QiE"
-    "Sodium Options API|modrinth|Es5v4eyq"
-    "Splitscreen Support|modrinth|yJgqfSDR"
-)
+# load_mods_config: Populate MODS, REQUIRED_SPLITSCREEN_MODS, and
+# REQUIRED_SPLITSCREEN_IDS from mods.conf (next to this script).
+# Falls back to built-in defaults if the file is missing.
+load_mods_config() {
+    local conf="${SCRIPT_DIR}/mods.conf"
+
+    if [[ ! -f "$conf" ]]; then
+        echo "[mods] mods.conf not found at ${conf} — using built-in defaults" >&2
+        # Built-in defaults (mirror of what mods.conf ships with)
+        REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
+        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
+        MODS=(
+            "Controlify|modrinth|DOUdJVEm"
+            "Splitscreen Support|modrinth|yJgqfSDR"
+            "Better Name Visibility|modrinth|pSfNeCCY"
+            "Full Brightness Toggle|modrinth|aEK1KhsC"
+            "In-Game Account Switcher|modrinth|cudtvDnd"
+            "Just Zoom|modrinth|iAiqcykM"
+            "Mod Menu|modrinth|mOgUt4GM"
+            "Old Combat Mod|modrinth|dZ1APLkO"
+            "Reese's Sodium Options|modrinth|Bh37bMuy"
+            "Sodium|modrinth|AANobbMI"
+            "Sodium Dynamic Lights|modrinth|PxQSWIcD"
+            "Sodium Extra|modrinth|PtjYWJkn"
+            "Sodium Extras|modrinth|vqqx0QiE"
+            "Sodium Options API|modrinth|Es5v4eyq"
+        )
+        return 0
+    fi
+
+    echo "[mods] Loading mod list from ${conf}" >&2
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip inline comments, then leading/trailing whitespace
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+
+        local type name platform id
+        IFS='|' read -r type name platform id <<< "$line"
+        # Trim whitespace from each field
+        type="${type// /}"; name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        platform="${platform// /}"; id="${id// /}"
+
+        MODS+=("${name}|${platform}|${id}")
+
+        if [[ "$type" == "required" ]]; then
+            REQUIRED_SPLITSCREEN_MODS+=("$name")
+            REQUIRED_SPLITSCREEN_IDS+=("$id")
+        fi
+    done < "$conf"
+
+    echo "[mods] Loaded ${#MODS[@]} mods (${#REQUIRED_SPLITSCREEN_MODS[@]} required)" >&2
+}
+
+load_mods_config
 
 # Runtime mod tracking arrays (populated during execution)
 declare -a SUPPORTED_MODS=()
