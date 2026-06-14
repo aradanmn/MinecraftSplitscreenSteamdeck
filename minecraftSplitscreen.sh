@@ -591,6 +591,8 @@ main() {
         if [ "${1:-}" = "launchFromPlasma" ]; then
             # Inside nested Plasma session — clean autostart and proceed
             rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+        elif [ "${XDG_SESSION_DESKTOP:-}" = "gamescope" ]; then
+            : # Pure gamescope — bwrap launches directly, no nested Plasma needed
         else
             # Not yet in nested session — start it (never returns)
             nestedPlasma
