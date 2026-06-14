@@ -177,12 +177,8 @@ bwrap \
   --dev-bind /dev/hidraw1 /dev/hidraw1 \
   --dev-bind /dev/hidraw2 /dev/hidraw2 \
   -- \
-  env \
-    SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
-    SDL_HIDAPI_LIBUSB_WHITELIST=0 \
-  "${launcher_exec}" \
-    -l "latestUpdate-${slot}" \
-    -a "P${slot}"
+  /home/deck/.local/share/PolyMC/splitscreen-launch-wrapper.sh \
+    "latestUpdate-${slot}" "P${slot}"
 CMDEOF
 }
 
