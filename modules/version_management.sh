@@ -27,9 +27,11 @@ get_supported_minecraft_versions() {
         print_error "Please check your internet connection and try again" >&2
         return 1
     else
-        # Convert to array and limit to recent versions (last 15 releases for testing)
+        # Take the 20 most-recent release versions. Mojang returns newest-first.
+        # 20 covers the current year's releases (26.0, 26.1, 26.1.1 …) plus several
+        # prior-year versions so older mod support is still visible.
         readarray -t all_versions <<< "$mojang_versions"
-        all_versions=("${all_versions[@]:0:15}")
+        all_versions=("${all_versions[@]:0:20}")
     fi
     
     print_info "Checking compatibility for required splitscreen mods..." >&2
@@ -102,8 +104,10 @@ get_supported_minecraft_versions() {
 # This is a lightweight version check that doesn't add mods to arrays
 # Parameters:
 #   $1 - mod_id: Mod ID (Modrinth project ID or CurseForge project ID)
-#   $2 - platform: "modrinth" or "curseforge"  
-#   $3 - mc_version: Minecraft version to check (e.g. "1.21.3")
+#   $2 - platform: "modrinth" or "curseforge"
+#   $3 - mc_version: Minecraft version to check.
+#        Supports both legacy format (e.g. "1.21.3") and the new yearly format
+#        introduced in 2026 (e.g. "26.0", "26.1", "26.1.1" = year.release[.patch]).
 # Returns: 0 if compatible, 1 if not compatible
 check_mod_version_compatibility() {
     local mod_id="$1"
@@ -179,16 +183,17 @@ check_mod_version_compatibility() {
             
             # Only proceed with fallback if allowed
             if [[ $allow_fallback == true ]]; then
-                # Try exact major.minor (e.g., "1.21")
+                # Try exact major.minor (e.g., "1.21" or "26.1")
                 file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
                 
-                # Try wildcard version format (e.g., "1.21.x") 
+                # Try wildcard version format (e.g., "1.21.x" or "26.1.x")
                 if [[ -z "$file_url" || "$file_url" == "null" ]]; then
                     local mc_major_minor_x="$mc_major_minor.x"
                     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
                 fi
                 
-                # Try zero-padded version format (e.g., "1.21.0")
+                # Try zero-padded patch (e.g., "1.21.0" or "26.1.0"); harmless no-op for
+                # the new yearly scheme where base releases have no patch component.
                 if [[ -z "$file_url" || "$file_url" == "null" ]]; then
                     local mc_major_minor_0="$mc_major_minor.0"
                     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
@@ -312,7 +317,7 @@ fallback_dependencies() {
 }
 
 # get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support both Controllable and Splitscreen Support mods
+# Only offers versions that support both Controlify and Splitscreen Support mods
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
     
@@ -350,7 +355,7 @@ get_minecraft_version() {
     done
     
     echo "These versions have been verified to support both essential splitscreen mods:"
-    echo "  ✅ Controllable (controller support)"  
+    echo "  ✅ Controlify (controller support)"
     echo "  ✅ Splitscreen Support (split-screen functionality)"
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
         echo "  ✅ ${EXTRA_REQUIRED_MOD_NAME:-Requested custom mod}"

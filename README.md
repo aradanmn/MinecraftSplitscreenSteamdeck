@@ -11,7 +11,7 @@ Simple installer for running **Minecraft splitscreen (1–4 players)** on Steam 
 - Optionally adds launchers to Steam and desktop
 
 ## Core Mods (Required)
-- [Controllable](https://www.curseforge.com/minecraft/mc-mods/controllable)
+- [Controlify](https://modrinth.com/mod/controlify)
 - [Splitscreen Support](https://modrinth.com/mod/splitscreen)
 
 ## Optional Mods
