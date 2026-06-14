@@ -195,8 +195,7 @@ _poll_for_java() {
     launcher_dir=$(_get_launcher_dir)
     local search_pattern="instances/latestUpdate-${slot}/natives"
 
-    local max_iterations
-    max_iterations=$(bc <<< "scale=0; ${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S} / ${INSTANCE_LIFECYCLE_POLL_INTERVAL_S}" 2>/dev/null || echo "120")
+    local max_iterations=120   # POLL_TIMEOUT_S(60) / POLL_INTERVAL_S(0.5)
 
     local _i
     for (( _i = 0; _i < max_iterations; _i++ )); do
@@ -220,8 +219,7 @@ _poll_for_java() {
 _poll_for_window() {
     local slot="$1"
 
-    local max_iterations
-    max_iterations=$(bc <<< "scale=0; ${INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S} / ${INSTANCE_LIFECYCLE_POLL_INTERVAL_S}" 2>/dev/null || echo "60")
+    local max_iterations=60    # WINDOW_WAIT_TIMEOUT_S(30) / POLL_INTERVAL_S(0.5)
 
     local _i
     for (( _i = 0; _i < max_iterations; _i++ )); do
