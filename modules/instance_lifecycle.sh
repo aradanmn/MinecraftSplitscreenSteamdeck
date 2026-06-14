@@ -171,7 +171,9 @@ bwrap \
   --dev-bind /home /home \
   --dev-bind /run /run \
   --dev-bind /dev/dri /dev/dri \
-  --dev-bind "${js_node}" "${js_node}" \
+  --dev-bind /dev/hidraw0 /dev/hidraw0 \
+  --dev-bind /dev/hidraw1 /dev/hidraw1 \
+  --dev-bind /dev/hidraw2 /dev/hidraw2 \
   -- \
   env \
     SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
