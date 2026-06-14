@@ -25,7 +25,7 @@ source "$_STAGE2_SCRIPT_DIR/lib/helpers.sh"
 hw_detect_display
 source "${REPO_ROOT}/modules/dock_detection.sh"
 
-_run_stage2_handheld() {
+run_stage2_handheld() {
     hw_section "Stage 2: Handheld Mode (non-interactive)"
 
     # --- H2.1 — Confirm handheld mode ---
@@ -133,5 +133,5 @@ _run_stage2_handheld() {
 }
 
 if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
-    _run_stage2_handheld
+    run_stage2_handheld
 fi
