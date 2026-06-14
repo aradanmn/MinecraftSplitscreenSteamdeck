@@ -310,6 +310,7 @@ apply_layout() {
                 xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
                 xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
                 xdotool windowraise "$wid" 2>/dev/null || true
+                echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode)" >&2
             else
                 echo "[window_manager] Window for slot $slot not found (SplitscreenP${slot})" >&2
             fi

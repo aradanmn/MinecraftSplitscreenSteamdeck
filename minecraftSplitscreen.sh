@@ -374,7 +374,11 @@ docked_flow() {
                 fi
             done
             if (( already_active == 0 )); then
+                local dev_vendor dev_product
+                dev_vendor=$(echo "$device_line" | awk '{print $3}')
+                dev_product=$(echo "$device_line" | awk '{print $4}')
                 echo "[orchestrator] Assigning controller to slot $slot ($event_node $js_node)" >&2
+                echo "[orchestrator] SLOT $slot: controller ${dev_vendor}:${dev_product} → $event_node $js_node" >&2
                 # Pre-reserve the slot so next iteration sees it as taken
                 update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
                 spawn_instance "$slot" "$event_node" "$js_node" &
@@ -522,6 +526,7 @@ docked_flow() {
 # =============================
 cleanup() {
     echo "[orchestrator] Cleanup: shutting down" >&2
+    echo "=== SESSION END: $(date) === slots active: $(get_active_slots 2>/dev/null || echo '?') ===" >&2
 
     # Kill background monitors
     if [[ -n "$_CONTROLLER_MONITOR_PID" ]]; then
@@ -556,6 +561,12 @@ cleanup() {
 # =============================
 main() {
     trap cleanup EXIT
+
+    # --- Session logging: tee stderr to persistent log for post-mortem ---
+    local SESSION_LOG="$HOME/splitscreen-session.log"
+    exec 2> >(tee -a "$SESSION_LOG" >&2)
+
+    echo "=== SESSION START: $(date) ===" >&2
 
     if ! detectLauncher; then
         echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
