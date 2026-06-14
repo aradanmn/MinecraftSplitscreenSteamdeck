@@ -564,8 +564,23 @@ main() {
 
     # --native: bare PolyMC launch, no orchestration, for testing controller
     if [ "${1:-}" = "--native" ]; then
-        detectLauncher
+        mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
+        {
+            echo "=== NATIVE SESSION: $(date) ==="
+            echo "  DISPLAY=${DISPLAY:-unset}"
+            echo "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
+            echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset}"
+            echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset}"
+            echo "  USER=$USER HOME=$HOME"
+        } >> "$LAUNCH_DEBUG_LOG" 2>&1
+        if ! detectLauncher; then
+            echo "[native-test] ERROR: PolyMC not found — check $LAUNCH_DEBUG_LOG" >&2
+            echo "[native-test] ERROR: PolyMC not found at $HOME/.local/share/PolyMC/" >> "$LAUNCH_DEBUG_LOG"
+            exit 1
+        fi
+        echo "[native-test] LAUNCHER_EXEC=$LAUNCHER_EXEC" >> "$LAUNCH_DEBUG_LOG"
         echo "[native-test] Launching bare PolyMC: ${LAUNCHER_EXEC} -l latestUpdate-1 -a P1"
+        echo "[native-test] exec: ${LAUNCHER_EXEC} -l latestUpdate-1 -a P1" >> "$LAUNCH_DEBUG_LOG"
         exec "${LAUNCHER_EXEC}" -l latestUpdate-1 -a P1
     fi
 
@@ -586,13 +601,18 @@ main() {
         selfUpdate
     fi
 
-    # Steam Deck Game Mode: launch nested Plasma session
+    # Steam Deck Game Mode: nested Plasma is only useful in Desktop Mode (KDE) where
+    # we need a Wayland compositor to tile 4 windows.  In pure gamescope (Game Mode)
+    # gamescope itself manages windows, so skip nested Plasma and launch directly.
     if isSteamDeckGameMode; then
         if [ "${1:-}" = "launchFromPlasma" ]; then
-            # Inside nested Plasma session — clean autostart and proceed
+            # Already inside a nested Plasma session — clean autostart file and continue
             rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+        elif [ "${XDG_SESSION_DESKTOP:-}" = "gamescope" ]; then
+            # Pure Game Mode (gamescope compositor) — no nested Plasma needed
+            echo "[orchestrator] Pure gamescope session detected — skipping nested Plasma" >&2
         else
-            # Not yet in nested session — start it (never returns)
+            # Desktop Mode with gamepad-UI flag — start nested KDE Wayland (never returns)
             nestedPlasma
         fi
     fi
