@@ -175,6 +175,7 @@ bwrap \
   -- \
   env \
     SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
+    SDL_HIDAPI_LIBUSB_WHITELIST=0 \
   "${launcher_exec}" \
     -l "latestUpdate-${slot}" \
     -a "P${slot}"
