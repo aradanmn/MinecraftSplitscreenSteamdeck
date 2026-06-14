@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_instance_lifecycle.sh
 # =============================================================================
 
-readonly TEST_TOTAL=8
+readonly TEST_TOTAL=9
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -361,6 +361,58 @@ JSON
 }
 
 # =============================================================================
+# Test T4.9 — _ensure_state_file resets pre-existing corrupted state
+# =============================================================================
+test_t4_9() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local state_file="$tmpdir/splitscreen_state.json"
+    SPLITSCREEN_STATE="$state_file"
+
+    # Pre-create a corrupted state file (zombie PIDs, wrong active flags)
+    jq -n '{
+        mode: "docked",
+        slots: {
+            "1": {active: true, pid: 99999, event_node: "/dev/input/event99", js_node: "/dev/input/js99", bwrap_pid: 88888},
+            "2": {active: false, pid: 77777, event_node: null, js_node: null, bwrap_pid: null},
+            "3": {active: true, pid: 66666, event_node: "/dev/input/event66", js_node: "/dev/input/js66", bwrap_pid: 55555},
+            "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null}
+        }
+    }' > "$state_file"
+
+    # Call _ensure_state_file — should wipe and reset
+    _ensure_state_file
+
+    # Verify all slots are inactive with null PIDs
+    local active_count
+    active_count=$(jq '[.slots[] | select(.active == true)] | length' "$state_file")
+    if (( active_count != 0 )); then
+        _fail "T4.9" "expected 0 active slots, got $active_count (stale state not reset)"
+        return
+    fi
+
+    # Verify all PIDs are null
+    local stale_pids
+    stale_pids=$(jq '[.slots[] | select(.pid != null)] | length' "$state_file")
+    if (( stale_pids != 0 )); then
+        _fail "T4.9" "expected 0 non-null PIDs, got $stale_pids (stale PIDs not cleared)"
+        return
+    fi
+
+    # Verify mode reset to handheld
+    local mode
+    mode=$(jq -r '.mode' "$state_file")
+    if [[ "$mode" != "handheld" ]]; then
+        _fail "T4.9" "expected mode=handheld, got $mode"
+        return
+    fi
+
+    _pass "T4.9 — _ensure_state_file resets pre-existing corrupted state"
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== instance_lifecycle test suite ==="
@@ -374,6 +426,7 @@ test_t4_5
 test_t4_6
 test_t4_7
 test_t4_8
+test_t4_9
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
