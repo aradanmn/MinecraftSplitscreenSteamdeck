@@ -175,10 +175,7 @@ bwrap \
   --dev-bind "${js_node}" "${js_node}" \
   -- \
   env \
-    SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT="" \
     SDL_JOYSTICK_DEVICE="${js_node}" \
-    SDL_JOYSTICK_HIDAPI=0 \
-    SDL_LINUX_JOYSTICK_CLASSIC=1 \
     SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 \
   "${launcher_exec}" \
     -l "latestUpdate-${slot}" \
