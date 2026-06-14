@@ -261,6 +261,191 @@ hw_wait_for() {
 }
 
 # ---------------------------------------------------------------------------
+# Screen and window geometry
+# ---------------------------------------------------------------------------
+
+# hw_get_screen_resolution: echo "WxH" (e.g. "1920x1080") for the active display
+hw_get_screen_resolution() {
+    local res
+    res=$(DISPLAY="${DISPLAY:-:0}" xdpyinfo 2>/dev/null \
+        | awk '/dimensions:/{print $2}' | head -1 || true)
+    [[ -n "$res" ]] && { echo "$res"; return 0; }
+    res=$(DISPLAY="${DISPLAY:-:0}" xrandr 2>/dev/null \
+        | awk '/\*/{print $1}' | head -1 || true)
+    [[ -n "$res" ]] && { echo "$res"; return 0; }
+    hw_warn "hw_get_screen_resolution: could not detect resolution, assuming 1280x800"
+    echo "1280x800"
+}
+
+# hw_expected_slot_geometry SLOT ACTIVE_SLOTS SCREEN_W SCREEN_H
+# Prints: "X Y W H" for the expected window position of SLOT given the set
+# of active slots and screen dimensions. Matches compute_slot_geometry logic.
+hw_expected_slot_geometry() {
+    local slot="$1" active="$2" sw="$3" sh="$4"
+
+    local count
+    count=$(echo "$active" | wc -w)
+
+    # Determine grid mode (mirrors compute_grid_mode in window_manager.sh)
+    local grid="full"
+    if (( count >= 2 )); then
+        grid="half"
+        local s
+        for s in $active; do
+            if (( s >= 3 )); then grid="quad"; break; fi
+        done
+    fi
+    if (( count >= 3 )); then grid="quad"; fi
+
+    local hw=$(( sw / 2 ))
+    local hh=$(( sh / 2 ))
+
+    case "$grid" in
+        full) echo "0 0 ${sw} ${sh}" ;;
+        half)
+            case "$slot" in
+                1) echo "0 0 ${sw} ${hh}" ;;
+                2) echo "0 ${hh} ${sw} ${hh}" ;;
+                *) echo "0 0 ${sw} ${sh}" ;;
+            esac ;;
+        quad)
+            case "$slot" in
+                1) echo "0 0 ${hw} ${hh}" ;;
+                2) echo "${hw} 0 ${hw} ${hh}" ;;
+                3) echo "0 ${hh} ${hw} ${hh}" ;;
+                4) echo "${hw} ${hh} ${hw} ${hh}" ;;
+                *) echo "0 0 ${sw} ${sh}" ;;
+            esac ;;
+    esac
+}
+
+# hw_assert_window_at LABEL TITLE EXP_X EXP_Y EXP_W EXP_H [TOLERANCE_PX]
+# Fails if the named window is not found or is not within TOLERANCE of the
+# expected position. Tolerates window-manager decoration offsets.
+hw_assert_window_at() {
+    local label="$1" title="$2" exp_x="$3" exp_y="$4" exp_w="$5" exp_h="$6"
+    local tol="${7:-50}"
+
+    local wid
+    wid=$(DISPLAY="${DISPLAY:-:0}" xdotool search --onlyvisible --name "$title" \
+        2>/dev/null | head -1 || true)
+
+    if [[ -z "$wid" ]]; then
+        hw_fail "${label} — window '${title}' not visible on DISPLAY=${DISPLAY:-:0}"
+        return 1
+    fi
+
+    local geom
+    geom=$(DISPLAY="${DISPLAY:-:0}" xdotool getwindowgeometry --shell "$wid" \
+        2>/dev/null || true)
+
+    if [[ -z "$geom" ]]; then
+        hw_fail "${label} — could not read geometry for window '${title}' (id ${wid})"
+        return 1
+    fi
+
+    # geom sets X, Y, WIDTH, HEIGHT, SCREEN, WINDOW
+    local X=0 Y=0 WIDTH=0 HEIGHT=0 SCREEN=0 WINDOW=0
+    eval "$geom"
+
+    hw_log "${label}: '${title}' (id ${wid}) → actual=${X},${Y} ${WIDTH}x${HEIGHT}"
+    hw_log "${label}: expected=${exp_x},${exp_y} ${exp_w}x${exp_h} (tolerance ±${tol}px)"
+
+    local ok=1
+
+    local dx=$(( X - exp_x )); [[ $dx -lt 0 ]] && dx=$(( -dx ))
+    local dy=$(( Y - exp_y )); [[ $dy -lt 0 ]] && dy=$(( -dy ))
+    local dw=$(( WIDTH - exp_w )); [[ $dw -lt 0 ]] && dw=$(( -dw ))
+    local dh=$(( HEIGHT - exp_h )); [[ $dh -lt 0 ]] && dh=$(( -dh ))
+
+    if (( dx > tol )); then
+        hw_fail "${label} — X off: expected ${exp_x} got ${X} (Δ${dx}px > ±${tol})"; ok=0; fi
+    if (( dy > tol )); then
+        hw_fail "${label} — Y off: expected ${exp_y} got ${Y} (Δ${dy}px > ±${tol})"; ok=0; fi
+    if (( dw > tol )); then
+        hw_fail "${label} — WIDTH off: expected ${exp_w} got ${WIDTH} (Δ${dw}px > ±${tol})"; ok=0; fi
+    if (( dh > tol )); then
+        hw_fail "${label} — HEIGHT off: expected ${exp_h} got ${HEIGHT} (Δ${dh}px > ±${tol})"; ok=0; fi
+
+    if (( ok == 1 )); then
+        hw_pass "${label} — '${title}' at correct position (${X},${Y} ${WIDTH}x${HEIGHT})"
+    fi
+}
+
+# hw_assert_splitscreen_properties LABEL SLOT EXPECTED_MODE [LAUNCHER_DIR]
+# Verifies the splitscreen.properties file written by the orchestrator
+# contains the expected mode value before Minecraft reads it.
+hw_assert_splitscreen_properties() {
+    local label="$1" slot="$2" expected_mode="$3"
+    local launcher_dir="${4:-$HOME/.local/share/PolyMC}"
+    local prop_file="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
+
+    hw_log "Checking ${prop_file}"
+
+    if [[ ! -f "$prop_file" ]]; then
+        hw_fail "${label} — splitscreen.properties not found: ${prop_file}"
+        return 1
+    fi
+
+    local actual_mode
+    actual_mode=$(grep '^mode=' "$prop_file" 2>/dev/null | cut -d= -f2 || true)
+    hw_log "${label}: splitscreen.properties mode=${actual_mode} (expected ${expected_mode})"
+    hw_assert_eq "${label} splitscreen.properties mode" "$expected_mode" "$actual_mode"
+}
+
+# ---------------------------------------------------------------------------
+# Structured operator checklist
+# ---------------------------------------------------------------------------
+
+# hw_checklist TITLE ITEM [ITEM ...]
+# Presents each item to the operator one at a time.
+# Operator types: y=confirmed, n=NOT seen/wrong, s=skip.
+# Increments HW_PASSED/FAILED/SKIPPED for each item.
+# Returns number of failed items.
+hw_checklist() {
+    local title="$1"
+    shift
+    local -a items=("$@")
+    local failed=0
+
+    hw_log ""
+    hw_log "━━━ CHECKLIST: ${title} ━━━"
+    hw_log "    For each item type: y=yes/confirmed  n=no/wrong  s=skip"
+    hw_log ""
+
+    local i
+    for i in "${!items[@]}"; do
+        local num=$(( i + 1 ))
+        local item="${items[$i]}"
+
+        echo "" | tee -a "${HW_LOG:-/dev/stderr}"
+        hw_log "  [${num}/${#items[@]}] ${item}"
+        hw_log "  → y / n / s :"
+
+        local response=""
+        if ! read -r response 2>/dev/null; then
+            hw_warn "stdin closed — treating remaining checklist items as skip"
+            hw_skip "${title} [${num}]: ${item}"
+            continue
+        fi
+        hw_log "  Operator: '${response}'"
+
+        case "${response,,}" in
+            y|yes)  hw_pass "${title} [${num}]: ${item}" ;;
+            s|skip) hw_skip "${title} [${num}]: ${item}" ;;
+            *)
+                hw_fail "${title} [${num}]: ${item}"
+                failed=$(( failed + 1 ))
+                ;;
+        esac
+    done
+
+    hw_log "━━━ End checklist: ${title} ━━━"
+    hw_log ""
+    return "$failed"
+}
+
+# ---------------------------------------------------------------------------
 # Display environment
 # ---------------------------------------------------------------------------
 
