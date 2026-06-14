@@ -1992,8 +1992,12 @@ select_user_mods() {
         return 0
     fi
 
-    # Automatically resolve all dependencies using Modrinth/CurseForge APIs
-    # This replaces the manual dependency handling with full API-based resolution
+    # Pass 1: resolve intra-list dependencies declared in mods.conf (fast, no API calls).
+    # e.g. "Reese's Sodium Options" → auto-adds "Sodium" and "Sodium Options API".
+    resolve_conf_dependencies
+
+    # Pass 2: resolve any remaining dependencies via Modrinth/CurseForge APIs
+    # (catches transitive deps of newly added mods and custom mods not in mods.conf).
     resolve_all_dependencies
 
     local final_count=0
@@ -2001,6 +2005,54 @@ select_user_mods() {
         final_count=${#FINAL_MOD_INDEXES[@]}
     fi
     print_success "Final mod list prepared: $final_count mods selected"
+}
+
+# resolve_conf_dependencies: BFS over MOD_DEPS_BY_NAME (loaded from mods.conf).
+# For every mod currently in FINAL_MOD_INDEXES, look up its declared deps and
+# auto-add any that aren't already included. Repeats until stable (handles chains
+# like Reese's Sodium Options → Sodium Options API → Sodium in two passes).
+# Called before resolve_all_dependencies() so the API pass doesn't need to re-do
+# what mods.conf already expressed.
+resolve_conf_dependencies() {
+    # Nothing declared — skip quietly.
+    if [[ ${#MOD_DEPS_BY_NAME[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    # Build a fast lookup: index → already included
+    local -A already_indexed=()
+    for idx in "${FINAL_MOD_INDEXES[@]}"; do
+        already_indexed["$idx"]=1
+    done
+
+    local changed=true
+    while [[ "$changed" == true ]]; do
+        changed=false
+        local -a snapshot=("${FINAL_MOD_INDEXES[@]}")
+        for idx in "${snapshot[@]}"; do
+            local mod_name="${SUPPORTED_MODS[$idx]:-}"
+            [[ -z "$mod_name" ]] && continue
+            local dep_names="${MOD_DEPS_BY_NAME[$mod_name]:-}"
+            [[ -z "$dep_names" ]] && continue
+
+            IFS=',' read -ra deps <<< "$dep_names"
+            for dep_name in "${deps[@]}"; do
+                dep_name="${dep_name#"${dep_name%%[![:space:]]*}"}"
+                dep_name="${dep_name%"${dep_name##*[![:space:]]}"}"
+                [[ -z "$dep_name" ]] && continue
+
+                for j in "${!SUPPORTED_MODS[@]}"; do
+                    if [[ "${SUPPORTED_MODS[$j]}" == "$dep_name" ]] \
+                       && [[ -z "${already_indexed[$j]:-}" ]]; then
+                        FINAL_MOD_INDEXES+=("$j")
+                        already_indexed["$j"]=1
+                        print_info "Auto-adding '${dep_name}' (required by '${mod_name}')"
+                        changed=true
+                    fi
+                done
+            done
+        done
+    done
 }
 
 # add_mod_dependencies: Add dependencies for a specific mod
