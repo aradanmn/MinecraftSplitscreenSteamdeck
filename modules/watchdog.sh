@@ -5,9 +5,9 @@ set -euo pipefail
 # WATCHDOG MODULE
 # =============================================================================
 # Polls $SPLITSCREEN_STATE on a fixed interval. For each slot marked
-# active: true, checks whether its bwrap_pid is still a live process
-# (kill -0). If the process is gone, emits SLOT_DIED <slot> to
-# $SPLITSCREEN_FIFO. Deduplicates: emits at most once per death;
+# active: true, checks whether its bwrap_pid and/or java_pid (pid) are
+# still live processes (kill -0). If either is gone, emits SLOT_DIED <slot>
+# to $SPLITSCREEN_FIFO. Deduplicates: emits at most once per death;
 # stops suppressing once the orchestrator clears the slot (active: false).
 #
 # Public API:
@@ -54,16 +54,28 @@ start_watchdog() {
             if [[ "$active" == "true" ]]; then
                 local bwrap_pid
                 bwrap_pid=$(jq -r ".slots[\"$slot\"].bwrap_pid // empty" "$state_file" 2>/dev/null || true)
+                local java_pid
+                java_pid=$(jq -r ".slots[\"$slot\"].pid // empty" "$state_file" 2>/dev/null || true)
 
-                if [[ -n "$bwrap_pid" ]]; then
-                    # Check if process is alive
-                    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
-                        if [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
-                            echo "[watchdog] Slot $slot bwrap PID $bwrap_pid gone → SLOT_DIED" >&2
-                            echo "SLOT_DIED $slot" >> "$fifo"
-                            _WATCHDOG_REPORTED[$slot]=1
-                        fi
-                    fi
+                local dead=false
+                local reason=""
+
+                # Check bwrap (launcher) PID
+                if [[ -n "$bwrap_pid" ]] && ! kill -0 "$bwrap_pid" 2>/dev/null; then
+                    dead=true
+                    reason="bwrap PID $bwrap_pid"
+                fi
+
+                # Check Java (game) PID — game may have exited leaving launcher open
+                if [[ -n "$java_pid" ]] && ! kill -0 "$java_pid" 2>/dev/null; then
+                    dead=true
+                    reason="Java PID $java_pid"
+                fi
+
+                if $dead && [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
+                    echo "[watchdog] Slot $slot $reason gone → SLOT_DIED" >&2
+                    echo "SLOT_DIED $slot" >> "$fifo"
+                    _WATCHDOG_REPORTED[$slot]=1
                 fi
             else
                 # Slot is inactive — clear dedup cache so it can be monitored again on reuse
