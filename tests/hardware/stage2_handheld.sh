@@ -51,6 +51,12 @@ run_stage2_handheld() {
     # -----------------------------------------------------------------------
     hw_info "H2.1 — Confirm handheld mode"
 
+    if ! hw_prompt "Ensure the Steam Deck is in HANDHELD mode (not docked).
+  Press Enter when ready, or type 'skip' to skip this entire stage."; then
+        hw_skip "Stage 2 skipped by operator"
+        return 0
+    fi
+
     local current_mode
     current_mode=$(get_display_mode 2>>"${HW_LOG}" || true)
     hw_log "get_display_mode returned: '${current_mode}'"
