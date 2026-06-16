@@ -155,12 +155,19 @@ _build_bwrap_command() {
     local slot="$1"
     local event_node="$2"
     local js_node="$3"
+    shift 3
     local launcher_exec
     launcher_exec=$(_get_launcher_exec)
 
-    # Build the command as a single string for background execution
-    # Note: -Dorg.lwjgl.opengl.Window.title is a JVM argument.
-    # PolyMC's AppImage supports --jvm-args for passing JVM flags.
+    # Build --bind /dev/null lines for other controllers (args 4+: event_node js_node pairs)
+    local mask_lines=""
+    while [[ $# -ge 2 ]]; do
+        mask_lines+="  --bind /dev/null $1 \\
+  --bind /dev/null $2 \\
+"
+        shift 2
+    done
+
     cat <<CMDEOF
 bwrap \
   --dev-bind / / \
@@ -173,7 +180,7 @@ bwrap \
   --dev-bind /dev/dri /dev/dri \
   --dev-bind "${event_node}" "${event_node}" \
   --dev-bind "${js_node}" "${js_node}" \
-  -- \
+${mask_lines}  -- \
   env \
     SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
     SDL_JOYSTICK_HIDAPI=0 \
@@ -320,6 +327,11 @@ spawn_instance() {
     local slot="${1:-}"
     local event_node="${2:-}"
     local js_node="${3:-}"
+    # Args 4+: pairs of (event_node, js_node) for other controllers to mask in bwrap
+    local -a mask_controllers=()
+    if [[ $# -gt 3 ]]; then
+        mask_controllers=("${@:4}")
+    fi
 
     if [[ -z "$slot" || -z "$event_node" || -z "$js_node" ]]; then
         echo "[spawn_instance] ERROR: slot, event_node, and js_node are required" >&2
@@ -362,6 +374,17 @@ spawn_instance() {
     launcher_dir=$(_get_launcher_dir)
     rm -f "${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/controllable/selected_controllers.json"
 
+    # 2.3 Set out_of_focus_input=true so unfocused instances respond to their controller
+    local controlify_cfg="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/controlify.json"
+    if [[ -f "$controlify_cfg" ]] && command -v jq >/dev/null 2>&1; then
+        local updated_cfg
+        updated_cfg=$(jq '.global.out_of_focus_input = true' "$controlify_cfg" 2>/dev/null)
+        if [[ -n "$updated_cfg" ]]; then
+            echo "$updated_cfg" > "$controlify_cfg"
+            echo "[spawn_instance] Set out_of_focus_input=true for slot $slot" >&2
+        fi
+    fi
+
     # 2.5 Set window title via instance.cfg JvmArgs
     local cfg_path="${launcher_dir}/instances/latestUpdate-${slot}/instance.cfg"
     if [[ -f "$cfg_path" ]]; then
@@ -372,7 +395,11 @@ spawn_instance() {
 
     # 3. Build the bwrap command
     local bwrap_command
-    bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
+    if [[ ${#mask_controllers[@]} -gt 0 ]]; then
+        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node" "${mask_controllers[@]}")
+    else
+        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
+    fi
 
     # 4. Mark slot as active in state file (preliminary, bwrap_pid filled after launch)
     update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
