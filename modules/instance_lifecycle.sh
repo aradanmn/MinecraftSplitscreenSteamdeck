@@ -368,6 +368,12 @@ spawn_instance() {
     local new_active="${active_slots} ${slot}"
     new_active=$(echo "$new_active" | tr -s ' ' | sed 's/^ //;s/ $//')
     _write_splitscreen_properties "$slot" "$new_active"
+    # Also update all already-active slots so they see the correct layout
+    # (they were written with old player count before this slot joined)
+    local _other_slot
+    for _other_slot in $active_slots; do
+        _write_splitscreen_properties "$_other_slot" "$new_active"
+    done
 
     # 2. Clear selected_controllers.json
     local launcher_dir
