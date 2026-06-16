@@ -160,30 +160,33 @@ _build_bwrap_command() {
     launcher_exec=$(_get_launcher_exec)
 
     # Build command as array so each element is safe to quote individually.
+    # --tmpfs /tmp gives each sandbox a fresh /tmp, preventing PolyMC's
+    # QSingleApplication socket from being seen by subsequent instances.
     local -a cmd=(
         bwrap
         --dev-bind / /
         --dev /dev
         --dev-bind /dev/fuse /dev/fuse
+        --tmpfs /tmp
         --dev-bind /tmp/.X11-unix /tmp/.X11-unix
-        --dev-bind /tmp /tmp
         --dev-bind /home /home
         --dev-bind /run /run
         --dev-bind /dev/dri /dev/dri
         --dev-bind "${event_node}" "${event_node}"
     )
 
-    # js_node is optional — Steam virtual Xbox pads may not have a js* device
-    if [[ -f "$js_node" ]]; then
+    # js_node is optional — char devices fail -f; use -e which matches any file type
+    if [[ -e "$js_node" ]]; then
         cmd+=(--dev-bind "${js_node}" "${js_node}")
     fi
 
-    # Mask other controllers — only bind device files that exist on the host
+    # Mask other controllers — use if-statements, not &&, to avoid set -e
+    # interpreting a "file not found" as a fatal error
     while [[ $# -ge 2 ]]; do
         local mask_event="$1" mask_js="$2"
         shift 2
-        [[ -e "$mask_event" ]] && cmd+=(--bind /dev/null "${mask_event}")
-        [[ -e "$mask_js"    ]] && cmd+=(--bind /dev/null "${mask_js}")
+        if [[ -e "$mask_event" ]]; then cmd+=(--bind /dev/null "${mask_event}"); fi
+        if [[ -e "$mask_js"    ]]; then cmd+=(--bind /dev/null "${mask_js}"); fi
     done
 
     cmd+=(
