@@ -643,6 +643,16 @@ main() {
 
     # Determine mode and branch
     display_mode=$(get_display_mode)
+    # Gamescope abstracts DRM — DP-1 shows disconnected even when a TV is connected.
+    # Override to docked if external controllers are present (more reliable signal).
+    if [[ "$display_mode" == "handheld" ]]; then
+        local _ext_count
+        _ext_count=$(list_eligible_controllers docked 2>/dev/null | grep -c .)
+        if [[ "$_ext_count" -ge 1 ]]; then
+            echo "[orchestrator] DRM said handheld but $_ext_count external controller(s) found â docked" >&2
+            display_mode="docked"
+        fi
+    fi
     echo "[orchestrator] Display mode: $display_mode" >&2
 
     case "$display_mode" in
