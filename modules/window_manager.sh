@@ -284,9 +284,25 @@ apply_layout() {
 
     local -a active_array=($active_slots)
 
-    # Process all 4 slots
+    # Determine the highest slot number the current grid supports.
+    # Slots beyond this limit are simply ignored — they have no defined
+    # geometry in this grid mode and must not receive placeholder windows.
+    local max_grid_slot
+    case "$grid_mode" in
+        half) max_grid_slot=2 ;;
+        quad) max_grid_slot=4 ;;
+        *)    max_grid_slot=1 ;;
+    esac
+
+    # Process only slots within the grid capacity
     local slot
     for slot in 1 2 3 4; do
+        if (( slot > max_grid_slot )); then
+            # Kill any stale placeholder that may have been left from a
+            # previous layout (e.g. transitioning from quad back to half)
+            _kill_placeholder "$slot"
+            continue
+        fi
         local is_active=0
         local as
         for as in "${active_array[@]}"; do
