@@ -159,35 +159,45 @@ _build_bwrap_command() {
     local launcher_exec
     launcher_exec=$(_get_launcher_exec)
 
-    # Build --bind /dev/null lines for other controllers (args 4+: event_node js_node pairs)
-    local mask_lines=""
+    # Build command as array so each element is safe to quote individually.
+    local -a cmd=(
+        bwrap
+        --dev-bind / /
+        --dev /dev
+        --dev-bind /dev/fuse /dev/fuse
+        --dev-bind /tmp/.X11-unix /tmp/.X11-unix
+        --dev-bind /tmp /tmp
+        --dev-bind /home /home
+        --dev-bind /run /run
+        --dev-bind /dev/dri /dev/dri
+        --dev-bind "${event_node}" "${event_node}"
+    )
+
+    # js_node is optional — Steam virtual Xbox pads may not have a js* device
+    if [[ -f "$js_node" ]]; then
+        cmd+=(--dev-bind "${js_node}" "${js_node}")
+    fi
+
+    # Mask other controllers — only bind device files that exist on the host
     while [[ $# -ge 2 ]]; do
-        mask_lines+="  --bind /dev/null $1 \\
-  --bind /dev/null $2 \\
-"
+        local mask_event="$1" mask_js="$2"
         shift 2
+        [[ -e "$mask_event" ]] && cmd+=(--bind /dev/null "${mask_event}")
+        [[ -e "$mask_js"    ]] && cmd+=(--bind /dev/null "${mask_js}")
     done
 
-    cat <<CMDEOF
-bwrap \
-  --dev-bind / / \
-  --dev /dev \
-  --dev-bind /dev/fuse /dev/fuse \
-  --dev-bind /tmp/.X11-unix /tmp/.X11-unix \
-  --dev-bind /tmp /tmp \
-  --dev-bind /home /home \
-  --dev-bind /run /run \
-  --dev-bind /dev/dri /dev/dri \
-  --dev-bind "${event_node}" "${event_node}" \
-  --dev-bind "${js_node}" "${js_node}" \
-${mask_lines}  -- \
-  env \
-    SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 \
-    SDL_JOYSTICK_HIDAPI=0 \
-  "${launcher_exec}" \
-    -l "latestUpdate-${slot}" \
-    -a "P${slot}"
-CMDEOF
+    cmd+=(
+        --
+        env
+        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
+        SDL_JOYSTICK_HIDAPI=0
+        "${launcher_exec}"
+        -l "latestUpdate-${slot}"
+        -a "P${slot}"
+    )
+
+    printf '%q ' "${cmd[@]}"
+    echo
 }
 
 # _poll_for_java: Poll for the Java process PID.
