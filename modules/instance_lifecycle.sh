@@ -191,9 +191,6 @@ _build_bwrap_command() {
 
     cmd+=(
         --
-        env
-        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
-        SDL_JOYSTICK_HIDAPI=0
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
         -a "P${slot}"
