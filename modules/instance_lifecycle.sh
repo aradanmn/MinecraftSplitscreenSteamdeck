@@ -230,23 +230,47 @@ _poll_for_java() {
 # _poll_for_window: Wait for the Minecraft window to appear.
 # $1 = slot
 # Returns window ID on stdout, empty string if timeout.
+# Strategy:
+#   1. xdotool search --name "SplitscreenP<slot>" — works only with LWJGL 2
+#   2. xdotool search --pid <java_pid>            — works with LWJGL 3 (Minecraft 1.18+)
+#      On match: rename WM_NAME so apply_layout finds it by name on all future calls.
 _poll_for_window() {
     local slot="$1"
 
-    local max_iterations=60    # WINDOW_WAIT_TIMEOUT_S(30) / POLL_INTERVAL_S(0.5)
+    local max_iterations=240    # 120s at 0.5s interval (Minecraft takes 60-90s to load)
 
     local _i
     for (( _i = 0; _i < max_iterations; _i++ )); do
+        # Strategy 1: title-based (works if LWJGL2 property was honoured)
         local wid
-        wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
+        wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null | head -1 || true)
         if [[ -n "$wid" ]]; then
             echo "$wid"
             return 0
         fi
+
+        # Strategy 2: PID-based after a short warm-up (LWJGL3 ignores title property)
+        if (( _i > 10 )); then
+            local java_pid
+            java_pid=$(get_java_pid "$slot")
+            if [[ -n "$java_pid" ]]; then
+                # tail -1 picks the most-recently-opened window from this PID tree
+                # (avoids grabbing PrismLauncher's own launch dialog if still open)
+                wid=$(xdotool search --pid "$java_pid" 2>/dev/null | tail -1 || true)
+                if [[ -n "$wid" ]]; then
+                    echo "[instance_lifecycle] Found window by PID $java_pid for slot $slot: wid=$wid" >&2
+                    # Rename WM_NAME so apply_layout can search by name on subsequent calls
+                    xdotool set_window --name "SplitscreenP${slot}" "$wid" 2>/dev/null || true
+                    echo "$wid"
+                    return 0
+                fi
+            fi
+        fi
+
         sleep "$INSTANCE_LIFECYCLE_POLL_INTERVAL_S"
     done
 
-    echo "[instance_lifecycle] WARNING: Window for slot $slot not found within ${INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S}s" >&2
+    echo "[instance_lifecycle] WARNING: Window for slot $slot not found within 120s" >&2
     echo ""
     return 1
 }
