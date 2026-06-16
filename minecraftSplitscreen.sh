@@ -349,47 +349,42 @@ docked_flow() {
     _CONTROLLER_MONITOR_PID=$!
     echo "[orchestrator] Controller monitor PID: $_CONTROLLER_MONITOR_PID" >&2
 
-    # Initial scan and spawn
-    local device_line
-    while IFS= read -r device_line; do
-        [[ -z "$device_line" ]] && continue
+    # Initial scan and spawn: collect all controllers first, then spawn with isolation masks
+    local -a _all_events=() _all_js=() _all_vendor=() _all_product=()
+    local _dl
+    while IFS= read -r _dl; do
+        [[ -z "$_dl" ]] && continue
+        _all_events+=("$(echo "$_dl" | awk '{print $1}')")
+        _all_js+=("$(echo "$_dl" | awk '{print $2}')")
+        _all_vendor+=("$(echo "$_dl" | awk '{print $3}')")
+        _all_product+=("$(echo "$_dl" | awk '{print $4}')")
+    done < <(list_eligible_controllers docked)
 
-        local event_node js_node
-        event_node=$(echo "$device_line" | awk '{print $1}')
-        js_node=$(echo "$device_line" | awk '{print $2}')
+    local _nc=${#_all_events[@]}
+    echo "[orchestrator] Found $_nc docked controller(s)" >&2
+    local _i
+    for (( _i=0; _i<_nc && _i<4; _i++ )); do
+        local slot=$(( _i + 1 ))
+        local event_node="${_all_events[$_i]}"
+        local js_node="${_all_js[$_i]}"
+        echo "[orchestrator] SLOT $slot: controller ${_all_vendor[$_i]}:${_all_product[$_i]} → $event_node $js_node" >&2
 
-        # Find the next free slot
-        local active_slots
-        active_slots=$(get_active_slots)
-
-        local slot
-        local assigned=0
-        for slot in 1 2 3 4; do
-            local already_active=0
-            local as
-            for as in $active_slots; do
-                if [[ "$as" == "$slot" ]]; then
-                    already_active=1
-                    break
-                fi
-            done
-            if (( already_active == 0 )); then
-                local dev_vendor dev_product
-                dev_vendor=$(echo "$device_line" | awk '{print $3}')
-                dev_product=$(echo "$device_line" | awk '{print $4}')
-                echo "[orchestrator] Assigning controller to slot $slot ($event_node $js_node)" >&2
-                echo "[orchestrator] SLOT $slot: controller ${dev_vendor}:${dev_product} → $event_node $js_node" >&2
-                # Pre-reserve the slot so next iteration sees it as taken
-                update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
-                spawn_instance "$slot" "$event_node" "$js_node" &
-                assigned=1
-                break
+        # Build exclusion mask: all other controllers' event/js nodes
+        local -a _mask=()
+        local _j
+        for (( _j=0; _j<_nc; _j++ )); do
+            if [[ $_j -ne $_i ]]; then
+                _mask+=("${_all_events[$_j]}" "${_all_js[$_j]}")
             fi
         done
-        if (( assigned == 0 )); then
-            echo "[orchestrator] No free slot for $event_node $js_node (max 4)" >&2
+
+        update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
+        if [[ ${#_mask[@]} -gt 0 ]]; then
+            spawn_instance "$slot" "$event_node" "$js_node" "${_mask[@]}" &
+        else
+            spawn_instance "$slot" "$event_node" "$js_node" &
         fi
-    done < <(list_eligible_controllers docked)
+    done
 
     # Event loop: read FIFO
     echo "[orchestrator] Entering event loop, reading from $SPLITSCREEN_FIFO" >&2
@@ -433,7 +428,19 @@ docked_flow() {
                     done
                     if (( taken == 0 )); then
                         echo "[orchestrator] CONTROLLER_ADD: slot $add_slot ($add_event $add_js)" >&2
-                        spawn_instance "$add_slot" "$add_event" "$add_js" &
+                        # Mask all currently active controllers from this new instance
+                        local _add_state _add_mask_args _me _mj
+                        _add_state=$(read_state 2>/dev/null || echo "{}")
+                        local -a _add_mask=()
+                        while IFS=" " read -r _me _mj; do
+                            [[ -z "$_me" || "$_me" == "null" ]] && continue
+                            _add_mask+=("$_me" "$_mj")
+                        done < <(echo "$_add_state" | jq -r '.slots | to_entries[] | select(.value.active == true) | "\(.value.event_node) \(.value.js_node)"'  2>/dev/null)
+                        if [[ ${#_add_mask[@]} -gt 0 ]]; then
+                            spawn_instance "$add_slot" "$add_event" "$add_js" "${_add_mask[@]}" &
+                        else
+                            spawn_instance "$add_slot" "$add_event" "$add_js" &
+                        fi
                         add_assigned=1
                         break
                     fi
