@@ -31,6 +31,7 @@ export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 _WATCH_DISPLAY_PID=""
 _CONTROLLER_MONITOR_PID=""
 _WATCHDOG_PID=""
+_ANCHOR_PID=""
 
 # =============================
 # Function: detectLauncher (PRESERVED)
@@ -531,6 +532,55 @@ docked_flow() {
 # =============================
 # Cleanup trap
 # =============================
+# launch_gamescope_anchor: Create a full-screen black GTK window and register it
+# as GAMESCOPECTRL_BASELAYER_WINDOW so gamescope dismisses the Steam loading overlay.
+# Saved PID in _ANCHOR_PID; cleanup() kills it and resets the property.
+launch_gamescope_anchor() {
+    echo "[orchestrator] Launching gamescope anchor window..." >&2
+    local res w h
+    res=$(xdpyinfo -display :0 2>/dev/null | awk '/dimensions:/{print $2}')
+    if [[ -z "$res" ]]; then
+        echo "[orchestrator] WARNING: could not get display resolution, defaulting to 1920x1080" >&2
+        res="1920x1080"
+    fi
+    w="${res%%x*}"
+    h="${res##*x}"
+    echo "[orchestrator] Anchor size: ${w}x${h}" >&2
+
+    local anchor_py="/tmp/splitscreen_anchor_$$.py"
+    python3 - "$w" "$h" << 'PYEOF' &
+import sys, subprocess, signal
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk
+
+w, h = int(sys.argv[1]), int(sys.argv[2])
+win = Gtk.Window()
+win.set_decorated(False)
+win.set_default_size(w, h)
+win.move(0, 0)
+win.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0, 0, 1))
+win.show_all()
+
+def on_realize(widget):
+    xid = win.get_window().get_xid()
+    subprocess.run(['xprop', '-root', '-display', ':0',
+                    '-f', 'GAMESCOPECTRL_BASELAYER_WINDOW', '32c',
+                    '-set', 'GAMESCOPECTRL_BASELAYER_WINDOW', str(xid)],
+                   capture_output=True)
+    import sys as _sys
+    _sys.stderr.write(f'[anchor] GAMESCOPECTRL_BASELAYER_WINDOW = {hex(xid)}\n')
+    _sys.stderr.flush()
+
+win.connect('realize', on_realize)
+signal.signal(signal.SIGTERM, lambda *_: Gtk.main_quit())
+Gtk.main()
+PYEOF
+
+    _ANCHOR_PID=$!
+    echo "[orchestrator] Anchor PID: $_ANCHOR_PID" >&2
+}
+
 cleanup() {
     echo "[orchestrator] Cleanup: shutting down" >&2
     echo "=== SESSION END: $(date) === slots active: $(get_active_slots 2>/dev/null || echo '?') ===" >&2
@@ -544,6 +594,12 @@ cleanup() {
     fi
     if [[ -n "$_WATCHDOG_PID" ]]; then
         kill "$_WATCHDOG_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$_ANCHOR_PID" ]]; then
+        kill "$_ANCHOR_PID" 2>/dev/null || true
+        xprop -root -display :0 -f GAMESCOPECTRL_BASELAYER_WINDOW 32c \
+            -set GAMESCOPECTRL_BASELAYER_WINDOW 0 2>/dev/null || true
+        _ANCHOR_PID=""
     fi
 
     # Tear down all instances
@@ -654,6 +710,11 @@ main() {
         fi
     fi
     echo "[orchestrator] Display mode: $display_mode" >&2
+
+    # In gamescope, register an anchor window so Steam dismisses the loading overlay
+    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]]; then
+        launch_gamescope_anchor
+    fi
 
     case "$display_mode" in
         handheld)

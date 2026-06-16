@@ -202,101 +202,127 @@ _parse_all_gamepad_devices() {
     fi
 }
 
-# _identify_internal_virtual_index: Return the 1-based index of the internal
-# gamepad's 28de:11ff virtual device in the sorted virtual device list.
-# Uses InputPlumber D-Bus if available, otherwise enumeration position fallback.
-_identify_internal_virtual_index() {
-    # If manually forced to fallback, skip D-Bus
-    if [[ "${INPUTPLUMBER_DBUS_AVAILABLE:-}" == "0" ]]; then
-        echo "[controller_monitor] INPUTPLUMBER_DBUS_AVAILABLE=0 — using enumeration fallback" >&2
-        echo "1"
-        return 0
-    fi
+# _find_internal_by_pad_name: Scan /proc/bus/input/devices for the 28de:11ff
+# entry whose Name line contains "pad 0" — Steam always names the built-in Deck
+# control "Microsoft X-Box 360 pad 0" regardless of enumeration order.
+# Returns the raw eventN number (no /dev/input/ prefix) or empty + return 1 on failure.
+_find_internal_by_pad_name() {
+    local proc_path
+    proc_path=$(_get_proc_input_path)
+    [[ ! -f "$proc_path" ]] && return 1
 
-    # Try InputPlumber D-Bus
-    if ! command -v busctl >/dev/null 2>&1; then
-        echo "[controller_monitor] busctl not found — using enumeration fallback" >&2
-        echo "1"
-        return 0
-    fi
-
-    echo "[controller_monitor] Querying InputPlumber via D-Bus..." >&2
-
-    local managed_output
-    managed_output=$(busctl call org.shadowblip.InputPlumber \
-        /org/shadowblip/InputPlumber \
-        org.shadowblip.InputPlumber \
-        GetManagedDevices 2>/dev/null || true)
-
-    if [[ -z "$managed_output" ]]; then
-        echo "[controller_monitor] InputPlumber D-Bus call failed — using enumeration fallback" >&2
-        echo "1"
-        return 0
-    fi
-
-    # Parse the object paths from the busctl output
-    # Example: a(so) 3 "/org/shadowblip/InputPlumber/CompositeDevice/..." ...
-    local internal_eventN=""
-    local object_paths
-    # Extract quoted paths from the output
-    object_paths=$(echo "$managed_output" | grep -oP '"/[^"]*"' | tr -d '"' || true)
-
-    local op
-    for op in $object_paths; do
-        local source_output
-        source_output=$(busctl get-property org.shadowblip.InputPlumber \
-            "$op" \
-            org.shadowblip.Input.CompositeDevice \
-            SourceDevicePaths 2>/dev/null || true)
-
-        if [[ -z "$source_output" ]]; then
-            continue
-        fi
-
-        # Check if any source path contains "platform" or lacks "usb"
-        if echo "$source_output" | grep -q "platform" || ! echo "$source_output" | grep -q "usb"; then
-            # This is the internal gamepad. Find its target virtual device.
-            local target_output
-            target_output=$(busctl get-property org.shadowblip.InputPlumber \
-                "$op" \
-                org.shadowblip.Input.CompositeDevice \
-                TargetDevices 2>/dev/null || true)
-
-            if [[ -n "$target_output" ]]; then
-                # Extract the input event number from the target device path
-                # TargetDevices typically contains paths like /dev/input/event3
-                if [[ "$target_output" =~ event([0-9]+) ]]; then
-                    internal_eventN="${BASH_REMATCH[1]}"
-                    echo "[controller_monitor] InputPlumber identified internal gamepad virtual event node: event$internal_eventN" >&2
-                    break
+    local in_block=0 vendor="" product="" devname="" handlers=""
+    local line
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if (( in_block == 1 )) \
+               && [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]] \
+               && [[ "$product" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]] \
+               && [[ "$devname" == *"pad 0"* ]]; then
+                local eventN="" _h
+                for _h in $handlers; do
+                    case "$_h" in event*) eventN="${_h#event}"; break ;; esac
+                done
+                if [[ -n "$eventN" ]]; then
+                    echo "$eventN"
+                    return 0
                 fi
             fi
+            in_block=0; vendor=""; product=""; devname=""; handlers=""
+            continue
         fi
-    done
+        in_block=1
+        case "$line" in
+            I:*)
+                [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] && vendor="${BASH_REMATCH[1],,}"
+                [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]] && product="${BASH_REMATCH[1],,}"
+                ;;
+            N:*) devname="${line#N: Name=}" ;;
+            H:*) handlers="${line#H: Handlers=}" ;;
+        esac
+    done < "$proc_path"
+    return 1
+}
 
-    if [[ -n "$internal_eventN" ]]; then
-        # Find the 1-based index of this eventN in the sorted virtual device list
-        local idx=1
-        local vline
+# _identify_internal_virtual_index: Return the 1-based index of the internal
+# gamepad's 28de:11ff virtual device in the sorted virtual device list.
+# Strategy: InputPlumber D-Bus → "pad 0" Name scan → last-in-list fallback.
+_identify_internal_virtual_index() {
+    # Inner helper: convert eventN to 1-based position in virtual device list
+    _eventN_to_virtual_idx() {
+        local target="$1" idx=1 vline
         while IFS= read -r vline; do
-            local _ven _vjs
-            _ven=$(echo "$vline" | awk '{print $1}')
-            if [[ "$_ven" == "$internal_eventN" ]]; then
+            local ven
+            ven=$(echo "$vline" | awk '{print $1}')
+            if [[ "$ven" == "$target" ]]; then
                 echo "$idx"
                 return 0
             fi
             idx=$((idx + 1))
         done < <(_parse_steam_virtual_devices)
+        return 1
+    }
 
-        # If we didn't find it in the current list, fall back to position 1
-        echo "[controller_monitor] InputPlumber eventN=$internal_eventN not found in virtual device list — using position 1" >&2
+    # --- Strategy 1: InputPlumber D-Bus (most accurate) ---
+    if [[ "${INPUTPLUMBER_DBUS_AVAILABLE:-}" != "0" ]] && command -v busctl >/dev/null 2>&1; then
+        echo "[controller_monitor] Querying InputPlumber via D-Bus..." >&2
+        local managed_output
+        managed_output=$(busctl call org.shadowblip.InputPlumber \
+            /org/shadowblip/InputPlumber \
+            org.shadowblip.InputPlumber \
+            GetManagedDevices 2>/dev/null || true)
+
+        if [[ -n "$managed_output" ]]; then
+            local object_paths
+            object_paths=$(echo "$managed_output" | grep -oP '"/[^"]*"' | tr -d '"' || true)
+            local op
+            for op in $object_paths; do
+                local source_output
+                source_output=$(busctl get-property org.shadowblip.InputPlumber \
+                    "$op" org.shadowblip.Input.CompositeDevice \
+                    SourceDevicePaths 2>/dev/null || true)
+                [[ -z "$source_output" ]] && continue
+                if echo "$source_output" | grep -q "platform" \
+                   || ! echo "$source_output" | grep -q "usb"; then
+                    local target_output
+                    target_output=$(busctl get-property org.shadowblip.InputPlumber \
+                        "$op" org.shadowblip.Input.CompositeDevice \
+                        TargetDevices 2>/dev/null || true)
+                    if [[ "$target_output" =~ event([0-9]+) ]]; then
+                        local internal_eventN="${BASH_REMATCH[1]}"
+                        echo "[controller_monitor] InputPlumber: internal at event$internal_eventN" >&2
+                        local found_idx
+                        if found_idx=$(_eventN_to_virtual_idx "$internal_eventN"); then
+                            echo "$found_idx"; return 0
+                        fi
+                        echo "[controller_monitor] event$internal_eventN not in virtual list" >&2
+                    fi
+                fi
+            done
+            echo "[controller_monitor] InputPlumber: could not locate internal event node" >&2
+        else
+            echo "[controller_monitor] InputPlumber D-Bus call failed" >&2
+        fi
     fi
 
-    echo "[controller_monitor] Could not identify internal device via InputPlumber — using enumeration fallback" >&2
-    echo "1"
+    # --- Strategy 2: Name scan ("pad 0" is always the built-in Deck control) ---
+    local pad0_eventN
+    if pad0_eventN=$(_find_internal_by_pad_name 2>/dev/null) && [[ -n "$pad0_eventN" ]]; then
+        local found_idx
+        if found_idx=$(_eventN_to_virtual_idx "$pad0_eventN"); then
+            echo "[controller_monitor] Name-based: internal at index $found_idx (event$pad0_eventN)" >&2
+            echo "$found_idx"; return 0
+        fi
+    fi
+
+    # --- Strategy 3: Assume internal is LAST — external pads register before built-in ---
+    local total
+    total=$(_parse_steam_virtual_devices | wc -l)
+    total="${total// /}"  # trim whitespace
+    echo "[controller_monitor] Fallback: assuming internal is last virtual device (index $total)" >&2
+    echo "$total"
     return 0
 }
-
 # _get_physical_devices: Return physical gamepad devices (not 28de:11ff, has jsN).
 # Output: one line per device: "<vendor> <product>"
 # Used to map external controller VID:PID by enumeration position.
