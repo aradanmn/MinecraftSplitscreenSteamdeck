@@ -244,25 +244,26 @@ _find_internal_by_pad_name() {
     return 1
 }
 
+# _eventN_to_virtual_idx: Convert eventN to 1-based position in the sorted
+# virtual device list. Returns the index (1-based) or 1 on failure.
+_eventN_to_virtual_idx() {
+    local target="$1" idx=1 vline
+    while IFS= read -r vline; do
+        local ven
+        ven=$(echo "$vline" | awk '{print $1}')
+        if [[ "$ven" == "$target" ]]; then
+            echo "$idx"
+            return 0
+        fi
+        idx=$((idx + 1))
+    done < <(_parse_steam_virtual_devices)
+    return 1
+}
+
 # _identify_internal_virtual_index: Return the 1-based index of the internal
 # gamepad's 28de:11ff virtual device in the sorted virtual device list.
 # Strategy: InputPlumber D-Bus → "pad 0" Name scan → last-in-list fallback.
 _identify_internal_virtual_index() {
-    # Inner helper: convert eventN to 1-based position in virtual device list
-    _eventN_to_virtual_idx() {
-        local target="$1" idx=1 vline
-        while IFS= read -r vline; do
-            local ven
-            ven=$(echo "$vline" | awk '{print $1}')
-            if [[ "$ven" == "$target" ]]; then
-                echo "$idx"
-                return 0
-            fi
-            idx=$((idx + 1))
-        done < <(_parse_steam_virtual_devices)
-        return 1
-    }
-
     # --- Strategy 1: InputPlumber D-Bus (most accurate) ---
     if [[ "${INPUTPLUMBER_DBUS_AVAILABLE:-}" != "0" ]] && command -v busctl >/dev/null 2>&1; then
         echo "[controller_monitor] Querying InputPlumber via D-Bus..." >&2
@@ -315,7 +316,7 @@ _identify_internal_virtual_index() {
         fi
     fi
 
-    # --- Strategy 3: Assume internal is LAST — external pads register before built-in ---
+    # --- Strategy 3: Assume internal is LAST -- external pads register before built-in ---
     local total
     total=$(_parse_steam_virtual_devices | wc -l)
     total="${total// /}"  # trim whitespace
