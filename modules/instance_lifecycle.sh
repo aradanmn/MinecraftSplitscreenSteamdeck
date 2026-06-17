@@ -287,6 +287,20 @@ _poll_for_window() {
                     # xdotool uses POSIX getopt (+ prefix), which stops at the first
                     # non-option argument. --name must come BEFORE the WID.
                     xdotool set_window --name "SplitscreenP${slot}" "$wid" 2>/dev/null || true
+
+                    # KEY FIX: Only set override_redirect if TinyWM is NOT running.
+                    # When TinyWM is the WM, it handles positioning via SubstructureRedirect.
+                    # When no WM (gamescope raw), override_redirect prevents KWin interference.
+                    if ! is_tinywm_running 2>/dev/null; then
+                        xdotool windowunmap "$wid" 2>/dev/null || true
+                        sleep 0.2
+                        xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+                        xdotool windowmap "$wid" 2>/dev/null || true
+                        sleep 0.1
+                        echo "[instance_lifecycle] Set override_redirect on window $wid for slot $slot" >&2
+                    else
+                        echo "[instance_lifecycle] TinyWM active, skipping override_redirect for window $wid" >&2
+                    fi
                     echo "$wid"
                     return 0
                 fi
@@ -508,10 +522,11 @@ spawn_instance() {
         echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
     fi
 
-    # 8. Apply layout with all currently active slots
+    # 8. Apply layout with all currently active slots (using sync_apply_layout
+    #    which routes through TinyWM if running, or falls back to xdotool)
     local updated_active
     updated_active=$(get_active_slots)
-    apply_layout "$updated_active" "" ""
+    sync_apply_layout "$updated_active" "" ""
 }
 
 # Tear down the instance in the given slot.
@@ -569,7 +584,7 @@ teardown_instance() {
     # 6. Re-apply layout with remaining active slots
     local remaining
     remaining=$(get_active_slots)
-    apply_layout "$remaining" "" ""
+    sync_apply_layout "$remaining" "" ""
 }
 
 # Tear down all active instances.

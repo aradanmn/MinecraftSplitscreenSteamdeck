@@ -345,6 +345,14 @@ handheld_flow() {
 docked_flow() {
     echo "[orchestrator] Entering docked mode" >&2
 
+    # Start TinyWM as the window manager on :0 before any instances launch.
+    # TinyWM registers as SubstructureRedirectMask, intercepting MapRequest
+    # events and positioning windows according to splitscreen_state.json.
+    echo "[orchestrator] Starting TinyWM window manager..." >&2
+    start_tinywm ":0" "${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" || {
+        echo "[orchestrator] WARNING: TinyWM failed to start, falling back to xdotool-based layout" >&2
+    }
+
     # Start controller monitor in background
     start_controller_monitor docked &
     _CONTROLLER_MONITOR_PID=$!
@@ -608,6 +616,9 @@ cleanup() {
     echo "[orchestrator] Cleanup: shutting down" >&2
     echo "=== SESSION END: $(date) === slots active: $(get_active_slots 2>/dev/null || echo '?') ===" >&2
 
+    # Stop TinyWM first (before killing instances, so it can process final events)
+    stop_tinywm 2>/dev/null || true
+
     # Kill background monitors
     if [[ -n "$_CONTROLLER_MONITOR_PID" ]]; then
         kill "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
@@ -657,6 +668,111 @@ main() {
     # --xdotool-test: run the xdotool geometry test inside gamescope
     if [ "${1:-}" = "--xdotool-test" ]; then
         exec "$SCRIPT_DIR/tests/gamescope-xdotool-test.sh"
+    fi
+
+    # --tinywm-test: Launch TinyWM with two test windows side-by-side on :0.
+    # Useful for testing TinyWM inside gamescope without launching Minecraft.
+    if [ "${1:-}" = "--tinywm-test" ]; then
+        echo "[orchestrator] TinyWM test mode: launching TinyWM + test windows on :0" >&2
+        _ensure_state_file
+
+        # Make a test state file with 2 active slots (half grid)
+        local tf="/tmp/tinywm-test-state.json"
+        jq -n '{
+            mode: "docked",
+            slots: {
+                "1": {active: true, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                "2": {active: true, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
+            }
+        }' > "$tf"
+
+        start_tinywm ":0" "$tf" || {
+            echo "[orchestrator] TinyWM failed to start" >&2
+            exit 1
+        }
+
+        # Launch two test windows
+        echo "[orchestrator] Launching test windows..." >&2
+        python3 -c "
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk, GLib
+import os
+
+# Get screen dimensions
+import subprocess
+res = subprocess.run(['xdpyinfo'], capture_output=True, text=True)
+import re
+m = re.search(r'dimensions:\s+(\d+)x(\d+)', res.stdout)
+sw, sh = (int(m.group(1)), int(m.group(2))) if m else (1280, 800)
+
+w1 = Gtk.Window()
+w1.set_decorated(False)
+w1.set_default_size(sw, sh//2)
+w1.move(0, 0)
+w1.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.2, 0.2, 0.8, 1))
+w1.set_title('SplitscreenP1')
+w1.show_all()
+
+w2 = Gtk.Window()
+w2.set_decorated(False)
+w2.set_default_size(sw, sh//2)
+w2.move(0, sh//2)
+w2.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.8, 0.2, 0.2, 1))
+w2.set_title('SplitscreenP2')
+w2.show_all()
+
+print(f'Test windows: P1 at 0,0 {sw}x{sh//2}, P2 at 0,{sh//2} {sw}x{sh//2}', flush=True)
+
+GLib.timeout_add_seconds(30, Gtk.main_quit)
+Gtk.main()
+" &
+        local test_pid=$!
+
+        # Wait for windows, verify positions
+        sleep 3
+        echo "[orchestrator] === Window geometry ===" >&2
+        for name in SplitscreenP1 SplitscreenP2; do
+            local wid
+            wid=$(xdotool search --name "$name" 2>/dev/null | head -1)
+            if [ -n "$wid" ]; then
+                echo "  $name WID=$wid: $(xdotool getwindowgeometry "$wid" 2>/dev/null | tr '\n' ' ')" >&2
+            fi
+        done
+
+        wait "$test_pid" 2>/dev/null || true
+        stop_tinywm
+        echo "[orchestrator] TinyWM test complete" >&2
+        exit 0
+    fi
+
+    # 'nested' arg: Steam shortcut passes this. Launch full docked flow
+    # with TinyWM as the window manager, managing Minecraft instances inside
+    # gamescope on :0 (the visible display). No nested Plasma session needed.
+    if [ "${1:-}" = "nested" ]; then
+        # Skip self-update and launcher detection — just run docked flow
+        # with TinyWM. This is the Steam Deck Game Mode path.
+        echo "[orchestrator] Nested mode: launching docked flow with TinyWM" >&2
+        exec 2> >(tee -a "$HOME/splitscreen-session.log" >&2)
+        echo "=== NESTED SESSION START: $(date) ====" >&2
+
+        _ensure_state_file
+
+        # Create FIFO and hold a write end open so readers never block on open()
+        mkdir -p "$(dirname "$SPLITSCREEN_FIFO")"
+        mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
+        exec 9<>"$SPLITSCREEN_FIFO"
+
+        # Start watchdog for instance death detection
+        start_watchdog &
+        _WATCHDOG_PID=$!
+        echo "[orchestrator] Watchdog PID: $_WATCHDOG_PID" >&2
+
+        docked_flow
+        # docked_flow runs event loop, never returns
+        exit 0
     fi
 
     # --- Session logging: tee stderr to persistent log for post-mortem ---
