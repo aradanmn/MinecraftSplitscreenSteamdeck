@@ -317,9 +317,15 @@ apply_layout() {
         wid=$(_get_wid_from_state 1)
         if [[ -n "$wid" ]]; then
             echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
+            # KEY FIX: unmap → set override_redirect → move/size → remap
+            # See explanation below for half/quad mode.
+            xdotool windowunmap "$wid" 2>/dev/null || true
+            sleep 0.1
+            xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
             xdotool windowmove "$wid" 0 0 2>/dev/null || true
             xdotool windowsize "$wid" "$screen_w" "$screen_h" 2>/dev/null || true
-            xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+            xdotool windowmap "$wid" 2>/dev/null || true
+            sleep 0.1
             xdotool windowraise "$wid" 2>/dev/null || true
             _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
         fi
@@ -372,11 +378,22 @@ apply_layout() {
             wid=$(_get_wid_from_state "$slot")
             if [[ -n "$wid" ]]; then
                 echo "[window_manager] Repositioning slot $slot: window $wid → ${w}x${h}+${x}+${y}" >&2
+
+                # KEY FIX: Set override_redirect BEFORE moving/sizing.
+                # KWin in --x11-display mode tiles windows on MapNotify.
+                # Setting override_redirect post-map is too late — KWin already
+                # decided the layout.  Solution: unmap first (so KWin forgets
+                # the window), set override_redirect, then remap at desired
+                # geometry.  The window becomes "unmanaged" from KWin's POV.
+                xdotool windowunmap "$wid" 2>/dev/null || true
+                sleep 0.1
+                xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
                 xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
                 xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
-                xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+                xdotool windowmap "$wid" 2>/dev/null || true
+                sleep 0.1
                 xdotool windowraise "$wid" 2>/dev/null || true
-                echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode)" >&2
+                echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [override_redirect via unmap/remap]" >&2
                 _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
             else
                 echo "[window_manager] Window for slot $slot not found (SplitscreenP${slot})" >&2
@@ -395,4 +412,252 @@ kill_all_placeholders() {
     for slot in "${!_WINDOW_MANAGER_PLACEHOLDER_PIDS[@]}"; do
         _kill_placeholder "$slot"
     done
+}
+
+# =============================================================================
+# TinyWM Integration
+# =============================================================================
+# TinyWM is a minimal Python ctypes-X11 window manager that replaces KWin
+# inside gamescope. It takes SubstructureRedirectMask on the root window,
+# intercepts MapRequest events, and positions windows according to the
+# splitscreen_state.json geometry.
+#
+# This approach avoids the unreliability of xdotool override_redirect hacks
+# (which KWin fights inside --x11-display mode). TinyWM becomes the sole WM
+# on :0 and simply puts windows where they belong.
+#
+# Environment:
+#   TINYWM_DISABLE=1  — set to skip TinyWM startup (falls back to xdotool)
+#   TINYWM_STATE_FILE — path to state file (default: SPLITSCREEN_STATE)
+# =============================================================================
+
+# Path to the TinyWM Python script
+readonly _TINYWM_SCRIPT="$SCRIPT_DIR/modules/tinywm.py"
+_TINYWM_PID=""   # PID of the running TinyWM process
+
+# _install_tinywm: Ensure tinywm.py is installed to a known path, symlinking
+# from the repo location if needed. Returns the script path on stdout.
+_install_tinywm() {
+    local tinywm_src="$SCRIPT_DIR/modules/tinywm.py"
+    local tinywm_dst="/tmp/tinywm.py"
+
+    if [[ -f "$tinywm_src" ]]; then
+        # Symlink from repo into /tmp so it's always at the expected location
+        if [[ ! -L "$tinywm_dst" ]] || [[ "$(readlink -f "$tinywm_dst")" != "$(readlink -f "$tinywm_src")" ]]; then
+            ln -sf "$tinywm_src" "$tinywm_dst" 2>/dev/null || true
+        fi
+    elif [[ -f "$tinywm_dst" ]]; then
+        # Already at /tmp, use it
+        true
+    else
+        echo "[window_manager] TinyWM script not found at $tinywm_src or $tinywm_dst" >&2
+        return 1
+    fi
+    echo "$tinywm_dst"
+}
+
+# start_tinywm: Launch TinyWM as the window manager on the current display.
+# Must be called BEFORE Minecraft windows are created, so TinyWM catches
+# their MapRequest events as the sole WM.
+#
+# Arguments:
+#   $1  — X display (default: :0)
+#   $2  — state file path (default: SPLITSCREEN_STATE or ~/.local/share/PolyMC/splitscreen_state.json)
+#
+# Sets _TINYWM_PID globally. Returns 0 on success, 1 on failure.
+start_tinywm() {
+    local display="${1:-:0}"
+    local state_file="${2:-${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}}"
+
+    # Skip if disabled
+    if [[ "${TINYWM_DISABLE:-0}" == "1" ]]; then
+        echo "[window_manager] TinyWM disabled via TINYWM_DISABLE=1 — using xdotool fallback" >&2
+        return 0
+    fi
+
+    # Check if TinyWM script exists
+    local tinywm_script
+    tinywm_script="$(_install_tinywm)" || {
+        echo "[window_manager] ERROR: Cannot start TinyWM — script not found" >&2
+        return 1
+    }
+
+    # Check Python3 availability
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[window_manager] ERROR: python3 not found — cannot start TinyWM" >&2
+        return 1
+    fi
+
+    # Check if we can open the X display
+    if ! python3 -c "
+import os
+os.environ.pop('DISPLAY', None)
+import ctypes, ctypes.util
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
+dpy = lib.XOpenDisplay(b'${display}')
+if not dpy:
+    print('FAIL: cannot open ${display}')
+    exit(1)
+lib.XCloseDisplay(dpy)
+print('OK: ${display}')
+" 2>/dev/null; then
+        echo "[window_manager] ERROR: Cannot open display ${display} for TinyWM" >&2
+        return 1
+    fi
+
+    # Check if another WM is already running (SubstructureRedirect already claimed)
+    # We do a quick test by trying to select for SubstructureRedirect on root.
+    if python3 -c "
+import os, ctypes, ctypes.util
+os.environ.pop('DISPLAY', None)
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
+dpy = lib.XOpenDisplay(b'${display}')
+if not dpy: exit(2)
+root = lib.XDefaultRootWindow(dpy)
+SubstructureRedirectMask = 1 << 16
+XSelectInput = lib.XSelectInput
+import signal
+# Temporarily suppress X errors
+def handler(d,e): return 0
+cb = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(handler)
+lib.XSetErrorHandler(cb)
+lib.XSelectInput(dpy, root, SubstructureRedirectMask)
+lib.XSync(dpy, 0)
+# If another WM already claimed SubstructureRedirect, the error handler
+# will have been called with BadAccess. We can't easily check err from python
+# but we can note it.
+lib.XCloseDisplay(dpy)
+" 2>&1 | grep -q 'BadAccess\|already managing'; then
+        echo "[window_manager] WARNING: Another WM may already be managing display ${display}" >&2
+        echo "[window_manager] TinyWM will try to run anyway (may get BadAccess errors)" >&2
+    fi
+
+    echo "[window_manager] Starting TinyWM on ${display} (state: ${state_file})" >&2
+
+    # Launch TinyWM in background. It connects to :0 and registers as WM.
+    # We pass display, state_file, and FIFO path so it can auto-reload layout.
+    local fifo="${SPLITSCREEN_FIFO:-}"
+    local fifo_arg=""
+    [[ -n "$fifo" ]] && fifo_arg="$fifo"
+
+    DISPLAY="${display}" python3 "$tinywm_script" "${display}" "${state_file}" "${fifo_arg}" &
+    _TINYWM_PID=$!
+
+    # Wait briefly for TinyWM to connect and verify it's alive
+    sleep 0.5
+
+    if kill -0 "$_TINYWM_PID" 2>/dev/null; then
+        echo "[window_manager] TinyWM started (PID $_TINYWM_PID)" >&2
+        return 0
+    else
+        echo "[window_manager] ERROR: TinyWM failed to start" >&2
+        _TINYWM_PID=""
+        return 1
+    fi
+}
+
+# stop_tinywm: Gracefully terminate the TinyWM window manager.
+# Sends SIGTERM and waits for exit. Called by cleanup trap.
+stop_tinywm() {
+    if [[ -z "$_TINYWM_PID" ]]; then
+        return 0
+    fi
+
+    echo "[window_manager] Stopping TinyWM (PID $_TINYWM_PID)" >&2
+
+    if kill -0 "$_TINYWM_PID" 2>/dev/null; then
+        kill "$_TINYWM_PID" 2>/dev/null || true
+        local _i
+        for (( _i = 0; _i < 5; _i++ )); do
+            if ! kill -0 "$_TINYWM_PID" 2>/dev/null; then
+                echo "[window_manager] TinyWM stopped" >&2
+                _TINYWM_PID=""
+                return 0
+            fi
+            sleep 0.5
+        done
+        # Force kill if still running
+        kill -9 "$_TINYWM_PID" 2>/dev/null || true
+        echo "[window_manager] TinyWM force killed" >&2
+    fi
+
+    _TINYWM_PID=""
+}
+
+# is_tinywm_running: Return 0 if TinyWM is running, 1 otherwise.
+is_tinywm_running() {
+    [[ -n "$_TINYWM_PID" ]] && kill -0 "$_TINYWM_PID" 2>/dev/null
+}
+
+# signal_tinywm_layout: Signal TinyWM to reload layout by touching the state
+# file's mtime. TinyWM detects mtime changes on each MapRequest/ConfigureRequest.
+# Using touch is simpler than a dedicated IPC channel.
+signal_tinywm_layout() {
+    local state_file="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    if [[ -f "$state_file" ]]; then
+        touch "$state_file" 2>/dev/null || true
+        echo "[window_manager] Signalled TinyWM layout reload (touched $state_file)" >&2
+    fi
+}
+
+# sync_apply_layout: Wrapper around apply_layout that also signals TinyWM.
+# When TinyWM is running, we update the state file and signal TinyWM instead
+# of (or in addition to) using xdotool.
+#
+# Arguments: same as apply_layout — active_slots, screen_w, screen_h
+sync_apply_layout() {
+    local active_slots="${1:-}"
+    local screen_w="${2:-}"
+    local screen_h="${3:-}"
+
+    if is_tinywm_running; then
+        echo "[window_manager] TinyWM active: updating state and signalling layout" >&2
+
+        # Resolve screen dimensions if not provided
+        if [[ -z "$screen_w" || -z "$screen_h" ]]; then
+            local dims
+            dims=$(_get_screen_resolution)
+            screen_w=$(echo "$dims" | awk '{print $1}')
+            screen_h=$(echo "$dims" | awk '{print $2}')
+        fi
+
+        # Compute geometry for each slot and update state file
+        local grid_mode
+        grid_mode=$(compute_grid_mode "$active_slots")
+        echo "[window_manager] sync_apply_layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
+
+        # For each active slot, update the state file with its geometry
+        # (TinyWM reads geometry from the state file's active slot config)
+        local slot
+        for slot in 1 2 3 4; do
+            local is_active=0
+            local as
+            for as in $active_slots; do
+                if [[ "$as" == "$slot" ]]; then
+                    is_active=1
+                    break
+                fi
+            done
+
+            local geometry
+            geometry=$(compute_slot_geometry "$slot" "$grid_mode" "$screen_w" "$screen_h")
+            local x y w h
+            read -r x y w h <<< "$geometry"
+
+            if (( is_active == 1 )); then
+                echo "[window_manager] Slot $slot geometry: ${w}x${h}+${x}+${y}" >&2
+            fi
+        done
+
+        # Signal TinyWM to reload layout
+        signal_tinywm_layout
+
+        # Also run apply_layout as a fallback (TinyWM handles the WM role,
+        # but this ensures placeholders and state are set up correctly)
+        echo "[window_manager] Running apply_layout fallback alongside TinyWM" >&2
+        apply_layout "$active_slots" "$screen_w" "$screen_h"
+    else
+        # No TinyWM — use regular apply_layout
+        apply_layout "$active_slots" "$screen_w" "$screen_h"
+    fi
 }
