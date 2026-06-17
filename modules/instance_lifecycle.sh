@@ -165,7 +165,7 @@ _build_bwrap_command() {
     launcher_exec=$(_get_launcher_exec)
 
     local -a cmd=(
-        bwrap
+        $(_get_bwrap_cmd)
         --dev-bind / /
         --dev /dev
         --dev-bind /dev/fuse /dev/fuse
@@ -199,20 +199,22 @@ _build_bwrap_command() {
     #     Steam sets this=1 by default; we set it explicitly to ensure it's not overridden.
     #   SDL_GAMECONTROLLER_IGNORE_DEVICES= (empty):
     #     Clears Steam's DS4 VID/PID exclusion list, so SDL can use evdev directly
-    #     if the Steam IPC socket isn't available. Not strictly needed for 28de:11ff
+    #     If the Steam IPC socket isn't available. Not strictly needed for 28de:11ff
     #     pads, but harmless and defensive against future Steam changes.
     #   SDL_JOYSTICK_HIDAPI=0:
     #     Disables HIDAPI backend (no /dev/hidraw* nodes in this sandbox).
     #     SDL3 falls back to pure evdev where our bound event/js nodes live.
     #   SDL_LINUX_JOYSTICK_CLASSIC=1:
-    #     Forces classic joystick driver path (not the new evdev-only path),
-    #     ensuring compatibility with older SDL3/gamescope builds.
+    #     Forces classic joystick driver path, ensuring SDL_JOYSTICK_DEVICE
+    #     pinning is honoured on Linux. Required for compatibility with the
+    #     older Controllable mod's bundled SDL and some gamescope builds.
     cmd+=(
         --
         env
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
+        SDL_LINUX_JOYSTICK_CLASSIC=1
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
         -a "P${slot}"
@@ -281,8 +283,9 @@ _poll_for_window() {
                 wid=$(xdotool search --pid "$java_pid" 2>/dev/null | tail -1 || true)
                 if [[ -n "$wid" ]]; then
                     echo "[instance_lifecycle] Found window by PID $java_pid for slot $slot: wid=$wid" >&2
-                    # Rename WM_NAME so apply_layout can search by name on subsequent calls
-                    xdotool set_window --name "SplitscreenP${slot}" "$wid" 2>/dev/null || true
+                    # Rename WM_NAME so apply_layout can search by name on subsequent calls.
+                    # WID must come first in xdotool set_window.
+                    xdotool set_window "$wid" --name "SplitscreenP${slot}" 2>/dev/null || true
                     echo "$wid"
                     return 0
                 fi
