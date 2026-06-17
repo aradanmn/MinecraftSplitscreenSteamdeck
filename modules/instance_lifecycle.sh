@@ -288,18 +288,153 @@ _poll_for_window() {
                     # non-option argument. --name must come BEFORE the WID.
                     xdotool set_window --name "SplitscreenP${slot}" "$wid" 2>/dev/null || true
 
-                    # KEY FIX: Only set override_redirect if TinyWM is NOT running.
-                    # When TinyWM is the WM, it handles positioning via SubstructureRedirect.
-                    # When no WM (gamescope raw), override_redirect prevents KWin interference.
-                    if ! is_tinywm_running 2>/dev/null; then
-                        xdotool windowunmap "$wid" 2>/dev/null || true
-                        sleep 0.2
-                        xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
-                        xdotool windowmap "$wid" 2>/dev/null || true
-                        sleep 0.1
-                        echo "[instance_lifecycle] Set override_redirect on window $wid for slot $slot" >&2
+                    # Configure window for gamescope overlay rendering:
+                    #   1. Strip STEAM_GAME (prevents gamescope from force-fullscreening it)
+                    #   2. Remove _NET_WM_STATE_FULLSCREEN
+                    #   3. Set override_redirect + STEAM_OVERLAY (puts it in overlay plane)
+                    #   4. Set initial geometry via OR-cycle (unmap->set OR->move->remap)
+                    #
+                    # This is the core of the gamescope windowing approach.
+                    echo "[instance_lifecycle] Configuring window $wid for gamescope overlay rendering" >&2
+
+                    # Detect if we're in gamescope mode
+                    local _in_gamescope=0
+                    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
+                        _in_gamescope=1
+                    fi
+
+                    if (( _in_gamescope == 1 )); then
+                        # Compute initial geometry for this slot
+                        local _g_screen_w="${SPLITSCREEN_SCREEN_W:-1280}"
+                        local _g_screen_h="${SPLITSCREEN_SCREEN_H:-800}"
+                        local _g_res
+                        _g_res=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}') || true
+                        if [[ -n "$_g_res" ]]; then
+                            _g_screen_w="${_g_res%%x*}"
+                            _g_screen_h="${_g_res##*x}"
+                        fi
+                        local _g_active=""
+                        _g_active=$(get_active_slots 2>/dev/null || echo "$slot")
+                        local _g_grid _g_geo _g_x _g_y _g_w _g_h
+                        _g_grid=$(compute_grid_mode "$_g_active" 2>/dev/null || echo "full")
+                        _g_geo=$(compute_slot_geometry "$slot" "$_g_grid" "$_g_screen_w" "$_g_screen_h" 2>/dev/null || echo "0 0 $_g_screen_w $_g_screen_h")
+                        read -r _g_x _g_y _g_w _g_h <<< "$_g_geo"
+                        echo "[instance_lifecycle] Initial geometry for slot $slot: ${_g_w}x${_g_h}+${_g_x}+${_g_y} (grid=$_g_grid)" >&2
+
+                        # Use Python ctypes for full gamescope window setup:
+                        # 1. Strip STEAM_GAME
+                        # 2. Set STEAM_OVERLAY + override_redirect
+                        # 3. OR-cycle to position
+                        python3 -c "
+import ctypes, ctypes.util, os, sys, time
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
+dpy = lib.XOpenDisplay(os.environ.get('DISPLAY', ':0').encode())
+if not dpy:
+    print('FAIL: cannot open display', file=sys.stderr)
+    sys.exit(1)
+
+wid = $wid
+x, y, w, h = $_g_x, $_g_y, $_g_w, $_g_h
+XInternAtom = lib.XInternAtom
+XInternAtom.restype = ctypes.c_ulong
+
+# 1. Strip STEAM_GAME (set to 0)
+steam_game = XInternAtom(dpy, b'STEAM_GAME', 0)
+val0 = (ctypes.c_uint32 * 1)(0)
+lib.XChangeProperty(dpy, ctypes.c_ulong(wid), steam_game,
+    ctypes.c_ulong(4), 32, 0,
+    ctypes.cast(val0, ctypes.POINTER(ctypes.c_ubyte)),
+    ctypes.c_int(1))
+lib.XFlush(dpy)
+
+# 2. Set STEAM_OVERLAY = 1
+steam_overlay = XInternAtom(dpy, b'STEAM_OVERLAY', 0)
+val1 = (ctypes.c_uint32 * 1)(1)
+lib.XChangeProperty(dpy, ctypes.c_ulong(wid), steam_overlay,
+    ctypes.c_ulong(4), 32, 0,
+    ctypes.cast(val1, ctypes.POINTER(ctypes.c_ubyte)),
+    ctypes.c_int(1))
+lib.XFlush(dpy)
+time.sleep(0.05)
+
+# 3. Unmap
+lib.XUnmapWindow(dpy, wid)
+lib.XFlush(dpy)
+time.sleep(0.15)
+
+# 4. Set override_redirect
+class XSetWA(ctypes.Structure):
+    _fields_ = [('override_redirect', ctypes.c_int)]
+attrs = XSetWA(override_redirect=ctypes.c_int(1))
+lib.XChangeWindowAttributes(dpy, wid, 1 << 3, ctypes.byref(attrs))
+
+# 5. Move and resize
+lib.XMoveResizeWindow(dpy, wid, x, y, w, h)
+lib.XFlush(dpy)
+time.sleep(0.1)
+
+# 6. Remap
+lib.XMapWindow(dpy, wid)
+lib.XFlush(dpy)
+time.sleep(0.15)
+
+# 7. Raise
+lib.XRaiseWindow(dpy, wid)
+lib.XFlush(dpy)
+
+# 8. Verify
+class XWindowAttrs(ctypes.Structure):
+    _fields_ = [
+        ('x', ctypes.c_int), ('y', ctypes.c_int),
+        ('width', ctypes.c_int), ('height', ctypes.c_int),
+        ('border_width', ctypes.c_int), ('depth', ctypes.c_int),
+        ('visual', ctypes.c_void_p), ('root', ctypes.c_ulong),
+        ('class_', ctypes.c_int), ('bit_gravity', ctypes.c_int),
+        ('win_gravity', ctypes.c_int), ('backing_store', ctypes.c_int),
+        ('backing_planes', ctypes.c_ulong), ('backing_pixel', ctypes.c_ulong),
+        ('save_under', ctypes.c_int), ('map_installed', ctypes.c_int),
+        ('map_state', ctypes.c_int),
+        ('all_event_masks', ctypes.c_ulong), ('your_event_masks', ctypes.c_ulong),
+        ('do_not_propagate_mask', ctypes.c_ulong),
+        ('override_redirect', ctypes.c_int), ('screen', ctypes.c_void_p),
+        ('colormap', ctypes.c_ulong),
+    ]
+attrs_out = XWindowAttrs()
+lib.XGetWindowAttributes(dpy, wid, ctypes.byref(attrs_out))
+print(f'GAMESCOPE-SETUP: pos={attrs_out.x},{attrs_out.y} size={attrs_out.width}x{attrs_out.height} OR={attrs_out.override_redirect}')
+lib.XCloseDisplay(dpy)
+" 2>/dev/null || {
+                            # Fallback: xdotool-based OR-cycle
+                            echo "[instance_lifecycle] Python ctypes setup failed, fallback to xdotool" >&2
+                            xdotool windowunmap "$wid" 2>/dev/null || true
+                            sleep 0.2
+                            xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+                            xdotool windowmove "$wid" "$_g_x" "$_g_y" 2>/dev/null || true
+                            xdotool windowsize "$wid" "$_g_w" "$_g_h" 2>/dev/null || true
+                            xdotool windowmap "$wid" 2>/dev/null || true
+                            sleep 0.1
+                            xdotool windowraise "$wid" 2>/dev/null || true
+                        }
                     else
-                        echo "[instance_lifecycle] TinyWM active, skipping override_redirect for window $wid" >&2
+                        # Desktop mode (KWin) — just set override_redirect + move
+                        echo "[instance_lifecycle] Desktop mode: setting override_redirect via OR-cycle" >&2
+                        python3 -c "
+import ctypes, ctypes.util, os, time
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
+dpy = lib.XOpenDisplay(os.environ.get('DISPLAY', ':0').encode())
+if dpy:
+    lib.XUnmapWindow(dpy, $wid)
+    lib.XFlush(dpy)
+    time.sleep(0.15)
+    class XSetWA(ctypes.Structure):
+        _fields_ = [('override_redirect', ctypes.c_int)]
+    attrs = XSetWA(override_redirect=ctypes.c_int(1))
+    lib.XChangeWindowAttributes(dpy, $wid, 1 << 3, ctypes.byref(attrs))
+    lib.XMapWindow(dpy, $wid)
+    lib.XFlush(dpy)
+    time.sleep(0.1)
+    lib.XCloseDisplay(dpy)
+" 2>/dev/null || true
                     fi
                     echo "$wid"
                     return 0
@@ -522,11 +657,22 @@ spawn_instance() {
         echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
     fi
 
-    # 8. Apply layout with all currently active slots (using sync_apply_layout
-    #    which routes through TinyWM if running, or falls back to xdotool)
+    # 8. Apply layout with all currently active slots
     local updated_active
     updated_active=$(get_active_slots)
-    sync_apply_layout "$updated_active" "" ""
+
+    # In gamescope mode, use the gamescope windowing system
+    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
+        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
+            gamescope_windowing_apply_layout "$updated_active" "" ""
+        else
+            # Fallback: use standard xdotool layout
+            sync_apply_layout "$updated_active" "" ""
+        fi
+    else
+        # Desktop mode: use standard window manager layout
+        sync_apply_layout "$updated_active" "" ""
+    fi
 }
 
 # Tear down the instance in the given slot.
@@ -584,7 +730,15 @@ teardown_instance() {
     # 6. Re-apply layout with remaining active slots
     local remaining
     remaining=$(get_active_slots)
-    sync_apply_layout "$remaining" "" ""
+    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
+        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
+            gamescope_windowing_apply_layout "$remaining" "" ""
+        else
+            sync_apply_layout "$remaining" "" ""
+        fi
+    else
+        sync_apply_layout "$remaining" "" ""
+    fi
 }
 
 # Tear down all active instances.

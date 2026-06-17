@@ -30,6 +30,122 @@ declare -A _WINDOW_MANAGER_PLACEHOLDER_PIDS
 
 # --- Internal functions ---
 
+# _apply_override_redirect_cycle: Unmap → set override_redirect → move/resize → remap.
+# Uses Python + ctypes X11 directly (avoids xdotool which gamescope may ignore).
+# The unmap/remap cycle forces the X server to forget the window's WM-managed state;
+# setting override_redirect between them makes it unmanaged so gamescope's WM
+# won't intercept the MapRequest and force its own geometry.
+#
+# Arguments: $1 = WID (decimal or hex), $2 = x, $3 = y, $4 = w, $5 = h
+# Returns: 0 if the cycle succeeded (verified by post-check), 1 if it failed.
+_apply_override_redirect_cycle() {
+    local wid="$1" x="$2" y="$3" w="$4" h="$5"
+
+    # Resolve hex WIDs to decimal for Python compatibility
+    local wid_dec
+    if [[ "$wid" =~ ^0x ]]; then
+        wid_dec=$(( wid ))
+    else
+        wid_dec="$wid"
+    fi
+
+    echo "[window_manager] OR-cycle: window $wid (dec=$wid_dec) → ${w}x${h}+${x}+${y}" >&2
+
+    # Use Python ctypes X11 — more reliable than xdotool inside gamescope
+    local result
+    result=$(python3 -c "
+import ctypes, ctypes.util, os, sys, time
+
+lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
+dpy = lib.XOpenDisplay(os.environ.get('DISPLAY', ':0').encode())
+if not dpy:
+    print('FAIL: cannot open display')
+    sys.exit(1)
+
+wid = ${wid_dec}
+
+# 1. Unmap window
+lib.XUnmapWindow(dpy, wid)
+lib.XFlush(dpy)
+time.sleep(0.15)
+
+# 2. Set override_redirect
+class XSetWA(ctypes.Structure):
+    _fields_ = [('override_redirect', ctypes.c_int)]
+attrs = XSetWA(override_redirect=ctypes.c_int(1))
+lib.XChangeWindowAttributes(dpy, wid, 1 << 3, ctypes.byref(attrs))
+
+# 3. Move and resize
+lib.XMoveResizeWindow(dpy, wid, $x, $y, $w, $h)
+lib.XFlush(dpy)
+time.sleep(0.1)
+
+# 4. Remap
+lib.XMapWindow(dpy, wid)
+lib.XFlush(dpy)
+time.sleep(0.15)
+
+# 5. Raise
+lib.XRaiseWindow(dpy, wid)
+lib.XFlush(dpy)
+
+# 6. Verify
+class XWindowAttrs(ctypes.Structure):
+    _fields_ = [
+        ('x', ctypes.c_int), ('y', ctypes.c_int),
+        ('width', ctypes.c_int), ('height', ctypes.c_int),
+        ('border_width', ctypes.c_int), ('depth', ctypes.c_int),
+        ('visual', ctypes.c_void_p), ('root', ctypes.c_ulong),
+        ('class_', ctypes.c_int), ('bit_gravity', ctypes.c_int),
+        ('win_gravity', ctypes.c_int), ('backing_store', ctypes.c_int),
+        ('backing_planes', ctypes.c_ulong), ('backing_pixel', ctypes.c_ulong),
+        ('save_under', ctypes.c_int), ('map_installed', ctypes.c_int),
+        ('map_state', ctypes.c_int),
+        ('all_event_masks', ctypes.c_ulong), ('your_event_masks', ctypes.c_ulong),
+        ('do_not_propagate_mask', ctypes.c_ulong),
+        ('override_redirect', ctypes.c_int), ('screen', ctypes.c_void_p),
+    ]
+attrs_out = XWindowAttrs()
+lib.XGetWindowAttributes(dpy, wid, ctypes.byref(attrs_out))
+print(f'VERIFY: OR={attrs_out.override_redirect} pos={attrs_out.x},{attrs_out.y} size={attrs_out.width}x{attrs_out.height} map_state={attrs_out.map_state}')
+
+lib.XCloseDisplay(dpy)
+" 2>&1) || true
+
+    echo "[window_manager] OR-cycle result: $result" >&2
+
+    # Parse verify output
+    if echo "$result" | grep -q 'VERIFY:'; then
+        local verify_line
+        verify_line=$(echo "$result" | grep 'VERIFY:')
+        echo "[window_manager] $verify_line" >&2
+
+        # Extract OR flag
+        local or_flag
+        or_flag=$(echo "$verify_line" | grep -oP 'OR=\K\d+')
+        if [[ "$or_flag" == "1" ]]; then
+            echo "[window_manager] OR-cycle succeeded: override_redirect=1 confirmed" >&2
+            return 0
+        else
+            echo "[window_manager] OR-cycle WARNING: override_redirect not set (got=$or_flag)" >&2
+        fi
+    else
+        echo "[window_manager] OR-cycle WARNING: could not verify result" >&2
+    fi
+
+    # Fallback: try xdotool as well
+    echo "[window_manager] OR-cycle: trying xdotool fallback too" >&2
+    xdotool windowunmap "$wid" 2>/dev/null || true
+    sleep 0.1
+    xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
+    xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
+    xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
+    xdotool windowmap "$wid" 2>/dev/null || true
+    sleep 0.1
+    xdotool windowraise "$wid" 2>/dev/null || true
+    return 0
+}
+
 # _get_screen_resolution: Discover screen dimensions.
 # Priority: wlr-randr → kscreen-doctor → xrandr → xdpyinfo → env override → fallback.
 # Output: "W H" on stdout.
@@ -317,16 +433,7 @@ apply_layout() {
         wid=$(_get_wid_from_state 1)
         if [[ -n "$wid" ]]; then
             echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
-            # KEY FIX: unmap → set override_redirect → move/size → remap
-            # See explanation below for half/quad mode.
-            xdotool windowunmap "$wid" 2>/dev/null || true
-            sleep 0.1
-            xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
-            xdotool windowmove "$wid" 0 0 2>/dev/null || true
-            xdotool windowsize "$wid" "$screen_w" "$screen_h" 2>/dev/null || true
-            xdotool windowmap "$wid" 2>/dev/null || true
-            sleep 0.1
-            xdotool windowraise "$wid" 2>/dev/null || true
+            _apply_override_redirect_cycle "$wid" 0 0 "$screen_w" "$screen_h"
             _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
         fi
         return 0
@@ -379,20 +486,16 @@ apply_layout() {
             if [[ -n "$wid" ]]; then
                 echo "[window_manager] Repositioning slot $slot: window $wid → ${w}x${h}+${x}+${y}" >&2
 
-                # KEY FIX: Set override_redirect BEFORE moving/sizing.
+                # KEY FIX: Set override_redirect via Python ctypes unmap/remap cycle.
                 # KWin in --x11-display mode tiles windows on MapNotify.
                 # Setting override_redirect post-map is too late — KWin already
                 # decided the layout.  Solution: unmap first (so KWin forgets
                 # the window), set override_redirect, then remap at desired
                 # geometry.  The window becomes "unmanaged" from KWin's POV.
-                xdotool windowunmap "$wid" 2>/dev/null || true
-                sleep 0.1
-                xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
-                xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
-                xdotool windowsize "$wid" "$w" "$h" 2>/dev/null || true
-                xdotool windowmap "$wid" 2>/dev/null || true
-                sleep 0.1
-                xdotool windowraise "$wid" 2>/dev/null || true
+                # Using Python ctypes X11 directly is more reliable than xdotool
+                # inside gamescope's XWayland where xdotool's windowmove/windowsize
+                # may return success but have no visual effect.
+                _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
                 echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [override_redirect via unmap/remap]" >&2
                 _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
             else
@@ -598,9 +701,9 @@ signal_tinywm_layout() {
     fi
 }
 
-# sync_apply_layout: Wrapper around apply_layout that also signals TinyWM.
-# When TinyWM is running, we update the state file and signal TinyWM instead
-# of (or in addition to) using xdotool.
+# sync_apply_layout: Wrapper around apply_layout.
+# When the gamescope windowing system is active, we call it instead.
+# Otherwise, we use the standard apply_layout (which works on KWin/Desktop).
 #
 # Arguments: same as apply_layout — active_slots, screen_w, screen_h
 sync_apply_layout() {
@@ -608,54 +711,16 @@ sync_apply_layout() {
     local screen_w="${2:-}"
     local screen_h="${3:-}"
 
-    if is_tinywm_running; then
-        echo "[window_manager] TinyWM active: updating state and signalling layout" >&2
-
-        # Resolve screen dimensions if not provided
-        if [[ -z "$screen_w" || -z "$screen_h" ]]; then
-            local dims
-            dims=$(_get_screen_resolution)
-            screen_w=$(echo "$dims" | awk '{print $1}')
-            screen_h=$(echo "$dims" | awk '{print $2}')
+    # Check if gamescope windowing is active (anchor PID exists)
+    if [[ -n "${_GW_ANCHOR_PID:-}" ]] && kill -0 "${_GW_ANCHOR_PID}" 2>/dev/null; then
+        echo "[window_manager] Gamescope windowing active, delegating to gamescope_windowing_apply_layout" >&2
+        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
+            gamescope_windowing_apply_layout "$active_slots" "$screen_w" "$screen_h"
+        else
+            apply_layout "$active_slots" "$screen_w" "$screen_h"
         fi
-
-        # Compute geometry for each slot and update state file
-        local grid_mode
-        grid_mode=$(compute_grid_mode "$active_slots")
-        echo "[window_manager] sync_apply_layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
-
-        # For each active slot, update the state file with its geometry
-        # (TinyWM reads geometry from the state file's active slot config)
-        local slot
-        for slot in 1 2 3 4; do
-            local is_active=0
-            local as
-            for as in $active_slots; do
-                if [[ "$as" == "$slot" ]]; then
-                    is_active=1
-                    break
-                fi
-            done
-
-            local geometry
-            geometry=$(compute_slot_geometry "$slot" "$grid_mode" "$screen_w" "$screen_h")
-            local x y w h
-            read -r x y w h <<< "$geometry"
-
-            if (( is_active == 1 )); then
-                echo "[window_manager] Slot $slot geometry: ${w}x${h}+${x}+${y}" >&2
-            fi
-        done
-
-        # Signal TinyWM to reload layout
-        signal_tinywm_layout
-
-        # Also run apply_layout as a fallback (TinyWM handles the WM role,
-        # but this ensures placeholders and state are set up correctly)
-        echo "[window_manager] Running apply_layout fallback alongside TinyWM" >&2
-        apply_layout "$active_slots" "$screen_w" "$screen_h"
     else
-        # No TinyWM — use regular apply_layout
+        # No gamescope windowing — use regular apply_layout (Desktop KWin, etc.)
         apply_layout "$active_slots" "$screen_w" "$screen_h"
     fi
 }

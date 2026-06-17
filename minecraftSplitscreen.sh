@@ -19,6 +19,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$SCRIPT_DIR/modules/dock_detection.sh"
 source "$SCRIPT_DIR/modules/controller_monitor.sh"
 source "$SCRIPT_DIR/modules/window_manager.sh"
+source "$SCRIPT_DIR/modules/gamescope_windowing.sh"
 source "$SCRIPT_DIR/modules/instance_lifecycle.sh"
 source "$SCRIPT_DIR/modules/watchdog.sh"
 
@@ -345,13 +346,10 @@ handheld_flow() {
 docked_flow() {
     echo "[orchestrator] Entering docked mode" >&2
 
-    # Start TinyWM as the window manager on :0 before any instances launch.
-    # TinyWM registers as SubstructureRedirectMask, intercepting MapRequest
-    # events and positioning windows according to splitscreen_state.json.
-    echo "[orchestrator] Starting TinyWM window manager..." >&2
-    start_tinywm ":0" "${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" || {
-        echo "[orchestrator] WARNING: TinyWM failed to start, falling back to xdotool-based layout" >&2
-    }
+    # NOTE: In Steam Deck Game Mode (the 'nested' path), gamescope_windowing_init()
+    # has already been called before docked_flow(). In Desktop mode (KDE X11),
+    # we use the standard window manager (KWin) for layout, so no init needed.
+    # The gamescope windowing system is ONLY used when launched from Game Mode.
 
     # Start controller monitor in background
     start_controller_monitor docked &
@@ -551,73 +549,16 @@ docked_flow() {
 # =============================
 # Cleanup trap
 # =============================
-# launch_gamescope_anchor: Create a full-screen black GTK window and register it
-# as GAMESCOPECTRL_BASELAYER_WINDOW so gamescope dismisses the Steam loading overlay.
-# Saved PID in _ANCHOR_PID; cleanup() kills it and resets the property.
-launch_gamescope_anchor() {
-    echo "[orchestrator] Launching gamescope anchor window..." >&2
-    local res w h
-    res=$(xdpyinfo -display :0 2>/dev/null | awk '/dimensions:/{print $2}')
-    if [[ -z "$res" ]]; then
-        echo "[orchestrator] WARNING: could not get display resolution, defaulting to 1920x1080" >&2
-        res="1920x1080"
-    fi
-    w="${res%%x*}"
-    h="${res##*x}"
-    echo "[orchestrator] Anchor size: ${w}x${h}" >&2
-
-    local anchor_py="/tmp/splitscreen_anchor_$$.py"
-    python3 - "$w" "$h" << 'PYEOF' &
-import sys, subprocess, signal
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, Gdk
-
-w, h = int(sys.argv[1]), int(sys.argv[2])
-win = Gtk.Window()
-win.set_decorated(False)
-win.set_default_size(w, h)
-win.move(0, 0)
-win.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0, 0, 1))
-win.show_all()
-
-def on_realize(widget):
-    xid = win.get_window().get_xid()
-    subprocess.run(['xprop', '-root', '-display', ':0',
-                    '-f', 'GAMESCOPECTRL_BASELAYER_WINDOW', '32c',
-                    '-set', 'GAMESCOPECTRL_BASELAYER_WINDOW', str(xid)],
-                   capture_output=True)
-    import sys as _sys
-    _sys.stderr.write(f'[anchor] GAMESCOPECTRL_BASELAYER_WINDOW = {hex(xid)}\n')
-    _sys.stderr.flush()
-
-win.connect('realize', on_realize)
-signal.signal(signal.SIGTERM, lambda *_: Gtk.main_quit())
-Gtk.main()
-PYEOF
-
-    _ANCHOR_PID=$!
-    echo "[orchestrator] Anchor PID: $_ANCHOR_PID" >&2
-
-    # Force anchor window to correct size/position via xdotool
-    # GTK's set_default_size can produce wrong sizes in gamescope's XWayland
-    sleep 0.5
-    local anchor_wid
-    anchor_wid=$(xdotool search --pid "$_ANCHOR_PID" 2>/dev/null | head -1)
-    if [[ -n "$anchor_wid" ]]; then
-        echo "[orchestrator] Forcing anchor window $anchor_wid to ${w}x${h}+0+0 via xdotool" >&2
-        xdotool windowmove "$anchor_wid" 0 0 2>/dev/null || true
-        xdotool windowsize "$anchor_wid" "$w" "$h" 2>/dev/null || true
-        xdotool set_window --overrideredirect 1 "$anchor_wid" 2>/dev/null || true
-    fi
-}
+# cleanup() is defined below — no separate anchor function needed.
+# The gamescope anchor window is managed by gamescope_windowing.sh
+# (gamescope_windowing_init / gamescope_windowing_cleanup).
 
 cleanup() {
     echo "[orchestrator] Cleanup: shutting down" >&2
-    echo "=== SESSION END: $(date) === slots active: $(get_active_slots 2>/dev/null || echo '?') ===" >&2
+    echo "=== SESSION END: $(date) === slots active: $(get_active_slots 2>/dev/null || echo '?') ====" >&2
 
-    # Stop TinyWM first (before killing instances, so it can process final events)
-    stop_tinywm 2>/dev/null || true
+    # Clean up gamescope windowing system (anchor window, atoms)
+    gamescope_windowing_cleanup 2>/dev/null || true
 
     # Kill background monitors
     if [[ -n "$_CONTROLLER_MONITOR_PID" ]]; then
@@ -668,6 +609,11 @@ main() {
     # --xdotool-test: run the xdotool geometry test inside gamescope
     if [ "${1:-}" = "--xdotool-test" ]; then
         exec "$SCRIPT_DIR/tests/gamescope-xdotool-test.sh"
+    fi
+
+    # --gamescope-test: run the gamescope baselayer+overlay layout test
+    if [ "${1:-}" = "--gamescope-test" ]; then
+        exec "$SCRIPT_DIR/tests/gamescope-layout-test.sh"
     fi
 
     # --tinywm-test: Launch TinyWM with two test windows side-by-side on :0.
@@ -753,8 +699,9 @@ Gtk.main()
     # gamescope on :0 (the visible display). No nested Plasma session needed.
     if [ "${1:-}" = "nested" ]; then
         # Skip self-update and launcher detection — just run docked flow
-        # with TinyWM. This is the Steam Deck Game Mode path.
-        echo "[orchestrator] Nested mode: launching docked flow with TinyWM" >&2
+        # with xdotool-based gamescope windowing for side-by-side Windows.
+        # This is the Steam Deck Game Mode path.
+        echo "[orchestrator] Nested mode: launching docked flow with gamescope windowing" >&2
         exec 2> >(tee -a "$HOME/splitscreen-session.log" >&2)
         echo "=== NESTED SESSION START: $(date) ====" >&2
 
@@ -765,11 +712,18 @@ Gtk.main()
         mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
         exec 9<>"$SPLITSCREEN_FIFO"
 
-        # Launch anchor window so gamescope dismisses the blue spinning
-        # circle / Steam loading overlay. Without this, the user sees a
-        # spinning cursor and no visible windows.
-        echo "[orchestrator] Launching gamescope anchor window for nested mode" >&2
-        launch_gamescope_anchor
+        # Initialize gamescope windowing system:
+        #   1. Launch black GTK anchor window as GAMESCOPECTRL_BASELAYER_WINDOW
+        #      → dismisses Steam loading overlay
+        #      → becomes the ONLY fullscreen base layer
+        #   2. Detect screen resolution for geometry computation
+        #   3. All Minecraft windows will be positioned as OR/overlay windows
+        #      with override_redirect + STEAM_OVERLAY props, so gamescope
+        #      respects their per-window geometry (side-by-side tiling).
+        echo "[orchestrator] Initializing gamescope windowing system..." >&2
+        gamescope_windowing_init || {
+            echo "[orchestrator] WARNING: gamescope windowing init failed, falling back" >&2
+        }
 
         # Start watchdog for instance death detection
         start_watchdog &
@@ -860,9 +814,14 @@ Gtk.main()
     fi
     echo "[orchestrator] Display mode: $display_mode" >&2
 
-    # In gamescope, register an anchor window so Steam dismisses the loading overlay
+    # In gamescope, initialize gamescope windowing (launches anchor + sets up atoms).
+    # The nested path already called gamescope_windowing_init before docked_flow();
+    # for direct launches, we call it here.
     if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]]; then
-        launch_gamescope_anchor
+        echo "[orchestrator] Detected gamescope session, initializing gamescope windowing" >&2
+        gamescope_windowing_init || {
+            echo "[orchestrator] WARNING: gamescope windowing init failed" >&2
+        }
     fi
 
     case "$display_mode" in
