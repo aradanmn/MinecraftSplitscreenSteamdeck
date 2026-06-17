@@ -194,7 +194,7 @@ configureInstanceControllerWrapper() {
     [ -f "$cfg_path" ] || return 0
 
     if [ -n "$joystick_device" ]; then
-        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 SDL_JOYSTICK_HIDAPI=0"
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
     else
