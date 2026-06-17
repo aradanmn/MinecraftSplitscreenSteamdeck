@@ -245,6 +245,75 @@ def action_move_resize(args):
     _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(mask), ctypes.byref(ch))
     _lib.XFlush(dpy)
 
+def action_move_resize_force(args):
+    \"\"\"Try multiple approaches to position a window in gamescope's XWayland.
+    Strategy:
+    1. XMoveResizeWindow (high-level, may bypass some filters)
+    2. XConfigureWindow with override_redirect set (bypass WM)
+    3. XConfigureWindow (standard dex.sh approach, always works on KWin)
+    Returns the approach number that succeeded, or 0 if all failed.
+    \"\"\"
+    wid, x, y, w, h = int(args[0]), int(args[1]), int(args[2]), int(args[3]), int(args[4])
+
+    def _read_geo():
+        \"\"\"Read actual window geometry via XGetWindowAttributes.\"\"\"
+        attrs = XWindowAttributes()
+        ret = _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(attrs))
+        if ret == 0:
+            return None
+        return (attrs.x, attrs.y, attrs.width, attrs.height)
+
+    def _geo_ok():
+        \"\"\"Check if the window is now at the target geometry (within tolerance).\"\"\"
+        g = _read_geo()
+        if g is None:
+            return False
+        gx, gy, gw, gh = g
+        # Allow 1-pixel tolerance for rounding
+        return (abs(gx - x) <= 1 and abs(gy - y) <= 1 and
+                abs(gw - w) <= 1 and abs(gh - h) <= 1)
+
+    # Strategy 1: XMoveResizeWindow (higher-level Xlib call)
+    _lib.XMoveResizeWindow(dpy, Window(wid), x, y, w, h)
+    _lib.XFlush(dpy)
+    _lib.XSync(dpy, 0)
+    if _geo_ok():
+        print(1)
+        return
+
+    # Strategy 2: Set override_redirect, then XConfigureWindow
+    class XSetWA(ctypes.Structure):
+        _fields_ = [('override_redirect', Bool)]
+    attrs = XSetWA(override_redirect=Bool(1))
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(1 << 3), ctypes.byref(attrs))
+    _lib.XFlush(dpy)
+
+    ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
+    mask = CWX | CWY | CWWidth | CWHeight | CWBorderWidth
+    _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(mask), ctypes.byref(ch))
+    _lib.XFlush(dpy)
+    _lib.XSync(dpy, 0)
+    if _geo_ok():
+        print(2)
+        return
+
+    # Strategy 3: XConfigureWindow without overrideredirect (standard)
+    # Clear override_redirect first
+    attrs2 = XSetWA(override_redirect=Bool(0))
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(1 << 3), ctypes.byref(attrs2))
+    _lib.XFlush(dpy)
+
+    ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
+    _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(mask), ctypes.byref(ch))
+    _lib.XFlush(dpy)
+    _lib.XSync(dpy, 0)
+    if _geo_ok():
+        print(3)
+        return
+
+    # All failed
+    print(0)
+
 def action_raise_win(args):
     wid = int(args[0])
     _lib.XRaiseWindow(dpy, Window(wid))
@@ -368,6 +437,7 @@ ACTIONS = {
     'move': action_move,
     'resize': action_resize,
     'move_resize': action_move_resize,
+    'move_resize_force': action_move_resize_force,
     'raise': action_raise_win,
     'set_name': action_set_name,
     'set_override_redirect': action_set_override_redirect,
@@ -425,6 +495,7 @@ dex_getgeometry() { _dex_run getgeometry "$1"; }
 dex_move()       { _dex_run move "$1" "$2" "$3"; }
 dex_resize()     { _dex_run resize "$1" "$2" "$3"; }
 dex_move_resize(){ _dex_run move_resize "$1" "$2" "$3" "$4" "$5"; }
+dex_move_resize_force(){ _dex_run move_resize_force "$1" "$2" "$3" "$4" "$5"; }
 dex_raise()      { _dex_run raise "$1"; }
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }

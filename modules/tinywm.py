@@ -487,15 +487,17 @@ def main():
             changed = layout.reload_if_changed()
             win_name = layout.get_window_name(dpy, win)
 
-            # If layout changed, apply our geometry instead of what the window requested
-            if changed:
-                geo = layout.get_geometry_for(win, win_name)
-                if geo:
-                    x, y, w, h = geo
-                    print(f"TinyWM: Layout changed, repositioning 0x{win:x} to {x},{y} {w}x{h}", file=sys.stderr)
-                    XMoveResizeWindow(dpy, win, x, y, w, h)
-                    XFlush(dpy)
-                    continue
+            # If layout changed or this is a known slot window, apply our geometry
+            # instead of what the window requested. This is critical inside gamescope
+            # where it sends ConfigureRequest events to force windows to fullscreen on
+            # focus — we must override those to maintain our splitscreen layout.
+            geo = layout.get_geometry_for(win, win_name) if (changed or win_name) else None
+            if geo:
+                x, y, w, h = geo
+                print(f"TinyWM: Overriding ConfigureRequest 0x{win:x} -> {x},{y} {w}x{h} (was {ev.x},{ev.y} {ev.width}x{ev.height})", file=sys.stderr)
+                XMoveResizeWindow(dpy, win, x, y, w, h)
+                XFlush(dpy)
+                continue
 
             # Otherwise let it have its requested geometry
             if value_mask & (1 << 0) or value_mask & (1 << 1) or value_mask & (1 << 2) or value_mask & (1 << 3):
