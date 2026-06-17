@@ -765,6 +765,12 @@ Gtk.main()
         mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
         exec 9<>"$SPLITSCREEN_FIFO"
 
+        # Launch anchor window so gamescope dismisses the blue spinning
+        # circle / Steam loading overlay. Without this, the user sees a
+        # spinning cursor and no visible windows.
+        echo "[orchestrator] Launching gamescope anchor window for nested mode" >&2
+        launch_gamescope_anchor
+
         # Start watchdog for instance death detection
         start_watchdog &
         _WATCHDOG_PID=$!
