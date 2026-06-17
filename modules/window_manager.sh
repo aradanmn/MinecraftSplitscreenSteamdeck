@@ -489,9 +489,9 @@ start_tinywm() {
     fi
 
     # Check if we can open the X display
-    if ! python3 -c "
-import os
-os.environ.pop('DISPLAY', None)
+    # Try to open the X display. For gamescope, DISPLAY is already :0.
+    # Use DISPLAY="${display}" (NO backslash-quotes — literal quotes break XOpenDisplay)
+    if ! DISPLAY="${display}" python3 -c "
 import ctypes, ctypes.util
 lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
 dpy = lib.XOpenDisplay(b'${display}')
@@ -506,10 +506,8 @@ print('OK: ${display}')
     fi
 
     # Check if another WM is already running (SubstructureRedirect already claimed)
-    # We do a quick test by trying to select for SubstructureRedirect on root.
-    if python3 -c "
+    if DISPLAY="${display}" python3 -c "
 import os, ctypes, ctypes.util
-os.environ.pop('DISPLAY', None)
 lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11') or 'libX11.so.6')
 dpy = lib.XOpenDisplay(b'${display}')
 if not dpy: exit(2)
