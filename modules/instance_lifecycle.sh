@@ -152,9 +152,11 @@ PROPEOF
     echo "[instance_lifecycle] Wrote splitscreen.properties for slot $slot: mode=$mode_value (grid=$grid_mode)" >&2
 }
 
-# _build_bwrap_command: Construct the bwrap command array for a slot.
+# _build_bwrap_command: Construct the bwrap command array for a slot and write a temp
+# executable script that runs it safely (via exec, not eval).
 # $1 = slot, $2 = event_node, $3 = js_node
-# Output: the full command string (for eval or background execution)
+# $4+ = pairs of (mask_event, mask_js) for other controllers to mask
+# Output: the path to the temp script on stdout.
 _build_bwrap_command() {
     local slot="$1"
     local event_node="$2"
@@ -182,6 +184,8 @@ _build_bwrap_command() {
     # js_node is optional — char devices fail -f; use -e which matches any file type
     if [[ -e "$js_node" ]]; then
         cmd+=(--dev-bind "${js_node}" "${js_node}")
+        # Set SDL_JOYSTICK_DEVICE to the assigned joystick only
+        cmd+=(--setenv "SDL_JOYSTICK_DEVICE" "${js_node}")
     fi
 
     # Mask other controllers — use if-statements, not &&, to avoid set -e
@@ -200,8 +204,20 @@ _build_bwrap_command() {
         -a "P${slot}"
     )
 
-    printf '%q ' "${cmd[@]}"
-    echo
+    # Write a temp shell script that uses exec to run the command safely
+    local tmp_script
+    tmp_script=$(mktemp /tmp/bwrap-slot${slot}-XXXXXX.sh)
+    chmod +x "$tmp_script"
+
+    # Write exec "${cmd[@]}" — printf %q keeps each argument safe
+    {
+        printf '#!/bin/bash\n'
+        printf 'exec '
+        printf '%q ' "${cmd[@]}"
+        printf '\n'
+    } > "$tmp_script"
+
+    echo "$tmp_script"
 }
 
 # _poll_for_java: Poll for the Java process PID.
@@ -452,20 +468,23 @@ spawn_instance() {
         echo "[spawn_instance] Set window title SplitscreenP${slot} via instance.cfg" >&2
     fi
 
-    # 3. Build the bwrap command
-    local bwrap_command
+    # 3. Build the bwrap temp script
+    local bwrap_script
     if [[ ${#mask_controllers[@]} -gt 0 ]]; then
-        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node" "${mask_controllers[@]}")
+        bwrap_script=$(_build_bwrap_command "$slot" "$event_node" "$js_node" "${mask_controllers[@]}")
     else
-        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
+        bwrap_script=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
     fi
 
     # 4. Mark slot as active in state file (preliminary, bwrap_pid filled after launch)
     update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
 
-    # 5. Spawn the instance
-    eval "$bwrap_command" &
+    # 5. Spawn the instance via the temp script (safe — no eval)
+    "$bwrap_script" &
     local bwrap_pid=$!
+
+    # Clean up the temp script immediately; the process has already forked
+    rm -f "$bwrap_script"
 
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
     echo "[spawn_instance] bwrap PID: $bwrap_pid" >&2

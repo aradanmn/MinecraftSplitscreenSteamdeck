@@ -276,6 +276,12 @@ compute_slot_geometry() {
 # Arguments: $1=active_slots (space-separated), $2=screen_w, $3=screen_h
 # Effects: repositions Minecraft windows, spawns/kills black placeholders.
 apply_layout() {
+    # Check for xdotool before proceeding
+    if ! command -v xdotool >/dev/null 2>&1; then
+        echo "[window_manager] ERROR: xdotool not found — window positioning will not work" >&2
+        return 1
+    fi
+
     local active_slots="${1:-}"
     local screen_w="${2:-}"
     local screen_h="${3:-}"

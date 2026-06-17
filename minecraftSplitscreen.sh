@@ -704,7 +704,7 @@ main() {
         local _ext_count
         _ext_count=$(list_eligible_controllers docked 2>/dev/null | grep -c .)
         if [[ "$_ext_count" -ge 1 ]]; then
-            echo "[orchestrator] DRM said handheld but $_ext_count external controller(s) found â docked" >&2
+            echo "[orchestrator] DRM said handheld but $_ext_count external controller(s) found - docked" >&2
             display_mode="docked"
         fi
     fi
