@@ -23,6 +23,7 @@ set -euo pipefail
 #   get_active_slots()            — stdout: "1 3" (space-separated, ascending)
 #   get_bwrap_pid(slot)           — stdout: PID or empty
 #   get_java_pid(slot)            — stdout: PID or empty
+#   get_window_id(slot)           — stdout: X11 WID or empty
 #
 # Environment overrides (for testing):
 #   BWRAP_CMD                     — override bwrap path
@@ -72,14 +73,17 @@ _ensure_state_file() {
     dir=$(dirname "$state_file")
     mkdir -p "$dir"
 
-    # Always reset — stale state from a previous crashed session poisons the next
+    # Always reset — stale state from a previous crashed session poisons the next.
+    # wid field holds the X11 window ID (hex integer) so apply_layout can locate
+    # the Minecraft window without relying on xdotool name-search (which fails in
+    # gamescope's XWayland where xdotool set_window --name doesn't persist).
     jq -n '{
         mode: "handheld",
         slots: {
-            "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-            "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-            "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null},
-            "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null}
+            "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+            "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+            "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+            "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
         }
     }' > "$state_file"
     echo "[instance_lifecycle] Reset state file: $state_file" >&2
@@ -351,6 +355,21 @@ get_java_pid() {
     jq -r ".slots[\"$slot\"].pid // empty" <<< "$state" 2>/dev/null
 }
 
+# Return the X11 window ID (WID) for a slot, or empty if not known.
+# Used by apply_layout to find the Minecraft window without xdotool name-search.
+get_window_id() {
+    local slot="$1"
+    local state
+    state=$(read_state)
+
+    if [[ "$state" == "null" ]]; then
+        echo ""
+        return 0
+    fi
+
+    jq -r ".slots[\"$slot\"].wid // empty" <<< "$state" 2>/dev/null
+}
+
 # --- Public API ---
 
 # Spawn a Minecraft instance in the given slot.
@@ -459,8 +478,13 @@ spawn_instance() {
         echo "[spawn_instance] Java PID: $java_pid" >&2
     fi
 
-    # 7. Wait for window to appear
-    _poll_for_window "$slot" >/dev/null || true
+    # 7. Wait for window to appear and store its WID in state
+    local window_id
+    window_id=$(_poll_for_window "$slot" || true)
+    if [[ -n "$window_id" ]]; then
+        update_slot_state "$slot" "{\"wid\": ${window_id}}"
+        echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
+    fi
 
     # 8. Apply layout with all currently active slots
     local updated_active
@@ -517,8 +541,8 @@ teardown_instance() {
     # 4. Kill placeholder window for this slot
     _kill_placeholder "$slot" 2>/dev/null || true
 
-    # 5. Update state file: mark slot inactive
-    update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null}"
+    # 5. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
+    update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null, \"wid\": null}"
 
     # 6. Re-apply layout with remaining active slots
     local remaining

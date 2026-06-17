@@ -164,6 +164,35 @@ _kill_placeholder() {
     fi
 }
 
+# _verify_window_geometry: After applying xdotool geometry, query the actual
+# position/size and log it for debugging. Used to confirm xdotool works inside
+# gamescope's XWayland.
+# $1 = slot label (e.g. "1"), $2 = window WID, $3 = expected_x, $4 = expected_y,
+# $5 = expected_w, $6 = expected_h
+_verify_window_geometry() {
+    local slot="$1" wid="$2"
+    local ex="$3" ey="$4" ew="$5" eh="$6"
+    local ax ay aw ah
+    ax=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Position: \K\d+,\d+' | cut -d, -f1 || echo "?")
+    ay=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Position: \K\d+,\d+' | cut -d, -f2 || echo "?")
+    aw=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f1 || echo "?")
+    ah=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f2 || echo "?")
+    echo "[window_manager] Verify slot $slot: wanted ${ex},${ey} ${ew}x${eh} → actual ${ax},${ay} ${aw}x${ah}" >&2
+}
+
+# _get_wid_from_state: Read the WID for a slot from the state file, falling
+# back to xdotool name search if state file doesn't exist or wid is empty.
+# $1 = slot
+# Output: WID on stdout, or empty string on failure.
+_get_wid_from_state() {
+    local slot="$1"
+    local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local wid=""
+    [[ -f "$sf" ]] && wid=$(jq -r ".slots[\"${slot}\"].wid // empty" "$sf" 2>/dev/null || true)
+    [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
+    echo "$wid"
+}
+
 # --- Public API ---
 
 # Determine grid mode from the set of active slot numbers.
@@ -270,18 +299,15 @@ apply_layout() {
 
     # In full mode, only slot 1 matters — no placeholders needed for other slots
     if [[ "$grid_mode" == "full" ]]; then
-        local wid=""
-        # Prefer WID from state file — xdotool set_window --name doesn't stick
-        # in gamescope so name-based search is unreliable there.
-        local _sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-        [[ -f "$_sf" ]] && wid=$(jq -r '.slots."1".wid // empty' "$_sf" 2>/dev/null || true)
-        [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP1" 2>/dev/null || true)
+        local wid
+        wid=$(_get_wid_from_state 1)
         if [[ -n "$wid" ]]; then
             echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
             xdotool windowmove "$wid" 0 0 2>/dev/null || true
             xdotool windowsize "$wid" "$screen_w" "$screen_h" 2>/dev/null || true
             xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
             xdotool windowraise "$wid" 2>/dev/null || true
+            _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
         fi
         return 0
     fi
@@ -326,11 +352,10 @@ apply_layout() {
             _kill_placeholder "$slot"
 
             # Find and reposition the Minecraft window.
-            # Prefer WID from state file — xdotool name search fails in gamescope.
-            local wid=""
-            local _sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-            [[ -f "$_sf" ]] && wid=$(jq -r ".slots.\"${slot}\".wid // empty" "$_sf" 2>/dev/null || true)
-            [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
+            # _get_wid_from_state prefers WID from state file (reliable in gamescope)
+            # and falls back to xdotool name search for X11 sessions.
+            local wid
+            wid=$(_get_wid_from_state "$slot")
             if [[ -n "$wid" ]]; then
                 echo "[window_manager] Repositioning slot $slot: window $wid → ${w}x${h}+${x}+${y}" >&2
                 xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
@@ -338,6 +363,7 @@ apply_layout() {
                 xdotool set_window --overrideredirect 1 "$wid" 2>/dev/null || true
                 xdotool windowraise "$wid" 2>/dev/null || true
                 echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode)" >&2
+                _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
             else
                 echo "[window_manager] Window for slot $slot not found (SplitscreenP${slot})" >&2
             fi
