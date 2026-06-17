@@ -177,7 +177,15 @@ _verify_window_geometry() {
     ay=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Position: \K\d+,\d+' | cut -d, -f2 || echo "?")
     aw=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f1 || echo "?")
     ah=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f2 || echo "?")
-    echo "[window_manager] Verify slot $slot: wanted ${ex},${ey} ${ew}x${eh} → actual ${ax},${ay} ${aw}x${ah}" >&2
+    if [[ "$ax" != "?" && "$ay" != "?" && "$aw" != "?" && "$ah" != "?" ]]; then
+        if [[ "$ax" -ne "$ex" || "$ay" -ne "$ey" || "$aw" -ne "$ew" || "$ah" -ne "$eh" ]]; then
+            echo "[window_manager] WARNING: slot $slot geometry mismatch: wanted ${ex},${ey} ${ew}x${eh} but got ${ax},${ay} ${aw}x${ah}" >&2
+        else
+            echo "[window_manager] Verify slot $slot: geometry OK (${ax},${ay} ${aw}x${ah})" >&2
+        fi
+    else
+        echo "[window_manager] WARNING: slot $slot geometry check failed — xdotool could not query window $wid (got ax=$ax ay=$ay aw=$aw ah=$ah)" >&2
+    fi
 }
 
 # _get_wid_from_state: Read the WID for a slot from the state file, falling
