@@ -32,7 +32,6 @@ _WATCH_DISPLAY_PID=""
 _CONTROLLER_MONITOR_PID=""
 _WATCHDOG_PID=""
 _ANCHOR_PID=""
-_LAYOUT_PID=""
 
 # =============================
 # Function: detectLauncher (PRESERVED)
@@ -388,33 +387,6 @@ docked_flow() {
         fi
     done
 
-    # Window layout loop (docked only) — runs in background, calls apply_layout
-    # every 5s until both windows are visible, then every 30s to maintain positions.
-    # Separate from the FIFO event loop so it doesn't block controller events.
-    (
-        local _settled=0
-        while true; do
-            local _active
-            _active=$(get_active_slots 2>/dev/null || true)
-            if [[ -n "$_active" ]]; then
-                local _W _H
-                _W=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}' | cut -dx -f1)
-                _H=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}' | cut -dx -f2)
-                _W=${_W:-1920}; _H=${_H:-1080}
-                apply_layout "$_active" "$_W" "$_H"
-                if (( _settled == 0 )); then
-                    echo "[layout] First layout pass done — switching to 30s cadence" >&2
-                    _settled=1
-                fi
-                sleep 30
-            else
-                sleep 5
-            fi
-        done
-    ) &
-    _LAYOUT_PID=$!
-    echo "[orchestrator] Layout loop PID: $_LAYOUT_PID" >&2
-
     # Event loop: read FIFO
     echo "[orchestrator] Entering event loop, reading from $SPLITSCREEN_FIFO" >&2
     local line
@@ -629,11 +601,6 @@ cleanup() {
             -set GAMESCOPECTRL_BASELAYER_WINDOW 0 2>/dev/null || true
         _ANCHOR_PID=""
     fi
-    if [[ -n "$_LAYOUT_PID" ]]; then
-        kill "$_LAYOUT_PID" 2>/dev/null || true
-        _LAYOUT_PID=""
-    fi
-
     # Tear down all instances
     teardown_all_instances 2>/dev/null || true
 
