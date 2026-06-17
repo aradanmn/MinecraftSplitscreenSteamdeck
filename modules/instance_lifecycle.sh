@@ -284,8 +284,9 @@ _poll_for_window() {
                 if [[ -n "$wid" ]]; then
                     echo "[instance_lifecycle] Found window by PID $java_pid for slot $slot: wid=$wid" >&2
                     # Rename WM_NAME so apply_layout can search by name on subsequent calls.
-                    # WID must come first in xdotool set_window.
-                    xdotool set_window "$wid" --name "SplitscreenP${slot}" 2>/dev/null || true
+                    # xdotool uses POSIX getopt (+ prefix), which stops at the first
+                    # non-option argument. --name must come BEFORE the WID.
+                    xdotool set_window --name "SplitscreenP${slot}" "$wid" 2>/dev/null || true
                     echo "$wid"
                     return 0
                 fi
