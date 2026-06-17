@@ -270,8 +270,12 @@ apply_layout() {
 
     # In full mode, only slot 1 matters — no placeholders needed for other slots
     if [[ "$grid_mode" == "full" ]]; then
-        local wid
-        wid=$(xdotool search --name "SplitscreenP1" 2>/dev/null || true)
+        local wid=""
+        # Prefer WID from state file — xdotool set_window --name doesn't stick
+        # in gamescope so name-based search is unreliable there.
+        local _sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+        [[ -f "$_sf" ]] && wid=$(jq -r '.slots."1".wid // empty' "$_sf" 2>/dev/null || true)
+        [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP1" 2>/dev/null || true)
         if [[ -n "$wid" ]]; then
             echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
             xdotool windowmove "$wid" 0 0 2>/dev/null || true
@@ -321,9 +325,12 @@ apply_layout() {
             # Kill placeholder if one exists for this slot
             _kill_placeholder "$slot"
 
-            # Find and reposition the Minecraft window
-            local wid
-            wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
+            # Find and reposition the Minecraft window.
+            # Prefer WID from state file — xdotool name search fails in gamescope.
+            local wid=""
+            local _sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+            [[ -f "$_sf" ]] && wid=$(jq -r ".slots.\"${slot}\".wid // empty" "$_sf" 2>/dev/null || true)
+            [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
             if [[ -n "$wid" ]]; then
                 echo "[window_manager] Repositioning slot $slot: window $wid → ${w}x${h}+${x}+${y}" >&2
                 xdotool windowmove "$wid" "$x" "$y" 2>/dev/null || true
