@@ -654,6 +654,11 @@ main() {
         exec "${LAUNCHER_EXEC}" -l latestUpdate-1 -a P1
     fi
 
+    # --xdotool-test: run the xdotool geometry test inside gamescope
+    if [ "${1:-}" = "--xdotool-test" ]; then
+        exec "$SCRIPT_DIR/tests/gamescope-xdotool-test.sh"
+    fi
+
     # --- Session logging: tee stderr to persistent log for post-mortem ---
     local SESSION_LOG="$HOME/splitscreen-session.log"
     exec 2> >(tee -a "$SESSION_LOG" >&2)
