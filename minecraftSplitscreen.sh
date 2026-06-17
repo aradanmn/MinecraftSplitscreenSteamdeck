@@ -172,7 +172,10 @@ launchGame() {
     # include perfectly valid controllers. Clear it for launched instances.
     launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
     # Prefer physical controllers over Steam virtual pads in Controllable.
-    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0")
+    # Use Steam virtual pads directly — SDL3 needs ALLOW_STEAM_VIRTUAL=1 for
+    # 28de:11ff devices (the Steam virtual Xbox pads). Setting =0 blocks them
+    # entirely and breaks controller detection inside bwrap sandboxes.
+    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1")
     # Force SDL to use Linux joystick devices instead of HIDAPI so SDL_JOYSTICK_DEVICE
     # pinning is applied per instance.
     launch_env+=("SDL_JOYSTICK_HIDAPI=0")
@@ -185,7 +188,7 @@ launchGame() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
         echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
         echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
-        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0"
+        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1"
         echo "  SDL_JOYSTICK_HIDAPI=0"
         echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
         echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
@@ -341,7 +344,7 @@ configureInstanceControllerWrapper() {
     [ -f "$cfg_path" ] || return 0
 
     if [ -n "$joystick_device" ]; then
-        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
     else
@@ -572,7 +575,7 @@ if isSteamDeckGameMode; then
     fi
 else
     # Not in Game Mode: just launch Minecraft instances directly
-    local -a controller_devices
+    controller_devices=()
     numberOfControllers=$(getControllerCount)
     mapfile -t controller_devices < <(getControllerDevices)
     if [ "${#controller_devices[@]}" -gt 0 ]; then
@@ -587,7 +590,7 @@ else
     fi
 
     for player in $(seq 1 $numberOfControllers); do
-        local joystick_device=""
+        joystick_device=""
         if [ "$player" -le "${#controller_devices[@]}" ]; then
             joystick_device="${controller_devices[$((player-1))]}"
         fi
