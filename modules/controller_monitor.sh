@@ -343,6 +343,28 @@ _get_physical_devices() {
 
 # --- Public API ---
 
+# Return the event node path for the internal (built-in) Steam Deck gamepad.
+# Output: "/dev/input/eventN" on stdout, or empty string if not found.
+get_internal_event_node() {
+    local pad0_eventN
+    if pad0_eventN=$(_find_internal_by_pad_name 2>/dev/null) && [[ -n "$pad0_eventN" ]]; then
+        echo "/dev/input/event$pad0_eventN"
+        echo "[controller_monitor] Internal event node: /dev/input/event$pad0_eventN" >&2
+        return 0
+    fi
+    # Fallback: get the first virtual device's event node
+    local first_virtual
+    first_virtual=$(_parse_steam_virtual_devices | head -1 | awk '{print $1}')
+    if [[ -n "$first_virtual" ]]; then
+        echo "/dev/input/event$first_virtual"
+        echo "[controller_monitor] Internal event node (fallback): /dev/input/event$first_virtual" >&2
+        return 0
+    fi
+    echo "[controller_monitor] WARNING: could not determine internal event node" >&2
+    echo ""
+    return 1
+}
+
 # Write current eligible device list to stdout.
 # Each line: "<event_node> <js_node> <physical_vendor> <physical_product>"
 # $1 = mode ("handheld" or "docked")
