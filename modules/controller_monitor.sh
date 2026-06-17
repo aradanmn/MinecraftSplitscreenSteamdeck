@@ -316,12 +316,12 @@ _identify_internal_virtual_index() {
         fi
     fi
 
-    # --- Strategy 3: Assume internal is LAST -- external pads register before built-in ---
-    local total
-    total=$(_parse_steam_virtual_devices | wc -l)
-    total="${total// /}"  # trim whitespace
-    echo "[controller_monitor] Fallback: assuming internal is last virtual device (index $total)" >&2
-    echo "$total"
+    # --- Strategy 3: Assume internal is FIRST (index 1) ---
+    # The Steam Deck's built-in gamepad always enumerates before any
+    # externally connected virtual gamepads (28de:11ff), so the first
+    # virtual device is always the internal gamepad.
+    echo "[controller_monitor] Fallback: assuming internal is first virtual device (index 1)" >&2
+    echo "1"
     return 0
 }
 # _get_physical_devices: Return physical gamepad devices (not 28de:11ff, has jsN).
