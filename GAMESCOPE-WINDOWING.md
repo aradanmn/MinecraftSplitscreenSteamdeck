@@ -128,6 +128,14 @@ Controller work is deferred while windowing is resolved. Summary for reference:
 
 _See individual commit messages in the relevant commits table above._
 
+## Related Documents
+
+| Document | Description |
+|----------|-------------|
+| `PLAN-WINDOWING-CONTROLLERS.md` | Comprehensive plan with 3-round challenge/refine analysis — windowing (Phase 1), controller isolation (Phase 2), verification (Phase 3) |
+| `DECISION-LOG-2026-06-17.md` | Key decisions made during the 3-round challenge process — what was tried, what was ruled out, what we know vs what we assume |
+| `SESSION-2026-06-16.md` | Raw full session log from the major debugging session |
+
 ## Next Steps
 
 1. **Deploy to Steam Deck** — `git pull` on the Deck, then run in Game Mode with 2 controllers
