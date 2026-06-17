@@ -579,6 +579,18 @@ PYEOF
 
     _ANCHOR_PID=$!
     echo "[orchestrator] Anchor PID: $_ANCHOR_PID" >&2
+
+    # Force anchor window to correct size/position via xdotool
+    # GTK's set_default_size can produce wrong sizes in gamescope's XWayland
+    sleep 0.5
+    local anchor_wid
+    anchor_wid=$(xdotool search --pid "$_ANCHOR_PID" 2>/dev/null | head -1)
+    if [[ -n "$anchor_wid" ]]; then
+        echo "[orchestrator] Forcing anchor window $anchor_wid to ${w}x${h}+0+0 via xdotool" >&2
+        xdotool windowmove "$anchor_wid" 0 0 2>/dev/null || true
+        xdotool windowsize "$anchor_wid" "$w" "$h" 2>/dev/null || true
+        xdotool set_window --overrideredirect 1 "$anchor_wid" 2>/dev/null || true
+    fi
 }
 
 cleanup() {
