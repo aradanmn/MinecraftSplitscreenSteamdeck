@@ -184,7 +184,7 @@ _build_bwrap_command() {
         cmd+=(--setenv "SDL_JOYSTICK_DEVICE" "${js_node}")
     fi
 
-    # Mask other controllers — use if-statements, not &&, to avoid set -e
+    # Mask other controllers: use if-statements, not &&, to avoid set -e
     # interpreting a "file not found" as a fatal error
     while [[ $# -ge 2 ]]; do
         local mask_event="$1" mask_js="$2"
@@ -193,8 +193,26 @@ _build_bwrap_command() {
         if [[ -e "$mask_js"    ]]; then cmd+=(--bind /dev/null "${mask_js}"); fi
     done
 
+    # SDL env vars — explicitly override Steam's inherited environment:
+    #   SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1:
+    #     Lets SDL3 see 28de:11ff Steam virtual Xbox pads (the only device in this sandbox).
+    #     Steam sets this=1 by default; we set it explicitly to ensure it's not overridden.
+    #   SDL_GAMECONTROLLER_IGNORE_DEVICES= (empty):
+    #     Clears Steam's DS4 VID/PID exclusion list, so SDL can use evdev directly
+    #     if the Steam IPC socket isn't available. Not strictly needed for 28de:11ff
+    #     pads, but harmless and defensive against future Steam changes.
+    #   SDL_JOYSTICK_HIDAPI=0:
+    #     Disables HIDAPI backend (no /dev/hidraw* nodes in this sandbox).
+    #     SDL3 falls back to pure evdev where our bound event/js nodes live.
+    #   SDL_LINUX_JOYSTICK_CLASSIC=1:
+    #     Forces classic joystick driver path (not the new evdev-only path),
+    #     ensuring compatibility with older SDL3/gamescope builds.
     cmd+=(
         --
+        env
+        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
+        SDL_GAMECONTROLLER_IGNORE_DEVICES=
+        SDL_JOYSTICK_HIDAPI=0
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
         -a "P${slot}"

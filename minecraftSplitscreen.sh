@@ -194,7 +194,7 @@ configureInstanceControllerWrapper() {
     [ -f "$cfg_path" ] || return 0
 
     if [ -n "$joystick_device" ]; then
-        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=0 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
+        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 SDL_JOYSTICK_HIDAPI=0"
         setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
         setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
     else
@@ -363,6 +363,13 @@ docked_flow() {
 
     local _nc=${#_all_events[@]}
     echo "[orchestrator] Found $_nc docked controller(s)" >&2
+
+    # Get the Deck built-in event node so we can mask it in every sandbox.
+    # This prevents the Deck's built-in controls from leaking through
+    # Steam's IPC socket even though we set ALLOW_STEAM_VIRTUAL=1.
+    local _internal_event
+    _internal_event=$(get_internal_event_node 2>/dev/null || true)
+
     local _i
     for (( _i=0; _i<_nc && _i<4; _i++ )); do
         local slot=$(( _i + 1 ))
@@ -378,6 +385,10 @@ docked_flow() {
                 _mask+=("${_all_events[$_j]}" "${_all_js[$_j]}")
             fi
         done
+        # Also mask the Deck built-in event node (belt-and-suspenders)
+        if [[ -n "$_internal_event" && "$_internal_event" != "$event_node" ]]; then
+            _mask+=("$_internal_event" "")
+        fi
 
         update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
         if [[ ${#_mask[@]} -gt 0 ]]; then
