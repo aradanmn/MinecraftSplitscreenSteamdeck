@@ -90,8 +90,13 @@ Controller work is deferred while windowing is resolved. Summary for reference:
 
 | Hash | Summary |
 |------|---------|
+| `4c6c7ef` | Force anchor window size via xdotool; upgrade geometry verification with WARNING logging |
+| `dc0983a` | Session log for 2026-06-16 (full debugging history) |
+| `b135c8f` | Controller: internal-is-first fallback, 9/9 tests |
+| `b48516c` | Eval→temp script for bwrap; nested function fix; xdotool guard; .gitignore; UTF-8 fix |
+| `62748f6` | Store WID in state after _poll_for_window; add geometry verification helpers |
+| `08ab45d` | Gamescope windowing work log (this file created) |
 | `8711922` | WID-first window lookup + remove polling layout loop |
-| **`HEAD`** | **Store WID in state, verify geometry, add shared helpers** — see changes below |
 | `ebb57b6` | Merge PR #11 (polymc-appimage-rewrite → gamescope-windowing) |
 | `3adf037` | Remove Steam virtual gamepad flag; add docked layout loop (loop now removed) |
 | `87aaaae` | `--tmpfs /tmp` for qtsingleapp socket isolation; fix mask conditionals |
@@ -121,31 +126,15 @@ Controller work is deferred while windowing is resolved. Summary for reference:
 
 ## Changes in This Commit
 
-The WID-first lookup from `8711922` was incomplete — the WID was looked up from state but never stored there. This commit completes the pipe:
-
-### What changed
-
-| File | Change |
-|------|--------|
-| `modules/instance_lifecycle.sh` | `_ensure_state_file` schema now includes `wid: null` per slot |
-| `modules/instance_lifecycle.sh` | `spawn_instance` stores the WID returned by `_poll_for_window` via `update_slot_state` |
-| `modules/instance_lifecycle.sh` | `teardown_instance` clears `wid` in the state reset (prevents stale WID reuse) |
-| `modules/instance_lifecycle.sh` | New public API `get_window_id(slot)` — reads WID from state |
-| `modules/window_manager.sh` | New `_get_wid_from_state()` helper — WID from state file, falls back to xdotool name search |
-| `modules/window_manager.sh` | New `_verify_window_geometry()` helper — logs expected vs actual geometry after xdotool calls |
-| `modules/window_manager.sh` | Both fullscreen and grid layout paths use `_get_wid_from_state` + `_verify_window_geometry` |
-
-### Test results
-
-All 41 unit tests pass (dock_detection 8/8, controller_monitor 5/9 pre-existing failures, window_manager 9/9, instance_lifecycle 9/9, watchdog 7/7, orchestrator 8/8). The 4 controller_monitor failures are pre-existing device index assumptions unrelated to windowing.
+_See individual commit messages in the relevant commits table above._
 
 ## Next Steps
 
 1. **Deploy to Steam Deck** — `git pull` on the Deck, then run in Game Mode with 2 controllers
 2. **Check session log** (`~/splitscreen-session.log`) for `[window_manager] Verify slot N:` lines — these show the actual xdotool geometry readback
 3. **If xdotool geometry matches expected**: the WID-pipe fix works and the layout should be correct
-4. **If xdotool geometry is wrong but returns valid numbers**: gamescope's XWayland reports one geometry but composites differently — try the alternatives below
-5. **If xdotool geometry returns "?":** xdotool didn't respond at all — try launching each instance at reduced resolution matching its half-screen slot
+4. **If xdotool geometry is wrong but returns valid numbers**: gamescope's XWayland reports one geometry but composites differently — see alternatives below
+5. **If xdotool geometry returns WARNING**: the `_verify_window_geometry` function will now log clear `WARNING` lines when xdotool fails or geometry doesn't match
 
 ---
 
