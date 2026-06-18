@@ -90,6 +90,11 @@ launchWindowTest() {
     W="${RES%x*}"; H="${RES#*x}"; HALF_H=$(( H / 2 ))
     echo "[launchWindowTest] W=$W H=$H HALF_H=$HALF_H" >> "$LOG"
 
+    # GDK_BACKEND=x11 forces GTK through XWayland instead of Wayland.
+    # Without this, win.move() and set_override_redirect are no-ops
+    # (Wayland clients cannot self-position), and xdotool can't see the windows.
+    export GDK_BACKEND=x11
+
     # P1: red, top half.
     # override_redirect=True makes KWin treat this as an unmanaged window —
     # it positions itself exactly at move() coords, bypassing KWin's placement.
