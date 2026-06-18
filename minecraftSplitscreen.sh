@@ -3,15 +3,15 @@
 #
 # Steam shortcut launches this with no arguments.
 # Auto-detects context:
-#   - gamescope session  → start nested KDE (nestedPlasma)
-#   - KDE session        → we're inside the nested KWin, create test windows
+#   gamescope session → nestedPlasma (start nested KDE inside gamescope)
+#   KDE session       → launchWindowTest (already inside KWin, create windows)
 
 LOG=/tmp/splitscreen-debug.log
 exec 2>>"$LOG"
 set -x
 
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
+echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
 
 # ─────────────────────────────────────────────────────────────────────────────
 nestedPlasma() {
@@ -80,75 +80,96 @@ launchWindowTest() {
     echo "[launchWindowTest] start" >> "$LOG"
     rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
 
+    # Kill plasmashell — we only want KWin as WM, not the full desktop
+    pkill plasmashell 2>/dev/null || true
+    sleep 0.5
+
     local RES W H HALF_H
     RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
     [[ -z "$RES" ]] && RES="1280x800"
     W="${RES%x*}"; H="${RES#*x}"; HALF_H=$(( H / 2 ))
     echo "[launchWindowTest] W=$W H=$H HALF_H=$HALF_H" >> "$LOG"
 
-    qdbus org.kde.KWin /KWin reconfigure 2>/dev/null || true
-    sleep 0.5
-
+    # P1: red, top half.
+    # override_redirect=True makes KWin treat this as an unmanaged window —
+    # it positions itself exactly at move() coords, bypassing KWin's placement.
     python3 -c "
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, GLib
 win = Gtk.Window()
 win.set_title('SplitscreenP1')
-win.set_decorated(False)
 win.set_default_size(${W}, ${HALF_H})
+win.realize()
+gdkwin = win.get_window()
+if gdkwin:
+    gdkwin.set_override_redirect(True)
 win.move(0, 0)
-win.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0.75, 0, 0, 1))
 lbl = Gtk.Label(label='P1  TOP HALF\n(0, 0)  ${W}x${HALF_H}')
-lbl.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(1, 1, 1, 1))
 win.add(lbl)
+css = Gtk.CssProvider()
+css.load_from_data(b'window { background-color: #cc0000; color: white; }')
+win.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 win.show_all()
 GLib.timeout_add_seconds(60, Gtk.main_quit)
 Gtk.main()
 " &
     local P1_PID=$!
+    echo "[launchWindowTest] P1 PID=$P1_PID" >> "$LOG"
 
     sleep 1
 
+    # P2: blue, bottom half.
     python3 -c "
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, GLib
 win = Gtk.Window()
 win.set_title('SplitscreenP2')
-win.set_decorated(False)
 win.set_default_size(${W}, ${HALF_H})
+win.realize()
+gdkwin = win.get_window()
+if gdkwin:
+    gdkwin.set_override_redirect(True)
 win.move(0, ${HALF_H})
-win.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0, 0.75, 1))
 lbl = Gtk.Label(label='P2  BOTTOM HALF\n(0, ${HALF_H})  ${W}x${HALF_H}')
-lbl.override_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(1, 1, 1, 1))
 win.add(lbl)
+css = Gtk.CssProvider()
+css.load_from_data(b'window { background-color: #0000cc; color: white; }')
+win.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 win.show_all()
 GLib.timeout_add_seconds(60, Gtk.main_quit)
 Gtk.main()
 " &
     local P2_PID=$!
+    echo "[launchWindowTest] P2 PID=$P2_PID" >> "$LOG"
 
     sleep 2
 
-    if command -v wmctrl >/dev/null 2>&1; then
-        for _attempt in 1 2 3; do
-            wmctrl -r "SplitscreenP1" -e "0,0,0,${W},${HALF_H}"         2>/dev/null || true
-            wmctrl -r "SplitscreenP2" -e "0,0,${HALF_H},${W},${HALF_H}" 2>/dev/null || true
-            sleep 1
-        done
-    fi
+    # Belt-and-suspenders: xdotool by PID to reinforce positions
+    local WID1 WID2
+    WID1=$(xdotool search --pid "$P1_PID" 2>/dev/null | head -1 || true)
+    WID2=$(xdotool search --pid "$P2_PID" 2>/dev/null | head -1 || true)
+    echo "[launchWindowTest] xdotool WID1=$WID1 WID2=$WID2" >> "$LOG"
+    for _attempt in 1 2 3; do
+        [[ -n "$WID1" ]] && xdotool windowmove "$WID1" 0 0            2>/dev/null || true
+        [[ -n "$WID1" ]] && xdotool windowsize "$WID1" "$W" "$HALF_H" 2>/dev/null || true
+        [[ -n "$WID2" ]] && xdotool windowmove "$WID2" 0 "$HALF_H"   2>/dev/null || true
+        [[ -n "$WID2" ]] && xdotool windowsize "$WID2" "$W" "$HALF_H" 2>/dev/null || true
+        sleep 1
+    done
 
+    echo "[launchWindowTest] waiting for windows to close" >> "$LOG"
     wait $P1_PID $P2_PID 2>/dev/null || true
     echo "[launchWindowTest] done" >> "$LOG"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auto-detect: gamescope session = initial launch, KDE session = inside KWin
+# Auto-detect: gamescope = initial launch, KDE = inside nested KWin
 if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
-    echo "[main] detected KDE session — running launchWindowTest" >> "$LOG"
+    echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
     launchWindowTest
 else
-    echo "[main] detected gamescope (or unknown) session — running nestedPlasma" >> "$LOG"
+    echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
     nestedPlasma
 fi
