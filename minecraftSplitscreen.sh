@@ -57,7 +57,7 @@ find_controller_pairs() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 write_python_helpers() {
-    # event_reader.py: runs inside bwrap, streams button press/release to stdout
+    # event_reader.py: runs inside bwrap, streams input events to stdout
     cat > /tmp/event_reader.py <<'PYEOF'
 import struct, sys, datetime, signal
 
@@ -68,7 +68,14 @@ BUTTONS = {
     317: 'L3',     318: 'R3',
     544: 'D-Up',   545: 'D-Down', 546: 'D-Left', 547: 'D-Right',
 }
+AXES = {
+    0: 'LS-X', 1: 'LS-Y', 2: 'L2',  3: 'RS-X', 4: 'RS-Y', 5: 'R2',
+    16: 'Hat-X', 17: 'Hat-Y',
+}
+AXIS_THRESHOLD = 10000  # ignore small analog noise; hat axes use -1/0/1
+
 EV_KEY = 1
+EV_ABS = 3
 
 dev = sys.argv[1] if len(sys.argv) > 1 else '/dev/input/event0'
 signal.signal(signal.SIGINT,  lambda *_: sys.exit(0))
@@ -81,11 +88,19 @@ try:
             if len(data) < 24:
                 break
             _, _, type_, code, value = struct.unpack('llHHi', data)
+            t = datetime.datetime.now().strftime('%H:%M:%S')
             if type_ == EV_KEY and value in (0, 1):
                 name  = BUTTONS.get(code, f'BTN_{code:#05x}')
                 state = 'PRESS' if value == 1 else 'release'
-                t     = datetime.datetime.now().strftime('%H:%M:%S')
                 print(f'[{t}]  {name:10s}  {state}', flush=True)
+            elif type_ == EV_ABS and code in AXES:
+                name = AXES[code]
+                is_hat = code in (16, 17)
+                if is_hat and value != 0:
+                    direction = '+' if value > 0 else '-'
+                    print(f'[{t}]  {name:10s}  {direction}', flush=True)
+                elif not is_hat and abs(value) > AXIS_THRESHOLD:
+                    print(f'[{t}]  {name:10s}  {value:+d}', flush=True)
 except Exception as e:
     print(f'ERROR: {e}', flush=True)
 PYEOF
@@ -182,7 +197,7 @@ def on_input(source, condition):
 
 GLib.io_add_watch(fd, GLib.IOCondition.IN, on_input)
 win.show_all()
-GLib.timeout_add_seconds(120, Gtk.main_quit)
+GLib.timeout_add_seconds(300, Gtk.main_quit)
 Gtk.main()
 proc.terminate()
 PYEOF
@@ -222,6 +237,13 @@ runIsolationTest() {
 
     echo "[test] P1_PID=$P1_PID P2_PID=$P2_PID" >> "$LOG"
     wait "$P1_PID" "$P2_PID" 2>/dev/null || true
+
+    # Windows closed — tear down the nested KDE session so gamescope returns
+    # to the Steam launcher instead of leaving a black screen.
+    echo "[test] windows exited, terminating nested KWin session" >> "$LOG"
+    pkill -TERM kwin_wayland 2>/dev/null || true
+    sleep 2
+    pkill -KILL kwin_wayland 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
