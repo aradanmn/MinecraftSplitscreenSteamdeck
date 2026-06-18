@@ -694,44 +694,11 @@ Gtk.main()
         exit 0
     fi
 
-    # 'nested' arg: Steam shortcut passes this. Launch full docked flow
-    # with TinyWM as the window manager, managing Minecraft instances inside
-    # gamescope on :0 (the visible display). No nested Plasma session needed.
+    # 'nested' arg: Steam shortcut passes this. Run window positioning
+    # diagnostic — opens two test windows so we can see where they land.
     if [ "${1:-}" = "nested" ]; then
-        # Skip self-update and launcher detection — just run docked flow
-        # with xdotool-based gamescope windowing for side-by-side Windows.
-        # This is the Steam Deck Game Mode path.
-        echo "[orchestrator] Nested mode: launching docked flow with gamescope windowing" >&2
-        exec 2> >(tee -a "$HOME/splitscreen-session.log" >&2)
-        echo "=== NESTED SESSION START: $(date) ====" >&2
-
-        _ensure_state_file
-
-        # Create FIFO and hold a write end open so readers never block on open()
-        mkdir -p "$(dirname "$SPLITSCREEN_FIFO")"
-        mkfifo "$SPLITSCREEN_FIFO" 2>/dev/null || true
-        exec 9<>"$SPLITSCREEN_FIFO"
-
-        # Initialize gamescope windowing system:
-        #   1. Launch black GTK anchor window as GAMESCOPECTRL_BASELAYER_WINDOW
-        #      → dismisses Steam loading overlay
-        #      → becomes the ONLY fullscreen base layer
-        #   2. Detect screen resolution for geometry computation
-        #   3. All Minecraft windows will be positioned as OR/overlay windows
-        #      with override_redirect + STEAM_OVERLAY props, so gamescope
-        #      respects their per-window geometry (side-by-side tiling).
-        echo "[orchestrator] Initializing gamescope windowing system..." >&2
-        gamescope_windowing_init || {
-            echo "[orchestrator] WARNING: gamescope windowing init failed, falling back" >&2
-        }
-
-        # Start watchdog for instance death detection
-        start_watchdog &
-        _WATCHDOG_PID=$!
-        echo "[orchestrator] Watchdog PID: $_WATCHDOG_PID" >&2
-
-        docked_flow
-        # docked_flow runs event loop, never returns
+        echo "[orchestrator] Running window position test (2 windows)" >&2
+        exec bash "$SCRIPT_DIR/tests/window-pos-test.sh"
         exit 0
     fi
 
