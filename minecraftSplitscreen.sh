@@ -169,7 +169,14 @@ launchSlot() {
     mkdir -p "$slot_runtime"
 
     local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
-    [[ -e /dev/fuse ]] && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
+    # --dev /dev overlays an empty devtmpfs, wiping the device nodes that
+    # --dev-bind / / provided.  Re-bind the GPU (required by Qt xcb / LWJGL),
+    # X11 socket, shared memory, and FUSE back in, matching the known-working
+    # bwrap configuration from commit d5f060c (modules/instance_lifecycle.sh).
+    [[ -d /dev/dri ]]       && bwrap_cmd+=(--dev-bind /dev/dri /dev/dri)
+    [[ -e /dev/fuse ]]      && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
+    [[ -d /dev/shm ]]       && bwrap_cmd+=(--dev-bind /dev/shm /dev/shm)
+    [[ -d /tmp/.X11-unix ]] && bwrap_cmd+=(--dev-bind /tmp/.X11-unix /tmp/.X11-unix)
     bwrap_cmd+=(
         --setenv APPIMAGE_EXTRACT_AND_RUN 1
         --setenv XDG_RUNTIME_DIR "$slot_runtime"
