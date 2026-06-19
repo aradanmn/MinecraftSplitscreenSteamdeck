@@ -349,6 +349,12 @@ launchSlot() {
         --setenv XDG_RUNTIME_DIR "$slot_runtime"
         --setenv QT_QPA_PLATFORM xcb
         --setenv DISPLAY "${DISPLAY:-:2}"
+        # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
+        # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
+        # leaving every instance silent. Point PULSE_SERVER at the real host socket
+        # by absolute path so each instance gets audio. The socket is already inside
+        # the sandbox via --dev-bind / /.
+        --setenv PULSE_SERVER "unix:/run/user/$(id -u)/pulse/native"
     )
     [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
     [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
