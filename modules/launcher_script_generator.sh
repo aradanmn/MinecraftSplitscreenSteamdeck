@@ -327,7 +327,16 @@ launchSlot() {
 
     logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
 
-    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc --tmpfs /tmp)
+    # --dev-bind / /        full filesystem access, preserves /tmp/.X11-unix sockets
+    # --dev /dev            minimal /dev so only explicitly bound input devices are visible
+    # --dev-bind /dev/fuse  PolyMC AppImage needs this for squashfuse self-mounting
+    # --proc /proc          process filesystem
+    # APPIMAGE_EXTRACT_AND_RUN=1: extract AppImage to a random tmpdir instead of
+    #   FUSE-mounting — bypasses FUSE permission issues and gives each instance a
+    #   unique applicationFilePath(), resolving the PolyMC single-instance lock conflict
+    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
+    [[ -e /dev/fuse ]] && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
+    bwrap_cmd+=(--setenv APPIMAGE_EXTRACT_AND_RUN 1)
     [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
     [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
 
