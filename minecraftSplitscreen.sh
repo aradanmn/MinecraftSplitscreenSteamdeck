@@ -496,22 +496,148 @@ launchWindowTest() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# testPlasma
+# Starts nested KDE session for Phase B automated lifecycle test.
+# Writes autostart .desktop that calls launchTestFromPlasma instead of main().
+# ─────────────────────────────────────────────────────────────────────────────
+testPlasma() {
+    echo "[testPlasma] start" >> "$LOG"
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    echo "[testPlasma] W=$W H=$H" >> "$LOG"
+
+    # KWin wrapper with correct resolution
+    cat > /tmp/kwin_wayland_wrapper <<WEOF
+#!/bin/bash
+/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
+WEOF
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
+
+    # Autostart calls launchTestFromPlasma
+    local SCRIPT_PATH
+    SCRIPT_PATH="$(readlink -f "$0")"
+    mkdir -p ~/.config/autostart
+    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+[Desktop Entry]
+Name=Splitscreen Test
+Exec=${SCRIPT_PATH} testFromPlasma
+Type=Application
+X-KDE-AutostartScript=true
+DEOF
+    echo "[testPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
+    exec dbus-run-session startplasma-wayland
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchTestFromPlasma
+# Called from KDE autostart inside the nested test session.
+# Starts docked_flow in background, runs the Phase B lifecycle test
+# script against the FIFO, then tears down.
+# ─────────────────────────────────────────────────────────────────────────────
+launchTestFromPlasma() {
+    echo "[launchTestFromPlasma] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    pkill plasmashell 2>/dev/null || true
+    sleep 0.5
+
+    # Ensure FIFO exists
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    if [[ ! -p "$fifo" ]]; then
+        mkfifo "$fifo" 2>/dev/null || true
+    fi
+
+    # Initialize the state file
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state" 2>/dev/null || true
+
+    # Start the orchestrator's docked_flow in the background
+    if declare -f docked_flow >/dev/null 2>&1; then
+        echo "[launchTestFromPlasma] Starting docked_flow in background" >> "$LOG"
+        docked_flow &
+        local orch_pid=$!
+        echo "[launchTestFromPlasma] Orchestrator PID: $orch_pid" >> "$LOG"
+    else
+        echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
+        pkill -TERM kwin_wayland 2>/dev/null || true
+        return 1
+    fi
+
+    # Wait for orchestrator to be ready
+    sleep 2
+
+    # Source the test harness and run test 2 (2-player lifecycle)
+    local test_script
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+    test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
+    if [[ -f "$test_script" ]]; then
+        echo "[launchTestFromPlasma] Running test harness: $test_script" >> "$LOG"
+        bash "$test_script" "${TEST_NUMBER:-2}" 2>&1 | tee -a "$LOG" || true
+        echo "[launchTestFromPlasma] Test complete" >> "$LOG"
+    else
+        echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
+    fi
+
+    # Clean up
+    echo "[launchTestFromPlasma] Cleaning up orchestrator (PID $orch_pid)" >> "$LOG"
+    kill -TERM "$orch_pid" 2>/dev/null || true
+    sleep 2
+
+    # Final cleanup
+    if declare -f teardown_all_instances >/dev/null 2>&1; then
+        teardown_all_instances 2>/dev/null || true
+    fi
+
+    pkill -TERM kwin_wayland 2>/dev/null || true
+    sleep 2
+    pkill -KILL kwin_wayland 2>/dev/null || true
+    echo "[launchTestFromPlasma] complete" >> "$LOG"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point — Phase B: event-loop orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
-# If running inside a KDE session (from nestedPlasma's autostart), use the
-# orchestrator's main() which detects handheld/docked mode and enters the
-# appropriate event loop. Falls back to batch-mode runStaticTest if the
-# orchestrator modules aren't loaded.
-if declare -f main >/dev/null 2>&1; then
-    echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
-    main
-else
-    echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
-    if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
-        echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
-        launchWindowTest
-    else
-        echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
-        nestedPlasma
-    fi
-fi
+# dispatch_mode is set by the test/testPlasma wrappers to override the
+# default behavior when running automated tests inside nested KDE.
+case "${1:-}" in
+    test|testPlasma)
+        # Phase B lifecycle test: first call from outside nested session
+        echo "[main] Phase B test mode — starting (outer)" >> "$LOG"
+        testPlasma
+        ;;
+    testFromPlasma)
+        # Called from KDE autostart inside the nested test session
+        echo "[main] Phase B test mode — inside KDE session" >> "$LOG"
+        if declare -f launchTestFromPlasma >/dev/null 2>&1; then
+            launchTestFromPlasma
+        elif declare -f main >/dev/null 2>&1; then
+            echo "[main] No launchTestFromPlasma — starting orchestrator main()" >> "$LOG"
+            main
+        else
+            echo "[main] Falling back to legacy batch runStaticTest" >> "$LOG"
+            launchWindowTest
+        fi
+        ;;
+    *)
+        # Normal mode
+        if declare -f main >/dev/null 2>&1; then
+            echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
+            main
+        else
+            echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
+            if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
+                echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
+                launchWindowTest
+            else
+                echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
+                nestedPlasma
+            fi
+        fi
+        ;;
+esac
