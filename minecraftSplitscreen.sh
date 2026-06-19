@@ -1,24 +1,21 @@
 #!/bin/bash
-# minecraftSplitscreen.sh — 8-hour windowing test harness
+# minecraftSplitscreen.sh — Phase A prototype: static Minecraft instance test
 #
-# Steam shortcut launches this with no arguments.
-# Auto-detects context:
-#   gamescope session → nestedPlasma (start nested KDE inside gamescope)
-#   KDE session       → launchWindowTest (already inside KWin, run harness)
+# Launches actual PolyMC/PrismLauncher instances inside a nested KWin session
+# with per-slot bwrap controller isolation.  Waits for all instances to reach
+# the Minecraft main menu ("Sound engine started" in the log), runs for
+# TEST_ACTIVE_S seconds, then auto-quits.  No operator interaction required.
 #
-# The harness simulates Minecraft player join/quit events:
-#   Phase 1: sequential join  P1→P2→P3→P4  (2-min loading delay each)
-#   Phase 2: sequential quit  P4→P3→P2     (P1 always survives)
-#   Phase 3: random events    every 5/15/30 min for the remainder of 8h
+# Overridable env vars:
+#   N_SLOTS          — number of player slots (default 4)
+#   TEST_ACTIVE_S    — active run duration in seconds (default 600)
+#   LOAD_TIMEOUT_S   — max seconds to wait for all instances to load (default 180)
+#   INSTANCES_DIR    — override auto-detected launcher instances directory
+#   LAUNCHER_EXEC    — override auto-detected launcher command
 #
-# Layout rules:
-#   4 active  → 2×2 quad
-#   3 active  → 2×2 quad, empty slot filled with black box
-#   2 active  → top/bottom halves (lower player# on top)
-#   1 active  → full screen
-#
-# Join rule: always fills lowest inactive slot whose prerequisite (N-1) is active.
-# Quit rule: any active player except the last one.
+# Production equivalent: modules/launcher_script_generator.sh → launchGames()
+# runStaticTest() is prototype-only; everything else is kept in sync with the
+# generator's LAUNCHER_SCRIPT_EOF heredoc.
 
 LOG=/tmp/splitscreen-debug.log
 exec 2>>"$LOG"
@@ -26,10 +23,45 @@ set -x
 
 echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
 
+N_SLOTS="${N_SLOTS:-4}"
+TEST_ACTIVE_S="${TEST_ACTIVE_S:-600}"
+LOAD_TIMEOUT_S="${LOAD_TIMEOUT_S:-180}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launcher auto-detection  (prototype only — generator bakes these in via sed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_detect_instances_dir() {
+    local candidates=(
+        "$HOME/.local/share/PolyMC/instances"
+        "$HOME/.var/app/org.fn2006.PolyMC/data/PolyMC/instances"
+        "$HOME/.local/share/PrismLauncher/instances"
+        "$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
+    )
+    for dir in "${candidates[@]}"; do
+        [[ -d "$dir" ]] && { echo "$dir"; return 0; }
+    done
+    return 1
+}
+
+_detect_launcher_exec() {
+    if flatpak list 2>/dev/null | grep -q "org.fn2006.PolyMC"; then
+        echo "flatpak run org.fn2006.PolyMC"; return 0
+    fi
+    if flatpak list 2>/dev/null | grep -q "org.prismlauncher.PrismLauncher"; then
+        echo "flatpak run org.prismlauncher.PrismLauncher"; return 0
+    fi
+    command -v polymc       >/dev/null 2>&1 && { echo "polymc"; return 0; }
+    command -v prismlauncher >/dev/null 2>&1 && { echo "prismlauncher"; return 0; }
+    return 1
+}
+
+INSTANCES_DIR="${INSTANCES_DIR:-$(_detect_instances_dir)}"
+LAUNCHER_EXEC="${LAUNCHER_EXEC:-$(_detect_launcher_exec)}"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # compute_geometry  slot total W H  →  stdout "x y w h"
-# Used by nestedPlasma() to write kwinrulesrc (KWin fallback).
-# The Python harness has its own layout engine.
+# Layouts: 1p=full, 2p=top/bottom, 3-4p=2×2 quad.
 # ─────────────────────────────────────────────────────────────────────────────
 compute_geometry() {
     local slot=$1 total=$2 W=$3 H=$4
@@ -48,325 +80,217 @@ compute_geometry() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# write_python_helpers — writes /tmp/splitscreen_test_harness.py
+# setSplitscreenModeForPlayer  slot n_slots
+# Writes splitscreen.properties so the in-game Splitscreen mod knows which
+# screen region to render.  This is the primary layout mechanism.
 # ─────────────────────────────────────────────────────────────────────────────
-write_python_helpers() {
-    cat > /tmp/splitscreen_test_harness.py <<'PYEOF'
-#!/usr/bin/env python3
-"""
-8-hour splitscreen windowing test harness.
-
-Simulates Minecraft player join/quit events using GTK windows as stand-ins.
-
-Usage: python3 /tmp/splitscreen_test_harness.py W H
-"""
-
-import gi, sys, os, random, time, signal
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, Gdk, GLib
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-
-JOIN_DELAY_S     = 120       # 2-minute loading simulation
-TEST_DURATION_S  = 28800     # 8 hours
-SEQ_QUIT_GAP_S   = 5         # gap between sequential quits
-LABEL_REFRESH_S  = 30        # how often to refresh active-time labels
-RANDOM_INTERVALS = [5*60, 15*60, 30*60]   # random phase event intervals
-
-PLAYER_BG = {1: '#1a0000', 2: '#00001a', 3: '#001a00', 4: '#1a1400'}
-PLAYER_FG = {1: '#ff4444', 2: '#4466ff', 3: '#44dd44', 4: '#ffcc00'}
-BLACK_BOX_BG = '#0a0a0a'
-BLACK_BOX_FG = '#333333'
-
-LOG_PATH = '/tmp/splitscreen-debug.log'
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-
-def log(msg):
-    ts = time.strftime('%H:%M:%S')
-    line = f'[harness {ts}] {msg}'
-    try:
-        with open(LOG_PATH, 'a') as f:
-            f.write(line + '\n')
-    except Exception:
-        pass
-    print(line, flush=True)
-
-# ── Layout computation ────────────────────────────────────────────────────────
-
-def compute_layout(active_set, W, H):
-    """
-    Returns (player_geom, bb_geom) — dicts of {player: (x,y,w,h)}.
-
-    Rules:
-      1 active  → full screen
-      2 active  → top / bottom halves (lower player# on top)
-      3 active  → 2×2 quad; the one empty slot gets a black box entry in bb_geom
-      4 active  → 2×2 quad; no black boxes
-    """
-    hw, hh = W // 2, H // 2
-    QUAD = {1: (0, 0, hw, hh), 2: (hw, 0, hw, hh),
-            3: (0, hh, hw, hh), 4: (hw, hh, hw, hh)}
-    n = len(active_set)
-
-    if n == 0:
-        return {}, {}
-    if n == 1:
-        p = min(active_set)
-        return {p: (0, 0, W, H)}, {}
-    if n == 2:
-        sp = sorted(active_set)
-        return {sp[0]: (0, 0, W, hh), sp[1]: (0, hh, W, hh)}, {}
-    # n == 3 or 4
-    geom   = {p: QUAD[p] for p in active_set}
-    bb_geo = {p: QUAD[p] for p in range(1, 5) if p not in active_set}
-    return geom, bb_geo
-
-# ── GTK window helpers ────────────────────────────────────────────────────────
-
-def _base_window(title, x, y, w, h):
-    win = Gtk.Window()
-    win.set_title(title)
-    win.set_default_size(w, h)
-    win.realize()
-    gdk = win.get_window()
-    if gdk:
-        gdk.set_override_redirect(True)
-    win.move(x, y)
-    return win
-
-def _rgba(hex_str):
-    c = Gdk.RGBA()
-    c.parse(hex_str)
-    return c
-
-def _make_player_window(p, x, y, w, h):
-    win = _base_window(f'SplitscreenP{p}', x, y, w, h)
-    ebox = Gtk.EventBox()
-    ebox.override_background_color(Gtk.StateFlags.NORMAL, _rgba(PLAYER_BG[p]))
-    lbl = Gtk.Label()
-    lbl.override_color(Gtk.StateFlags.NORMAL, _rgba(PLAYER_FG[p]))
-    lbl.set_markup(f'<span size="xx-large" weight="bold">P{p}</span>')
-    lbl.set_justify(Gtk.Justification.CENTER)
-    ebox.add(lbl)
-    win.add(ebox)
-    win._lbl  = lbl
-    win._join = time.time()
-    win.show_all()
-    return win
-
-def _make_black_box(p, x, y, w, h):
-    win = _base_window(f'BlackBoxP{p}', x, y, w, h)
-    ebox = Gtk.EventBox()
-    ebox.override_background_color(Gtk.StateFlags.NORMAL, _rgba(BLACK_BOX_BG))
-    lbl = Gtk.Label()
-    lbl.override_color(Gtk.StateFlags.NORMAL, _rgba(BLACK_BOX_FG))
-    lbl.set_markup(f'<span size="large">P{p}\nempty</span>')
-    lbl.set_justify(Gtk.Justification.CENTER)
-    ebox.add(lbl)
-    win.add(ebox)
-    win.show_all()
-    return win
-
-def _update_label(win, p, x, y, w, h):
-    elapsed = int(time.time() - win._join)
-    m, s = divmod(elapsed, 60)
-    win._lbl.set_markup(
-        f'<span size="xx-large" weight="bold">P{p}</span>\n'
-        f'<span size="small">({x},{y})  {w}×{h}\n{m:02d}:{s:02d}</span>'
-    )
-
-# ── Harness ───────────────────────────────────────────────────────────────────
-
-class Harness:
-    def __init__(self, W, H):
-        self.W, self.H  = W, H
-        self.active     = {}   # {player: Gtk.Window}
-        self.bb_wins    = {}   # {player: Gtk.Window}  black-box placeholders
-        self.pending    = set()# players mid 2-min join delay
-        self.start_time = time.time()
-        self._seq_join  = [2, 3, 4]
-        self._seq_quit  = [4, 3, 2]
-        self._random_on = False
-
-    # ── Layout ─────────────────────────────────────────────────────────────
-
-    def _reposition(self):
-        active_set = set(self.active.keys())
-        geom, bb_geom = compute_layout(active_set, self.W, self.H)
-
-        for p, (x, y, w, h) in geom.items():
-            win = self.active[p]
-            win.resize(w, h)
-            win.move(x, y)
-            _update_label(win, p, x, y, w, h)
-
-        needed  = set(bb_geom.keys())
-        current = set(self.bb_wins.keys())
-
-        for p in current - needed:
-            self.bb_wins[p].destroy()
-            del self.bb_wins[p]
-
-        for p in needed - current:
-            x, y, w, h = bb_geom[p]
-            self.bb_wins[p] = _make_black_box(p, x, y, w, h)
-
-        for p in needed & current:
-            x, y, w, h = bb_geom[p]
-            self.bb_wins[p].resize(w, h)
-            self.bb_wins[p].move(x, y)
-
-        layout_desc = f'active={sorted(active_set)} bb={sorted(bb_geom.keys())}'
-        log(f'LAYOUT {layout_desc}')
-
-    # ── Join / Quit ─────────────────────────────────────────────────────────
-
-    def _next_join_candidate(self):
-        """Lowest inactive player whose prerequisite (N-1) is active."""
-        occupied = set(self.active.keys()) | self.pending
-        for p in [1, 2, 3, 4]:
-            if p not in occupied:
-                if p == 1 or (p - 1) in occupied:
-                    return p
-        return None
-
-    def _quit_candidates(self):
-        if len(self.active) <= 1:
-            return []
-        return sorted(self.active.keys())
-
-    def _trigger_join(self, p):
-        self.pending.add(p)
-        log(f'JOIN_EVENT P{p} loading (completes in {JOIN_DELAY_S}s)')
-        GLib.timeout_add_seconds(JOIN_DELAY_S, self._join_complete, p)
-
-    def _join_complete(self, p):
-        self.pending.discard(p)
-        # Compute where P's window should go in the new layout
-        active_set = set(self.active.keys()) | {p}
-        geom, _ = compute_layout(active_set, self.W, self.H)
-        x, y, w, h = geom.get(p, (0, 0, self.W, self.H))
-        self.active[p] = _make_player_window(p, x, y, w, h)
-        self._reposition()
-        log(f'JOIN_COMPLETE P{p} → active={sorted(self.active.keys())}')
-        return False
-
-    def _trigger_quit(self, p):
-        log(f'QUIT P{p} active_before={sorted(self.active.keys())}')
-        if p in self.active:
-            self.active[p].destroy()
-            del self.active[p]
-        self._reposition()
-        log(f'QUIT P{p} active_after={sorted(self.active.keys())}')
-
-    # ── Phase 1: sequential join ────────────────────────────────────────────
-
-    def _next_seq_join(self):
-        if self._seq_join:
-            p = self._seq_join.pop(0)
-            self._trigger_join(p)
-            # Next join fires after this one completes (+2s buffer)
-            GLib.timeout_add_seconds(JOIN_DELAY_S + 2, self._next_seq_join)
-        else:
-            # All 4 joined — pause then start sequential quits
-            log('SEQ_JOIN complete — pausing 15s before sequential quit')
-            GLib.timeout_add_seconds(15, self._next_seq_quit)
-        return False
-
-    # ── Phase 2: sequential quit ────────────────────────────────────────────
-
-    def _next_seq_quit(self):
-        if self._seq_quit and len(self.active) > 1:
-            p = self._seq_quit.pop(0)
-            if p in self.active:
-                self._trigger_quit(p)
-            GLib.timeout_add_seconds(SEQ_QUIT_GAP_S, self._next_seq_quit)
-        else:
-            # Sequential phase done
-            log('SEQ_QUIT complete — starting random phase')
-            self._random_on = True
-            self._schedule_random()
-        return False
-
-    # ── Phase 3: random events ──────────────────────────────────────────────
-
-    def _schedule_random(self):
-        interval = random.choice(RANDOM_INTERVALS)
-        log(f'RANDOM next event in {interval // 60}min')
-        GLib.timeout_add_seconds(interval, self._random_event)
-
-    def _random_event(self):
-        join_p   = self._next_join_candidate()
-        quit_ps  = self._quit_candidates()
-
-        options = []
-        if join_p is not None:
-            options.append(('join', join_p))
-        for p in quit_ps:
-            options.append(('quit', p))
-
-        if options:
-            action, p = random.choice(options)
-            log(f'RANDOM action={action} player={p}')
-            if action == 'join':
-                self._trigger_join(p)
-            else:
-                self._trigger_quit(p)
-
-        self._schedule_random()
-        return False
-
-    # ── Label refresh ───────────────────────────────────────────────────────
-
-    def _refresh_labels(self):
-        active_set = set(self.active.keys())
-        geom, _ = compute_layout(active_set, self.W, self.H)
-        for p, win in self.active.items():
-            if p in geom:
-                x, y, w, h = geom[p]
-                _update_label(win, p, x, y, w, h)
-        return True   # repeat
-
-    # ── Start / End ─────────────────────────────────────────────────────────
-
-    def start(self):
-        log(f'TEST_START W={self.W} H={self.H} duration=8h')
-        # P1 appears immediately (no loading delay for the first player)
-        self._join_complete(1)
-        # Kick off sequential joins for P2, P3, P4
-        GLib.timeout_add_seconds(1, self._next_seq_join)
-        # Periodic label refresh
-        GLib.timeout_add_seconds(LABEL_REFRESH_S, self._refresh_labels)
-        # Auto-exit after 8h
-        GLib.timeout_add_seconds(TEST_DURATION_S, self._end_test)
-
-    def _end_test(self):
-        elapsed = int(time.time() - self.start_time)
-        log(f'TEST_COMPLETE elapsed={elapsed}s')
-        Gtk.main_quit()
-        return False
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-def main():
-    W = int(sys.argv[1]) if len(sys.argv) > 1 else 1280
-    H = int(sys.argv[2]) if len(sys.argv) > 2 else 800
-
-    log(f'HARNESS init W={W} H={H}')
-    signal.signal(signal.SIGINT,  lambda *_: Gtk.main_quit())
-    signal.signal(signal.SIGTERM, lambda *_: Gtk.main_quit())
-
-    h = Harness(W, H)
-    GLib.idle_add(h.start)
-    Gtk.main()
-    log('HARNESS exit')
-
-if __name__ == '__main__':
-    main()
-PYEOF
+setSplitscreenModeForPlayer() {
+    local player=$1 n=$2
+    local config_path="$INSTANCES_DIR/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
+    mkdir -p "$(dirname "$config_path")"
+    local mode="FULLSCREEN"
+    case "$n" in
+        1) mode="FULLSCREEN" ;;
+        2) [[ $player -eq 1 ]] && mode="TOP" || mode="BOTTOM" ;;
+        3)
+            case $player in
+                1) mode="TOP" ;; 2) mode="BOTTOM_LEFT" ;; *) mode="BOTTOM_RIGHT" ;;
+            esac ;;
+        4)
+            case $player in
+                1) mode="TOP_LEFT" ;; 2) mode="TOP_RIGHT" ;;
+                3) mode="BOTTOM_LEFT" ;; *) mode="BOTTOM_RIGHT" ;;
+            esac ;;
+    esac
+    echo -e "gap=1\nmode=$mode" > "$config_path"
+    sync
+    sleep 0.5
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# logMsg  slot level msg...
+# Structured log line → LOG and stderr.  slot=0 for session-level events.
+# Works in both prototype (LOG) and generator (LOG_FILE) contexts.
+# ─────────────────────────────────────────────────────────────────────────────
+declare -A SLOT_PIDS
+
+logMsg() {
+    local slot="$1" level="$2"
+    shift 2
+    local ts
+    ts=$(date +%H:%M:%S)
+    local line="[SLOT-${slot} ${level} ${ts}] $*"
+    local _logf="${LOG_FILE:-${LOG:-/tmp/splitscreen-debug.log}}"
+    echo "$line" >> "$_logf" 2>/dev/null
+    echo "$line" >&2
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# find_controller_pairs  →  stdout "js_dev ev_dev" per physical controller
+# Maps /dev/input/jsN to its sibling eventM via sysfs.
+# Steam virtual pads have no js node and are automatically excluded.
+# ─────────────────────────────────────────────────────────────────────────────
+find_controller_pairs() {
+    for js in /dev/input/js*; do
+        [[ -e "$js" ]] || continue
+        local jsnum="${js##*js}"
+        local evname
+        evname=$(ls /sys/class/input/js${jsnum}/device/ 2>/dev/null | grep '^event' | head -1)
+        [[ -n "$evname" ]] && echo "$js /dev/input/$evname"
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchSlot  slot js_dev ev_dev
+# Launches one PolyMC/PrismLauncher instance inside a bwrap controller sandbox.
+# Records the bwrap PID in SLOT_PIDS[slot].  Returns 1 if bwrap dies immediately.
+# ─────────────────────────────────────────────────────────────────────────────
+launchSlot() {
+    local slot="$1" js_dev="$2" ev_dev="$3"
+    local instance_id="latestUpdate-${slot}"
+
+    logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
+
+    if [[ -z "$LAUNCHER_EXEC" ]]; then
+        logMsg "$slot" ERROR "LAUNCHER_EXEC not set — cannot launch"
+        return 1
+    fi
+
+    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc --tmpfs /tmp)
+    [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
+    [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
+
+    if command -v kde-inhibit >/dev/null 2>&1; then
+        "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
+            $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+    else
+        logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
+        "${bwrap_cmd[@]}" $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+    fi
+
+    local pid=$!
+    SLOT_PIDS[$slot]=$pid
+
+    sleep 2
+    if ! kill -0 "$pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and LAUNCHER_EXEC=$LAUNCHER_EXEC"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "bwrap PID=$pid alive"
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# waitForAllReady  n_slots [timeout_s]
+# Polls each instance's latest.log for "Sound engine started" (main menu).
+# Returns 0 when all n_slots are ready, 1 on timeout.
+# On timeout logs per-slot diagnostics but does NOT kill anything.
+# ─────────────────────────────────────────────────────────────────────────────
+waitForAllReady() {
+    local n_slots="$1" timeout_s="${2:-180}"
+    local marker="Sound engine started"
+    local deadline=$(( $(date +%s) + timeout_s ))
+
+    logMsg 0 INFO "waiting for $n_slots instances — marker='$marker' timeout=${timeout_s}s"
+
+    while [[ $(date +%s) -lt $deadline ]]; do
+        local ready=0
+        for slot in $(seq 1 "$n_slots"); do
+            local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+            if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
+                (( ready++ ))
+            fi
+        done
+        logMsg 0 DEBUG "$ready/$n_slots at main menu"
+        if [[ $ready -ge $n_slots ]]; then
+            logMsg 0 INFO "all $n_slots instances ready"
+            return 0
+        fi
+        sleep 5
+    done
+
+    logMsg 0 ERROR "load timeout after ${timeout_s}s — per-slot status:"
+    for slot in $(seq 1 "$n_slots"); do
+        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        if [[ ! -f "$mc_log" ]]; then
+            logMsg "$slot" ERROR "no log file at $mc_log — instance likely crashed"
+        elif grep -q "$marker" "$mc_log" 2>/dev/null; then
+            logMsg "$slot" INFO "ready (arrived after deadline)"
+        else
+            local last
+            last=$(tail -3 "$mc_log" 2>/dev/null | tr '\n' '|')
+            logMsg "$slot" ERROR "NOT ready — last log: $last"
+        fi
+    done
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# quitSlot  slot bwrap_pid
+# SIGTERM to bwrap and its children, waits up to 30s, then SIGKILLs stragglers.
+# ─────────────────────────────────────────────────────────────────────────────
+quitSlot() {
+    local slot="$1" bwrap_pid="$2"
+
+    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" INFO "PID $bwrap_pid already gone"
+        return 0
+    fi
+
+    logMsg "$slot" INFO "SIGTERM → PID $bwrap_pid and children"
+    kill -TERM "$bwrap_pid" 2>/dev/null || true
+    pkill -TERM -P "$bwrap_pid" 2>/dev/null || true
+
+    local waited=0
+    while [[ $waited -lt 30 ]]; do
+        kill -0 "$bwrap_pid" 2>/dev/null || {
+            logMsg "$slot" INFO "exited gracefully after ${waited}s"
+            return 0
+        }
+        sleep 1
+        (( waited++ ))
+    done
+
+    logMsg "$slot" WARN "still alive after 30s — SIGKILL"
+    kill -KILL "$bwrap_pid" 2>/dev/null || true
+    pkill -KILL -P "$bwrap_pid" 2>/dev/null || true
+    sleep 1
+
+    if kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "survived SIGKILL — manual intervention needed (PID=$bwrap_pid)"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "killed (forced)"
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# quitAllSlots
+# Quits all SLOT_PIDS entries in parallel, then clears the array.
+# ─────────────────────────────────────────────────────────────────────────────
+quitAllSlots() {
+    if [[ ${#SLOT_PIDS[@]} -eq 0 ]]; then
+        logMsg 0 INFO "quitAllSlots: nothing to quit"
+        return 0
+    fi
+    logMsg 0 INFO "quitting slots: ${!SLOT_PIDS[*]}"
+    local slot
+    for slot in "${!SLOT_PIDS[@]}"; do
+        quitSlot "$slot" "${SLOT_PIDS[$slot]}" &
+    done
+    wait
+    unset SLOT_PIDS
+    declare -gA SLOT_PIDS
+    logMsg 0 INFO "all slots quit"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# nestedPlasma
+# Starts a nested KDE Plasma Wayland session inside gamescope.
+# Writes an autostart .desktop so this script is re-invoked as launchWindowTest
+# once the KDE session is up.
 # ─────────────────────────────────────────────────────────────────────────────
 nestedPlasma() {
     echo "[nestedPlasma] start" >> "$LOG"
@@ -380,25 +304,7 @@ nestedPlasma() {
 
     kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
 
-    # Write KWin rules for all 4 slots as a quad fallback
-    {
-        echo "[General]"
-        echo "count=4"
-        for slot in 1 2 3 4; do
-            read x y w h < <(compute_geometry "$slot" 4 "$W" "$H")
-            echo ""
-            echo "[$slot]"
-            echo "Description=SplitscreenP${slot}"
-            echo "title=SplitscreenP${slot}"
-            echo "titlematch=1"
-            echo "position=${x},${y}"
-            echo "positionrule=3"
-            echo "size=${w},${h}"
-            echo "sizerule=3"
-        done
-    } > ~/.config/kwinrulesrc
-    echo "[nestedPlasma] kwinrulesrc written" >> "$LOG"
-
+    # KWin wrapper with correct resolution
     cat > /tmp/kwin_wayland_wrapper <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
@@ -406,6 +312,7 @@ WEOF
     chmod +x /tmp/kwin_wayland_wrapper
     export PATH=/tmp:$PATH
 
+    # Autostart re-invokes this script once KDE session is running
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
     mkdir -p ~/.config/autostart
@@ -417,34 +324,128 @@ Type=Application
 X-KDE-AutostartScript=true
 DEOF
     echo "[nestedPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
-
     exec dbus-run-session startplasma-wayland
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-launchWindowTest() {
-    echo "[launchWindowTest] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+# runStaticTest  [n_slots] [test_active_s]
+# PROTOTYPE ONLY — not generated by the installer.
+# Production equivalent: launchGames() in launcher_script_generator.sh.
+#
+# Full Phase A orchestration:
+#   detect launchers → write KWin rules → write splitscreen configs →
+#   launch all slots → wait for main menu → active test → auto-quit
+# ─────────────────────────────────────────────────────────────────────────────
+runStaticTest() {
+    local n_slots="${1:-$N_SLOTS}" test_active_s="${2:-$TEST_ACTIVE_S}"
 
-    pkill plasmashell 2>/dev/null || true
-    sleep 0.5
+    logMsg 0 INFO "=== PHASE A STATIC TEST === slots=$n_slots active=${test_active_s}s load_timeout=${LOAD_TIMEOUT_S}s"
+    logMsg 0 INFO "INSTANCES_DIR=${INSTANCES_DIR:-<not detected>}"
+    logMsg 0 INFO "LAUNCHER_EXEC=${LAUNCHER_EXEC:-<not detected>}"
 
+    # ── Pre-flight checks
+    if [[ -z "$INSTANCES_DIR" || ! -d "$INSTANCES_DIR" ]]; then
+        logMsg 0 ERROR "INSTANCES_DIR not found: '${INSTANCES_DIR:-empty}'"
+        logMsg 0 ERROR "ensure PolyMC/PrismLauncher is installed, or set INSTANCES_DIR"
+        return 1
+    fi
+    if [[ -z "$LAUNCHER_EXEC" ]]; then
+        logMsg 0 ERROR "no launcher detected — install PolyMC/PrismLauncher or set LAUNCHER_EXEC"
+        return 1
+    fi
+    for slot in $(seq 1 "$n_slots"); do
+        local inst_dir="$INSTANCES_DIR/latestUpdate-${slot}"
+        if [[ ! -d "$inst_dir" ]]; then
+            logMsg "$slot" ERROR "instance dir missing: $inst_dir — run the installer first"
+            return 1
+        fi
+        logMsg "$slot" INFO "instance dir OK: $inst_dir"
+    done
+
+    # ── Screen size
     local RES W H
     RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
     [[ -z "$RES" ]] && RES="1280x800"
     W="${RES%x*}"; H="${RES#*x}"
-    echo "[launchWindowTest] W=$W H=$H" >> "$LOG"
+    logMsg 0 INFO "screen: ${W}x${H}"
 
-    export GDK_BACKEND=x11
-    write_python_helpers
+    # ── Detect controller pairs
+    local -a js_devs ev_devs
+    local idx=0
+    while IFS=' ' read -r js ev; do
+        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; (( idx++ ))
+    done < <(find_controller_pairs)
+    logMsg 0 INFO "detected ${#js_devs[@]} controller pair(s)"
 
-    GDK_BACKEND=x11 python3 /tmp/splitscreen_test_harness.py "$W" "$H"
-    echo "[launchWindowTest] harness exited" >> "$LOG"
+    # ── KWin placement rules (fallback positioning)
+    {
+        echo "[General]"; echo "count=$n_slots"
+        for _s in $(seq 1 "$n_slots"); do
+            read _x _y _w _h < <(compute_geometry "$_s" "$n_slots" "$W" "$H")
+            printf '\n[%s]\nDescription=SplitscreenP%s\ntitle=SplitscreenP%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
+                "$_s" "$_s" "$_s" "$_x" "$_y" "$_w" "$_h"
+        done
+    } > ~/.config/kwinrulesrc
+    logMsg 0 INFO "kwinrulesrc written for $n_slots slots"
 
-    # Tear down nested KDE session — gamescope returns to Steam launcher
+    # ── Splitscreen mod config + launch each slot
+    local launch_ok=true
+    for slot in $(seq 1 "$n_slots"); do
+        setSplitscreenModeForPlayer "$slot" "$n_slots"
+        logMsg "$slot" INFO "splitscreen.properties written"
+
+        local js_dev="${js_devs[$((slot-1))]:-}"
+        local ev_dev="${ev_devs[$((slot-1))]:-}"
+        if ! launchSlot "$slot" "$js_dev" "$ev_dev"; then
+            logMsg "$slot" ERROR "launch failed — aborting test"
+            launch_ok=false; break
+        fi
+        sleep 2
+    done
+
+    if [[ "$launch_ok" != true ]]; then
+        logMsg 0 ERROR "launch aborted — cleaning up"
+        quitAllSlots; return 1
+    fi
+
+    # ── Wait for all instances to reach main menu
+    if ! waitForAllReady "$n_slots" "$LOAD_TIMEOUT_S"; then
+        logMsg 0 ERROR "load failed — instances left running for SSH inspection"
+        logMsg 0 INFO "inspect: $INSTANCES_DIR/latestUpdate-N/.minecraft/logs/latest.log"
+        logMsg 0 INFO "waiting 5min grace period before force-quit"
+        sleep 300
+        quitAllSlots; return 1
+    fi
+
+    # ── Active test run
+    logMsg 0 INFO "=== ACTIVE TEST START === running ${test_active_s}s"
+    sleep "$test_active_s"
+
+    # ── Auto-quit
+    logMsg 0 INFO "=== ACTIVE TEST COMPLETE === quitting all slots"
+    quitAllSlots
+    logMsg 0 INFO "=== PHASE A TEST PASS ==="
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchWindowTest
+# Entry point when running inside the nested KDE session.
+# Calls runStaticTest then tears down the KWin session.
+# ─────────────────────────────────────────────────────────────────────────────
+launchWindowTest() {
+    echo "[launchWindowTest] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    pkill plasmashell 2>/dev/null || true
+    sleep 0.5
+
+    runStaticTest "$N_SLOTS" "$TEST_ACTIVE_S"
+    local result=$?
+
     pkill -TERM kwin_wayland 2>/dev/null || true
     sleep 2
     pkill -KILL kwin_wayland 2>/dev/null || true
+    return $result
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
