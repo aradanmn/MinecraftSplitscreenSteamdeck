@@ -45,13 +45,17 @@ _detect_instances_dir() {
 }
 
 _detect_launcher_exec() {
+    # AppImage bundled alongside the PolyMC data directory
+    local appimage="$HOME/.local/share/PolyMC/PolyMC.AppImage"
+    [[ -x "$appimage" ]] && { echo "$appimage"; return 0; }
+
     if flatpak list 2>/dev/null | grep -q "org.fn2006.PolyMC"; then
         echo "flatpak run org.fn2006.PolyMC"; return 0
     fi
     if flatpak list 2>/dev/null | grep -q "org.prismlauncher.PrismLauncher"; then
         echo "flatpak run org.prismlauncher.PrismLauncher"; return 0
     fi
-    command -v polymc       >/dev/null 2>&1 && { echo "polymc"; return 0; }
+    command -v polymc        >/dev/null 2>&1 && { echo "polymc"; return 0; }
     command -v prismlauncher >/dev/null 2>&1 && { echo "prismlauncher"; return 0; }
     return 1
 }
