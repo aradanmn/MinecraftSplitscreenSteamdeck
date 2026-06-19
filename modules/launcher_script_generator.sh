@@ -285,6 +285,174 @@ launchGame() {
 }
 
 # =============================================================================
+# Slot-based Instance Management (gamescope / Game Mode path)
+# =============================================================================
+
+# Per-slot bwrap PID tracking.  Populated by launchSlot, consumed by quitAllSlots.
+declare -A SLOT_PIDS
+
+# logMsg  slot level msg...
+# Structured log line written to LOG_FILE and stderr.
+# slot=0 for session-level events.
+logMsg() {
+    local slot="$1" level="$2"
+    shift 2
+    local ts
+    ts=$(date +%H:%M:%S)
+    local line="[SLOT-${slot} ${level} ${ts}] $*"
+    local _logf="${LOG_FILE:-/tmp/splitscreen-debug.log}"
+    echo "$line" >> "$_logf" 2>/dev/null
+    echo "$line" >&2
+}
+
+# find_controller_pairs  →  stdout "js_dev ev_dev" per physical controller
+# Maps /dev/input/jsN to its sibling eventM via sysfs.
+# Steam virtual pads have no js node — they are automatically excluded.
+find_controller_pairs() {
+    for js in /dev/input/js*; do
+        [[ -e "$js" ]] || continue
+        local jsnum="${js##*js}"
+        local evname
+        evname=$(ls /sys/class/input/js${jsnum}/device/ 2>/dev/null | grep '^event' | head -1)
+        [[ -n "$evname" ]] && echo "$js /dev/input/$evname"
+    done
+}
+
+# launchSlot  slot js_dev ev_dev
+# Launches one PolyMC/PrismLauncher instance inside a bwrap controller sandbox.
+# Records the bwrap PID in SLOT_PIDS[slot].  Returns 1 if bwrap dies immediately.
+launchSlot() {
+    local slot="$1" js_dev="$2" ev_dev="$3"
+    local instance_id="latestUpdate-${slot}"
+
+    logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
+
+    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc --tmpfs /tmp)
+    [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
+    [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
+
+    if command -v kde-inhibit >/dev/null 2>&1; then
+        "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
+            $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+    else
+        logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
+        "${bwrap_cmd[@]}" $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+    fi
+
+    local pid=$!
+    SLOT_PIDS[$slot]=$pid
+
+    sleep 2
+    if ! kill -0 "$pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and LAUNCHER_EXEC"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "bwrap PID=$pid alive"
+    return 0
+}
+
+# waitForAllReady  n_slots [timeout_s]
+# Polls each instance's latest.log for "Sound engine started" (main menu reached).
+# Returns 0 when all n_slots are ready, 1 on timeout.
+# On timeout, logs per-slot status for SSH post-mortem — does NOT kill anything.
+waitForAllReady() {
+    local n_slots="$1" timeout_s="${2:-180}"
+    local marker="Sound engine started"
+    local deadline=$(( $(date +%s) + timeout_s ))
+
+    logMsg 0 INFO "waiting for $n_slots instances — marker='$marker' timeout=${timeout_s}s"
+
+    while [[ $(date +%s) -lt $deadline ]]; do
+        local ready=0
+        for slot in $(seq 1 "$n_slots"); do
+            local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+            if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
+                (( ready++ ))
+            fi
+        done
+        logMsg 0 DEBUG "$ready/$n_slots at main menu"
+        if [[ $ready -ge $n_slots ]]; then
+            logMsg 0 INFO "all $n_slots instances ready"
+            return 0
+        fi
+        sleep 5
+    done
+
+    logMsg 0 ERROR "load timeout after ${timeout_s}s — per-slot status:"
+    for slot in $(seq 1 "$n_slots"); do
+        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        if [[ ! -f "$mc_log" ]]; then
+            logMsg "$slot" ERROR "no log file — instance likely crashed: $mc_log"
+        elif grep -q "$marker" "$mc_log" 2>/dev/null; then
+            logMsg "$slot" INFO "ready (arrived after deadline)"
+        else
+            local last
+            last=$(tail -3 "$mc_log" 2>/dev/null | tr '\n' '|')
+            logMsg "$slot" ERROR "NOT ready — last log: $last"
+        fi
+    done
+    return 1
+}
+
+# quitSlot  slot bwrap_pid
+# Sends SIGTERM to the bwrap container and its children, waits up to 30s,
+# then SIGKILLs stragglers.  Logs outcome.
+quitSlot() {
+    local slot="$1" bwrap_pid="$2"
+
+    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" INFO "PID $bwrap_pid already gone"
+        return 0
+    fi
+
+    logMsg "$slot" INFO "SIGTERM → PID $bwrap_pid and children"
+    kill -TERM "$bwrap_pid" 2>/dev/null || true
+    pkill -TERM -P "$bwrap_pid" 2>/dev/null || true
+
+    local waited=0
+    while [[ $waited -lt 30 ]]; do
+        kill -0 "$bwrap_pid" 2>/dev/null || {
+            logMsg "$slot" INFO "exited gracefully after ${waited}s"
+            return 0
+        }
+        sleep 1
+        (( waited++ ))
+    done
+
+    logMsg "$slot" WARN "still alive after 30s — SIGKILL"
+    kill -KILL "$bwrap_pid" 2>/dev/null || true
+    pkill -KILL -P "$bwrap_pid" 2>/dev/null || true
+    sleep 1
+
+    if kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "survived SIGKILL — manual intervention needed (PID=$bwrap_pid)"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "killed (forced)"
+    return 0
+}
+
+# quitAllSlots
+# Quits all entries in SLOT_PIDS in parallel, then clears the array.
+quitAllSlots() {
+    if [[ ${#SLOT_PIDS[@]} -eq 0 ]]; then
+        logMsg 0 INFO "quitAllSlots: nothing to quit"
+        return 0
+    fi
+    logMsg 0 INFO "quitting slots: ${!SLOT_PIDS[*]}"
+    local slot
+    for slot in "${!SLOT_PIDS[@]}"; do
+        quitSlot "$slot" "${SLOT_PIDS[$slot]}" &
+    done
+    wait
+    unset SLOT_PIDS
+    declare -gA SLOT_PIDS
+    logMsg 0 INFO "all slots quit"
+}
+
+# =============================================================================
 # KDE Panel Management
 # =============================================================================
 
@@ -603,22 +771,28 @@ setSplitscreenModeForPlayer() {
 # Main Game Launch Logic
 # =============================================================================
 
-# Launch all games based on controller count
+# Launch all games based on controller count.
+# Uses launchSlot (bwrap + controller isolation + PID tracking) instead of
+# the legacy launchGame.  Waits for all instances to reach the Minecraft main
+# menu before returning, so callers know the session is fully up.
 launchGames() {
     hidePanels
 
-    local numberOfControllers
-    numberOfControllers=$(getControllerCount)
+    local n
+    n=$(getControllerCount)
+    logMsg 0 INFO "launchGames: n=$n controllers detected"
 
-    # Write KWin window placement rules so KWin enforces geometry as a fallback
+    # ── Screen geometry
     local ruleW ruleH
     ruleW=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1) || ruleW=1280
     ruleH=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2) || ruleH=800
+
+    # ── KWin placement rules (fallback positioning)
     {
         echo "[General]"
-        echo "count=$numberOfControllers"
-        for _slot in $(seq 1 "$numberOfControllers"); do
-            read _x _y _w _h < <(compute_geometry "$_slot" "$numberOfControllers" "$ruleW" "$ruleH")
+        echo "count=$n"
+        for _slot in $(seq 1 "$n"); do
+            read _x _y _w _h < <(compute_geometry "$_slot" "$n" "$ruleW" "$ruleH")
             echo ""
             echo "[$_slot]"
             echo "Description=SplitscreenP${_slot}"
@@ -630,18 +804,55 @@ launchGames() {
             echo "sizerule=3"
         done
     } > ~/.config/kwinrulesrc
+    logMsg 0 INFO "kwinrulesrc written for $n slots"
 
-    for player in $(seq 1 $numberOfControllers); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player"
+    # ── Detect controller pairs
+    local -a js_devs ev_devs
+    local idx=0
+    while IFS=' ' read -r js ev; do
+        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; (( idx++ ))
+    done < <(find_controller_pairs)
+    logMsg 0 INFO "found ${#js_devs[@]} controller pair(s)"
+
+    # ── Write splitscreen mod config and launch each slot
+    local launch_ok=true
+    for slot in $(seq 1 "$n"); do
+        setSplitscreenModeForPlayer "$slot" "$n"
+        local js_dev="${js_devs[$((slot-1))]:-}"
+        local ev_dev="${ev_devs[$((slot-1))]:-}"
+        if ! launchSlot "$slot" "$js_dev" "$ev_dev"; then
+            logMsg "$slot" ERROR "launch failed — aborting"
+            launch_ok=false; break
+        fi
+        sleep 2
     done
 
+    if [[ "$launch_ok" != true ]]; then
+        logMsg 0 ERROR "launch aborted — cleaning up"
+        quitAllSlots
+        pkill -TERM kwin_wayland 2>/dev/null || true
+        sleep 2; pkill -KILL kwin_wayland 2>/dev/null || true
+        return 1
+    fi
+
+    # ── Wait for all instances to reach main menu
+    local load_timeout="${LOAD_TIMEOUT_S:-180}"
+    if ! waitForAllReady "$n" "$load_timeout"; then
+        logMsg 0 ERROR "load failed — see instance logs in $INSTANCES_DIR"
+    else
+        logMsg 0 INFO "all instances at main menu — session running"
+    fi
+
+    # ── Production: wait for players to exit naturally
     wait
 
-    # Tear down the nested KDE session so gamescope returns to the Steam launcher
+    # ── Tear down nested KDE session → gamescope returns to Steam launcher
+    logMsg 0 INFO "all instances exited — tearing down KWin session"
+    quitAllSlots
     pkill -TERM kwin_wayland 2>/dev/null || true
     sleep 2
     pkill -KILL kwin_wayland 2>/dev/null || true
+    logMsg 0 INFO "launchGames complete"
 }
 
 # =============================================================================
