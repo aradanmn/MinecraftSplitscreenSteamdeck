@@ -152,6 +152,21 @@ log_debug() { echo "[Debug] $*" >&2; log "DEBUG: $*"; }
 _init_log
 
 # =============================================================================
+# Source runtime orchestrator modules
+# =============================================================================
+# Load the event-loop, lifecycle, windowing, and detection modules.
+# These live alongside the script in ../modules/ relative to the install dir.
+MODULES_DIR="$(cd "$(dirname "$0")/modules" 2>/dev/null && pwd)" || MODULES_DIR=""
+if [[ -n "$MODULES_DIR" ]]; then
+    for _mod in dock_detection.sh controller_monitor.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh; do
+        _mod_path="$MODULES_DIR/$_mod"
+        if [[ -f "$_mod_path" ]]; then
+            source "$_mod_path"
+        fi
+    done
+fi
+
+# =============================================================================
 # Launcher Validation
 # =============================================================================
 
@@ -971,29 +986,37 @@ if isSteamDeckGameMode; then
         nestedPlasma
     fi
 else
-    # Desktop mode: launch directly
-    numberOfControllers=$(getControllerCount)
+    # Desktop mode: launch directly via the orchestrator event-loop
+    # The orchestrator's main() detects handheld vs docked display mode,
+    # starts the controller monitor and watchdog, and runs the FIFO-based
+    # event loop (CONTROLLER_ADD → spawn, CONTROLLER_REMOVE → teardown,
+    # SLOT_DIED → cleanup, DISPLAY_MODE_CHANGE → mode switch).
+    if declare -f main >/dev/null 2>&1; then
+        main
+    else
+        # Fallback: legacy batch launch (orchestrator modules not loaded)
+        log_warning "Orchestrator modules not found — using legacy batch launch"
+        numberOfControllers=$(getControllerCount)
 
-    # Handle 0 controllers - prompt user for options
-    if [ "$numberOfControllers" -eq 0 ]; then
-        numberOfControllers=$(promptControllerMode)
-        # If user chose to exit (returned 0), exit gracefully
+        # Handle 0 controllers - prompt user for options
         if [ "$numberOfControllers" -eq 0 ]; then
-            exit 0
+            numberOfControllers=$(promptControllerMode)
+            if [ "$numberOfControllers" -eq 0 ]; then
+                exit 0
+            fi
         fi
+
+        echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
+        for player in $(seq 1 $numberOfControllers); do
+            setSplitscreenModeForPlayer "$player" "$numberOfControllers"
+            echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
+            launchGame "latestUpdate-$player" "P$player"
+        done
+
+        echo "[Info] All instances launched. Waiting for games to exit..."
+        wait
+        echo "[Info] All games have exited."
     fi
-
-    echo "[Info] $numberOfControllers player(s), launching splitscreen instances..."
-
-    for player in $(seq 1 $numberOfControllers); do
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        echo "[Info] Launching instance $player of $numberOfControllers (latestUpdate-$player)"
-        launchGame "latestUpdate-$player" "P$player"
-    done
-
-    echo "[Info] All instances launched. Waiting for games to exit..."
-    wait
-    echo "[Info] All games have exited."
 fi
 LAUNCHER_SCRIPT_EOF
 

@@ -23,6 +23,15 @@ set -x
 
 echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
 
+# Source runtime orchestrator modules
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+for _mod in dock_detection.sh controller_monitor.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh; do
+    _mod_path="$SCRIPT_DIR/modules/$_mod"
+    if [[ -f "$_mod_path" ]]; then
+        source "$_mod_path"
+    fi
+done
+
 N_SLOTS="${N_SLOTS:-4}"
 TEST_ACTIVE_S="${TEST_ACTIVE_S:-600}"
 LOAD_TIMEOUT_S="${LOAD_TIMEOUT_S:-180}"
@@ -487,10 +496,22 @@ launchWindowTest() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
-    echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
-    launchWindowTest
+# Entry point — Phase B: event-loop orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+# If running inside a KDE session (from nestedPlasma's autostart), use the
+# orchestrator's main() which detects handheld/docked mode and enters the
+# appropriate event loop. Falls back to batch-mode runStaticTest if the
+# orchestrator modules aren't loaded.
+if declare -f main >/dev/null 2>&1; then
+    echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
+    main
 else
-    echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
-    nestedPlasma
+    echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
+    if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
+        echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
+        launchWindowTest
+    else
+        echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
+        nestedPlasma
+    fi
 fi
