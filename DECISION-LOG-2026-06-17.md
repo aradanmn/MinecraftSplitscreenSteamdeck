@@ -58,7 +58,7 @@ Xephyr is deferred until/unless xdotool is proven non-functional in gamescope. A
 | File | Content |
 |------|---------|
 | `GAMESCOPE-WINDOWING.md` | Main work log — architecture, what works, commit history |
-| `PLAN-WINDOWING-CONTROLLERS.md` | Full comprehensive plan with 3-round challenge/refine (this session) |
+| `docs/archive/PLAN-WINDOWING-CONTROLLERS.md` | Full comprehensive plan with 3-round challenge/refine (this session; archived 2026-06-19) |
 | `SESSION-2026-06-16.md` | Raw full session log from previous work session |
 
 ## Files to Modify When Implementing

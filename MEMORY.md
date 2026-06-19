@@ -7,6 +7,36 @@ files.
 
 ---
 
+## 2026-06-19 — Docs decluttering pass
+
+**What:** Reduced root-level `.md` clutter (was 15 files, ~400KB).
+- **Deleted** (recoverable from git history): `HANDOFF.md` (pre-windowing handoff for
+  the abandoned `claude/elegant-bell-vdupw5` branch) and `IMPLEMENTATION_HANDOFF.md`
+  (63KB spec for the launcher rewrite that is now implemented in `modules/`).
+- **Archived to `docs/archive/`**: `WINDOWING-SPEC.md`, `PLAN-WINDOWING-CONTROLLERS.md`,
+  `RESEARCH-GAMESCOPE-WINDOWING.md`, `windowing-analysis.md` — superseded windowing
+  planning/research, kept for the reasoning trail with an explanatory
+  `docs/archive/README.md`.
+
+**Why:** The two deleted handoffs described complete or dead work and had zero
+inbound references. The four archived docs were overlapping 2026-06-17 "challenge &
+refine" explorations of the windowing problem that `SESSION-2026-06-17B.md` later
+solved with a *different* approach (nested KWin via autostart, not the `dex` /
+nested-Xwayland path some of these recommended) — superseded for current work but
+valuable as decision history.
+
+**Decision:** Archive rather than delete the planning cluster (browsable folder beats
+git-archaeology for the "why"); delete only the two truly dead handoffs. README
+references none of these, so no user-facing links broke. Updated the two internal
+references to `PLAN-WINDOWING-CONTROLLERS.md` (in DECISION-LOG-2026-06-17.md and
+GAMESCOPE-WINDOWING.md) to the new archive path. Left `SESSION-2026-06-16.md` (226KB
+raw log) in place as history.
+
+**Kept as authoritative:** README, MEMORY, GAMESCOPE-WINDOWING, and the
+2026-06-17/2026-06-19 SESSION + DECISION-LOG files.
+
+---
+
 ## 2026-06-19 — bwrap GPU regression fixed
 
 **What:** In both `launchSlot` functions (`minecraftSplitscreen.sh` ~L171 and
