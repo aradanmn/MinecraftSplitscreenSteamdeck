@@ -199,9 +199,27 @@ _handle_msg() {
                     ;;
                 handheld)
                     echo "[orchestrator] Switching to handheld mode (built-in display only)" >&2
-                    # Tear down all docked-session instances
-                    teardown_all_instances 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+                    # ── Docked→Handheld guard ────────────────────────────────
+                    # Keep slot 1 alive (it's P1 / Deck controls).
+                    # Tear down ALL other active slots.
+                    # Reflow to single-player layout if P1 remains.
+                    local active_slots
+                    active_slots=$(get_active_slots)
+                    local _s
+                    for _s in $active_slots; do
+                        if [[ "$_s" != "1" ]]; then
+                            echo "[orchestrator] Teardown slot $_s (docked→handheld transition)" >&2
+                            teardown_instance "$_s" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+                        fi
+                    done
+
                     _set_mode "handheld"
+
+                    # If slot 1 survived, reflow to fullscreen single-player layout
+                    if slot_is_active 1 2>/dev/null; then
+                        echo "[orchestrator] Slot 1 survived — reflowing to single-player layout" >&2
+                        _reflow_layout
+                    fi
                     # Return 1 so the caller can re-enter handheld_flow
                     return 1
                     ;;
