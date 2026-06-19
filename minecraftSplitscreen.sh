@@ -160,16 +160,22 @@ launchSlot() {
         return 1
     fi
 
-    # --dev-bind / /        full filesystem access, preserves /tmp/.X11-unix sockets
-    # --dev /dev            minimal /dev so only explicitly bound input devices are visible
-    # --dev-bind /dev/fuse  PolyMC AppImage needs this for squashfuse self-mounting
-    # --proc /proc          process filesystem
-    # APPIMAGE_EXTRACT_AND_RUN=1: extract AppImage to a random tmpdir instead of
-    #   FUSE-mounting — bypasses FUSE permission issues and gives each instance a
-    #   unique applicationFilePath(), resolving the PolyMC single-instance lock conflict
+    # Per-slot isolated XDG_RUNTIME_DIR so PolyMC's SingleApplication QLocalServer
+    # sockets don't find each other.  Without this, slots 2-4 detect slot 1 running,
+    # route their -l command to it, and exit — only one Minecraft actually launches.
+    # QT_QPA_PLATFORM=xcb forces PolyMC's Qt GUI to X11 so it doesn't need the
+    # Wayland socket (which lives in the now-isolated XDG_RUNTIME_DIR).
+    local slot_runtime="/tmp/polymc-runtime-slot${slot}"
+    mkdir -p "$slot_runtime"
+
     local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
     [[ -e /dev/fuse ]] && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
-    bwrap_cmd+=(--setenv APPIMAGE_EXTRACT_AND_RUN 1)
+    bwrap_cmd+=(
+        --setenv APPIMAGE_EXTRACT_AND_RUN 1
+        --setenv XDG_RUNTIME_DIR "$slot_runtime"
+        --setenv QT_QPA_PLATFORM xcb
+        --setenv DISPLAY "${DISPLAY:-:2}"
+    )
     [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
     [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
 
@@ -400,6 +406,12 @@ runStaticTest() {
         done
     } > ~/.config/kwinrulesrc
     logMsg 0 INFO "kwinrulesrc written for $n_slots slots"
+
+    # ── Clear stale Minecraft logs so waitForAllReady doesn't match previous-run entries
+    for slot in $(seq 1 "$n_slots"); do
+        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        [[ -f "$mc_log" ]] && > "$mc_log" && logMsg "$slot" INFO "cleared stale latest.log"
+    done
 
     # ── Splitscreen mod config + launch each slot
     local launch_ok=true
