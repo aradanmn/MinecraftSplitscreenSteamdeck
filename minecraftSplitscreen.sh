@@ -557,22 +557,21 @@ launchTestFromPlasma() {
     export SPLITSCREEN_STATE="$state"
     echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state" 2>/dev/null || true
 
-    # Start a test-mode FIFO consumer in the background.
-    # This is a lightweight event loop that reads messages from the FIFO
-    # and calls spawn_instance / teardown_instance directly.
-    # It does NOT start the hardware monitors (controller_monitor,
-    # watch_display_mode, watchdog) — the test harness injects events.
-    _start_test_fifo_consumer
-    local orch_pid=$!
-    if [[ -z "$orch_pid" || "$orch_pid" == "0" ]]; then
-        echo "[launchTestFromPlasma] ERROR: FIFO consumer failed to start" >> "$LOG"
+    # Start the production orchestrator's docked_flow in the background.
+    # docked_flow now has set +e so hardware monitor failures are tolerated.
+    if declare -f docked_flow >/dev/null 2>&1; then
+        echo "[launchTestFromPlasma] Starting docked_flow in background" >> "$LOG"
+        docked_flow &
+        local orch_pid=$!
+        echo "[launchTestFromPlasma] Orchestrator PID: $orch_pid" >> "$LOG"
+    else
+        echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
         pkill -TERM kwin_wayland 2>/dev/null || true
         return 1
     fi
-    echo "[launchTestFromPlasma] Test FIFO consumer PID: $orch_pid" >> "$LOG"
 
-    # Give the consumer time to open the FIFO for reading
-    sleep 1
+    # Give docked_flow time to open the FIFO and start monitors
+    sleep 2
 
     # Run the Phase B lifecycle test — all tests by default,
     # or a specific test number if TEST_NUMBER is set (from "test N" arg)
@@ -603,89 +602,6 @@ launchTestFromPlasma() {
     sleep 2
     pkill -KILL kwin_wayland 2>/dev/null || true
     echo "[launchTestFromPlasma] complete" >> "$LOG"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _start_test_fifo_consumer
-# Lightweight FIFO consumer for test mode.
-# Reads CONTROLLER_ADD/REMOVE/SLOT_DIED/DISPLAY_MODE_CHANGE from the FIFO
-# and dispatches to spawn_instance / teardown_instance / _set_mode directly.
-# Does NOT start hardware monitors. Runs in background until killed.
-# ─────────────────────────────────────────────────────────────────────────────
-_start_test_fifo_consumer() {
-    (
-        set +e
-        local fifo="${SPLITSCREEN_FIFO:-}"
-        [[ -z "$fifo" ]] && { echo "[test-fifo] NO FIFO" >&2; exit 1; }
-        [[ -p "$fifo" ]] || { echo "[test-fifo] FIFO $fifo not found" >&2; exit 1; }
-
-        echo "[test-fifo] Consumer started, waiting for messages..." >&2
-        while true; do
-            local msg
-            IFS= read -r msg < "$fifo" 2>/dev/null || {
-                echo "[test-fifo] read error" >&2
-                sleep 1
-                continue
-            }
-            [[ -z "$msg" ]] && continue
-            echo "[test-fifo] Received: $msg" >&2
-
-            local msg_type="${msg%% *}"
-            local msg_arg="${msg#* }"
-            [[ "$msg_type" == "$msg_arg" ]] && msg_arg=""
-
-            case "$msg_type" in
-                CONTROLLER_ADD)
-                    local slot event_node js_node
-                    slot=$(_find_free_slot)
-                    if [[ -z "$slot" ]]; then
-                        echo "[test-fifo] All slots full — ignoring" >&2
-                        continue
-                    fi
-                    event_node="${msg_arg%% *}"
-                    js_node="${msg_arg#* }"
-                    [[ "$event_node" == "$js_node" ]] && js_node=""
-                    echo "[test-fifo] CONTROLLER_ADD → slot $slot ($event_node $js_node)" >&2
-                    spawn_instance "$slot" "$event_node" "$js_node" 2>&1 | sed 's/^/[test-fifo:spawn] /' >&2 || \
-                        echo "[test-fifo] spawn_instance returned error" >&2
-                    _reflow_layout 2>/dev/null || true
-                    ;;
-                CONTROLLER_REMOVE)
-                    local slot="$msg_arg"
-                    echo "[test-fifo] CONTROLLER_REMOVE → slot $slot" >&2
-                    teardown_instance "$slot" 2>&1 | sed 's/^/[test-fifo:teardown] /' >&2 || true
-                    _reflow_layout 2>/dev/null || true
-                    ;;
-                SLOT_DIED)
-                    local slot="$msg_arg"
-                    echo "[test-fifo] SLOT_DIED → slot $slot" >&2
-                    teardown_instance "$slot" 2>&1 | sed 's/^/[test-fifo:teardown] /' >&2 || true
-                    _reflow_layout 2>/dev/null || true
-                    ;;
-                DISPLAY_MODE_CHANGE)
-                    local new_mode="$msg_arg"
-                    echo "[test-fifo] DISPLAY_MODE_CHANGE → $new_mode" >&2
-                    _set_mode "$new_mode"
-                    if [[ "$new_mode" == "handheld" ]]; then
-                        local active_slots active_s
-                        active_slots=$(get_active_slots)
-                        for active_s in $active_slots; do
-                            if [[ "$active_s" != "1" ]]; then
-                                echo "[test-fifo] Undock: tearing down slot $active_s" >&2
-                                teardown_instance "$active_s" 2>/dev/null || true
-                            fi
-                        done
-                        if slot_is_active 1 2>/dev/null; then
-                            _reflow_layout 2>/dev/null || true
-                        fi
-                    fi
-                    ;;
-                *)
-                    echo "[test-fifo] Unknown: $msg_type" >&2
-                    ;;
-            esac
-        done
-    ) &
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
