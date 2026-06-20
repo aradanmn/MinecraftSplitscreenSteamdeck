@@ -299,19 +299,22 @@ _kill_placeholder() {
     fi
 }
 
-# _verify_window_geometry: After applying xdotool geometry, query the actual
-# position/size and log it for debugging. Used to confirm xdotool works inside
-# gamescope's XWayland.
+# _verify_window_geometry: After applying positioning, query the actual
+# position/size via ctypes and log it.
 # $1 = slot label (e.g. "1"), $2 = window WID, $3 = expected_x, $4 = expected_y,
 # $5 = expected_w, $6 = expected_h
 _verify_window_geometry() {
     local slot="$1" wid="$2"
     local ex="$3" ey="$4" ew="$5" eh="$6"
     local ax ay aw ah
-    ax=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Position: \K\d+,\d+' | cut -d, -f1 || echo "?")
-    ay=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Position: \K\d+,\d+' | cut -d, -f2 || echo "?")
-    aw=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f1 || echo "?")
-    ah=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -oP 'Geometry: \K\d+x\d+' | cut -dx -f2 || echo "?")
+    local geo
+    geo=$(dex_getgeometry "$wid" 2>/dev/null || echo "")
+    if [[ -n "$geo" ]]; then
+        read -r ax ay aw ah <<< "$geo"
+    else
+        ax="?"; ay="?"; aw="?"; ah="?"
+    fi
+    ah=$(dex_getgeometry "$wid" 2>/dev/null | awk '{print $4}' || echo "?")
     if [[ "$ax" != "?" && "$ay" != "?" && "$aw" != "?" && "$ah" != "?" ]]; then
         if [[ "$ax" -ne "$ex" || "$ay" -ne "$ey" || "$aw" -ne "$ew" || "$ah" -ne "$eh" ]]; then
             echo "[window_manager] WARNING: slot $slot geometry mismatch: wanted ${ex},${ey} ${ew}x${eh} but got ${ax},${ay} ${aw}x${ah}" >&2
@@ -319,20 +322,20 @@ _verify_window_geometry() {
             echo "[window_manager] Verify slot $slot: geometry OK (${ax},${ay} ${aw}x${ah})" >&2
         fi
     else
-        echo "[window_manager] WARNING: slot $slot geometry check failed — xdotool could not query window $wid (got ax=$ax ay=$ay aw=$aw ah=$ah)" >&2
+        echo "[window_manager] WARNING: slot $slot geometry check failed — could not query window $wid (got ax=$ax ay=$ay aw=$aw ah=$ah)" >&2
     fi
 }
 
-# _get_wid_from_state: Read the WID for a slot from the state file, falling
-# back to xdotool name search if state file doesn't exist or wid is empty.
-# $1 = slot
+# _get_wid_from_state: Read a slot's WID from the state JSON file, or fall back
+# to dex window-name search if missing.
+# $1 = slot (1-4)
 # Output: WID on stdout, or empty string on failure.
 _get_wid_from_state() {
     local slot="$1"
     local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
     local wid=""
     [[ -f "$sf" ]] && wid=$(jq -r ".slots[\"${slot}\"].wid // empty" "$sf" 2>/dev/null || true)
-    [[ -z "$wid" ]] && wid=$(xdotool search --name "SplitscreenP${slot}" 2>/dev/null || true)
+    [[ -z "$wid" ]] && wid=$(dex_search --name "SplitscreenP${slot}" 2>/dev/null || true)
     echo "$wid"
 }
 
@@ -419,12 +422,6 @@ compute_slot_geometry() {
 # Arguments: $1=active_slots (space-separated), $2=screen_w, $3=screen_h
 # Effects: repositions Minecraft windows, spawns/kills black placeholders.
 apply_layout() {
-    # Check for xdotool before proceeding
-    if ! command -v xdotool >/dev/null 2>&1; then
-        echo "[window_manager] ERROR: xdotool not found — window positioning will not work" >&2
-        return 1
-    fi
-
     local active_slots="${1:-}"
     local screen_w="${2:-}"
     local screen_h="${3:-}"
@@ -441,10 +438,21 @@ apply_layout() {
     grid_mode=$(compute_grid_mode "$active_slots")
 
     echo "[window_manager] Applying layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
-    echo "[window_manager] All visible windows:" >&2
-    xdotool search --name "." 2>/dev/null | while read w; do
-        echo "  $w: $(xdotool getwindowname $w 2>/dev/null || echo '?')" >&2
-    done
+
+    # List visible windows if xdotool is available (debug info, not required)
+    if command -v xdotool >/dev/null 2>&1; then
+        echo "[window_manager] All visible windows:" >&2
+        xdotool search --name "." 2>/dev/null | while read w; do
+            echo "  $w: $(xdotool getwindowname $w 2>/dev/null || echo '?')" >&2
+        done
+    elif type dex_list_windows >/dev/null 2>&1; then
+        echo "[window_manager] All visible windows (via dex):" >&2
+        dex_list_windows 2>/dev/null | while read w name; do
+            echo "  $w: $name" >&2
+        done
+    else
+        echo "[window_manager] xdotool not found — using ctypes-only path, skipping window listing" >&2
+    fi
 
     # In full mode, only slot 1 matters — no placeholders needed for other slots
     if [[ "$grid_mode" == "full" ]]; then
