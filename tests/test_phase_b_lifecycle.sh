@@ -90,35 +90,65 @@ _get_active_count() {
 _get_slot_pid() {
     local slot="$1"
     local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    jq -r ".slots[\"$slot\"].bwrap_pid // .slots[\"$slot\"].pid // empty" "$state" 2>/dev/null
+    # Return java PID if present, else bwrap PID.
+    # For slots 2-4, the bwrap process exits immediately after SingleApp forwarding
+    # (PolyMC detects slot 1's primary and routes -l there), so bwrap_pid is dead.
+    # The Java PID is what actually lives on.
+    jq -r ".slots[\"$slot\"].pid // .slots[\"$slot\"].bwrap_pid // empty" "$state" 2>/dev/null
 }
 
 _slot_pid_alive() {
     local slot="$1"
-    local pid
-    pid=$(_get_slot_pid "$slot")
-    [[ -z "$pid" ]] && return 1
-    kill -0 "$pid" 2>/dev/null
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    # Check java PID first, then bwrap PID — either alive means the instance is running
+    local java_pid bwrap_pid
+    java_pid=$(jq -r ".slots[\"$slot\"].pid // empty" "$state" 2>/dev/null)
+    bwrap_pid=$(jq -r ".slots[\"$slot\"].bwrap_pid // empty" "$state" 2>/dev/null)
+    [[ -n "$java_pid"  ]] && kill -0 "$java_pid"  2>/dev/null && return 0
+    [[ -n "$bwrap_pid" ]] && kill -0 "$bwrap_pid" 2>/dev/null && return 0
+    return 1
 }
 
-# Inject a message into the FIFO
+# Wait for Minecraft to reach the main menu by polling latest.log for
+# "Sound engine started".  This is the real readiness signal — active=true
+# in the state file only means the bwrap process started, not that the game
+# is loaded.  Timeout default: 360s (Minecraft can take 3-6 min under load).
+_wait_for_minecraft_ready() {
+    local slot="$1" timeout_s="${2:-360}" label="${3:-slot $slot}"
+    local launcher_dir="${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$HOME/.local/share/PolyMC}"
+    local log="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/logs/latest.log"
+    local deadline=$(( $(date +%s) + timeout_s ))
+    _info "$label: waiting for Minecraft main menu (Sound engine started) …"
+    while [[ $(date +%s) -lt $deadline ]]; do
+        if grep -q "Sound engine started" "$log" 2>/dev/null; then
+            local elapsed=$(( $(date +%s) - deadline + timeout_s ))
+            _info "$label: Minecraft ready after ${elapsed}s"
+            return 0
+        fi
+        sleep 5
+    done
+    _fail "$label: Minecraft did not reach main menu within ${timeout_s}s"
+    return 1
+}
+
+# Inject a message into the FIFO.
 # Writes in the background so a temporary gap in the orchestrator restart loop
-# (the ~0.5s between docked_flow exiting and restarting) doesn't block forever.
-# Polls for up to 5s; fails fast if the orchestrator never reads the message.
+# doesn't block forever, AND so we can wait while spawn_instance is blocking
+# docked_flow (up to 120s polling for Java PID + X window per slot).
 _inject() {
     local msg="$1"
     _info "INJECT: $msg"
     echo "$msg" > "$FIFO" &
     local write_pid=$!
     local i
-    for i in $(seq 1 10); do
+    for i in $(seq 1 240); do   # up to 120s — covers spawn_instance blocking time
         sleep 0.5
         if ! kill -0 "$write_pid" 2>/dev/null; then
             return 0   # write was consumed by the orchestrator
         fi
     done
     kill "$write_pid" 2>/dev/null || true
-    _fail "FIFO write not consumed within 5s — orchestrator not reading ($FIFO)"
+    _fail "FIFO write not consumed within 120s — orchestrator not reading ($FIFO)"
     return 1
 }
 
@@ -138,20 +168,24 @@ test_handheld_single_player() {
     _inject "DISPLAY_MODE_CHANGE handheld"
     sleep 1
 
-    # Find a free slot (should be slot 1, first to connect)
+    # /dev/null as device: bwrap binds it successfully, SDL sees a dead device,
+    # Minecraft loads without controller input.
     local slot=1
     if ! slot_is_active "$slot" 2>/dev/null; then
-        _inject "CONTROLLER_ADD /dev/input/event3 /dev/input/js0"
+        _inject "CONTROLLER_ADD /dev/null /dev/null"
     else
         _info "Slot $slot already active — skipping ADD"
     fi
 
-    if _wait_for_slot_active "$slot" 120 "Test 1"; then
-        _pass "Test 1.1 — Slot $slot active after add"
+    if _wait_for_slot_active "$slot" 30 "Test 1"; then
+        _pass "Test 1.1 — Slot $slot bwrap started"
     else
-        _fail "Test 1.1 — Slot $slot did not become active within 120s"
+        _fail "Test 1.1 — Slot $slot bwrap did not start within 30s"
         return
     fi
+
+    # Wait for Minecraft to reach the main menu
+    _wait_for_minecraft_ready "$slot" 360 "Test 1" || { return; }
 
     # Verify PID is alive
     if _slot_pid_alive "$slot"; then
@@ -185,26 +219,28 @@ test_docked_two_players() {
     sleep 1
 
     # Player 1 connects → slot 1
-    _inject "CONTROLLER_ADD /dev/input/event3 /dev/input/js0"
-    if _wait_for_slot_active 1 120 "Test 2"; then
-        _pass "Test 2.1 — Slot 1 active"
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    if _wait_for_slot_active 1 30 "Test 2"; then
+        _pass "Test 2.1 — Slot 1 bwrap started"
     else
-        _fail "Test 2.1 — Slot 1 did not activate"
+        _fail "Test 2.1 — Slot 1 did not start"
         return
     fi
+    _wait_for_minecraft_ready 1 360 "Test 2-P1" || { return; }
 
     local count_1
     count_1=$(get_active_slots 2>/dev/null | wc -w)
     _info "Active slots after P1: $count_1"
 
     # Player 2 connects → slot 2
-    _inject "CONTROLLER_ADD /dev/input/event4 /dev/input/js1"
-    if _wait_for_slot_active 2 120 "Test 2"; then
-        _pass "Test 2.2 — Slot 2 active"
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    if _wait_for_slot_active 2 30 "Test 2"; then
+        _pass "Test 2.2 — Slot 2 bwrap started"
     else
-        _fail "Test 2.2 — Slot 2 did not activate"
+        _fail "Test 2.2 — Slot 2 did not start"
         return
     fi
+    _wait_for_minecraft_ready 2 360 "Test 2-P2" || { return; }
 
     sleep 3  # Allow reflow to complete
 
@@ -241,14 +277,14 @@ test_docked_three_players() {
     sleep 1
 
     for slot in 1 2 3; do
-        local ev="event$((slot + 2))" js="js$((slot - 1))"
-        _inject "CONTROLLER_ADD /dev/input/$ev /dev/input/$js"
-        if _wait_for_slot_active "$slot" 120 "Test 3"; then
-            _pass "Test 3.1 — Slot $slot active"
+        _inject "CONTROLLER_ADD /dev/null /dev/null"
+        if _wait_for_slot_active "$slot" 30 "Test 3"; then
+            _pass "Test 3.1 — Slot $slot bwrap started"
         else
-            _fail "Test 3.1 — Slot $slot did not activate"
+            _fail "Test 3.1 — Slot $slot did not start"
             return
         fi
+        _wait_for_minecraft_ready "$slot" 360 "Test 3-P${slot}" || { return; }
     done
 
     sleep 3  # Allow reflow
@@ -299,9 +335,9 @@ test_max_four() {
     sleep 1
 
     for slot in 1 2 3 4; do
-        local ev="event$((slot + 2))" js="js$((slot - 1))"
-        _inject "CONTROLLER_ADD /dev/input/$ev /dev/input/$js"
-        _wait_for_slot_active "$slot" 120 "Test 4" || _fail "Test 4.1 — Slot $slot did not activate"
+        _inject "CONTROLLER_ADD /dev/null /dev/null"
+        _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return; }
+        _wait_for_minecraft_ready "$slot" 360 "Test 4-P${slot}" || { return; }
     done
 
     _info "Test 4: 4 slots should be active now"
@@ -313,8 +349,8 @@ test_max_four() {
         _fail "Test 4.2 — Expected 4 active, got $active"
     fi
 
-    # 5th controller — should be ignored
-    _inject "CONTROLLER_ADD /dev/input/event99 /dev/input/js99"
+    # 5th controller — should be ignored (all 4 slots full)
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
     sleep 2
     active=$(get_active_slots 2>/dev/null | wc -w)
     if (( active == 4 )); then
@@ -338,10 +374,12 @@ test_docked_to_handheld() {
     sleep 1
 
     # Launch 2 players
-    _inject "CONTROLLER_ADD /dev/input/event3 /dev/input/js0"
-    _wait_for_slot_active 1 120 "Test 5"
-    _inject "CONTROLLER_ADD /dev/input/event4 /dev/input/js1"
-    _wait_for_slot_active 2 120 "Test 5"
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    _wait_for_slot_active 1 30 "Test 5"
+    _wait_for_minecraft_ready 1 360 "Test 5-P1" || { return; }
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    _wait_for_slot_active 2 30 "Test 5"
+    _wait_for_minecraft_ready 2 360 "Test 5-P2" || { return; }
 
     _info "Test 5: 2 players active, simulating undock..."
 
@@ -374,25 +412,27 @@ test_load_timing() {
     _inject "DISPLAY_MODE_CHANGE docked"
     sleep 1
 
-    # Launch P1, time it
+    # Launch P1, time to main menu
     _info "Timing load for P1 (solo)..."
     local t_start t_end elapsed
     t_start=$(date +%s%N)
-    _inject "CONTROLLER_ADD /dev/input/event3 /dev/input/js0"
-    _wait_for_slot_active 1 180 "Test 6-P1"
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    _wait_for_slot_active 1 30 "Test 6-P1"
+    _wait_for_minecraft_ready 1 360 "Test 6-P1" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
-    _info "P1 load time: ${elapsed}ms"
+    _info "P1 load time to main menu: ${elapsed}ms"
     echo "TIMING|P1|${elapsed}" >> "$LOG"
 
-    # Launch P2 with P1 already running, time it
+    # Launch P2 with P1 already rendering, time to main menu
     _info "Timing load for P2 (with P1 already rendering)..."
     t_start=$(date +%s%N)
-    _inject "CONTROLLER_ADD /dev/input/event4 /dev/input/js1"
-    _wait_for_slot_active 2 180 "Test 6-P2"
+    _inject "CONTROLLER_ADD /dev/null /dev/null"
+    _wait_for_slot_active 2 30 "Test 6-P2"
+    _wait_for_minecraft_ready 2 360 "Test 6-P2" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
-    _info "P2 load time (with contention): ${elapsed}ms"
+    _info "P2 load time to main menu (with render contention): ${elapsed}ms"
     echo "TIMING|P2|${elapsed}" >> "$LOG"
 
     _info "Timing results recorded. Baseline comparison available after test."
@@ -413,9 +453,9 @@ test_full_lifecycle() {
 
     # Launch 4 players
     for slot in 1 2 3 4; do
-        local ev="event$((slot + 2))" js="js$((slot - 1))"
-        _inject "CONTROLLER_ADD /dev/input/$ev /dev/input/$js"
-        _wait_for_slot_active "$slot" 120 "Test 7" || _fail "Test 7.1 — Slot $slot did not activate"
+        _inject "CONTROLLER_ADD /dev/null /dev/null"
+        _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return; }
+        _wait_for_minecraft_ready "$slot" 360 "Test 7-P${slot}" || { return; }
     done
 
     sleep 3

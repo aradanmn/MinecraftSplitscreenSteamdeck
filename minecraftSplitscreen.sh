@@ -549,11 +549,6 @@ launchTestFromPlasma() {
     # if the test script hangs, crashes, or is interrupted.
     trap 'pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
 
-    # Mock spawn mode: replace bwrap+PolyMC with sleep stubs so the test
-    # exercises the orchestrator's FIFO dispatch + state machine without
-    # requiring physical controllers or a running Minecraft install.
-    export SPLITSCREEN_MOCK_SPAWN=1
-
     # Ensure FIFO exists
     local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
     export SPLITSCREEN_FIFO="$fifo"
@@ -597,7 +592,7 @@ launchTestFromPlasma() {
     test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
     if [[ -f "$test_script" ]]; then
         echo "[launchTestFromPlasma] Running test harness: $test_script" >> "$LOG"
-        timeout 300 bash "$test_script" "$test_arg" 2>&1 | tee -a "$LOG" || true
+        timeout 7200 bash "$test_script" "$test_arg" 2>&1 | tee -a "$LOG" || true
         echo "[launchTestFromPlasma] Test complete" >> "$LOG"
     else
         echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
