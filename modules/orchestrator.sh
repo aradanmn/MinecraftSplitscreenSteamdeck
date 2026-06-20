@@ -242,6 +242,7 @@ _handle_msg() {
 # - On DISPLAY_MODE_CHANGE docked, switches to docked_flow
 # =============================================================================
 handheld_flow() {
+    set +e
     echo "[orchestrator] Starting handheld flow" >&2
     local fifo="${SPLITSCREEN_FIFO:-}"
     if [[ -z "$fifo" ]]; then
@@ -315,6 +316,7 @@ handheld_flow() {
 # - On DISPLAY_MODE_CHANGE handheld (undock), tears down all and exits
 # =============================================================================
 docked_flow() {
+    set +e
     echo "[orchestrator] Starting docked flow" >&2
     local fifo="${SPLITSCREEN_FIFO:-}"
     if [[ -z "$fifo" ]]; then
