@@ -9,5 +9,5 @@ REPO_DIR="$HOME/MinecraftSplitscreenSteamdeck"
 # Ensure repo is up to date
 cd "$REPO_DIR" && git pull -q 2>/dev/null || true
 
-# Run the prototype in test mode
-exec "$REPO_DIR/minecraftSplitscreen.sh" test
+# Run the prototype in test mode, passing through any extra args (test number)
+exec "$REPO_DIR/minecraftSplitscreen.sh" test "$@"
