@@ -102,19 +102,29 @@ _slot_pid_alive() {
 }
 
 # Inject a message into the FIFO
+# Writes in the background so a temporary gap in the orchestrator restart loop
+# (the ~0.5s between docked_flow exiting and restarting) doesn't block forever.
+# Polls for up to 5s; fails fast if the orchestrator never reads the message.
 _inject() {
     local msg="$1"
     _info "INJECT: $msg"
-    echo "$msg" > "$FIFO" 2>/dev/null || {
-        _fail "Cannot write to FIFO $FIFO. Is the orchestrator running?"
-        return 1
-    }
-    sleep 0.5
+    echo "$msg" > "$FIFO" &
+    local write_pid=$!
+    local i
+    for i in $(seq 1 10); do
+        sleep 0.5
+        if ! kill -0 "$write_pid" 2>/dev/null; then
+            return 0   # write was consumed by the orchestrator
+        fi
+    done
+    kill "$write_pid" 2>/dev/null || true
+    _fail "FIFO write not consumed within 5s — orchestrator not reading ($FIFO)"
+    return 1
 }
 
 # Clean up any leftover instances
 _clean_instances() {
-    if [[ -f "$FIFO" ]]; then
+    if [[ -p "$FIFO" ]]; then   # -p not -f: FIFOs are not regular files
         pkill -f "minecraftSplitscreen.sh" 2>/dev/null || true
         pkill -f "kwin_wayland" 2>/dev/null || true
     fi
@@ -335,15 +345,15 @@ test_docked_to_handheld() {
 
     _info "Test 5: 2 players active, simulating undock..."
 
-    # Switch to handheld — should kill slot 2, keep slot 1
+    # Switch to handheld — should kill slot 2, keep slot 1.
+    # _inject returns once the message is consumed by docked_flow; the teardown
+    # of slot 2 happens AFTER that, so wait for it explicitly instead of sleeping.
     _inject "DISPLAY_MODE_CHANGE handheld"
-    sleep 2
 
-    # Slot 2 should be gone
-    if slot_is_active 2 2>/dev/null; then
-        _fail "Test 5.1 — Slot 2 survived dock→handheld transition (should have been torn down)"
-    else
+    if _wait_for_slot_inactive 2 10 "Test 5"; then
         _pass "Test 5.1 — Slot 2 torn down on undock"
+    else
+        _fail "Test 5.1 — Slot 2 survived dock→handheld transition (should have been torn down)"
     fi
 
     # Slot 1 should survive (it's P1 / Deck controls)

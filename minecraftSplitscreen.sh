@@ -566,20 +566,26 @@ launchTestFromPlasma() {
     export SPLITSCREEN_STATE="$state"
     echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state" 2>/dev/null || true
 
-    # Start the production orchestrator's docked_flow in the background.
-    # docked_flow now has set +e so hardware monitor failures are tolerated.
-    if declare -f docked_flow >/dev/null 2>&1; then
-        echo "[launchTestFromPlasma] Starting docked_flow in background" >> "$LOG"
-        docked_flow &
-        local orch_pid=$!
-        echo "[launchTestFromPlasma] Orchestrator PID: $orch_pid" >> "$LOG"
-    else
+    # Restart-loop wrapper around docked_flow.
+    # DISPLAY_MODE_CHANGE handheld causes docked_flow to return 1 and exit —
+    # tests 1 and 5 both send that message.  Without a restart loop the FIFO
+    # has no reader and every subsequent _inject blocks forever.
+    if ! declare -f docked_flow >/dev/null 2>&1; then
         echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
-        pkill -TERM kwin_wayland 2>/dev/null || true
         return 1
     fi
+    _orchestrator_loop() {
+        while true; do
+            docked_flow || true   # ignore rc=1 (mode-change exit), restart immediately
+            sleep 0.5             # brief gap before re-entry
+        done
+    }
+    echo "[launchTestFromPlasma] Starting orchestrator restart loop" >> "$LOG"
+    _orchestrator_loop &
+    local orch_pid=$!
+    echo "[launchTestFromPlasma] Orchestrator PID: $orch_pid" >> "$LOG"
 
-    # Give docked_flow time to open the FIFO and start monitors
+    # Give the first docked_flow iteration time to open the FIFO
     sleep 2
 
     # Run the Phase B lifecycle test — all tests by default,
@@ -597,9 +603,10 @@ launchTestFromPlasma() {
         echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
     fi
 
-    # Clean up
+    # Clean up — kill the restart loop and its children (monitors, sleep stubs)
     echo "[launchTestFromPlasma] Cleaning up orchestrator (PID $orch_pid)" >> "$LOG"
     kill -TERM "$orch_pid" 2>/dev/null || true
+    pkill -P "$orch_pid" 2>/dev/null || true
     sleep 2
 
     # Final cleanup
