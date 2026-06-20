@@ -659,8 +659,14 @@ spawn_instance() {
     # 4. Mark slot as active in state file (preliminary, bwrap_pid filled after launch)
     update_slot_state "$slot" "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": null, \"bwrap_pid\": null}"
 
-    # 5. Spawn the instance via eval of the safely-quoted command string
-    eval "$bwrap_command" &
+    # 5. Spawn the instance in its OWN process group via setsid.
+    #    Previously `eval "$bwrap_command" &; bwrap_pid=$!` captured the PID of a
+    #    transient subshell wrapper, NOT the real bwrap process (off by ~2). That
+    #    made the watchdog fire spurious SLOT_DIED (it saw the wrapper exit) and
+    #    made teardown SIGTERM the wrong PID, leaking the whole bwrap→PolyMC→java
+    #    tree. setsid makes bwrap the session/group leader so $! is the real
+    #    group-leader PID; teardown signals the negative PID to kill the group.
+    setsid bash -c "$bwrap_command" </dev/null &
     local bwrap_pid=$!
 
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
@@ -717,9 +723,14 @@ teardown_instance() {
     local java_pid
     java_pid=$(get_java_pid "$slot")
 
-    # 1. Send SIGTERM to bwrap_pid
+    # bwrap_pid is the process-group leader (see spawn_instance / setsid), so the
+    # whole bwrap→PolyMC→java tree shares PGID == bwrap_pid. Signalling the
+    # NEGATIVE pid hits the entire group, which is the only reliable way to reap
+    # the tree (PolyMC's AppImage extract-and-run forks intermediate processes
+    # that a single-PID kill misses).
+    # 1. Send SIGTERM to the whole group (fall back to single PID if group is gone)
     if [[ -n "$bwrap_pid" ]]; then
-        kill "$bwrap_pid" 2>/dev/null || true
+        kill -TERM "-${bwrap_pid}" 2>/dev/null || kill -TERM "$bwrap_pid" 2>/dev/null || true
     fi
 
     # 2. Wait up to TEARDOWN_GRACE_S for processes to exit
@@ -738,9 +749,12 @@ teardown_instance() {
         sleep 1
     done
 
-    # 3. SIGKILL if still alive
-    if [[ -n "$bwrap_pid" ]] && kill -0 "$bwrap_pid" 2>/dev/null; then
-        kill -9 "$bwrap_pid" 2>/dev/null || true
+    # 3. SIGKILL the whole group if anything is still alive, then mop up the
+    #    individually-tracked PIDs as a belt-and-suspenders fallback.
+    if [[ -n "$bwrap_pid" ]]; then
+        if kill -0 "$bwrap_pid" 2>/dev/null || kill -0 "$java_pid" 2>/dev/null; then
+            kill -KILL "-${bwrap_pid}" 2>/dev/null || kill -9 "$bwrap_pid" 2>/dev/null || true
+        fi
     fi
     if [[ -n "$java_pid" ]] && kill -0 "$java_pid" 2>/dev/null; then
         kill -9 "$java_pid" 2>/dev/null || true
