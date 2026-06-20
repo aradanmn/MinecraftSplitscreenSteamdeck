@@ -585,6 +585,20 @@ spawn_instance() {
 
     echo "[spawn_instance] Launching instance for slot $slot ($event_node, $js_node)" >&2
 
+    # ── Mock mode ─────────────────────────────────────────────────────────────
+    # When SPLITSCREEN_MOCK_SPAWN=1, replace bwrap+PolyMC with a sleep stub.
+    # Exercises the orchestrator's FIFO dispatch and state machine without any
+    # hardware (no controllers, no real game).  teardown_instance works unchanged
+    # because it just kills the stub PID.
+    if [[ "${SPLITSCREEN_MOCK_SPAWN:-}" == "1" ]]; then
+        sleep 86400 &
+        local stub_pid=$!
+        update_slot_state "$slot" \
+            "{\"active\": true, \"event_node\": \"${event_node}\", \"js_node\": \"${js_node}\", \"pid\": ${stub_pid}, \"bwrap_pid\": ${stub_pid}, \"wid\": null}"
+        echo "[spawn_instance] MOCK: slot $slot active (stub_pid=$stub_pid)" >&2
+        return 0
+    fi
+
     # 1. Write splitscreen.properties — need active slots for grid determination
     local active_slots
     active_slots=$(get_active_slots)

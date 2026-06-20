@@ -20,13 +20,26 @@
 # All (default) — run all tests in sequence
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail   # no -e: individual test failures must not abort the harness
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="$HOME/splitscreen-phase-b-test.log"
 
 # ── Orchestrator FIFO path (must match what orchestrator.sh uses) ──────────
 FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+
+# ── Production state-query functions (jq-based, no module sourcing needed) ──
+# These match the implementations in modules/instance_lifecycle.sh exactly.
+_state_file() { echo "${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"; }
+
+slot_is_active() {
+    jq -e ".slots[\"$1\"].active == true" "$(_state_file)" >/dev/null 2>&1
+}
+
+get_active_slots() {
+    jq -r '[.slots | to_entries[] | select(.value.active == true) | .key | tonumber] | sort | join(" ")' \
+        "$(_state_file)" 2>/dev/null
+}
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 _pass() { echo "[PASS] $*" | tee -a "$LOG"; }
