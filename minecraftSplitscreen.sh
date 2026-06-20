@@ -335,6 +335,49 @@ quitAllSlots() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Session-env leak guard.
+# nestedPlasma/testPlasma exec `dbus-run-session startplasma-wayland`. KDE startup
+# pushes the NESTED compositor's WAYLAND_DISPLAY (e.g. wayland-1) into the shared
+# systemd --user environment (dbus-update-activation-environment --systemd). But
+# dbus-run-session only isolates the dbus *bus*, not the per-user systemd manager —
+# so that value outlives our session. Afterward the next gamescope/Steam session
+# inherits WAYLAND_DISPLAY pointing at a now-dead socket → gamescope can't start →
+# sddm relaunches forever → both displays stay black.
+# We snapshot the gamescope value BEFORE going nested and restore it on the way out.
+# ─────────────────────────────────────────────────────────────────────────────
+_SESSION_ENV_BAK="/tmp/splitscreen-session-env.bak"
+
+_snapshot_session_env() {
+    : > "$_SESSION_ENV_BAK" 2>/dev/null || true
+    local v cur
+    for v in WAYLAND_DISPLAY DISPLAY; do
+        # systemd --user still holds the gamescope value here (startplasma has not
+        # clobbered it yet); fall back to our own inherited process env.
+        cur=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^${v}=//p" | head -1)
+        [[ -z "$cur" ]] && cur="${!v:-}"
+        if [[ -n "$cur" ]]; then
+            echo "${v}=${cur}" >> "$_SESSION_ENV_BAK"
+        else
+            echo "#UNSET ${v}" >> "$_SESSION_ENV_BAK"
+        fi
+    done
+    echo "[session-env] snapshot: $(tr '\n' ' ' < "$_SESSION_ENV_BAK" 2>/dev/null)" >> "$LOG"
+}
+
+_restore_session_env() {
+    [[ -f "$_SESSION_ENV_BAK" ]] || return 0
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            \#UNSET\ *) systemctl --user unset-environment "${line#\#UNSET }" 2>/dev/null || true ;;
+            *=*)        systemctl --user set-environment "$line" 2>/dev/null || true ;;
+        esac
+    done < "$_SESSION_ENV_BAK"
+    echo "[session-env] restored gamescope WAYLAND_DISPLAY/DISPLAY in systemd --user" >> "$LOG"
+    rm -f "$_SESSION_ENV_BAK" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # nestedPlasma
 # Starts a nested KDE Plasma Wayland session inside gamescope.
 # Writes an autostart .desktop so this script is re-invoked as launchWindowTest
@@ -371,6 +414,7 @@ Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
+    _snapshot_session_env
     echo "[nestedPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
     exec dbus-run-session startplasma-wayland
 }
@@ -536,6 +580,7 @@ Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
+    _snapshot_session_env
     echo "[testPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
     exec dbus-run-session startplasma-wayland
 }
@@ -552,9 +597,10 @@ launchTestFromPlasma() {
     pkill plasmashell 2>/dev/null || true
     sleep 0.5
 
-    # Always kill the nested KWin session on exit — prevents permanent black screen
-    # if the test script hangs, crashes, or is interrupted.
-    trap 'pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
+    # Always kill the nested KWin session AND restore the leaked session env on exit
+    # — prevents both a permanent black screen and the sddm restart loop if the test
+    # script hangs, crashes, or is interrupted.
+    trap '_restore_session_env; pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
 
     # Ensure FIFO exists
     local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
@@ -618,6 +664,7 @@ launchTestFromPlasma() {
 
     # Disarm the trap and do the KWin cleanup explicitly (cleaner log ordering)
     trap - EXIT
+    _restore_session_env
     pkill -TERM kwin_wayland 2>/dev/null || true
     sleep 2
     pkill -KILL kwin_wayland 2>/dev/null || true
