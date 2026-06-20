@@ -572,13 +572,16 @@ launchTestFromPlasma() {
     # Wait for orchestrator to be ready
     sleep 2
 
-    # Source the test harness and run test 2 (2-player lifecycle)
+    # Run the Phase B lifecycle test — all tests by default,
+    # or a specific test number if TEST_NUMBER is set (from "test N" arg)
+    local test_arg="${TEST_NUMBER:-all}"
+    echo "[launchTestFromPlasma] Running test harness (tests=$test_arg)" >> "$LOG"
     local test_script
     SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
     test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
     if [[ -f "$test_script" ]]; then
         echo "[launchTestFromPlasma] Running test harness: $test_script" >> "$LOG"
-        bash "$test_script" "${TEST_NUMBER:-2}" 2>&1 | tee -a "$LOG" || true
+        bash "$test_script" "$test_arg" 2>&1 | tee -a "$LOG" || true
         echo "[launchTestFromPlasma] Test complete" >> "$LOG"
     else
         echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
@@ -606,12 +609,18 @@ launchTestFromPlasma() {
 # dispatch_mode is set by the test/testPlasma wrappers to override the
 # default behavior when running automated tests inside nested KDE.
 case "${1:-}" in
-    test|testPlasma)
-        # Phase B lifecycle test: first call from outside nested session
+    test)
+        # Phase B lifecycle test: first call from outside nested session.
+        # Optional second arg is a test number for the harness.
+        # Steam launch option: "test" (run all) or "test 6" (run specific)
         echo "[main] Phase B test mode — starting (outer)" >> "$LOG"
+        if [[ -n "${2:-}" ]]; then
+            export TEST_NUMBER="$2"
+            echo "[main] Test number: $TEST_NUMBER" >> "$LOG"
+        fi
         testPlasma
         ;;
-    testFromPlasma)
+    testFromPlasma|testPlasma)
         # Called from KDE autostart inside the nested test session
         echo "[main] Phase B test mode — inside KDE session" >> "$LOG"
         if declare -f launchTestFromPlasma >/dev/null 2>&1; then
