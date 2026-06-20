@@ -208,9 +208,20 @@ _build_bwrap_command() {
     #     Forces classic joystick driver path, ensuring SDL_JOYSTICK_DEVICE
     #     pinning is honoured on Linux. Required for compatibility with the
     #     older Controllable mod's bundled SDL and some gamescope builds.
+    # AppImage / Qt / audio env — must match the known-working launchSlot config.
+    #   APPIMAGE_EXTRACT_AND_RUN=1: the AppImage cannot FUSE-mount inside the
+    #     sandbox (no fusermount on PATH → "Cannot mount AppImage"); extract-and-run
+    #     sidesteps FUSE entirely. THIS is what was killing every spawn_instance.
+    #   QT_QPA_PLATFORM=xcb: force PolyMC's Qt GUI onto X11 — the nested KDE session
+    #     exports QT_QPA_PLATFORM=wayland, which PolyMC would otherwise inherit.
+    #   PULSE_SERVER: absolute path to the host socket so audio works regardless of
+    #     XDG_RUNTIME_DIR (the socket is inside the sandbox via --dev-bind / /).
     cmd+=(
         --
         env
+        APPIMAGE_EXTRACT_AND_RUN=1
+        QT_QPA_PLATFORM=xcb
+        "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
