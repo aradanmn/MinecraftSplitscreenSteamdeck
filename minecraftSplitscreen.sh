@@ -592,7 +592,7 @@ launchTestFromPlasma() {
     test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
     if [[ -f "$test_script" ]]; then
         echo "[launchTestFromPlasma] Running test harness: $test_script" >> "$LOG"
-        timeout 7200 bash "$test_script" "$test_arg" 2>&1 | tee -a "$LOG" || true
+        timeout 7200 bash "$test_script" "$test_arg" || true
         echo "[launchTestFromPlasma] Test complete" >> "$LOG"
     else
         echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
