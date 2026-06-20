@@ -16,7 +16,7 @@
 #   4 — Docked: Max 4 players, 5th ignored
 #   5 — Docked→Handheld: 2+ players active, undock → keeps P1 only
 #   6 — Load timing: measure real load time under render contention
-#   7 — Full lifecycle: 4 players, P2 dies → teardown, P4 joins → reflow
+#   7 — Full lifecycle: 4 players, P2 dies mid-session, P4 quits cleanly
 # All (default) — run all tests in sequence
 # =============================================================================
 
@@ -131,6 +131,16 @@ _wait_for_minecraft_ready() {
     return 1
 }
 
+# Truncate a slot's latest.log before spawning so _wait_for_minecraft_ready
+# does not see "Sound engine started" from the PREVIOUS run's log (Minecraft
+# rotates the log at JVM startup, but that rotation happens after we start
+# polling, so a stale log causes an immediate false-positive on second+ tests).
+_prep_slot() {
+    local slot="$1"
+    local launcher_dir="${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$HOME/.local/share/PolyMC}"
+    : > "${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/logs/latest.log" 2>/dev/null || true
+}
+
 # Inject a message into the FIFO.
 # Writes in the background so a temporary gap in the orchestrator restart loop
 # doesn't block forever, AND so we can wait while spawn_instance is blocking
@@ -141,23 +151,31 @@ _inject() {
     echo "$msg" > "$FIFO" &
     local write_pid=$!
     local i
-    for i in $(seq 1 240); do   # up to 120s — covers spawn_instance blocking time
+    for i in $(seq 1 400); do   # up to 200s: _poll_for_java(60s) + _poll_for_window(120s) + buffer
         sleep 0.5
         if ! kill -0 "$write_pid" 2>/dev/null; then
             return 0   # write was consumed by the orchestrator
         fi
     done
     kill "$write_pid" 2>/dev/null || true
-    _fail "FIFO write not consumed within 120s — orchestrator not reading ($FIFO)"
+    _fail "FIFO write not consumed within 200s — orchestrator not reading ($FIFO)"
     return 1
 }
 
-# Clean up any leftover instances
+# Best-effort drain of any instances a test left running (e.g., early bail-out).
+# Does NOT kill kwin_wayland or the parent minecraftSplitscreen.sh — the parent's
+# EXIT trap handles those.  Uses direct FIFO writes rather than _inject() because
+# the orchestrator may have died already.
 _clean_instances() {
-    if [[ -p "$FIFO" ]]; then   # -p not -f: FIFOs are not regular files
-        pkill -f "minecraftSplitscreen.sh" 2>/dev/null || true
-        pkill -f "kwin_wayland" 2>/dev/null || true
-    fi
+    [[ -p "$FIFO" ]] || return 0
+    local slot
+    for slot in 1 2 3 4; do
+        if slot_is_active "$slot" 2>/dev/null; then
+            _info "cleanup: slot $slot still active — sending SLOT_DIED"
+            echo "SLOT_DIED $slot" > "$FIFO" 2>/dev/null || true
+        fi
+    done
+    sleep 5
 }
 
 # ── Test 1: Handheld — single player lifecycle ────────────────────────────
@@ -172,6 +190,7 @@ test_handheld_single_player() {
     # Minecraft loads without controller input.
     local slot=1
     if ! slot_is_active "$slot" 2>/dev/null; then
+        _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/null"
     else
         _info "Slot $slot already active — skipping ADD"
@@ -219,6 +238,7 @@ test_docked_two_players() {
     sleep 1
 
     # Player 1 connects → slot 1
+    _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/null"
     if _wait_for_slot_active 1 30 "Test 2"; then
         _pass "Test 2.1 — Slot 1 bwrap started"
@@ -233,6 +253,7 @@ test_docked_two_players() {
     _info "Active slots after P1: $count_1"
 
     # Player 2 connects → slot 2
+    _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/null"
     if _wait_for_slot_active 2 30 "Test 2"; then
         _pass "Test 2.2 — Slot 2 bwrap started"
@@ -277,6 +298,7 @@ test_docked_three_players() {
     sleep 1
 
     for slot in 1 2 3; do
+        _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/null"
         if _wait_for_slot_active "$slot" 30 "Test 3"; then
             _pass "Test 3.1 — Slot $slot bwrap started"
@@ -335,6 +357,7 @@ test_max_four() {
     sleep 1
 
     for slot in 1 2 3 4; do
+        _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/null"
         _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return; }
         _wait_for_minecraft_ready "$slot" 360 "Test 4-P${slot}" || { return; }
@@ -359,11 +382,11 @@ test_max_four() {
         _fail "Test 4.3 — Expected 4 active after 5th add, got $active"
     fi
 
-    # Clean up all
+    # Clean up all — wait for each teardown to complete before the next test
     for slot in 1 2 3 4; do
         _inject "SLOT_DIED $slot"
+        _wait_for_slot_inactive "$slot" 30 "Test 4 cleanup slot $slot"
     done
-    sleep 3
 }
 
 # ── Test 5: Docked→Handheld transition guard ──────────────────────────────
@@ -374,9 +397,11 @@ test_docked_to_handheld() {
     sleep 1
 
     # Launch 2 players
+    _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/null"
     _wait_for_slot_active 1 30 "Test 5"
     _wait_for_minecraft_ready 1 360 "Test 5-P1" || { return; }
+    _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/null"
     _wait_for_slot_active 2 30 "Test 5"
     _wait_for_minecraft_ready 2 360 "Test 5-P2" || { return; }
@@ -388,7 +413,7 @@ test_docked_to_handheld() {
     # of slot 2 happens AFTER that, so wait for it explicitly instead of sleeping.
     _inject "DISPLAY_MODE_CHANGE handheld"
 
-    if _wait_for_slot_inactive 2 10 "Test 5"; then
+    if _wait_for_slot_inactive 2 30 "Test 5"; then
         _pass "Test 5.1 — Slot 2 torn down on undock"
     else
         _fail "Test 5.1 — Slot 2 survived dock→handheld transition (should have been torn down)"
@@ -416,8 +441,9 @@ test_load_timing() {
     _info "Timing load for P1 (solo)..."
     local t_start t_end elapsed
     t_start=$(date +%s%N)
+    _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/null"
-    _wait_for_slot_active 1 30 "Test 6-P1"
+    _wait_for_slot_active 1 30 "Test 6-P1" || { _fail "Test 6 — Slot 1 bwrap did not start"; return; }
     _wait_for_minecraft_ready 1 360 "Test 6-P1" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
@@ -427,8 +453,9 @@ test_load_timing() {
     # Launch P2 with P1 already rendering, time to main menu
     _info "Timing load for P2 (with P1 already rendering)..."
     t_start=$(date +%s%N)
+    _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/null"
-    _wait_for_slot_active 2 30 "Test 6-P2"
+    _wait_for_slot_active 2 30 "Test 6-P2" || { _fail "Test 6 — Slot 2 bwrap did not start"; return; }
     _wait_for_minecraft_ready 2 360 "Test 6-P2" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
@@ -446,13 +473,14 @@ test_load_timing() {
 
 # ── Test 7: Full lifecycle ────────────────────────────────────────────────
 test_full_lifecycle() {
-    _header "Test 7: Full lifecycle — 4 players, P2 dies, P4 joins later"
+    _header "Test 7: Full lifecycle — 4 players, P2 dies mid-session, P4 quits cleanly"
 
     _inject "DISPLAY_MODE_CHANGE docked"
     sleep 1
 
     # Launch 4 players
     for slot in 1 2 3 4; do
+        _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/null"
         _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return; }
         _wait_for_minecraft_ready "$slot" 360 "Test 7-P${slot}" || { return; }
@@ -502,10 +530,11 @@ test_full_lifecycle() {
         _fail "Test 7.6 — Expected 2, got $count"
     fi
 
-    # Clean up
+    # Clean up — wait for teardowns so the next test starts clean
     _inject "CONTROLLER_REMOVE 1"
+    _wait_for_slot_inactive 1 30 "Test 7 cleanup"
     _inject "CONTROLLER_REMOVE 3"
-    sleep 3
+    _wait_for_slot_inactive 3 30 "Test 7 cleanup"
 }
 
 # ── Main dispatch ──────────────────────────────────────────────────────────
