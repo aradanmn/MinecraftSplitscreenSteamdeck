@@ -96,13 +96,38 @@ CWWidth = 1 << 2
 CWHeight = 1 << 3
 CWBorderWidth = 1 << 4
 
+# override_redirect is the 13th field of XSetWindowAttributes (NOT the first), and
+# its change-mask bit is CWOverrideRedirect (1<<9). The old code used a 1-field
+# struct + mask 1<<3 (CWBorderPixel), so it never actually changed override_redirect.
+CWOverrideRedirect = 1 << 9
+
+class XSetWindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ('background_pixmap', ctypes.c_ulong), ('background_pixel', ctypes.c_ulong),
+        ('border_pixmap', ctypes.c_ulong),     ('border_pixel', ctypes.c_ulong),
+        ('bit_gravity', ctypes.c_int),         ('win_gravity', ctypes.c_int),
+        ('backing_store', ctypes.c_int),       ('backing_planes', ctypes.c_ulong),
+        ('backing_pixel', ctypes.c_ulong),     ('save_under', Bool),
+        ('event_mask', ctypes.c_long),         ('do_not_propagate_mask', ctypes.c_long),
+        ('override_redirect', Bool),           ('colormap', ctypes.c_ulong),
+        ('cursor', ctypes.c_ulong),
+    ]
+
 # ---- Open display ----
+# CRITICAL: ctypes defaults every C return value to 32-bit c_int. On 64-bit that
+# truncates the Display* from XOpenDisplay into a garbage pointer, so every X call
+# then operates on junk and silently no-ops — this is why dex "didn't work". Set
+# restype=c_void_p and wrap dpy as a typed pointer instance so it passes 64-bit-safe
+# to every call (the call sites already wrap their other args as Window()/byref()).
 display_name = os.environ.get('DEX_DISPLAY', os.environ.get('DISPLAY', ':0'))
-dpy = _lib.XOpenDisplay(display_name.encode() if isinstance(display_name, str) else display_name)
-if not dpy:
+_lib.XOpenDisplay.restype = ctypes.c_void_p
+_dpy = _lib.XOpenDisplay(display_name.encode() if isinstance(display_name, str) else display_name)
+if not _dpy:
     print(f"ERROR: Cannot open display '{display_name}'", file=sys.stderr)
     sys.exit(1)
+dpy = ctypes.c_void_p(_dpy)
 
+_lib.XDefaultRootWindow.restype = Window
 root = _lib.XDefaultRootWindow(dpy)
 
 # ---- Atom cache ----
@@ -246,17 +271,17 @@ def action_move_resize(args):
     _lib.XFlush(dpy)
 
 def action_move_resize_force(args):
-    \"\"\"Try multiple approaches to position a window in gamescope's XWayland.
+    """Try multiple approaches to position a window in gamescope's XWayland.
     Strategy:
     1. XMoveResizeWindow (high-level, may bypass some filters)
     2. XConfigureWindow with override_redirect set (bypass WM)
     3. XConfigureWindow (standard dex.sh approach, always works on KWin)
     Returns the approach number that succeeded, or 0 if all failed.
-    \"\"\"
+    """
     wid, x, y, w, h = int(args[0]), int(args[1]), int(args[2]), int(args[3]), int(args[4])
 
     def _read_geo():
-        \"\"\"Read actual window geometry via XGetWindowAttributes.\"\"\"
+        """Read actual window geometry via XGetWindowAttributes."""
         attrs = XWindowAttributes()
         ret = _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(attrs))
         if ret == 0:
@@ -264,7 +289,7 @@ def action_move_resize_force(args):
         return (attrs.x, attrs.y, attrs.width, attrs.height)
 
     def _geo_ok():
-        \"\"\"Check if the window is now at the target geometry (within tolerance).\"\"\"
+        """Check if the window is now at the target geometry (within tolerance)."""
         g = _read_geo()
         if g is None:
             return False
@@ -282,10 +307,8 @@ def action_move_resize_force(args):
         return
 
     # Strategy 2: Set override_redirect, then XConfigureWindow
-    class XSetWA(ctypes.Structure):
-        _fields_ = [('override_redirect', Bool)]
-    attrs = XSetWA(override_redirect=Bool(1))
-    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(1 << 3), ctypes.byref(attrs))
+    attrs = XSetWindowAttributes(override_redirect=1)
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
     _lib.XFlush(dpy)
 
     ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
@@ -299,8 +322,8 @@ def action_move_resize_force(args):
 
     # Strategy 3: XConfigureWindow without overrideredirect (standard)
     # Clear override_redirect first
-    attrs2 = XSetWA(override_redirect=Bool(0))
-    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(1 << 3), ctypes.byref(attrs2))
+    attrs2 = XSetWindowAttributes(override_redirect=0)
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs2))
     _lib.XFlush(dpy)
 
     ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
@@ -327,10 +350,8 @@ def action_set_name(args):
 
 def action_set_override_redirect(args):
     wid, val = int(args[0]), int(args[1])
-    class XSetWA(ctypes.Structure):
-        _fields_ = [('override_redirect', Bool)]
-    attrs = XSetWA(override_redirect=Bool(val))
-    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(1 << 3), ctypes.byref(attrs))
+    attrs = XSetWindowAttributes(override_redirect=val)
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
     _lib.XFlush(dpy)
 
 def _send_client_msg(wid, msg_type, data0, data1, data2, data3, data4):
