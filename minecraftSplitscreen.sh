@@ -17,7 +17,14 @@
 # runStaticTest() is prototype-only; everything else is kept in sync with the
 # generator's LAUNCHER_SCRIPT_EOF heredoc.
 
-LOG=/tmp/splitscreen-debug.log
+# Per-run timestamped debug log. The script re-execs itself across the
+# gamescope→KDE boundary (nestedPlasma/testPlasma write an autostart that
+# re-invokes us); those autostart Exec lines pass SPLITSCREEN_DEBUG_LOG so both
+# halves of one run append to the SAME file. Only the first invocation (env var
+# unset) mints a new timestamp. A stable -latest symlink makes tailing easy.
+LOG="${SPLITSCREEN_DEBUG_LOG:-/tmp/splitscreen-debug-$(date +%Y%m%d-%H%M%S).log}"
+export SPLITSCREEN_DEBUG_LOG="$LOG"
+ln -sfn "$LOG" /tmp/splitscreen-debug-latest.log 2>/dev/null || true
 exec 2>>"$LOG"
 set -x
 
@@ -360,7 +367,7 @@ WEOF
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=${SCRIPT_PATH}
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -525,7 +532,7 @@ WEOF
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=${SCRIPT_PATH} testFromPlasma
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
