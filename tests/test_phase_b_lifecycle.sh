@@ -185,9 +185,10 @@ _clean_instances() {
 test_handheld_single_player() {
     _header "Test 1: Handheld — single player joins, plays, quits"
 
-    # Ensure mode is handheld
-    _inject "DISPLAY_MODE_CHANGE handheld"
-    sleep 1
+    # No DISPLAY_MODE_CHANGE — orchestrator starts in docked mode (set by
+    # launchTestFromPlasma).  For handheld tests we just use a single slot.
+    # The deck-built-in vs external-controller distinction is cosmetic here;
+    # both go through docked_flow's CONTROLLER_ADD dispatch.
 
     # Two DISTINCT dead device nodes (/dev/null event, /dev/zero js): bwrap binds
     # both, SDL sees no /dev/input/* controller, Minecraft loads without input.
@@ -238,9 +239,6 @@ test_handheld_single_player() {
 # ── Test 2: Docked — 2 players join, reflow, 1 quits ─────────────────────
 test_docked_two_players() {
     _header "Test 2: Docked — 2 players sequential, reflow, 1 quits"
-
-    _inject "DISPLAY_MODE_CHANGE docked"
-    sleep 1
 
     # Player 1 connects → slot 1
     _prep_slot 1
@@ -299,9 +297,6 @@ test_docked_two_players() {
 test_docked_three_players() {
     _header "Test 3: Docked — 3 players join, 2 quit sequentially"
 
-    _inject "DISPLAY_MODE_CHANGE docked"
-    sleep 1
-
     for slot in 1 2 3; do
         _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/zero"
@@ -357,9 +352,6 @@ test_docked_three_players() {
 # ── Test 4: Max 4, 5th ignored ────────────────────────────────────────────
 test_max_four() {
     _header "Test 4: Docked — max 4 players, 5th controller ignored"
-
-    _inject "DISPLAY_MODE_CHANGE docked"
-    sleep 1
 
     for slot in 1 2 3 4; do
         _prep_slot "$slot"
@@ -438,11 +430,9 @@ test_docked_to_handheld() {
 # ── Test 6: Load timing under render contention ──────────────────────────
 test_load_timing() {
     _header "Test 6: Load timing — measure real instance load time under contention"
-
-    _inject "DISPLAY_MODE_CHANGE docked"
     sleep 1
 
-    # Launch P1, time to main menu
+    # Launch P1, time it
     _info "Timing load for P1 (solo)..."
     local t_start t_end elapsed
     t_start=$(date +%s%N)
@@ -479,9 +469,6 @@ test_load_timing() {
 # ── Test 7: Full lifecycle ────────────────────────────────────────────────
 test_full_lifecycle() {
     _header "Test 7: Full lifecycle — 4 players, P2 dies mid-session, P4 quits cleanly"
-
-    _inject "DISPLAY_MODE_CHANGE docked"
-    sleep 1
 
     # Launch 4 players
     for slot in 1 2 3 4; do
