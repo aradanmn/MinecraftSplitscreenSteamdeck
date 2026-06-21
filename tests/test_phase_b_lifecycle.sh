@@ -125,11 +125,11 @@ _kill_slot_process() {
     java_pid=$(jq -r ".slots[\"$slot\"].pid // empty" "$state" 2>/dev/null)
     if [[ -n "$bwrap_pid" ]]; then
         _info "Killing slot $slot bwrap pgid=$bwrap_pid"
-        kill -TERM "-${bwrap_pid}" 2>/dev/null || kill -TERM "$bwrap_pid" 2>/dev/null || true
+        kill -KILL "-${bwrap_pid}" 2>/dev/null || kill -KILL "$bwrap_pid" 2>/dev/null || true
     fi
     if [[ -n "$java_pid" ]] && kill -0 "$java_pid" 2>/dev/null; then
         _info "Killing slot $slot java pid=$java_pid"
-        kill -TERM "$java_pid" 2>/dev/null || true
+        kill -KILL "$java_pid" 2>/dev/null || true
     fi
     if [[ -z "$bwrap_pid" && -z "$java_pid" ]]; then
         _info "No PIDs in state for slot $slot — nothing to kill"
