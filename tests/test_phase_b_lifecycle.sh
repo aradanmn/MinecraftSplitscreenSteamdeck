@@ -140,9 +140,11 @@ _kill_slot_process() {
 # Wait for Minecraft to reach the main menu by polling latest.log for
 # "Sound engine started".  This is the real readiness signal — active=true
 # in the state file only means the bwrap process started, not that the game
-# is loaded.  Timeout default: 360s (Minecraft can take 3-6 min under load).
+# is loaded.  Timeout default: 600s (Minecraft can take 3-6 min under load;
+# first-run asset download may add 10-30 min — pre-warm the Deck with one
+# manual launch before running tests to avoid hitting this limit).
 _wait_for_minecraft_ready() {
-    local slot="$1" timeout_s="${2:-360}" label="${3:-slot $slot}"
+    local slot="$1" timeout_s="${2:-600}" label="${3:-slot $slot}"
     local launcher_dir="${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$HOME/.local/share/PolyMC}"
     local log="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/logs/latest.log"
     local deadline=$(( $(date +%s) + timeout_s ))
@@ -235,7 +237,7 @@ test_handheld_single_player() {
     fi
 
     # Wait for Minecraft to reach the main menu
-    _wait_for_minecraft_ready "$slot" 360 "Test 1" || { return; }
+    _wait_for_minecraft_ready "$slot" 600 "Test 1" || { return; }
 
     # Verify PID is alive
     if _slot_pid_alive "$slot"; then
@@ -275,7 +277,7 @@ test_docked_two_players() {
         _fail "Test 2.1 — Slot 1 did not start"
         return
     fi
-    _wait_for_minecraft_ready 1 360 "Test 2-P1" || { return; }
+    _wait_for_minecraft_ready 1 600 "Test 2-P1" || { return; }
 
     local count_1
     count_1=$(get_active_slots 2>/dev/null | wc -w)
@@ -290,7 +292,7 @@ test_docked_two_players() {
         _fail "Test 2.2 — Slot 2 did not start"
         return
     fi
-    _wait_for_minecraft_ready 2 360 "Test 2-P2" || { return; }
+    _wait_for_minecraft_ready 2 600 "Test 2-P2" || { return; }
 
     sleep 3  # Allow reflow to complete
 
@@ -332,7 +334,7 @@ test_docked_three_players() {
             _fail "Test 3.1 — Slot $slot did not start"
             return
         fi
-        _wait_for_minecraft_ready "$slot" 360 "Test 3-P${slot}" || { return; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 3-P${slot}" || { return; }
     done
 
     sleep 3  # Allow reflow
@@ -383,7 +385,7 @@ test_max_four() {
         _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/zero"
         _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return; }
-        _wait_for_minecraft_ready "$slot" 360 "Test 4-P${slot}" || { return; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 4-P${slot}" || { return; }
     done
 
     _info "Test 4: 4 slots should be active now"
@@ -423,11 +425,11 @@ test_docked_to_handheld() {
     _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 1 30 "Test 5"
-    _wait_for_minecraft_ready 1 360 "Test 5-P1" || { return; }
+    _wait_for_minecraft_ready 1 600 "Test 5-P1" || { return; }
     _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 2 30 "Test 5"
-    _wait_for_minecraft_ready 2 360 "Test 5-P2" || { return; }
+    _wait_for_minecraft_ready 2 600 "Test 5-P2" || { return; }
 
     _info "Test 5: 2 players active, simulating undock..."
 
@@ -465,7 +467,7 @@ test_load_timing() {
     _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 1 30 "Test 6-P1" || { _fail "Test 6 — Slot 1 bwrap did not start"; return; }
-    _wait_for_minecraft_ready 1 360 "Test 6-P1" || { return; }
+    _wait_for_minecraft_ready 1 600 "Test 6-P1" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
     _info "P1 load time to main menu: ${elapsed}ms"
@@ -477,7 +479,7 @@ test_load_timing() {
     _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 2 30 "Test 6-P2" || { _fail "Test 6 — Slot 2 bwrap did not start"; return; }
-    _wait_for_minecraft_ready 2 360 "Test 6-P2" || { return; }
+    _wait_for_minecraft_ready 2 600 "Test 6-P2" || { return; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
     _info "P2 load time to main menu (with render contention): ${elapsed}ms"
@@ -501,7 +503,7 @@ test_full_lifecycle() {
         _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/zero"
         _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return; }
-        _wait_for_minecraft_ready "$slot" 360 "Test 7-P${slot}" || { return; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 7-P${slot}" || { return; }
     done
 
     sleep 3
