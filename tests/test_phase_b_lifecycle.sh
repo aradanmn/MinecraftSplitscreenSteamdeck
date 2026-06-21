@@ -45,14 +45,17 @@ get_active_slots() {
 }
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
-_pass() { echo "[PASS] $*" | tee -a "$LOG"; }
-_fail() { echo "[FAIL] $*" | tee -a "$LOG"; }
-_info() { echo "[Info] $*" | tee -a "$LOG"; }
+# Write to the log file with >> (never tee) so a broken stdout pipe from
+# "bash ... | head -N" doesn't silently drop lines via tee SIGPIPE.
+_log()  { echo "$*" >> "$LOG"; }
+_pass() { _log "[PASS] $*"; echo "[PASS] $*" >&2; }
+_fail() { _log "[FAIL] $*"; echo "[FAIL] $*" >&2; }
+_info() { _log "[Info] $*"; echo "[Info] $*" >&2; }
 _header() {
-    echo "" | tee -a "$LOG"
-    echo "==============================================================" | tee -a "$LOG"
-    echo "  $*" | tee -a "$LOG"
-    echo "==============================================================" | tee -a "$LOG"
+    _log ""
+    _log "=============================================================="
+    _log "  $*"
+    _log "=============================================================="
 }
 
 # Wait for a slot to become active in the state file (timeout in seconds)
