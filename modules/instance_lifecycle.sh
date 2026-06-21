@@ -547,7 +547,12 @@ spawn_instance() {
     #    SIGKILL — if the socket exists but nothing is listening, Qt's SingleApplication
     #    tries to forward to the dead peer, fails silently, and exits without launching.
     rm -f /tmp/qtsingleapp-* 2>/dev/null || true
-    setsid bash -c "$bwrap_command" </dev/null &
+    # Redirect bwrap stdout/stderr directly to the debug log (bypassing any pipe
+    # the caller may have put around spawn_instance). Without this, bwrap and all
+    # its Minecraft descendants inherit the pipe's write-end and keep it open until
+    # the game exits — which blocks the orchestrator's sed pipe and prevents it from
+    # reading FIFO events (e.g. SLOT_DIED) until after Minecraft is already dead.
+    setsid bash -c "$bwrap_command" </dev/null >>"${LOG:-/tmp/splitscreen-bwrap-${slot}.log}" 2>&1 &
     local bwrap_pid=$!
 
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
