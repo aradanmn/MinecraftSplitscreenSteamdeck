@@ -191,7 +191,11 @@ _handle_msg() {
                 return 0
             fi
             echo "[orchestrator] SLOT_DIED for slot $slot — cleaning up" >&2
-            teardown_instance "$slot" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+            local _td_log
+            _td_log=$(mktemp /tmp/teardown_slot${slot}_XXXXXX.log)
+            teardown_instance "$slot" >"$_td_log" 2>&1 || true
+            sed 's/^/[orchestrator] /' < "$_td_log" >&2
+            rm -f "$_td_log"
             _reflow_layout
             ;;
 

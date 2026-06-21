@@ -652,18 +652,9 @@ teardown_instance() {
     # 5. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
     update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null, \"wid\": null}"
 
-    # 6. Re-apply layout with remaining active slots
-    local remaining
-    remaining=$(get_active_slots)
-    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
-        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
-            gamescope_windowing_apply_layout "$remaining" "" ""
-        else
-            sync_apply_layout "$remaining" "" ""
-        fi
-    else
-        sync_apply_layout "$remaining" "" ""
-    fi
+    # Layout reflow is the caller's responsibility (e.g. SLOT_DIED handler calls
+    # _reflow_layout after teardown_instance returns). Calling sync_apply_layout
+    # here would hang if the window is already dead (X11 BadWindow → no response).
 }
 
 # Tear down all active instances.
