@@ -157,17 +157,20 @@ _handle_msg() {
             #   3. In _build_bwrap_command, these become --bind /dev/null masks
             #   4. Set SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 per-slot
             # Currently passes only this slot's controller (no masking yet).
-            # Use a temp file instead of a pipe so bwrap/Java descendants don't
-            # inherit the write-end and block the orchestrator's FIFO event loop.
-            local _si_log
-            _si_log=$(mktemp /tmp/spawn_instance_slot${slot}_XXXXXX.log)
-            spawn_instance "$slot" "$event_node" "$js_node" >"$_si_log" 2>&1 || true
-            sed 's/^/[orchestrator] /' < "$_si_log" >&2
-            rm -f "$_si_log"
-
-            # Give the window time to appear before reflow
-            sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
-            _reflow_layout
+            # Run spawn_instance in the background so the FIFO event loop is
+            # never blocked — spawn_instance polls for java+window for up to
+            # 120s, and any SLOT_DIED fired while it runs must be processed
+            # immediately (not after a 2-minute wait).
+            local _slot="$slot" _en="$event_node" _jn="$js_node"
+            {
+                local _si_log
+                _si_log=$(mktemp /tmp/spawn_instance_slot${_slot}_XXXXXX.log)
+                spawn_instance "$_slot" "$_en" "$_jn" >"$_si_log" 2>&1 || true
+                sed 's/^/[orchestrator] /' < "$_si_log" >&2
+                rm -f "$_si_log"
+                sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
+                _reflow_layout
+            } &
             ;;
 
         CONTROLLER_REMOVE)
