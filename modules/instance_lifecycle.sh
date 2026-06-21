@@ -216,9 +216,16 @@ _build_bwrap_command() {
     #     exports QT_QPA_PLATFORM=wayland, which PolyMC would otherwise inherit.
     #   PULSE_SERVER: absolute path to the host socket so audio works regardless of
     #     XDG_RUNTIME_DIR (the socket is inside the sandbox via --dev-bind / /).
-    cmd+=(
-        --
-        env
+    # XAUTHORITY: bwrap inherits env but SSH sessions don't have the cookie set.
+    # Auto-detect from the kwin_wayland_wrapper --xwayland-xauthority flag, which
+    # names the actual file regardless of login session or boot path.
+    local _xauth="${XAUTHORITY:-}"
+    if [[ -z "$_xauth" ]]; then
+        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
+            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
+    fi
+
+    local -a _env_vars=(
         APPIMAGE_EXTRACT_AND_RUN=1
         QT_QPA_PLATFORM=xcb
         "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
@@ -226,6 +233,13 @@ _build_bwrap_command() {
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
+    )
+    [[ -n "$_xauth" ]] && _env_vars+=("XAUTHORITY=$_xauth")
+
+    cmd+=(
+        --
+        env
+        "${_env_vars[@]}"
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
         -a "P${slot}"
