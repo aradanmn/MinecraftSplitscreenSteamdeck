@@ -1,7 +1,20 @@
 #!/bin/bash
 # =============================================================================
-# GAMESCOPE WINDOWING MODULE
+# GAMESCOPE WINDOWING MODULE  —  DEAD / UNUSED (kept for reference only)
 # =============================================================================
+# NOT SOURCED by minecraftSplitscreen.sh or any module. Every caller guards with
+# `command -v gamescope_windowing_apply_layout` / `type`, which is always false
+# because this file is never loaded, so they fall back to window_manager's
+# apply_layout (which now positions via the verified dex.sh X11 layer).
+#
+# It also still contains the OLD ctypes bugs (XOpenDisplay with no restype →
+# 64-bit pointer truncation; valuemask 1<<3 = CWBorderPixel instead of 1<<9).
+# Do NOT wire this in as-is. If a bare-gamescope (no nested KWin) overlay-plane
+# approach is ever revived, port these operations onto dex.sh rather than
+# resurrecting this inline ctypes.
+#
+# Original description below.
+# -----------------------------------------------------------------------------
 # Pure xdotool/Python-ctypes approach for positioning Minecraft windows inside
 # gamescope's XWayland compositor (Steam Deck Game Mode).
 #

@@ -345,19 +345,14 @@ apply_layout() {
 
     echo "[window_manager] Applying layout: active_slots='$active_slots', grid=$grid_mode, ${screen_w}x${screen_h}" >&2
 
-    # List visible windows if xdotool is available (debug info, not required)
-    if command -v xdotool >/dev/null 2>&1; then
-        echo "[window_manager] All visible windows:" >&2
-        xdotool search --name "." 2>/dev/null | while read w; do
-            echo "  $w: $(xdotool getwindowname $w 2>/dev/null || echo '?')" >&2
-        done
-    elif type dex_list_windows >/dev/null 2>&1; then
+    # List visible windows for debugging (via dex — the single X11 layer).
+    # Best-effort; never use xdotool here (its search/getwindowname can block
+    # indefinitely inside gamescope's XWayland, freezing the synchronous caller).
+    if type dex_list_windows >/dev/null 2>&1; then
         echo "[window_manager] All visible windows (via dex):" >&2
-        dex_list_windows 2>/dev/null | while read w name; do
+        dex_list_windows 2>/dev/null | while read -r w name; do
             echo "  $w: $name" >&2
         done
-    else
-        echo "[window_manager] xdotool not found — using ctypes-only path, skipping window listing" >&2
     fi
 
     # In full mode, only slot 1 matters — no placeholders needed for other slots
