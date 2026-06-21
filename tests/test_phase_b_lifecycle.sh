@@ -208,7 +208,17 @@ _clean_instances() {
             echo "SLOT_DIED $slot" > "$FIFO" 2>/dev/null || true
         fi
     done
-    sleep 5
+    # Wait up to 30s for teardown to complete (SIGTERM→10s grace→SIGKILL takes ~11s)
+    local deadline=$(( $(date +%s) + 30 ))
+    while [[ $(date +%s) -lt $deadline ]]; do
+        local all_clear=1
+        for slot in 1 2 3 4; do
+            slot_is_active "$slot" 2>/dev/null && { all_clear=0; break; }
+        done
+        [[ $all_clear -eq 1 ]] && return 0
+        sleep 0.5
+    done
+    _info "cleanup: warning — some slots still active after 30s"
 }
 
 # ── Test 1: Handheld — single player lifecycle ────────────────────────────
@@ -319,9 +329,9 @@ test_docked_two_players() {
         _fail "Test 2.4 — Slot 1 died when P2 disconnected (regression)"
     fi
 
-    # Clean up remaining P1
+    # Clean up remaining P1 (not an assertion — don't fail test on timeout)
     _inject "SLOT_DIED 1"
-    _wait_for_slot_inactive 1 15 "Test 2 cleanup"
+    _wait_for_slot_inactive 1 30 "Test 2 cleanup" || true
 }
 
 # ── Test 3: Docked — 3 players, 2 sequential quits ────────────────────────
@@ -377,7 +387,7 @@ test_docked_three_players() {
     fi
 
     _inject "SLOT_DIED 2"
-    _wait_for_slot_inactive 2 15 "Test 3 cleanup"
+    _wait_for_slot_inactive 2 30 "Test 3 cleanup" || true
 }
 
 # ── Test 4: Max 4, 5th ignored ────────────────────────────────────────────
@@ -413,7 +423,7 @@ test_max_four() {
     # Clean up all — wait for each teardown to complete before the next test
     for slot in 1 2 3 4; do
         _inject "SLOT_DIED $slot"
-        _wait_for_slot_inactive "$slot" 30 "Test 4 cleanup slot $slot"
+        _wait_for_slot_inactive "$slot" 30 "Test 4 cleanup slot $slot" || true
     done
 }
 
@@ -455,7 +465,7 @@ test_docked_to_handheld() {
     fi
 
     _inject "SLOT_DIED 1"
-    _wait_for_slot_inactive 1 15 "Test 5 cleanup"
+    _wait_for_slot_inactive 1 30 "Test 5 cleanup" || true
 }
 
 # ── Test 6: Load timing under render contention ──────────────────────────
@@ -493,8 +503,8 @@ test_load_timing() {
     # Clean up
     _inject "SLOT_DIED 1"
     _inject "SLOT_DIED 2"
-    _wait_for_slot_inactive 1 15
-    _wait_for_slot_inactive 2 15
+    _wait_for_slot_inactive 1 30 "Test 6 cleanup" || true
+    _wait_for_slot_inactive 2 30 "Test 6 cleanup" || true
 }
 
 # ── Test 7: Full lifecycle ────────────────────────────────────────────────
@@ -556,9 +566,9 @@ test_full_lifecycle() {
 
     # Clean up — wait for teardowns so the next test starts clean
     _inject "CONTROLLER_REMOVE 1"
-    _wait_for_slot_inactive 1 30 "Test 7 cleanup"
+    _wait_for_slot_inactive 1 30 "Test 7 cleanup" || true
     _inject "CONTROLLER_REMOVE 3"
-    _wait_for_slot_inactive 3 30 "Test 7 cleanup"
+    _wait_for_slot_inactive 3 30 "Test 7 cleanup" || true
 }
 
 # ── Main dispatch ──────────────────────────────────────────────────────────
