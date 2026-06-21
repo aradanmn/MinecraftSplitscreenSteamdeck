@@ -41,127 +41,33 @@ declare -A _WINDOW_MANAGER_PLACEHOLDER_PIDS
 _apply_override_redirect_cycle() {
     local wid="$1" x="$2" y="$3" w="$4" h="$5"
 
-    # Resolve hex WIDs to decimal for Python compatibility
-    local wid_dec
-    if [[ "$wid" =~ ^0x ]]; then
-        wid_dec=$(( wid ))
-    else
-        wid_dec="$wid"
+    # Delegate to dex.sh — the single, verified X11 layer (ctypes via libX11).
+    # This replaced an inline ctypes copy of the same logic; keeping three
+    # divergent copies (here, instance_lifecycle.sh, gamescope_windowing.sh) is
+    # exactly how the pointer-truncation / valuemask / struct bugs crept in.
+    # dex_move_resize_force was confirmed on-Deck to position windows exactly in
+    # gamescope's XWayland (strategy 2 = override_redirect + XConfigure).
+    if ! type dex_move_resize_force >/dev/null 2>&1; then
+        echo "[window_manager] ERROR: dex.sh not sourced — cannot position window $wid" >&2
+        return 1
     fi
 
-    echo "[window_manager] OR-cycle: window $wid (dec=$wid_dec) → ${w}x${h}+${x}+${y}" >&2
+    # Set override_redirect first so KWin/gamescope won't re-tile the window,
+    # then move/resize. dex_move_resize_force tries plain move, then
+    # override_redirect+XConfigure, then XConfigure, returning the strategy that
+    # actually stuck (0 = all failed).
+    dex_set_override_redirect "$wid" 1 2>/dev/null || true
+    local strat
+    strat=$(dex_move_resize_force "$wid" "$x" "$y" "$w" "$h" 2>/dev/null || echo 0)
 
-    # Set override_redirect + reposition via Python ctypes X11.
-    # timeout-bounded so a bad X round-trip can't freeze the synchronous caller.
-    local result
-    result=$(timeout 10 python3 -c "
-import ctypes, ctypes.util, os, sys, time
+    local geo
+    geo=$(dex_getgeometry "$wid" 2>/dev/null || echo "")
+    echo "[window_manager] dex position: window $wid → ${w}x${h}+${x}+${y} (strategy=$strat) readback=[${geo:-?}]" >&2
 
-X = ctypes.CDLL(ctypes.util.find_library('X11') or 'libX11.so.6')
-
-Display = ctypes.c_void_p
-Window  = ctypes.c_ulong
-
-# ctypes defaults every restype/argtype to c_int (32-bit). On 64-bit that
-# TRUNCATES the Display* from XOpenDisplay, so later calls get a garbage pointer
-# and segfault (silently — empty output). Declare the signatures explicitly.
-X.XOpenDisplay.restype           = Display
-X.XOpenDisplay.argtypes          = [ctypes.c_char_p]
-X.XUnmapWindow.argtypes          = [Display, Window]
-X.XMapWindow.argtypes            = [Display, Window]
-X.XRaiseWindow.argtypes          = [Display, Window]
-X.XFlush.argtypes                = [Display]
-X.XCloseDisplay.argtypes         = [Display]
-X.XMoveResizeWindow.argtypes     = [Display, Window, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
-X.XChangeWindowAttributes.argtypes = [Display, Window, ctypes.c_ulong, ctypes.c_void_p]
-X.XGetWindowAttributes.argtypes  = [Display, Window, ctypes.c_void_p]
-
-dpy = X.XOpenDisplay(os.environ.get('DISPLAY', ':0').encode())
-if not dpy:
-    print('FAIL: cannot open display')
-    sys.exit(1)
-
-wid = ${wid_dec}
-
-# Full XSetWindowAttributes layout: override_redirect is the 13th field, not the
-# first. The old code used a 1-field struct + valuemask 1<<3 (CWBorderPixel),
-# so it never actually set override_redirect.
-class XSetWindowAttributes(ctypes.Structure):
-    _fields_ = [
-        ('background_pixmap', ctypes.c_ulong), ('background_pixel', ctypes.c_ulong),
-        ('border_pixmap', ctypes.c_ulong),     ('border_pixel', ctypes.c_ulong),
-        ('bit_gravity', ctypes.c_int),         ('win_gravity', ctypes.c_int),
-        ('backing_store', ctypes.c_int),       ('backing_planes', ctypes.c_ulong),
-        ('backing_pixel', ctypes.c_ulong),     ('save_under', ctypes.c_int),
-        ('event_mask', ctypes.c_long),         ('do_not_propagate_mask', ctypes.c_long),
-        ('override_redirect', ctypes.c_int),   ('colormap', ctypes.c_ulong),
-        ('cursor', ctypes.c_ulong),
-    ]
-CWOverrideRedirect = 1 << 9
-
-# 1. Unmap so KWin forgets the window
-X.XUnmapWindow(dpy, wid); X.XFlush(dpy); time.sleep(0.15)
-
-# 2. override_redirect = True → window becomes unmanaged (KWin won't re-tile it)
-swa = XSetWindowAttributes(); swa.override_redirect = 1
-X.XChangeWindowAttributes(dpy, wid, CWOverrideRedirect, ctypes.byref(swa))
-
-# 3. Move + resize, 4. remap at new geometry, 5. raise
-X.XMoveResizeWindow(dpy, wid, $x, $y, $w, $h); X.XFlush(dpy); time.sleep(0.1)
-X.XMapWindow(dpy, wid); X.XFlush(dpy); time.sleep(0.15)
-X.XRaiseWindow(dpy, wid); X.XFlush(dpy)
-
-# 6. Verify
-class XWindowAttributes(ctypes.Structure):
-    _fields_ = [
-        ('x', ctypes.c_int), ('y', ctypes.c_int),
-        ('width', ctypes.c_int), ('height', ctypes.c_int),
-        ('border_width', ctypes.c_int), ('depth', ctypes.c_int),
-        ('visual', ctypes.c_void_p), ('root', ctypes.c_ulong),
-        ('class_', ctypes.c_int), ('bit_gravity', ctypes.c_int),
-        ('win_gravity', ctypes.c_int), ('backing_store', ctypes.c_int),
-        ('backing_planes', ctypes.c_ulong), ('backing_pixel', ctypes.c_ulong),
-        ('save_under', ctypes.c_int), ('map_installed', ctypes.c_int),
-        ('map_state', ctypes.c_int),
-        ('all_event_masks', ctypes.c_long), ('your_event_masks', ctypes.c_long),
-        ('do_not_propagate_mask', ctypes.c_long),
-        ('override_redirect', ctypes.c_int), ('screen', ctypes.c_void_p),
-    ]
-a = XWindowAttributes()
-X.XGetWindowAttributes(dpy, wid, ctypes.byref(a))
-print(f'VERIFY: OR={a.override_redirect} pos={a.x},{a.y} size={a.width}x{a.height} map_state={a.map_state}')
-X.XCloseDisplay(dpy)
-" 2>&1) || true
-
-    echo "[window_manager] OR-cycle result: $result" >&2
-
-    # Parse verify output
-    if echo "$result" | grep -q 'VERIFY:'; then
-        local verify_line
-        verify_line=$(echo "$result" | grep 'VERIFY:')
-        echo "[window_manager] $verify_line" >&2
-
-        # Extract OR flag
-        local or_flag
-        or_flag=$(echo "$verify_line" | grep -oP 'OR=\K\d+')
-        if [[ "$or_flag" == "1" ]]; then
-            echo "[window_manager] OR-cycle succeeded: override_redirect=1 confirmed" >&2
-            return 0
-        else
-            echo "[window_manager] OR-cycle WARNING: override_redirect not set (got=$or_flag)" >&2
-        fi
-    else
-        echo "[window_manager] OR-cycle WARNING: could not verify result" >&2
+    if [[ "$strat" != "0" && "$strat" != "fail" && -n "$geo" ]]; then
+        return 0
     fi
-
-    # No xdotool fallback. xdotool's positioning verbs (windowmove/windowsize/
-    # set_window) were abandoned for gamescope: inside its XWayland they report
-    # success with no visual effect, and can block indefinitely — one such call
-    # (`xdotool set_window --overrideredirect`) froze the orchestrator event loop
-    # so SLOT_DIED was never read and the instance leaked. If the ctypes cycle
-    # above didn't verify, report failure to the caller instead of silently
-    # falling back to a tool we don't trust.
-    echo "[window_manager] OR-cycle FAILED to verify override_redirect for window $wid (no xdotool fallback)" >&2
+    echo "[window_manager] dex position FAILED for window $wid (strategy=$strat)" >&2
     return 1
 }
 
