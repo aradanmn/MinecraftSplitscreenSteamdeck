@@ -585,6 +585,10 @@ _main() {
 
     _info "Running ${#tests[@]} test(s)..."
     for t in "${tests[@]}"; do
+        # Clean up any slots left active by an earlier test's early return (e.g.
+        # `_wait_for_minecraft_ready ... || { return; }` skips per-test cleanup).
+        # This runs before every test so each starts with a guaranteed clean slate.
+        _clean_instances
         # No `| tee -a "$LOG"` here: _info/_pass/_fail/_header already tee to $LOG
         # internally, so piping the function output through tee again doubled every
         # line.  stderr still surfaces to the parent's log for the set -x trace.
