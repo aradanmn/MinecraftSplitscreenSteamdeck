@@ -112,6 +112,31 @@ _slot_pid_alive() {
     return 1
 }
 
+# Kill a slot's bwrap process group directly (simulates Minecraft crash/quit).
+# Does NOT touch the state file — the watchdog detects the dead PID and writes
+# SLOT_DIED <slot> to the FIFO, which the orchestrator then handles normally.
+# Use this for assertion steps that should exercise the full watchdog→orchestrator
+# path.  For cleanup-only steps, direct _inject "SLOT_DIED" is fine.
+_kill_slot_process() {
+    local slot="$1"
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local bwrap_pid java_pid
+    bwrap_pid=$(jq -r ".slots[\"$slot\"].bwrap_pid // empty" "$state" 2>/dev/null)
+    java_pid=$(jq -r ".slots[\"$slot\"].pid // empty" "$state" 2>/dev/null)
+    if [[ -n "$bwrap_pid" ]]; then
+        _info "Killing slot $slot bwrap pgid=$bwrap_pid"
+        kill -TERM "-${bwrap_pid}" 2>/dev/null || kill -TERM "$bwrap_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$java_pid" ]] && kill -0 "$java_pid" 2>/dev/null; then
+        _info "Killing slot $slot java pid=$java_pid"
+        kill -TERM "$java_pid" 2>/dev/null || true
+    fi
+    if [[ -z "$bwrap_pid" && -z "$java_pid" ]]; then
+        _info "No PIDs in state for slot $slot — nothing to kill"
+        return 1
+    fi
+}
+
 # Wait for Minecraft to reach the main menu by polling latest.log for
 # "Sound engine started".  This is the real readiness signal — active=true
 # in the state file only means the bwrap process started, not that the game
@@ -219,13 +244,14 @@ test_handheld_single_player() {
         _fail "Test 1.2 — PID for slot $slot is not alive"
     fi
 
-    # Simulate player quit / death
-    _inject "SLOT_DIED $slot"
+    # Simulate player quit: kill the process group directly so the watchdog
+    # detects it and sends SLOT_DIED through the normal production path.
+    _kill_slot_process "$slot"
 
     if _wait_for_slot_inactive "$slot" 30 "Test 1"; then
-        _pass "Test 1.3 — Slot $slot properly torn down after SLOT_DIED"
+        _pass "Test 1.3 — Slot $slot properly torn down (watchdog→SLOT_DIED path)"
     else
-        _fail "Test 1.3 — Slot $slot still active after SLOT_DIED"
+        _fail "Test 1.3 — Slot $slot still active after process kill"
     fi
 
     # Verify PID is gone
@@ -487,11 +513,12 @@ test_full_lifecycle() {
         _fail "Test 7.2 — Expected 4 active, got $active"
     fi
 
-    # P2 dies (simulate crash)
-    _info "Simulating P2 crash..."
-    _inject "SLOT_DIED 2"
+    # P2 dies (simulate crash): kill the process group so the watchdog detects
+    # it and sends SLOT_DIED through the normal production path.
+    _info "Simulating P2 crash (kill process group)..."
+    _kill_slot_process 2
     if _wait_for_slot_inactive 2 30 "Test 7"; then
-        _pass "Test 7.3 — Slot 2 torn down on crash"
+        _pass "Test 7.3 — Slot 2 torn down on crash (watchdog→SLOT_DIED path)"
     else
         _fail "Test 7.3 — Slot 2 still active after crash"
     fi
