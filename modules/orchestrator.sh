@@ -157,10 +157,13 @@ _handle_msg() {
             #   3. In _build_bwrap_command, these become --bind /dev/null masks
             #   4. Set SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 per-slot
             # Currently passes only this slot's controller (no masking yet).
-            spawn_instance "$slot" "$event_node" "$js_node" 2>&1 | sed 's/^/[orchestrator] /' >&2 || {
-                echo "[orchestrator] spawn_instance failed for slot $slot" >&2
-                return 0
-            }
+            # Use a temp file instead of a pipe so bwrap/Java descendants don't
+            # inherit the write-end and block the orchestrator's FIFO event loop.
+            local _si_log
+            _si_log=$(mktemp /tmp/spawn_instance_slot${slot}_XXXXXX.log)
+            spawn_instance "$slot" "$event_node" "$js_node" >"$_si_log" 2>&1 || true
+            sed 's/^/[orchestrator] /' < "$_si_log" >&2
+            rm -f "$_si_log"
 
             # Give the window time to appear before reflow
             sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
