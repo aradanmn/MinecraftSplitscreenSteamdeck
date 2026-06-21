@@ -169,7 +169,11 @@ _build_bwrap_command() {
         --dev-bind / /
         --dev /dev
         --dev-bind /dev/fuse /dev/fuse
-        --dev-bind /tmp /tmp
+        # Each slot gets an isolated tmpfs for /tmp so PolyMC's qtsingleapp
+        # socket is NOT shared between slots. Without this, slot 2's PolyMC
+        # would see slot 1's socket, forward its args to slot 1, and exit —
+        # leaving slot 2 with no running Minecraft process.
+        --tmpfs /tmp
         --dev-bind /tmp/.X11-unix /tmp/.X11-unix
         --dev-bind /home /home
         --dev-bind /run /run
@@ -234,7 +238,11 @@ _build_bwrap_command() {
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
     )
-    [[ -n "$_xauth" ]] && _env_vars+=("XAUTHORITY=$_xauth")
+    if [[ -n "$_xauth" ]]; then
+        _env_vars+=("XAUTHORITY=$_xauth")
+        # If xauth file is in /tmp, bind it into the isolated tmpfs
+        [[ "$_xauth" == /tmp/* ]] && cmd+=(--bind "$_xauth" "$_xauth")
+    fi
 
     cmd+=(
         --
