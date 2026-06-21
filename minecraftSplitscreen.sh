@@ -701,6 +701,42 @@ case "${1:-}" in
             launchWindowTest
         fi
         ;;
+    testDirect)
+        # Run Phase B tests directly against an existing display session (Desktop Mode / SSH).
+        # Unlike "test", does NOT start nested KDE or kill kwin_wayland on exit.
+        # Usage: DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 bash minecraftSplitscreen.sh testDirect [N]
+        echo "[main] testDirect — bypassing nested KDE, using existing display" >> "$LOG"
+        if [[ -n "${2:-}" ]]; then
+            export TEST_NUMBER="$2"
+        fi
+        if ! declare -f docked_flow >/dev/null 2>&1; then
+            echo "[main] testDirect: docked_flow not available — modules not loaded?" >> "$LOG"
+            exit 1
+        fi
+        # Init FIFO and state
+        _td_fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+        export SPLITSCREEN_FIFO="$_td_fifo"
+        [[ -p "$_td_fifo" ]] || mkfifo "$_td_fifo" 2>/dev/null || true
+        _td_state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+        export SPLITSCREEN_STATE="$_td_state"
+        echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$_td_state"
+        # Restart loop — docked_flow returns 1 on mode-change, restart immediately
+        _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
+        _orch_loop &
+        _td_orch_pid=$!
+        trap 'kill "$_td_orch_pid" 2>/dev/null; pkill -P "$_td_orch_pid" 2>/dev/null || true' EXIT
+        sleep 2
+        # Run tests
+        SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+        _td_test="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
+        if [[ -f "$_td_test" ]]; then
+            timeout 7200 bash "$_td_test" "${TEST_NUMBER:-all}" || true
+        else
+            echo "[main] testDirect: test script not found at $_td_test" >> "$LOG"
+        fi
+        kill "$_td_orch_pid" 2>/dev/null || true
+        pkill -P "$_td_orch_pid" 2>/dev/null || true
+        ;;
     *)
         # Normal mode
         if declare -f main >/dev/null 2>&1; then
