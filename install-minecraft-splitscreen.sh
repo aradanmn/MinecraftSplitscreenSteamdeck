@@ -94,6 +94,7 @@ readonly RUNTIME_MODULE_FILES=(
     "instance_lifecycle.sh"
     "watchdog.sh"
     "orchestrator.sh"
+    "dex.sh"
 )
 
 # Combined list used by download_modules and the presence check below.

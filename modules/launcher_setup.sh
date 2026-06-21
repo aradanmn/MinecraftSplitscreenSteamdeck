@@ -118,6 +118,8 @@ install_runtime_modules() {
         "window_manager.sh"
         "instance_lifecycle.sh"
         "watchdog.sh"
+        "orchestrator.sh"
+        "dex.sh"
     )
 
     local failed=0
