@@ -210,10 +210,10 @@ def get_pid(wid):
     return None
 
 # ---- Actions ----
-def action_root_wid():
+def action_root_wid(args=None):
     print(root)
 
-def action_list():
+def action_list(args=None):
     def recurse(w, depth=0):
         name = get_wm_name(w)
         print(f"{w}  {name}")
@@ -541,11 +541,16 @@ dex_wid_from_state() {
     fi
 }
 
-# Cleanup generated script on exit
+# Cleanup helper for the generated backend script.
+# NOTE: deliberately NOT auto-trapped on EXIT. dex.sh is sourced as a library by
+# the orchestrator (minecraftSplitscreen.sh), and `trap ... EXIT` here would
+# REPLACE the sourcing script's own EXIT trap (kwin teardown + session-env
+# restore), reintroducing the black-screen/leak bugs. The backend lives at a
+# per-PID path under /tmp and is reaped on reboot; callers may invoke
+# _dex_cleanup manually if they want to remove it sooner.
 _dex_cleanup() {
     rm -f "$DEX_PY_SCRIPT"
 }
-trap _dex_cleanup EXIT
 
 # If run directly, show help
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
