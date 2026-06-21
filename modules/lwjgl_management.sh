@@ -47,7 +47,7 @@ get_lwjgl_version() {
     # Final fallback
     if [[ -z "$LWJGL_VERSION" ]]; then
         print_warning "Could not detect LWJGL version, using fallback"
-        LWJGL_VERSION="3.3.3"
+        LWJGL_VERSION="3.4.1"
     fi
     
     print_success "Using LWJGL version: $LWJGL_VERSION"
@@ -62,8 +62,11 @@ get_lwjgl_version_by_mapping() {
     
     # LWJGL version mapping based on Minecraft releases
     # Source: https://minecraft.wiki/w/Tutorials/Update_LWJGL
-    if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-        echo "3.3.3"  # MC 1.21+ uses LWJGL 3.3.3
+    # MC 26.x.x is the new (2026) versioning scheme; 3.4.1 required by Sodium.
+    if [[ "$mc_version" =~ ^[2-9][0-9]+\. ]]; then
+        echo "3.4.1"  # MC 26.x.x+ (new 2026 versioning) uses LWJGL 3.4.1
+    elif [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
+        echo "3.4.1"  # MC 1.21+ uses LWJGL 3.4.1 (Sodium requirement)
     elif [[ "$mc_version" =~ ^1\.(19|20)(\.|$) ]]; then
         echo "3.3.1"  # MC 1.19-1.20 uses LWJGL 3.3.1
     elif [[ "$mc_version" =~ ^1\.18(\.|$) ]]; then
