@@ -542,6 +542,11 @@ spawn_instance() {
     #    made teardown SIGTERM the wrong PID, leaking the whole bwrap→PolyMC→java
     #    tree. setsid makes bwrap the session/group leader so $! is the real
     #    group-leader PID; teardown signals the negative PID to kill the group.
+    #
+    #    Remove any stale PolyMC SingleApplication socket left over from a prior
+    #    SIGKILL — if the socket exists but nothing is listening, Qt's SingleApplication
+    #    tries to forward to the dead peer, fails silently, and exits without launching.
+    rm -f /tmp/qtsingleapp-* 2>/dev/null || true
     setsid bash -c "$bwrap_command" </dev/null &
     local bwrap_pid=$!
 
