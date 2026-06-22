@@ -16,6 +16,24 @@
   `--`; `--exit-with-session`?), making kwin present an immediate surface, and
   gamescope focus/atom association (STEAM_GAME / GAMESCOPE_FOCUSABLE_APPS). For now
   we ship nested Plasma with the panel stripped (proven to display in gamescope).
+  - **DEEP-RESEARCH ANSWER (2026-06-22):** root cause was the kwin invocation. The
+    `-- <cmd>` form is WRONG (verified killed 0-3). Correct form is
+    `dbus-run-session kwin_wayland --xwayland --no-lockscreen --no-global-shortcuts
+    --width W --height H --exit-with-session bash "$0" _nestedSession` — command goes
+    after `--exit-with-session`, SPACE-separated (NOT `=`, verified killed 1-2; NOT
+    positional, killed 0-3). Source: blog.broulik.de 2025 (2-1) + elimination of all
+    alternatives. Bonus: --exit-with-session makes kwin exit when the session cmd
+    exits (also fixes the "Steam doesn't return" hang for the bare-kwin path).
+  - All 3 walls were ONE wall: bad `-- <cmd>` syntax → session cmd never ran → kwin
+    had no window → no focusable top-level surface → gamescope spinner + no focus.
+    gamescope focus = pick_primary_focus_and_override() over candidates that have a
+    focusable top-level surface; Steam-launched apps win via non-zero appID +
+    GAMESCOPECTRL_BASELAYER_APPID ordering (gamescope steamcompmgr.cpp, 3-0).
+  - DEAD END: manually spoofing the STEAM_GAME atom does NOT grant focus (killed
+    0-3 multiple times). Rely on the Steam launch for the appID.
+  - Nested kwin CAN host X11 clients (Graesslin rootless-XWayland demo, 3-0); our
+    override_redirect tiling lives inside the nested kwin XWayland — gamescope only
+    sees kwin's single composited output surface.
 
 ## Immediate — Phase B testing
 
