@@ -84,12 +84,54 @@ The hardcoded-`main` references become correct once the branch *is* main:
 - Rename `minecraftSplitscreen.sh` → `mcss.sh` (cascades to `launcher_setup.sh`, `desktop_launcher.sh`, `add-to-steam.py`, and the soon-deleted generator).
 - bare-KWin research round (kwin_wayland_wrapper vs raw kwin; `KWIN_COMPOSE=Q`; EGL platform env).
 
+### G. Runtime dependency preflight (do with the merge)
+The launcher's external-binary dependencies are **assumed present** — the installer only ensures `bwrap`. There is **no preflight**, so a missing tool (e.g. `jq`, `python3`) crashes the launcher mid-run with a cryptic error. Add a fail-fast preflight (see §4 for the dependency map):
+- Run it **at install time** (in `main_workflow.sh`, near `ensure_bwrap_installed`) so the user is warned before they finish, and
+- Guard it **at launch time** (top of `minecraftSplitscreen.sh`) to catch image drift.
+- On SteamOS the rootfs is read-only, so the preflight mostly **verifies + prints a clear message** (and how to install) rather than auto-installing; it may attempt `pacman` for installable ones like `bwrap` does.
+
+---
+
+## 4. Runtime dependencies (mcss.sh)
+
+| Category | Items | Status |
+|---|---|---|
+| **Bundled** (deployed by installer) | 7 runtime modules: `dock_detection, controller_monitor, window_manager, instance_lifecycle, watchdog, orchestrator, dex` | ✅ deployed; self-contained (no calls into installer-only modules) |
+| **Critical external bins** | `jq` (all state I/O), `python3` (dex backend + placeholders), `bwrap`, `dbus-run-session` | ⚠️ only `bwrap` ensured; rest assumed |
+| **KDE/session stack** | `kwin_wayland`, `startplasma-wayland`, `plasmashell`, `kscreen-doctor`, `qdbus`/`qdbus6`, `kde-inhibit` | ⚠️ assumed present (ships with SteamOS desktop) |
+| **X tools** | `xdpyinfo`, `xrandr`, `xauth` | ⚠️ assumed present |
+| **Fallback-only (not critical)** | `xdotool` (dex ctypes is primary), `wlr-randr` (absent on Deck; has fallback) | ok — guarded by fallbacks |
+| **Generated on the fly** (NOT installed, by design) | `/tmp/dex_$$.py` (X11 backend), `/tmp/kwin_wayland_wrapper`, tkinter/xterm placeholders, `splitscreen.properties` (per instance/layout), `splitscreen_state.json`, the FIFO, `~/.config/autostart/*.desktop` | ✅ created at run time |
+| **Data/assets** | 4 instances, `accounts.json`, `PolyMC.AppImage`, `polymc.cfg`, mods | ✅ installed |
+
+### Preflight sketch
+```bash
+# Verify required tools; fail fast with a clear message instead of a cryptic
+# mid-launch crash. Critical = launcher cannot function; session = nested-Plasma
+# windowing. (xdotool/wlr-randr are intentionally omitted — fallback-only.)
+_preflight_deps() {
+    local missing=()
+    for bin in jq python3 bwrap dbus-run-session \
+               kwin_wayland startplasma-wayland kscreen-doctor xdpyinfo; do
+        command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
+    done
+    if (( ${#missing[@]} )); then
+        echo "[mcss] Missing required tools: ${missing[*]}" >&2
+        echo "[mcss] SteamOS: sudo steamos-readonly disable && sudo pacman -S <pkg>; then retry." >&2
+        return 1
+    fi
+    return 0
+}
+```
+Most of these ship with a stock SteamOS desktop, so the practical value is a clear diagnostic on a non-standard image and an explicit, documented requirement set.
+
 ---
 
 ## Suggested order
 1. **A** — wire `launchFromPlasma` to the nested-Plasma+windowing path (production). Test it in Game Mode.
-2. (Optional) **E/Issue A** — fix 3–4 player re-tile if needed for launch.
-3. **D** — delete dead code + stale docs.
-4. **B** — PR/merge the branch as the new main (branch tree wins).
-5. **C** — verify a clean install from main.
-6. **F** — deferred niceties + bare-KWin research later.
+2. **G** — add the runtime dependency preflight (install-time + launch-time). Cheap, high-value safety net.
+3. (Optional) **E/Issue A** — fix 3–4 player re-tile if needed for launch.
+4. **D** — delete dead code + stale docs.
+5. **B** — PR/merge the branch as the new main (branch tree wins).
+6. **C** — verify a clean install from main.
+7. **F** — deferred niceties + bare-KWin research later.
