@@ -887,7 +887,29 @@ case "${1:-}" in
         unset XAUTHORITY
         export DISPLAY="$_ns_display" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
         echo "[_nestedSession] nested display ready: $DISPLAY" >> "$LOG"
+
+        # Give the nested compositor an IMMEDIATE full-screen background window.
+        # gamescope shows a loading spinner for a nested compositor that presents no
+        # window (the old nested-Plasma path always had plasmashell's surfaces, so
+        # gamescope always had content).  A persistent black full-screen window makes
+        # KWin present a surface right away → gamescope displays it — and it doubles
+        # as the black backdrop behind the splitscreen tiles.  Sized from the nested
+        # root window (querying our OWN XWayland is safe; the earlier problem was
+        # probing the gamescope parent before kwin existed).
+        _ns_geo=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2; exit}')
+        [[ -z "$_ns_geo" ]] && _ns_geo="1280x800"
+        _ns_bw="${_ns_geo%x*}"; _ns_bh="${_ns_geo#*x}"
+        echo "[_nestedSession] spawning ${_ns_bw}x${_ns_bh} background window" >> "$LOG"
+        python3 -c "
+import tkinter as tk
+r=tk.Tk(); r.overrideredirect(True); r.geometry('${_ns_bw}x${_ns_bh}+0+0'); r.configure(bg='black')
+r.lower(); r.mainloop()
+" >> "$LOG" 2>&1 &
+        _NS_BG_PID=$!
+        sleep 1
+
         _run_phase_b_session
+        kill "$_NS_BG_PID" 2>/dev/null || true
         echo "[_nestedSession] session complete — terminating nested kwin (PPID=$PPID)" >> "$LOG"
         kill -TERM "$PPID" 2>/dev/null || true
         ;;
