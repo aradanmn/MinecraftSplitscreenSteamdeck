@@ -595,7 +595,7 @@ WEOF
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30} ${SCRIPT_PATH} testFromPlasma
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -638,7 +638,7 @@ launchTestFromPlasma() {
     # loop, full process-tree teardown, observation delay).  Default a viewing delay
     # for this interactive Game-Mode path.  _run_phase_b_session initialises the
     # FIFO + state file itself.
-    export SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30}"
+    export SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
     _run_phase_b_session
 
     # Final instance cleanup, then tear down KWin explicitly (cleaner log ordering).
@@ -780,7 +780,7 @@ launchNested() {
             SPLITSCREEN_DEBUG_LOG="$LOG" \
             SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
             SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
-            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30}" \
+            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
             TEST_NUMBER="${TEST_NUMBER:-all}" \
             _NESTED_X_BEFORE="$x_before" \
             bash "$self" _nestedSession
