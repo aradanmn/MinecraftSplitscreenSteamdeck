@@ -338,35 +338,47 @@ def action_move_resize_force(args):
     print(0)
 
 def action_move_resize_remap(args):
-    """Place a (WM-managed) window as override_redirect using the FULL cycle:
-    unmap -> set override_redirect -> move/resize -> map -> raise.
+    """Place a (WM-managed) window as override_redirect and actually MOVE it:
+    unmap -> set override_redirect -> REPARENT to root at (x,y) -> size/re-assert ->
+    map -> raise -> re-assert move/resize -> readback.
 
-    Why the cycle is mandatory: setting override_redirect on a window that KWin is
-    currently managing+mapping makes KWin unmanage it, which unmaps it — and ICCCM
-    says the override_redirect change only takes effect at the NEXT map.  The old
-    code set override_redirect + XConfigureWindow but never remapped, so the window
-    ended up with correct geometry but UNMAPPED (invisible) — the "windows
-    disappear on reflow" bug.  Unmapping first lets KWin cleanly release the window,
-    then we remap it as an unmanaged override_redirect window at the target geometry
-    that KWin will not touch.  Prints the geometry readback for the caller."""
+    Why reparent-to-root (the fix for "the move doesn't take"): KWin reparents
+    managed windows into a decoration frame.  Unmapping + setting override_redirect
+    does NOT pull the client back out of that frame, so a plain XConfigureWindow's
+    x/y are interpreted relative to the (stale) frame and don't move the window on
+    screen — only same-position resizes appeared to work, while any re-tile that
+    changed x/y (slot 2 half-bottom -> quad top-right, or a survivor going fullscreen
+    on scale-down) silently no-op'd.  XReparentWindow(root, x, y) detaches the client
+    from KWin's frame AND positions it at root coordinates, so the move takes.  Set
+    override_redirect FIRST so KWin won't re-manage it after the reparent; the
+    post-map XMoveResizeWindow re-asserts geometry as insurance.  Readback (now
+    parent==root) is true screen coordinates."""
     wid, x, y, w, h = int(args[0]), int(args[1]), int(args[2]), int(args[3]), int(args[4])
-    # 1. Unmap so the WM releases management.
+    # 1. Unmap so KWin releases management.
     _lib.XUnmapWindow(dpy, Window(wid))
     _lib.XSync(dpy, 0)
-    # 2. Become override_redirect (unmanaged).
+    # 2. Become override_redirect (unmanaged) so KWin won't re-frame/re-manage it.
     attrs = XSetWindowAttributes(override_redirect=1)
     _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
     _lib.XSync(dpy, 0)
-    # 3. Move/resize to the target geometry while unmapped.
+    # 3. Detach from KWin's decoration frame and place at root (x, y).  THE FIX:
+    #    frame-relative x/y from XConfigureWindow were being clobbered; reparenting
+    #    to root with the target coords makes the window actually move.
+    _lib.XReparentWindow(dpy, Window(wid), root, x, y)
+    _lib.XSync(dpy, 0)
+    # 4. Set size (and re-assert position) while unmapped, now that parent == root.
     ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
     mask = CWX | CWY | CWWidth | CWHeight | CWBorderWidth
     _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(mask), ctypes.byref(ch))
     _lib.XSync(dpy, 0)
-    # 4. Remap (now unmanaged) + raise.
+    # 5. Remap (unmanaged, at root) + raise.
     _lib.XMapWindow(dpy, Window(wid))
     _lib.XRaiseWindow(dpy, Window(wid))
     _lib.XSync(dpy, 0)
-    # 5. Geometry readback for the caller.
+    # 6. Re-assert geometry once mapped (insurance against any map-time reset).
+    _lib.XMoveResizeWindow(dpy, Window(wid), x, y, w, h)
+    _lib.XSync(dpy, 0)
+    # 7. Geometry readback for the caller (root-relative == true screen coords now).
     a = XWindowAttributes()
     if _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(a)) != 0:
         print(f"{a.x} {a.y} {a.width} {a.height}")
