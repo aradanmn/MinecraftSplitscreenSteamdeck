@@ -91,7 +91,7 @@ _find_free_slot() {
 
 # =============================================================================
 # HELPER: compute and persist the reflowed layout for all active slots
-# Writes new kwinrulesrc and calls sync_apply_layout (or the gamescope variant)
+# Writes new kwinrulesrc and calls sync_apply_layout to reposition windows.
 # =============================================================================
 _reflow_layout() {
     local active
@@ -119,15 +119,7 @@ _reflow_layout() {
     # such as a window being left unmapped — discarding them made the slot-1
     # unmap bug invisible in the debug log.  `|| true` still keeps a positioning
     # failure from aborting the orchestrator loop.
-    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
-        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
-            gamescope_windowing_apply_layout "$active" "$ruleW" "$ruleH" || true
-        else
-            sync_apply_layout "$active" "$ruleW" "$ruleH" || true
-        fi
-    else
-        sync_apply_layout "$active" "$ruleW" "$ruleH" || true
-    fi
+    sync_apply_layout "$active" "$ruleW" "$ruleH" || true
 }
 
 # =============================================================================
