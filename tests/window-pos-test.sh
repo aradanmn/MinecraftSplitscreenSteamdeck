@@ -1,6 +1,6 @@
 #!/bin/bash
 # Standalone window positioning test for gamescope
-# No bwrap, no PolyMC, no TinyWM — just two test windows
+# No bwrap, no PolyMC — just two test windows
 set -euo pipefail
 
 DISPLAY="${DISPLAY:-:0}"
