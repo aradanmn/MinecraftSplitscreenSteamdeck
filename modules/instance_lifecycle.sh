@@ -586,18 +586,8 @@ spawn_instance() {
     local updated_active
     updated_active=$(get_active_slots)
 
-    # In gamescope mode, use the gamescope windowing system
-    if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
-        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
-            gamescope_windowing_apply_layout "$updated_active" "" ""
-        else
-            # Fallback: use standard xdotool layout
-            sync_apply_layout "$updated_active" "" ""
-        fi
-    else
-        # Desktop mode: use standard window manager layout
-        sync_apply_layout "$updated_active" "" ""
-    fi
+    # Apply the layout for all currently-active slots.
+    sync_apply_layout "$updated_active" "" ""
 }
 
 # Tear down the instance in the given slot.
