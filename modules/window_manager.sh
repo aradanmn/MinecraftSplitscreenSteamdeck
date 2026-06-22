@@ -42,11 +42,10 @@ _apply_override_redirect_cycle() {
     local wid="$1" x="$2" y="$3" w="$4" h="$5"
 
     # Delegate to dex.sh — the single, verified X11 layer (ctypes via libX11).
-    # This replaced an inline ctypes copy of the same logic; keeping three
-    # divergent copies (here, instance_lifecycle.sh, gamescope_windowing.sh) is
-    # exactly how the pointer-truncation / valuemask / struct bugs crept in.
-    # dex_move_resize_force was confirmed on-Deck to position windows exactly in
-    # gamescope's XWayland (strategy 2 = override_redirect + XConfigure).
+    # This replaced earlier divergent inline ctypes copies of the same logic,
+    # which is exactly how the pointer-truncation / valuemask / struct bugs crept
+    # in.  dex's move/resize is confirmed on-Deck to position windows in the
+    # nested XWayland (override_redirect + XConfigure).
     if ! type dex_move_resize_remap >/dev/null 2>&1; then
         echo "[window_manager] ERROR: dex.sh not sourced — cannot position window $wid" >&2
         return 1
@@ -442,26 +441,10 @@ kill_all_placeholders() {
     done
 }
 
-# sync_apply_layout: Wrapper around apply_layout.
-# When the gamescope windowing system is active, we call it instead.
-# Otherwise, we use the standard apply_layout (which works on KWin/Desktop).
-#
+# sync_apply_layout: thin wrapper around apply_layout, kept so existing callers
+# don't need to change. (It used to branch to the gamescope-windowing approach,
+# now removed — window positioning is always done by apply_layout on nested KWin.)
 # Arguments: same as apply_layout — active_slots, screen_w, screen_h
 sync_apply_layout() {
-    local active_slots="${1:-}"
-    local screen_w="${2:-}"
-    local screen_h="${3:-}"
-
-    # Check if gamescope windowing is active (anchor PID exists)
-    if [[ -n "${_GW_ANCHOR_PID:-}" ]] && kill -0 "${_GW_ANCHOR_PID}" 2>/dev/null; then
-        echo "[window_manager] Gamescope windowing active, delegating to gamescope_windowing_apply_layout" >&2
-        if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
-            gamescope_windowing_apply_layout "$active_slots" "$screen_w" "$screen_h"
-        else
-            apply_layout "$active_slots" "$screen_w" "$screen_h"
-        fi
-    else
-        # No gamescope windowing — use regular apply_layout (Desktop KWin, etc.)
-        apply_layout "$active_slots" "$screen_w" "$screen_h"
-    fi
+    apply_layout "${1:-}" "${2:-}" "${3:-}"
 }
