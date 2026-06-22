@@ -735,6 +735,13 @@ launchNested() {
         export TEST_NUMBER="$2"
     fi
 
+    # Strip the Steam/gamescope overlay preload (gameoverlayrenderer.so) and stale
+    # session-path vars before bringing up the nested compositor.  The overlay
+    # LD_PRELOAD "meddles with" nested compositor tasks (per David Edmundson's
+    # "Run plasma from within gamescope" reference, corroborated by ArchWiki).
+    # nestedPlasma()/testPlasma() already do this; launchNested was missing it.
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
     # Parent compositor socket (kwin nests into it).  Auto-detect if unset.
     if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
         local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" cand
