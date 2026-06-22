@@ -47,27 +47,24 @@ _apply_override_redirect_cycle() {
     # exactly how the pointer-truncation / valuemask / struct bugs crept in.
     # dex_move_resize_force was confirmed on-Deck to position windows exactly in
     # gamescope's XWayland (strategy 2 = override_redirect + XConfigure).
-    if ! type dex_move_resize_force >/dev/null 2>&1; then
+    if ! type dex_move_resize_remap >/dev/null 2>&1; then
         echo "[window_manager] ERROR: dex.sh not sourced — cannot position window $wid" >&2
         return 1
     fi
 
-    # Set override_redirect first so KWin/gamescope won't re-tile the window,
-    # then move/resize. dex_move_resize_force tries plain move, then
-    # override_redirect+XConfigure, then XConfigure, returning the strategy that
-    # actually stuck (0 = all failed).
-    dex_set_override_redirect "$wid" 1 2>/dev/null || true
-    local strat
-    strat=$(dex_move_resize_force "$wid" "$x" "$y" "$w" "$h" 2>/dev/null || echo 0)
-
+    # Full cycle: unmap → set override_redirect → move/resize → map → raise.
+    # Setting override_redirect on a live KWin-managed window makes KWin unmanage
+    # and UNMAP it, and the change only applies at the next map (ICCCM).  The old
+    # code set override_redirect + XConfigure but never remapped, so reflowed
+    # windows ended up with the correct geometry but UNMAPPED (invisible) — the
+    # "windows disappear when a second player joins" bug.  dex_move_resize_remap
+    # performs the whole cycle and echoes the geometry readback.
     local geo
-    geo=$(dex_getgeometry "$wid" 2>/dev/null || echo "")
-    echo "[window_manager] dex position: window $wid → ${w}x${h}+${x}+${y} (strategy=$strat) readback=[${geo:-?}]" >&2
+    geo=$(dex_move_resize_remap "$wid" "$x" "$y" "$w" "$h" 2>/dev/null || echo "")
+    echo "[window_manager] dex remap: window $wid → ${w}x${h}+${x}+${y} readback=[${geo:-?}]" >&2
 
-    if [[ "$strat" != "0" && "$strat" != "fail" && -n "$geo" ]]; then
-        return 0
-    fi
-    echo "[window_manager] dex position FAILED for window $wid (strategy=$strat)" >&2
+    [[ -n "$geo" ]] && return 0
+    echo "[window_manager] dex remap FAILED for window $wid" >&2
     return 1
 }
 

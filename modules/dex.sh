@@ -337,6 +337,40 @@ def action_move_resize_force(args):
     # All failed
     print(0)
 
+def action_move_resize_remap(args):
+    """Place a (WM-managed) window as override_redirect using the FULL cycle:
+    unmap -> set override_redirect -> move/resize -> map -> raise.
+
+    Why the cycle is mandatory: setting override_redirect on a window that KWin is
+    currently managing+mapping makes KWin unmanage it, which unmaps it — and ICCCM
+    says the override_redirect change only takes effect at the NEXT map.  The old
+    code set override_redirect + XConfigureWindow but never remapped, so the window
+    ended up with correct geometry but UNMAPPED (invisible) — the "windows
+    disappear on reflow" bug.  Unmapping first lets KWin cleanly release the window,
+    then we remap it as an unmanaged override_redirect window at the target geometry
+    that KWin will not touch.  Prints the geometry readback for the caller."""
+    wid, x, y, w, h = int(args[0]), int(args[1]), int(args[2]), int(args[3]), int(args[4])
+    # 1. Unmap so the WM releases management.
+    _lib.XUnmapWindow(dpy, Window(wid))
+    _lib.XSync(dpy, 0)
+    # 2. Become override_redirect (unmanaged).
+    attrs = XSetWindowAttributes(override_redirect=1)
+    _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
+    _lib.XSync(dpy, 0)
+    # 3. Move/resize to the target geometry while unmapped.
+    ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
+    mask = CWX | CWY | CWWidth | CWHeight | CWBorderWidth
+    _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(mask), ctypes.byref(ch))
+    _lib.XSync(dpy, 0)
+    # 4. Remap (now unmanaged) + raise.
+    _lib.XMapWindow(dpy, Window(wid))
+    _lib.XRaiseWindow(dpy, Window(wid))
+    _lib.XSync(dpy, 0)
+    # 5. Geometry readback for the caller.
+    a = XWindowAttributes()
+    if _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(a)) != 0:
+        print(f"{a.x} {a.y} {a.width} {a.height}")
+
 def action_raise_win(args):
     wid = int(args[0])
     _lib.XRaiseWindow(dpy, Window(wid))
@@ -459,6 +493,7 @@ ACTIONS = {
     'resize': action_resize,
     'move_resize': action_move_resize,
     'move_resize_force': action_move_resize_force,
+    'move_resize_remap': action_move_resize_remap,
     'raise': action_raise_win,
     'set_name': action_set_name,
     'set_override_redirect': action_set_override_redirect,
@@ -517,6 +552,7 @@ dex_move()       { _dex_run move "$1" "$2" "$3"; }
 dex_resize()     { _dex_run resize "$1" "$2" "$3"; }
 dex_move_resize(){ _dex_run move_resize "$1" "$2" "$3" "$4" "$5"; }
 dex_move_resize_force(){ _dex_run move_resize_force "$1" "$2" "$3" "$4" "$5"; }
+dex_move_resize_remap(){ _dex_run move_resize_remap "$1" "$2" "$3" "$4" "$5"; }
 dex_raise()      { _dex_run raise "$1"; }
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
