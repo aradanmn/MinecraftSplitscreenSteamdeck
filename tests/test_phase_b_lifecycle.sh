@@ -85,6 +85,9 @@ _wait_for_slot_inactive() {
         fi
         sleep 0.5
     done
+    # Make the timeout visible — a silent return 1 here previously left a 30s gap
+    # in the log with no explanation of why a slot never went inactive.
+    [[ -n "$label" ]] && _info "$label: slot $slot still ACTIVE after ${timeout_s}s (timeout)"
     return 1
 }
 
@@ -246,11 +249,11 @@ test_handheld_single_player() {
         _pass "Test 1.1 — Slot $slot bwrap started"
     else
         _fail "Test 1.1 — Slot $slot bwrap did not start within 30s"
-        return
+        return 0
     fi
 
     # Wait for Minecraft to reach the main menu
-    _wait_for_minecraft_ready "$slot" 600 "Test 1" || { return; }
+    _wait_for_minecraft_ready "$slot" 600 "Test 1" || { return 0; }
 
     # Verify PID is alive
     if _slot_pid_alive "$slot"; then
@@ -275,6 +278,7 @@ test_handheld_single_player() {
     else
         _pass "Test 1.4 — PID reaped after teardown"
     fi
+    return 0
 }
 
 # ── Test 2: Docked — 2 players join, reflow, 1 quits ─────────────────────
@@ -288,9 +292,9 @@ test_docked_two_players() {
         _pass "Test 2.1 — Slot 1 bwrap started"
     else
         _fail "Test 2.1 — Slot 1 did not start"
-        return
+        return 0
     fi
-    _wait_for_minecraft_ready 1 600 "Test 2-P1" || { return; }
+    _wait_for_minecraft_ready 1 600 "Test 2-P1" || { return 0; }
 
     local count_1
     count_1=$(get_active_slots 2>/dev/null | wc -w)
@@ -303,9 +307,9 @@ test_docked_two_players() {
         _pass "Test 2.2 — Slot 2 bwrap started"
     else
         _fail "Test 2.2 — Slot 2 did not start"
-        return
+        return 0
     fi
-    _wait_for_minecraft_ready 2 600 "Test 2-P2" || { return; }
+    _wait_for_minecraft_ready 2 600 "Test 2-P2" || { return 0; }
 
     sleep 3  # Allow reflow to complete
 
@@ -332,6 +336,7 @@ test_docked_two_players() {
     # Clean up remaining P1 (not an assertion — don't fail test on timeout)
     _inject "SLOT_DIED 1"
     _wait_for_slot_inactive 1 30 "Test 2 cleanup" || true
+    return 0
 }
 
 # ── Test 3: Docked — 3 players, 2 sequential quits ────────────────────────
@@ -345,9 +350,9 @@ test_docked_three_players() {
             _pass "Test 3.1 — Slot $slot bwrap started"
         else
             _fail "Test 3.1 — Slot $slot did not start"
-            return
+            return 0
         fi
-        _wait_for_minecraft_ready "$slot" 600 "Test 3-P${slot}" || { return; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 3-P${slot}" || { return 0; }
     done
 
     sleep 3  # Allow reflow
@@ -388,6 +393,7 @@ test_docked_three_players() {
 
     _inject "SLOT_DIED 2"
     _wait_for_slot_inactive 2 30 "Test 3 cleanup" || true
+    return 0
 }
 
 # ── Test 4: Max 4, 5th ignored ────────────────────────────────────────────
@@ -397,8 +403,8 @@ test_max_four() {
     for slot in 1 2 3 4; do
         _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/zero"
-        _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return; }
-        _wait_for_minecraft_ready "$slot" 600 "Test 4-P${slot}" || { return; }
+        _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return 0; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 4-P${slot}" || { return 0; }
     done
 
     _info "Test 4: 4 slots should be active now"
@@ -425,6 +431,7 @@ test_max_four() {
         _inject "SLOT_DIED $slot"
         _wait_for_slot_inactive "$slot" 30 "Test 4 cleanup slot $slot" || true
     done
+    return 0
 }
 
 # ── Test 5: Docked→Handheld transition guard ──────────────────────────────
@@ -438,11 +445,11 @@ test_docked_to_handheld() {
     _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 1 30 "Test 5"
-    _wait_for_minecraft_ready 1 600 "Test 5-P1" || { return; }
+    _wait_for_minecraft_ready 1 600 "Test 5-P1" || { return 0; }
     _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
     _wait_for_slot_active 2 30 "Test 5"
-    _wait_for_minecraft_ready 2 600 "Test 5-P2" || { return; }
+    _wait_for_minecraft_ready 2 600 "Test 5-P2" || { return 0; }
 
     _info "Test 5: 2 players active, simulating undock..."
 
@@ -466,6 +473,7 @@ test_docked_to_handheld() {
 
     _inject "SLOT_DIED 1"
     _wait_for_slot_inactive 1 30 "Test 5 cleanup" || true
+    return 0
 }
 
 # ── Test 6: Load timing under render contention ──────────────────────────
@@ -479,8 +487,8 @@ test_load_timing() {
     t_start=$(date +%s%N)
     _prep_slot 1
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
-    _wait_for_slot_active 1 30 "Test 6-P1" || { _fail "Test 6 — Slot 1 bwrap did not start"; return; }
-    _wait_for_minecraft_ready 1 600 "Test 6-P1" || { return; }
+    _wait_for_slot_active 1 30 "Test 6-P1" || { _fail "Test 6 — Slot 1 bwrap did not start"; return 0; }
+    _wait_for_minecraft_ready 1 600 "Test 6-P1" || { return 0; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
     _info "P1 load time to main menu: ${elapsed}ms"
@@ -491,8 +499,8 @@ test_load_timing() {
     t_start=$(date +%s%N)
     _prep_slot 2
     _inject "CONTROLLER_ADD /dev/null /dev/zero"
-    _wait_for_slot_active 2 30 "Test 6-P2" || { _fail "Test 6 — Slot 2 bwrap did not start"; return; }
-    _wait_for_minecraft_ready 2 600 "Test 6-P2" || { return; }
+    _wait_for_slot_active 2 30 "Test 6-P2" || { _fail "Test 6 — Slot 2 bwrap did not start"; return 0; }
+    _wait_for_minecraft_ready 2 600 "Test 6-P2" || { return 0; }
     t_end=$(date +%s%N)
     elapsed=$(( (t_end - t_start) / 1000000 ))
     _info "P2 load time to main menu (with render contention): ${elapsed}ms"
@@ -505,6 +513,7 @@ test_load_timing() {
     _inject "SLOT_DIED 2"
     _wait_for_slot_inactive 1 30 "Test 6 cleanup" || true
     _wait_for_slot_inactive 2 30 "Test 6 cleanup" || true
+    return 0
 }
 
 # ── Test 7: Full lifecycle ────────────────────────────────────────────────
@@ -515,8 +524,8 @@ test_full_lifecycle() {
     for slot in 1 2 3 4; do
         _prep_slot "$slot"
         _inject "CONTROLLER_ADD /dev/null /dev/zero"
-        _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return; }
-        _wait_for_minecraft_ready "$slot" 600 "Test 7-P${slot}" || { return; }
+        _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return 0; }
+        _wait_for_minecraft_ready "$slot" 600 "Test 7-P${slot}" || { return 0; }
     done
 
     sleep 3
@@ -569,6 +578,7 @@ test_full_lifecycle() {
     _wait_for_slot_inactive 1 30 "Test 7 cleanup" || true
     _inject "CONTROLLER_REMOVE 3"
     _wait_for_slot_inactive 3 30 "Test 7 cleanup" || true
+    return 0
 }
 
 # ── Main dispatch ──────────────────────────────────────────────────────────
@@ -587,16 +597,22 @@ _main() {
         5) tests=(test_docked_to_handheld) ;;
         6) tests=(test_load_timing) ;;
         7) tests=(test_full_lifecycle) ;;
+        # NOTE: test_docked_to_handheld (T5) is intentionally EXCLUDED from the
+        # `all` suite.  It can only be validated with the dock PHYSICALLY
+        # disconnected: the real watch_display_mode dock detection runs
+        # concurrently and races the injected DISPLAY_MODE_CHANGE, so an injected
+        # undock while still docked produces a false result.  Run it deliberately
+        # via `testDirect 5` only after physically undocking the Deck.
         all|*) tests=(test_handheld_single_player test_docked_two_players
                       test_docked_three_players test_max_four
-                      test_docked_to_handheld test_load_timing
+                      test_load_timing
                       test_full_lifecycle) ;;
     esac
 
     _info "Running ${#tests[@]} test(s)..."
     for t in "${tests[@]}"; do
         # Clean up any slots left active by an earlier test's early return (e.g.
-        # `_wait_for_minecraft_ready ... || { return; }` skips per-test cleanup).
+        # `_wait_for_minecraft_ready ... || { return 0; }` skips per-test cleanup).
         # This runs before every test so each starts with a guaranteed clean slate.
         _clean_instances
         # No `| tee -a "$LOG"` here: _info/_pass/_fail/_header already tee to $LOG

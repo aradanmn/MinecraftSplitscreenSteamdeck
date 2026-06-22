@@ -46,8 +46,14 @@ _read_fifo_msg() {
     [[ -z "$fifo" ]] && return 1
     [[ -p "$fifo" ]] || return 1
 
-    # Use read with timeout so we can check watchdog/monitor health between msgs
-    IFS= read -r -t "$timeout_s" msg < "$fifo" 2>/dev/null || return 1
+    # Open the FIFO read-WRITE (<>) rather than read-only (<).  A read-only open
+    # of a FIFO blocks in open() until some process opens the write end — and that
+    # block happens BEFORE `read -t` starts counting, so a read-only open with no
+    # writer present hangs forever (the -t timeout never engages).  This was the
+    # root cause of orchestrator iterations wedging permanently and piling up
+    # hung subshells.  Opening read-write keeps a writer reference on this fd, so
+    # open() returns immediately and the -t timeout governs the wait as intended.
+    IFS= read -r -t "$timeout_s" msg <> "$fifo" 2>/dev/null || return 1
     echo "$msg"
     return 0
 }
