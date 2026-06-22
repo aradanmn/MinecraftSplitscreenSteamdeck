@@ -49,6 +49,24 @@
     override_redirect tiling lives inside the nested kwin XWayland — gamescope only
     sees kwin's single composited output surface.
 
+  - **DEEP-RESEARCH #2 (2026-06-22) — the GL-context error + fixes:**
+    KEY: nested-Plasma IS the maintainer-recommended pattern (David Edmundson's gist
+    'Run plasma from within gamescope' launches full `dbus-run-session startplasma-wayland`,
+    NOT bare kwin_wayland; no known-good example of bare kwin compositing GL clients in
+    gamescope). → nested-Plasma-panel-less is the REAL answer; bare kwin is optional.
+    IF pursuing bare kwin, two concrete fixes:
+    (1) `unset LD_PRELOAD` — MISSING from launchNested (nestedPlasma/testPlasma DO it).
+        Steam overlay preload (gameoverlayrenderer.so, seen in our logs) 'meddles with
+        nested compositor tasks' (3-0). Genuine omission/bug.
+    (2) `KWIN_COMPOSE=Q` (QPainter software comp) — documented KDE workaround for 'KWin
+        can't start a working Xwayland nested with the OpenGL compositor' = our error (3-0).
+        Try Q, then KWIN_COMPOSE=O2ES.
+    BIG CAVEAT: NOT confirmed Q (software) composites XWayland GL/dmabuf windows like
+    Minecraft — may black-screen them. On-Deck test only.
+    REFUTED (don't chase): KWIN_DRM_DEVICES/wrong-DRM/simpledrm (0-3), llvmpipe-specific
+    (0-3), kms_swrast perms (0-3), EGL-init-fails (0-3), KWIN_OPENGL_INTERFACE=egl (no-op),
+    --expose-wayland requirement (unestablished 1-2). Exact root cause not pinned to a source.
+
 ## Immediate — Phase B testing
 
 - [ ] Test 3.4 FAIL is teardown TIMING, not windowing: when P1 disconnects, teardown (SIGTERM→10s grace→SIGKILL→watchdog SLOT_DIED) + 3-player load takes >30s, so `_wait_for_slot_inactive 1 30` times out. Fix: bump that assertion window (e.g. 45–60s) and/or speed teardown. Confirmed 2026-06-21: windows tile correctly (half→quad→half), 3.1/3.2/3.3/3.5 pass, only 3.4 times out.
