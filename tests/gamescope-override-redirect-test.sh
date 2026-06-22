@@ -6,10 +6,9 @@
 # for window positioning. Designed to be run remotely via SSH or in Game Mode.
 #
 # Usage:
-#   ./tests/gamescope-override-redirect-test.sh [--with-tinywm] [--with-dex]
+#   ./tests/gamescope-override-redirect-test.sh [--with-dex]
 #
 # Modes:
-#   --with-tinywm   Start TinyWM first, then create windows
 #   --with-dex      Use DEX (Python ctypes X11) instead of xdotool
 #   (default)       Plain xdotool override_redirect unmap/remap
 #
@@ -17,13 +16,11 @@
 # =============================================================================
 
 RESULT_FILE="$HOME/splitscreen-override-redirect-test.txt"
-USE_TINYWM=false
 USE_DEX=false
 DISPLAY="${DISPLAY:-:0}"
 
 for arg in "$@"; do
     case "$arg" in
-        --with-tinywm) USE_TINYWM=true ;;
         --with-dex)    USE_DEX=true ;;
     esac
 done
@@ -55,35 +52,6 @@ H=${RES##*x}
 
 HALF_H=$(( H / 2 ))
 HALF_W=$(( W / 2 ))
-
-# Start TinyWM if requested
-if $USE_TINYWM; then
-    echo "" | tee -a "$RESULT_FILE"
-    echo "=== Starting TinyWM ===" | tee -a "$RESULT_FILE"
-
-    # Make a test state file
-    TF="/tmp/or-test-state.json"
-    cat > "$TF" << JSONEOF
-{
-    "mode": "docked",
-    "slots": {
-        "1": {"active": true, "wid": null, "x": 0, "y": 0, "w": $HALF_W, "h": $H, "event_node": null, "js_node": null, "bwrap_pid": null, "pid": null},
-        "2": {"active": true, "wid": null, "x": $HALF_W, "y": 0, "w": $HALF_W, "h": $H, "event_node": null, "js_node": null, "bwrap_pid": null, "pid": null}
-    }
-}
-JSONEOF
-
-    SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
-    DISPLAY="$DISPLAY" python3 "$SCRIPT_DIR/modules/tinywm.py" "$DISPLAY" "$TF" &
-    TINYWM_PID=$!
-    sleep 1
-    if kill -0 "$TINYWM_PID" 2>/dev/null; then
-        echo "TinyWM started (PID $TINYWM_PID)" | tee -a "$RESULT_FILE"
-    else
-        echo "ERROR: TinyWM failed to start" | tee -a "$RESULT_FILE"
-        exit 1
-    fi
-fi
 
 echo "" | tee -a "$RESULT_FILE"
 echo "=== Phase 1: Create two fullscreen windows ===" | tee -a "$RESULT_FILE"
@@ -135,7 +103,7 @@ fi
 
 if [[ -z "$W1_WID" || -z "$W2_WID" ]]; then
     echo "ERROR: Could not find test windows (W1=$W1_WID, W2=$W2_WID)" | tee -a "$RESULT_FILE"
-    kill $W1_PID $W2_PID $TINYWM_PID 2>/dev/null || true
+    kill $W1_PID $W2_PID 2>/dev/null || true
     exit 1
 fi
 
@@ -440,7 +408,4 @@ echo "Result: $RESULT_TEXT" | tee -a "$RESULT_FILE"
 # Cleanup
 sleep 1
 kill $W1_PID $W2_PID 2>/dev/null || true
-if $USE_TINYWM && [[ -n "$TINYWM_PID" ]]; then
-    kill "$TINYWM_PID" 2>/dev/null || true
-fi
 pkill -f "OVER_REDIRECT_L\|OVER_REDIRECT_R" 2>/dev/null || true

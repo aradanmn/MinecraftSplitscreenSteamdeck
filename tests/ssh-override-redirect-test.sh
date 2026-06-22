@@ -32,7 +32,7 @@ scp "$LOCAL_SCRIPT" "${DECK_HOST}:${REMOTE_SCRIPT}" || {
 }
 
 echo "=== Script deployed. Run it with: ==="
-echo "ssh ${DECK_HOST} 'DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_* bash ${REMOTE_SCRIPT} [--with-tinywm] [--with-dex]'"
+echo "ssh ${DECK_HOST} 'DISPLAY=:0 XAUTHORITY=/run/user/1000/xauth_* bash ${REMOTE_SCRIPT} [--with-dex]'"
 echo ""
 echo "Or directly:"
 echo "ssh ${DECK_HOST} 'DISPLAY=:0 XAUTHORITY=$(ssh ${DECK_HOST} "ls /run/user/1000/xauth_* 2>/dev/null | head -1" 2>/dev/null) bash ${REMOTE_SCRIPT}'"
