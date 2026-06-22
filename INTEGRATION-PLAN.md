@@ -157,6 +157,8 @@ Most of these ship with a stock SteamOS desktop, so the practical value is a cle
 
 ## Suggested order
 _Decisions locked (2026-06-22): launcher = Option B (deploy hand-written + auto-detect) + deploy-time version stamping; generator retired; platform support = hard-stop on missing KDE/gamescope (no DE-agnostic windowing); targets = SteamOS/Deck, Bazzite KDE/handheld, CachyOS-with-KDE._
+
+_Progress (2026-06-22, small commits on the branch): ✅ generator retired (831b6cd); ✅ A0 version stamping + `--version` (71c1112). Remaining below._
 1. **A1** — wire the production `launchFromPlasma` flow (nested-Plasma + windowing + real orchestrator) into the hand-written launcher. Test in Game Mode. _(A0 decided: Option B.)_
 2. **A0 stamping** — add the `__MCSS_VERSION__`/`COMMIT`/`BUILD_DATE` placeholders + sed-stamp in `setup_splitscreen_launcher_script`; add a `--version` flag.
 3. **G** — hard-stop dependency + KDE/gamescope preflight (install-time + launch-time), distro-aware hints.
