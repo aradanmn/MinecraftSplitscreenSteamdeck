@@ -672,6 +672,152 @@ launchTestFromPlasma() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# _kill_tree: recursively SIG a process and all of its descendants.
+# pkill -P reaps only DIRECT children; docked_flow spawns grandchildren (subshells,
+# spawn_instance, monitors) that otherwise orphan to init.  $1 = pid, $2 = signal.
+# ─────────────────────────────────────────────────────────────────────────────
+_kill_tree() {
+    local pid="$1" sig="${2:-TERM}" child
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+        _kill_tree "$child" "$sig"
+    done
+    kill "-${sig}" "$pid" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _run_phase_b_session: Shared Phase B lifecycle-test runner.
+# Assumes the display environment (DISPLAY / XAUTHORITY / WAYLAND_DISPLAY) is
+# already set by the caller and that the orchestrator modules (docked_flow, …)
+# are sourced.  Starts the orchestrator restart-loop in-process (so docked_flow
+# stays in scope), runs the lifecycle harness against the FIFO, then tears down
+# the whole orchestrator process tree.  Publishes the loop PID in the global
+# _PHASE_B_ORCH_PID so an outer EXIT trap can also reap it.
+# ─────────────────────────────────────────────────────────────────────────────
+_run_phase_b_session() {
+    if ! declare -f docked_flow >/dev/null 2>&1; then
+        echo "[run_phase_b] docked_flow not available — modules not loaded?" >> "$LOG"
+        return 1
+    fi
+
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
+    _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
+    _orch_loop &
+    _PHASE_B_ORCH_PID=$!
+    echo "[run_phase_b] orchestrator loop PID=$_PHASE_B_ORCH_PID (DISPLAY=$DISPLAY)" >> "$LOG"
+    sleep 2
+
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+    local test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
+    if [[ -f "$test_script" ]]; then
+        timeout 7200 bash "$test_script" "${TEST_NUMBER:-all}" || true
+    else
+        echo "[run_phase_b] test script not found at $test_script" >> "$LOG"
+    fi
+
+    _kill_tree "$_PHASE_B_ORCH_PID" TERM
+    sleep 1
+    _kill_tree "$_PHASE_B_ORCH_PID" KILL
+    rm -f "$fifo" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchNested: Run the Phase B session inside a BARE nested KWin compositor.
+# kwin_wayland nests as a Wayland client of the current session compositor
+# (gamescope in Game Mode, host KWin in Desktop Mode) and owns the full screen
+# with NO Plasma shell/panel — so instances tile across the entire display and
+# nothing draws behind a menu bar.  Controller isolation is unaffected: only the
+# DISPLAY target changes; bwrap --dev-bind device isolation is untouched.
+# ─────────────────────────────────────────────────────────────────────────────
+launchNested() {
+    echo "[launchNested] start" >> "$LOG"
+    if [[ -n "${2:-}" ]]; then
+        export TEST_NUMBER="$2"
+    fi
+
+    # Parent compositor socket (kwin nests into it).  Auto-detect if unset.
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+        local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" cand
+        for cand in gamescope-0 wayland-0 wayland-1; do
+            [[ -S "$rt/$cand" ]] && { export WAYLAND_DISPLAY="$cand"; break; }
+        done
+    fi
+    echo "[launchNested] parent WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<none>}" >> "$LOG"
+
+    # Nested resolution = parent output size.  env override → wlr-randr → xdpyinfo → fallback.
+    local W H res=""
+    if [[ -n "${SPLITSCREEN_SCREEN_W:-}" && -n "${SPLITSCREEN_SCREEN_H:-}" ]]; then
+        W="$SPLITSCREEN_SCREEN_W"; H="$SPLITSCREEN_SCREEN_H"
+    else
+        res=$(wlr-randr 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1)
+        [[ -z "$res" ]] && res=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')
+        [[ -z "$res" ]] && res="1280x800"
+        W="${res%x*}"; H="${res#*x}"
+    fi
+    echo "[launchNested] nested resolution ${W}x${H}" >> "$LOG"
+
+    # Snapshot existing X sockets — XWayland ignores --xwayland-display and auto-picks
+    # the lowest free number, so we detect the ACTUAL display it creates rather than
+    # assuming.  (Confirmed on-Deck: requesting :2 yields :1 when :1 is free.)
+    local x_before
+    x_before=$(ls /tmp/.X11-unix/ 2>/dev/null | sort)
+
+    # xauth file: passed to kwin for completeness, but the nested XWayland accepts
+    # local same-user connections without enforcing it (confirmed on-Deck), so an
+    # empty file is fine for clients too.
+    local xauth="/tmp/splitscreen-nested-xauth-$$"
+    : > "$xauth"
+
+    # Launch the bare nested compositor (no Plasma → full-screen, no panel).
+    local nested_wl="splitscreen-nested-$$"
+    kwin_wayland \
+        --width "$W" --height "$H" \
+        --no-lockscreen --no-global-shortcuts \
+        --socket "$nested_wl" \
+        --xwayland --xwayland-display :2 --xwayland-xauthority "$xauth" \
+        >> "$LOG" 2>&1 &
+    local kwin_pid=$!
+    echo "[launchNested] kwin_wayland PID=$kwin_pid socket=$nested_wl (detecting display…)" >> "$LOG"
+
+    # Detect the new X socket → actual nested display, and confirm it answers.
+    local nested_display="" i newx
+    for i in $(seq 1 60); do
+        newx=$(comm -13 <(printf '%s\n' "$x_before") <(ls /tmp/.X11-unix/ 2>/dev/null | sort) | head -1)
+        if [[ -n "$newx" ]]; then
+            nested_display=":${newx#X}"
+            if DISPLAY="$nested_display" XAUTHORITY="$xauth" xdpyinfo >/dev/null 2>&1; then break; fi
+            nested_display=""
+        fi
+        kill -0 "$kwin_pid" 2>/dev/null || { echo "[launchNested] kwin exited early" >> "$LOG"; break; }
+        sleep 0.5
+    done
+    if [[ -z "$nested_display" ]]; then
+        echo "[launchNested] ERROR: nested XWayland never became ready" >> "$LOG"
+        _kill_tree "$kwin_pid" KILL; rm -f "$xauth"; return 1
+    fi
+    echo "[launchNested] nested XWayland ready on $nested_display" >> "$LOG"
+
+    # Point the orchestrator + instances at the nested display.
+    export DISPLAY="$nested_display" XAUTHORITY="$xauth" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+
+    _nested_cleanup() {
+        [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && _kill_tree "$_PHASE_B_ORCH_PID" KILL
+        _kill_tree "$kwin_pid" TERM; sleep 1; _kill_tree "$kwin_pid" KILL
+        rm -f "$xauth" "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
+    }
+    trap '_nested_cleanup' EXIT
+
+    _run_phase_b_session
+    _nested_cleanup
+    trap - EXIT
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point — Phase B: event-loop orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 # dispatch_mode is set by the test/testPlasma wrappers to override the
@@ -702,60 +848,31 @@ case "${1:-}" in
         fi
         ;;
     testDirect)
-        # Run Phase B tests directly against an existing display session (Desktop Mode / SSH).
-        # Unlike "test", does NOT start nested KDE or kill kwin_wayland on exit.
-        # Usage: DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 bash minecraftSplitscreen.sh testDirect [N]
-        echo "[main] testDirect — bypassing nested KDE, using existing display" >> "$LOG"
+        # Run Phase B tests directly against an EXISTING display session (the bare
+        # host :0).  Does NOT start a nested compositor — windows render on the host
+        # desktop (subject to its panel/WM).  Kept for SSH/headless debugging; for a
+        # clean full-screen run use "testNested".
+        # Usage: DISPLAY=:0 XAUTHORITY=… bash minecraftSplitscreen.sh testDirect [N]
+        echo "[main] testDirect — using existing display ${DISPLAY:-<unset>}" >> "$LOG"
         if [[ -n "${2:-}" ]]; then
             export TEST_NUMBER="$2"
         fi
-        if ! declare -f docked_flow >/dev/null 2>&1; then
-            echo "[main] testDirect: docked_flow not available — modules not loaded?" >> "$LOG"
-            exit 1
-        fi
-        # Init FIFO and state
-        _td_fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
-        export SPLITSCREEN_FIFO="$_td_fifo"
-        [[ -p "$_td_fifo" ]] || mkfifo "$_td_fifo" 2>/dev/null || true
-        _td_state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-        export SPLITSCREEN_STATE="$_td_state"
-        echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$_td_state"
-        # Restart loop — docked_flow returns 1 on mode-change, restart immediately.
-        # Kept in-process (NOT a fresh `bash -c`) so the sourced docked_flow and
-        # its module functions stay in scope.
-        _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
-        _orch_loop &
-        _td_orch_pid=$!
-        # Recursively kill a process and all of its descendants.  pkill -P only
-        # reaps DIRECT children, so docked_flow's grandchildren (e.g. subshells
-        # blocked on the FIFO) were orphaned to init on a hung run — that is how
-        # dozens of stray processes accumulated.  Walk the tree depth-first.
-        _kill_tree() {
-            local pid="$1" sig="${2:-TERM}" child
-            for child in $(pgrep -P "$pid" 2>/dev/null); do
-                _kill_tree "$child" "$sig"
-            done
-            kill "-${sig}" "$pid" 2>/dev/null || true
-        }
-        # FIFO is removed last so any writer still blocked on it unblocks and exits
-        # rather than lingering.
         _td_cleanup() {
-            _kill_tree "$_td_orch_pid" TERM
-            sleep 1
-            _kill_tree "$_td_orch_pid" KILL   # escalate to SIGKILL for stragglers
-            rm -f "$_td_fifo" 2>/dev/null || true
+            [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && { _kill_tree "$_PHASE_B_ORCH_PID" TERM; sleep 1; _kill_tree "$_PHASE_B_ORCH_PID" KILL; }
+            rm -f "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
         }
         trap '_td_cleanup' EXIT
-        sleep 2
-        # Run tests
-        SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-        _td_test="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
-        if [[ -f "$_td_test" ]]; then
-            timeout 7200 bash "$_td_test" "${TEST_NUMBER:-all}" || true
-        else
-            echo "[main] testDirect: test script not found at $_td_test" >> "$LOG"
-        fi
-        _td_cleanup
+        _run_phase_b_session
+        trap - EXIT
+        ;;
+    testNested)
+        # Run Phase B tests inside a BARE nested KWin compositor (full screen, no
+        # panel).  Works from Game Mode (nests into gamescope) or Desktop Mode
+        # (nests into host KWin).  This is the intended path — instances tile across
+        # the whole display with no menu bar, and we fully control window placement.
+        # Usage: bash minecraftSplitscreen.sh testNested [N]
+        echo "[main] testNested — bare nested KWin compositor" >> "$LOG"
+        launchNested "$@"
         ;;
     *)
         # Normal mode
