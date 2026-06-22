@@ -634,6 +634,18 @@ launchTestFromPlasma() {
     pkill -TERM kwin_wayland 2>/dev/null || true
     sleep 2
     pkill -KILL kwin_wayland 2>/dev/null || true
+
+    # End the nested Plasma session so Steam/gamescope sees the "game" exit.
+    # Killing KWin alone does NOT make `dbus-run-session startplasma-wayland`
+    # (the process Steam tracks) return, so gamescope sat on the running-game
+    # overlay until the user pressed "Abort Game".  Log out the Plasma session
+    # gracefully, then fall back to terminating the session leader.  [UNVERIFIED
+    # 2026-06-21 — added end-of-night; confirm next session.]
+    qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null \
+        || qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null || true
+    sleep 1
+    pkill -x plasma_session 2>/dev/null || true
+    pkill -f startplasma-wayland 2>/dev/null || true
     echo "[launchTestFromPlasma] complete" >> "$LOG"
 }
 
