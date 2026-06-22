@@ -92,8 +92,9 @@ The hardcoded-`main` references become correct once the branch *is* main:
 - Action: just re-verify a clean `curl | bash` install from main post-merge.
 
 ### D. Cleanup (do with the merge)
-- **Delete `launcher_script_generator.sh`** — retired per the A0 decision (Option B chosen; generation replaced by deploy + auto-detect + sed version stamping).
-- **Delete genuinely-dead code (verify first):** `modules/gamescope_windowing.sh`, `modules/tinywm.py`, `modules/gamescope_window_control.py` (abandoned TinyWM/gamescope-windowing approaches; not deployed by the installer, not sourced by the launcher).
+- ✅ **`launcher_script_generator.sh` deleted** (831b6cd) — retired per the A0 decision.
+- ✅ **TinyWM removed entirely** (d96ad38) — `modules/tinywm.py` deleted, the ~180-line block stripped from `window_manager.sh`, and `--with-tinywm` removed from the tests. (Never worked; no live callers.)
+- **Still TODO — `modules/gamescope_windowing.sh` + `modules/gamescope_window_control.py`** (abandoned gamescope-direct-windowing approach). NOT a clean `rm`: `gamescope_windowing.sh` is referenced by guarded `gamescope_windowing_apply_layout` calls in `orchestrator.sh`/`instance_lifecycle.sh`/`window_manager.sh` (always-false at runtime since it's never sourced, but the dead branches should be removed too); `gamescope_window_control.py` is referenced by `tests/gamescope-layout-test.sh`. These also hold the last stray `tinywm` comment-mentions.
 - **Delete/relocate stale docs:** `DECISION_NEEDED.md`, `GAMESCOPE_INVESTIGATION.md`, `GAMESCOPE_RESEARCH.md` (untracked), and the pile of `SESSION-*.md` / `RAW-SESSION-*.md` (move to `sessions/`).
 
 ### E. Known functional issues at merge time (decide fix-before vs document-and-follow-up)
