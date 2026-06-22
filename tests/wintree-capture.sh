@@ -18,11 +18,17 @@
 set -uo pipefail
 STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
 
-# 1. Detect the nested XWayland display from a running Minecraft (java) instance.
-NDISP=""
+# 1. Detect the nested XWayland display AND its xauth cookie from a running
+#    Minecraft (java) instance's env (the nested Plasma XWayland enforces auth, so
+#    DISPLAY alone won't connect from outside the session).
+NDISP=""; NAUTH=""
 for p in $(pgrep -x java 2>/dev/null); do
     d=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
-    [[ -n "$d" ]] && { NDISP="$d"; break; }
+    if [[ -n "$d" ]]; then
+        NDISP="$d"
+        NAUTH=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^XAUTHORITY=//p' | head -1)
+        break
+    fi
 done
 if [[ -z "$NDISP" ]]; then
     echo "!! No running java instance with a DISPLAY found."
@@ -30,6 +36,8 @@ if [[ -z "$NDISP" ]]; then
     exit 1
 fi
 export DISPLAY="$NDISP"
+[[ -n "$NAUTH" ]] && export XAUTHORITY="$NAUTH"
+echo "    (XAUTHORITY=${NAUTH:-<none>})"
 echo "=== nested display: $NDISP   resolution: $(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')"
 echo
 
