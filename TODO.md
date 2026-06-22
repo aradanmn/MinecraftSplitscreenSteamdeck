@@ -1,5 +1,22 @@
 # TODO
 
+## Research — bare nested KWin on SteamOS 3.8 (Game Mode)
+
+- [ ] Deep-research running a **bare nested `kwin_wayland`** (no Plasma shell) as a
+  Steam-launched game under gamescope on SteamOS 3.8, for full-screen splitscreen
+  with no panel. Blocked during 2026-06-21 session by three gamescope/KWin walls:
+  1. SSH/systemd-run-launched nested kwin runs but gamescope never gives it focus
+     (only displays apps launched through Steam).
+  2. A throwaway Wayland probe (wlr-randr) before kwin made gamescope think the
+     game exited and kill it — fixed by removing all pre-kwin compositor probes.
+  3. `kwin_wayland … --xwayland -- <cmd>` did NOT launch the session command under
+     gamescope (process tree showed kwin → only Xwayland, no session child), and
+     gamescope shows its loading spinner for an EMPTY nested compositor.
+  Investigate: correct kwin session-leader invocation on 6.4.3 (positional arg vs
+  `--`; `--exit-with-session`?), making kwin present an immediate surface, and
+  gamescope focus/atom association (STEAM_GAME / GAMESCOPE_FOCUSABLE_APPS). For now
+  we ship nested Plasma with the panel stripped (proven to display in gamescope).
+
 ## Immediate — Phase B testing
 
 - [ ] Complete Phase B test run (Tests 1–7) on Deck — never finished cleanly
