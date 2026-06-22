@@ -61,10 +61,17 @@ There are currently **two** drifted launcher implementations:
 - `modules/launcher_script_generator.sh` — the *intended production generator* (heredoc template + `__PLACEHOLDER__`/sed). **Stale (v2.1.1, Feb 1):** sources only 6 runtime modules (**missing `dex.sh`**), runs the OLD `launchGames`/`nestedPlasma` static flow, and is **orphaned** — not in the installer's module lists, never sourced or called.
 - repo-root `minecraftSplitscreen.sh` — the current architecture (sources all 7 modules incl. `dex.sh`, auto-detects config, new orchestrator/test paths). The installer currently deploys THIS via `setup_splitscreen_launcher_script` (a copy), not the generator.
 
-Decide and converge on one:
-- **Option A — restore generation (matches the intended design):** make the hand-written `minecraftSplitscreen.sh` the generator *template* (config → `__PLACEHOLDER__`s), add `dex.sh` to its sourced modules, wire the new production launch flow (A1 below), and re-point the installer at `generate_splitscreen_launcher` (download it as an installer module; remove/retire `setup_splitscreen_launcher_script`). Result: tested code == generated code.
-- **Option B — retire generation:** the hand-written script now auto-detects config at runtime, so baking paths is largely unnecessary. Keep `setup_splitscreen_launcher_script` (deploy the hand-written modular script) and **delete** `launcher_script_generator.sh`.
-- Recommendation: **A** if you want a self-contained, version-stamped, config-baked artifact for distribution; **B** for simplicity. Non-negotiable: ONE source of truth — the current two-copies drift is what caused the missing-`dex.sh` / old-flow gap.
+**DECISION (user, 2026-06-22): Option B + deploy-time version stamping.**
+- Keep `setup_splitscreen_launcher_script` (deploy the hand-written modular script, which auto-detects launcher config at runtime → portable across distros). **Delete `launcher_script_generator.sh`** (retired by deliberate decision, not because it was dead).
+- **Add version stamping without generation** (decoupled): put `MCSS_VERSION`/`MCSS_COMMIT`/`MCSS_BUILD_DATE="__…__"` placeholders near the top of the script (with `dev`/`unknown` defaults), and `sed`-stamp them in `setup_splitscreen_launcher_script` right after the `cp`:
+  ```bash
+  commit=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  ver=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo dev)
+  sed -i -e "s/__MCSS_VERSION__/$ver/" -e "s/__MCSS_COMMIT__/$commit/" \
+         -e "s|__MCSS_BUILD_DATE__|$(date -Iseconds)|" "$launcher_script"
+  ```
+  Expose it via a startup log line and a `--version` flag. ~6 lines, single source of truth, no template/drift.
+- (Rejected Option A — restore generation: would re-introduce a second copy to keep in sync; not worth it now that config is auto-detected. The only A-only benefit, deterministic launcher choice when both PolyMC+PrismLauncher exist, is covered by logging the detected launcher + the `LAUNCHER_EXEC` env override.)
 
 ### A1. BLOCKER — wire the production launch flow (`launchFromPlasma`)
 Whichever launcher wins A0, the production entry must do the **production analog of the test path**: nested Plasma + panel strip + the **real orchestrator** (`main()`/`docked_flow` with real controller detection), NOT the old `launchGames` static flow and NOT the test harness.
@@ -85,7 +92,7 @@ The hardcoded-`main` references become correct once the branch *is* main:
 - Action: just re-verify a clean `curl | bash` install from main post-merge.
 
 ### D. Cleanup (do with the merge)
-- **`launcher_script_generator.sh` — do NOT blindly delete.** It is the intended production generator (currently orphaned + stale). Its fate is decided by A0: under Option A it gets updated and re-wired; under Option B it gets deleted. (Earlier draft wrongly listed it as dead code.)
+- **Delete `launcher_script_generator.sh`** — retired per the A0 decision (Option B chosen; generation replaced by deploy + auto-detect + sed version stamping).
 - **Delete genuinely-dead code (verify first):** `modules/gamescope_windowing.sh`, `modules/tinywm.py`, `modules/gamescope_window_control.py` (abandoned TinyWM/gamescope-windowing approaches; not deployed by the installer, not sourced by the launcher).
 - **Delete/relocate stale docs:** `DECISION_NEEDED.md`, `GAMESCOPE_INVESTIGATION.md`, `GAMESCOPE_RESEARCH.md` (untracked), and the pile of `SESSION-*.md` / `RAW-SESSION-*.md` (move to `sessions/`).
 
@@ -100,11 +107,16 @@ The hardcoded-`main` references become correct once the branch *is* main:
 - Rename `minecraftSplitscreen.sh` → `mcss.sh` (cascades to `launcher_setup.sh`, `desktop_launcher.sh`, `add-to-steam.py`, and the soon-deleted generator).
 - bare-KWin research round (kwin_wayland_wrapper vs raw kwin; `KWIN_COMPOSE=Q`; EGL platform env).
 
-### G. Runtime dependency preflight (do with the merge)
-The launcher's external-binary dependencies are **assumed present** — the installer only ensures `bwrap`. There is **no preflight**, so a missing tool (e.g. `jq`, `python3`) crashes the launcher mid-run with a cryptic error. Add a fail-fast preflight (see §4 for the dependency map):
-- Run it **at install time** (in `main_workflow.sh`, near `ensure_bwrap_installed`) so the user is warned before they finish, and
-- Guard it **at launch time** (top of `minecraftSplitscreen.sh`) to catch image drift.
-- On SteamOS the rootfs is read-only, so the preflight mostly **verifies + prints a clear message** (and how to install) rather than auto-installing; it may attempt `pacman` for installable ones like `bwrap` does.
+### G. Runtime dependency + platform preflight — HARD STOP (do with the merge)
+The launcher's external-binary deps are **assumed present** (installer only ensures `bwrap`), so a missing tool crashes mid-run. Worse, the windowing approach **requires KDE Plasma + KWin** (and **gamescope** for the Game Mode / Steam-launched path), which is **not** universal across the target distros. Add a **fail-fast HARD STOP** (not a warning):
+- **Supported targets:** SteamOS/Steam Deck (KDE + gamescope, OOTB ✅), Bazzite **handheld/KDE** editions (✅) — **not** Bazzite GNOME (❌), CachyOS **with KDE + gamescope installed** (✅, else guide the user to install them).
+- **The gate = the dependency preflight extended with the KDE/Plasma stack.** Required: `jq python3 bwrap dbus-run-session kwin_wayland startplasma-wayland kscreen-doctor xdpyinfo` (+ `gamescope` for the Game Mode path). Missing any → **hard stop** with a clear, distro-aware message.
+- Run it **at install time** (in `main_workflow.sh`, near `ensure_bwrap_installed` — fail before downloading PolyMC/mods) **and at launch time** (top of `minecraftSplitscreen.sh` — catch drift / a copy moved to a non-KDE box).
+- **Distro-aware hint:** CachyOS/Arch → `sudo pacman -S <pkg>`; SteamOS → read-only note (`sudo steamos-readonly disable && pacman -S …`); Bazzite GNOME → "unsupported edition; needs a KDE/handheld image".
+- Decision (user, 2026-06-22): **do NOT pursue DE-agnostic windowing** (GNOME/wlroots) — hard-stop + document instead. Big effort, low payoff for the three targets.
+
+### H. Docs — supported platforms / requirements
+- Add a **"Supported platforms & Requirements"** section to `README.md`: requires **KDE Plasma + KWin** (and **gamescope** for Game Mode). Works OOTB on **SteamOS/Steam Deck** and **Bazzite handheld/KDE**; on **CachyOS** install KDE + gamescope first; **not supported** on GNOME-only / non-KDE setups. State this up front so users self-select before installing.
 
 ---
 
@@ -144,11 +156,13 @@ Most of these ship with a stock SteamOS desktop, so the practical value is a cle
 ---
 
 ## Suggested order
-1. **A0** — pick ONE launcher source of truth (generate vs deploy-hand-written). This unblocks everything else.
-2. **A1** — wire the production `launchFromPlasma` flow (nested-Plasma + windowing + real orchestrator) into whichever launcher A0 chose. Test in Game Mode.
-3. **G** — add the runtime dependency preflight (install-time + launch-time). Cheap, high-value safety net.
-4. (Optional) **E/Issue A** — fix 3–4 player re-tile if needed for launch.
-5. **D** — cleanup (resolve the generator per A0; delete the genuinely-dead modules + stale docs).
-6. **B** — PR/merge the branch as the new main (branch tree wins).
-7. **C** — verify a clean install from main.
-8. **F** — deferred niceties + bare-KWin research later.
+_Decisions locked (2026-06-22): launcher = Option B (deploy hand-written + auto-detect) + deploy-time version stamping; generator retired; platform support = hard-stop on missing KDE/gamescope (no DE-agnostic windowing); targets = SteamOS/Deck, Bazzite KDE/handheld, CachyOS-with-KDE._
+1. **A1** — wire the production `launchFromPlasma` flow (nested-Plasma + windowing + real orchestrator) into the hand-written launcher. Test in Game Mode. _(A0 decided: Option B.)_
+2. **A0 stamping** — add the `__MCSS_VERSION__`/`COMMIT`/`BUILD_DATE` placeholders + sed-stamp in `setup_splitscreen_launcher_script`; add a `--version` flag.
+3. **G** — hard-stop dependency + KDE/gamescope preflight (install-time + launch-time), distro-aware hints.
+4. **H** — README "Supported platforms & Requirements".
+5. (Optional) **E/Issue A** — fix 3–4 player re-tile if needed for launch.
+6. **D** — cleanup: delete `launcher_script_generator.sh` + dead modules + stale docs.
+7. **B** — PR/merge the branch as the new main (branch tree wins).
+8. **C** — verify a clean install from main on each target.
+9. **F** — deferred niceties + bare-KWin research later.
