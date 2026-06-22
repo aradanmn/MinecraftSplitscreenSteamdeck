@@ -720,11 +720,32 @@ case "${1:-}" in
         _td_state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
         export SPLITSCREEN_STATE="$_td_state"
         echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$_td_state"
-        # Restart loop — docked_flow returns 1 on mode-change, restart immediately
+        # Restart loop — docked_flow returns 1 on mode-change, restart immediately.
+        # Kept in-process (NOT a fresh `bash -c`) so the sourced docked_flow and
+        # its module functions stay in scope.
         _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
         _orch_loop &
         _td_orch_pid=$!
-        trap 'kill "$_td_orch_pid" 2>/dev/null; pkill -P "$_td_orch_pid" 2>/dev/null || true' EXIT
+        # Recursively kill a process and all of its descendants.  pkill -P only
+        # reaps DIRECT children, so docked_flow's grandchildren (e.g. subshells
+        # blocked on the FIFO) were orphaned to init on a hung run — that is how
+        # dozens of stray processes accumulated.  Walk the tree depth-first.
+        _kill_tree() {
+            local pid="$1" sig="${2:-TERM}" child
+            for child in $(pgrep -P "$pid" 2>/dev/null); do
+                _kill_tree "$child" "$sig"
+            done
+            kill "-${sig}" "$pid" 2>/dev/null || true
+        }
+        # FIFO is removed last so any writer still blocked on it unblocks and exits
+        # rather than lingering.
+        _td_cleanup() {
+            _kill_tree "$_td_orch_pid" TERM
+            sleep 1
+            _kill_tree "$_td_orch_pid" KILL   # escalate to SIGKILL for stragglers
+            rm -f "$_td_fifo" 2>/dev/null || true
+        }
+        trap '_td_cleanup' EXIT
         sleep 2
         # Run tests
         SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -734,8 +755,7 @@ case "${1:-}" in
         else
             echo "[main] testDirect: test script not found at $_td_test" >> "$LOG"
         fi
-        kill "$_td_orch_pid" 2>/dev/null || true
-        pkill -P "$_td_orch_pid" 2>/dev/null || true
+        _td_cleanup
         ;;
     *)
         # Normal mode
