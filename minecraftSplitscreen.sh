@@ -749,17 +749,17 @@ launchNested() {
     fi
     echo "[launchNested] parent WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<none>}" >> "$LOG"
 
-    # Nested resolution = parent output size.  env override → wlr-randr → xdpyinfo → fallback.
-    local W H res=""
-    if [[ -n "${SPLITSCREEN_SCREEN_W:-}" && -n "${SPLITSCREEN_SCREEN_H:-}" ]]; then
-        W="$SPLITSCREEN_SCREEN_W"; H="$SPLITSCREEN_SCREEN_H"
-    else
-        res=$(wlr-randr 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1)
-        [[ -z "$res" ]] && res=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')
-        [[ -z "$res" ]] && res="1280x800"
-        W="${res%x*}"; H="${res#*x}"
-    fi
-    echo "[launchNested] nested resolution ${W}x${H}" >> "$LOG"
+    # Nested resolution.  CRITICAL: do NOT probe the compositor here (wlr-randr /
+    # xdpyinfo).  When launched as a Steam game, gamescope watches the game's
+    # Wayland clients — a throwaway probe that connects and immediately disconnects
+    # makes gamescope think the game exited and it kills us before we ever exec
+    # kwin (observed: trace died right after a wlr-randr connect/disconnect).  KWin
+    # must be the FIRST and ONLY client.  Use an env override, else default to the
+    # Deck's handheld panel size; gamescope scales the nested surface to its output.
+    local W H
+    W="${SPLITSCREEN_SCREEN_W:-1280}"
+    H="${SPLITSCREEN_SCREEN_H:-800}"
+    echo "[launchNested] nested resolution ${W}x${H} (override SPLITSCREEN_SCREEN_W/H to change)" >> "$LOG"
 
     # Snapshot existing X sockets so the nested session can identify which XWayland
     # display kwin creates — it auto-picks the lowest free number and ignores
