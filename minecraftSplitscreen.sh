@@ -19,6 +19,22 @@
 # the real ones. (The old launcher_script_generator.sh template was retired — the
 # launcher is deployed + version-stamped, not generated.)
 
+# ── Build provenance ─────────────────────────────────────────────────────────
+# Stamped by the installer at deploy time (setup_splitscreen_launcher_script does
+# a sed substitution on the placeholders below).  Run un-stamped (e.g. straight
+# from the repo during testing) the placeholders remain and we fall back to
+# dev/unknown.  `--version`/`-v` prints and exits before any logging/side effects.
+MCSS_VERSION="__MCSS_VERSION__"
+MCSS_COMMIT="__MCSS_COMMIT__"
+MCSS_BUILD_DATE="__MCSS_BUILD_DATE__"
+[[ "$MCSS_VERSION"    == __MCSS_* ]] && MCSS_VERSION="dev"
+[[ "$MCSS_COMMIT"     == __MCSS_* ]] && MCSS_COMMIT="unknown"
+[[ "$MCSS_BUILD_DATE" == __MCSS_* ]] && MCSS_BUILD_DATE="unknown"
+if [[ "${1:-}" == "--version" || "${1:-}" == "-v" ]]; then
+    echo "minecraftSplitscreen ${MCSS_VERSION} (commit ${MCSS_COMMIT}, built ${MCSS_BUILD_DATE})"
+    exit 0
+fi
+
 # Per-run timestamped debug log. The script re-execs itself across the
 # gamescope→KDE boundary (nestedPlasma/testPlasma write an autostart that
 # re-invokes us); those autostart Exec lines pass SPLITSCREEN_DEBUG_LOG so both

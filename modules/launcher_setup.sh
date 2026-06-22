@@ -97,6 +97,22 @@ setup_splitscreen_launcher_script() {
     fi
 
     chmod +x "$launcher_script"
+
+    # Stamp build provenance into the deployed copy (version / commit / date).
+    # The launcher carries __MCSS_*__ placeholders; replace them here. A failure
+    # is non-fatal — the launcher falls back to dev/unknown if left un-stamped.
+    local _ver _commit _date
+    _ver=$(cat "${SCRIPT_DIR:-}/VERSION" 2>/dev/null || echo "dev")
+    _commit=$(git -C "${SCRIPT_DIR:-.}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    _date=$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo "unknown")
+    sed -i \
+        -e "s/__MCSS_VERSION__/${_ver}/" \
+        -e "s/__MCSS_COMMIT__/${_commit}/" \
+        -e "s|__MCSS_BUILD_DATE__|${_date}|" \
+        "$launcher_script" 2>/dev/null \
+        && print_info "Stamped launcher: version=${_ver} commit=${_commit}" \
+        || print_warning "Could not stamp launcher version (will report as dev/unknown)"
+
     print_success "Splitscreen launcher script installed: $launcher_script"
     return 0
 }
