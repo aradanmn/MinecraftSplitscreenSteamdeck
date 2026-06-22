@@ -753,13 +753,29 @@ launchNested() {
     # with WAYLAND_DISPLAY + DISPLAY pointing at the nested compositor; _nestedSession
     # runs the orchestrator + tests there and then exits, which makes kwin — and thus
     # the Steam "game" — exit too.
+    #
+    # INVOCATION (deep-research answer 2026-06-22; see TODO.md "Research — bare
+    # nested KWin on SteamOS 3.8"):
+    #   * The OLD `kwin_wayland … --xwayland -- <cmd>` form is WRONG.  kwin never
+    #     launched the session command under gamescope — the process tree showed
+    #     kwin → only Xwayland with NO session child, so the nested compositor had
+    #     no top-level surface and gamescope sat on its loading spinner / never gave
+    #     it focus (verified killed slots 0-3).
+    #   * The CORRECT KWin session-leader form is to pass the command AFTER
+    #     `--exit-with-session`, SPACE-separated — NOT `=` (verified killed 1-2),
+    #     NOT a bare `--` separator, NOT positional (verified killed 0-3).
+    #     `--exit-with-session <cmd>` runs <cmd> as the session and makes kwin exit
+    #     when <cmd> returns (so the bare-kwin path returns to Steam cleanly).
+    #     Source: blog.broulik.de 2025 + elimination of all alternatives.
+    #   * `dbus-run-session` wraps kwin so it has a private session bus (kwin needs
+    #     a session bus to come up cleanly outside a full Plasma session).
     local self; self="$(readlink -f "$0")"
     echo "[launchNested] exec nested kwin ${W}x${H} → _nestedSession (test=${TEST_NUMBER:-all})" >> "$LOG"
-    exec kwin_wayland \
+    exec dbus-run-session kwin_wayland \
         --width "$W" --height "$H" \
         --no-lockscreen --no-global-shortcuts \
         --xwayland \
-        -- env \
+        --exit-with-session env \
             SPLITSCREEN_DEBUG_LOG="$LOG" \
             SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
             SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
@@ -828,7 +844,8 @@ case "${1:-}" in
         ;;
     _nestedSession)
         # INTERNAL: runs INSIDE the bare nested kwin (launched by launchNested's
-        # `exec kwin_wayland … -- … bash "$0" _nestedSession`).  kwin sets
+        # `exec dbus-run-session kwin_wayland … --exit-with-session env … bash "$0"
+        # _nestedSession`).  kwin sets
         # WAYLAND_DISPLAY + DISPLAY for this session; resolve/confirm the nested X
         # display, run the Phase B session against it, then terminate kwin so the
         # Steam "game" exits cleanly.
@@ -888,6 +905,9 @@ r.lower(); r.mainloop()
 
         _run_phase_b_session
         kill "$_NS_BG_PID" 2>/dev/null || true
+        # With --exit-with-session, kwin exits on its own when this session command
+        # returns, so this kill is now redundant — kept as a harmless belt-and-braces
+        # in case PPID is not the kwin session leader.
         echo "[_nestedSession] session complete — terminating nested kwin (PPID=$PPID)" >> "$LOG"
         kill -TERM "$PPID" 2>/dev/null || true
         ;;
