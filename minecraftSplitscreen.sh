@@ -573,10 +573,12 @@ WEOF
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
     mkdir -p ~/.config/autostart
+    # Propagate the chosen test number + observation delay into the nested session
+    # (the autostart re-invocation is a fresh process — env does not carry over).
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} testFromPlasma
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30} ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -594,75 +596,39 @@ DEOF
 launchTestFromPlasma() {
     echo "[launchTestFromPlasma] start" >> "$LOG"
     rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
-    pkill plasmashell 2>/dev/null || true
-    sleep 0.5
 
-    # Always kill the nested KWin session AND restore the leaked session env on exit
-    # — prevents both a permanent black screen and the sddm restart loop if the test
-    # script hangs, crashes, or is interrupted.
-    trap '_restore_session_env; pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
+    # Strip the Plasma panel for full-screen real estate.  plasma-session can
+    # respawn plasmashell, so keep a background killer running for the whole
+    # session (reaped on exit).  Killing plasmashell also clears the desktop
+    # wallpaper → black backdrop behind the splitscreen tiles, which is what we
+    # want (this is the "nested Plasma, no panel" path; bare nested KWin is a
+    # future option — see TODO "Research — bare nested KWin on SteamOS 3.8").
+    pkill -x plasmashell 2>/dev/null || true
+    ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
+    _PANEL_KILLER_PID=$!
 
-    # Ensure FIFO exists
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
-    export SPLITSCREEN_FIFO="$fifo"
-    if [[ ! -p "$fifo" ]]; then
-        mkfifo "$fifo" 2>/dev/null || true
-    fi
+    # Tear down the nested KWin session, stop the panel killer, and restore the
+    # leaked session env on exit — prevents a permanent black screen / sddm restart
+    # loop if the test hangs, crashes, or is interrupted.
+    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
 
-    # Initialize the state file
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    export SPLITSCREEN_STATE="$state"
-    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state" 2>/dev/null || true
-
-    # Restart-loop wrapper around docked_flow.
-    # DISPLAY_MODE_CHANGE handheld causes docked_flow to return 1 and exit —
-    # tests 1 and 5 both send that message.  Without a restart loop the FIFO
-    # has no reader and every subsequent _inject blocks forever.
     if ! declare -f docked_flow >/dev/null 2>&1; then
         echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
         return 1
     fi
-    _orchestrator_loop() {
-        while true; do
-            docked_flow || true   # ignore rc=1 (mode-change exit), restart immediately
-            sleep 0.5             # brief gap before re-entry
-        done
-    }
-    echo "[launchTestFromPlasma] Starting orchestrator restart loop" >> "$LOG"
-    _orchestrator_loop &
-    local orch_pid=$!
-    echo "[launchTestFromPlasma] Orchestrator PID: $orch_pid" >> "$LOG"
 
-    # Give the first docked_flow iteration time to open the FIFO
-    sleep 2
+    # Run the Phase B session via the shared runner (FIFO-safe orchestrator restart
+    # loop, full process-tree teardown, observation delay).  Default a viewing delay
+    # for this interactive Game-Mode path.  _run_phase_b_session initialises the
+    # FIFO + state file itself.
+    export SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30}"
+    _run_phase_b_session
 
-    # Run the Phase B lifecycle test — all tests by default,
-    # or a specific test number if TEST_NUMBER is set (from "test N" arg)
-    local test_arg="${TEST_NUMBER:-all}"
-    echo "[launchTestFromPlasma] Running test harness (tests=$test_arg)" >> "$LOG"
-    local test_script
-    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-    test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
-    if [[ -f "$test_script" ]]; then
-        echo "[launchTestFromPlasma] Running test harness: $test_script" >> "$LOG"
-        timeout 7200 bash "$test_script" "$test_arg" || true
-        echo "[launchTestFromPlasma] Test complete" >> "$LOG"
-    else
-        echo "[launchTestFromPlasma] Test script not found at $test_script" >> "$LOG"
-    fi
-
-    # Clean up — kill the restart loop and its children (monitors, sleep stubs)
-    echo "[launchTestFromPlasma] Cleaning up orchestrator (PID $orch_pid)" >> "$LOG"
-    kill -TERM "$orch_pid" 2>/dev/null || true
-    pkill -P "$orch_pid" 2>/dev/null || true
-    sleep 2
-
-    # Final cleanup
+    # Final instance cleanup, then tear down KWin explicitly (cleaner log ordering).
     if declare -f teardown_all_instances >/dev/null 2>&1; then
         teardown_all_instances 2>/dev/null || true
     fi
-
-    # Disarm the trap and do the KWin cleanup explicitly (cleaner log ordering)
+    kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
     trap - EXIT
     _restore_session_env
     pkill -TERM kwin_wayland 2>/dev/null || true
