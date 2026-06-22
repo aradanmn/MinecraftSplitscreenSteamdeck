@@ -2,6 +2,20 @@
 
 ## Research — bare nested KWin on SteamOS 3.8 (Game Mode)
 
+- [ ] **TESTED 2026-06-22 (testNested 2 on feat/gamescope-bare-kwin):** the
+  `--exit-with-session` invocation fix WORKED — kwin launched the session command
+  (was the `-- <cmd>` blocker). BUT bare `kwin_wayland` failed to bring up its
+  compositor under gamescope: journal ended at `kwin_scene_opengl: Could not delete
+  render time query because no context is current`, NO nested XWayland socket ever
+  appeared, test harness never ran, kwin exited. CONTRAST: nested-Plasma's kwin
+  composites Minecraft fine under gamescope (tests 2-4) — so the full Plasma session
+  / `kwin_wayland_wrapper` provides GL/EGL/session setup that the bare invocation
+  lacks. NEW bare-kwin blocker = GL/EGL context init. Next experiments: (a) launch
+  via `kwin_wayland_wrapper` (what nestedPlasma/testPlasma use) instead of raw
+  `kwin_wayland`; (b) try `KWIN_COMPOSE=Q` software compositing (caveat: may not
+  composite XWayland GL/dmabuf clients); (c) investigate EGL platform env for nested
+  GL-in-gamescope. Until solved, SHIP nested-Plasma-panel-less (`test N`).
+
 - [ ] Deep-research running a **bare nested `kwin_wayland`** (no Plasma shell) as a
   Steam-launched game under gamescope on SteamOS 3.8, for full-screen splitscreen
   with no panel. Blocked during 2026-06-21 session by three gamescope/KWin walls:
