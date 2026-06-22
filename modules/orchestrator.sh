@@ -112,15 +112,21 @@ _reflow_layout() {
         _write_splitscreen_properties "$slot" "$active" 2>/dev/null || true
     done
 
-    # Reflow via the window manager
+    # Reflow via the window manager.
+    # NOTE: stderr is intentionally NOT suppressed (was `2>/dev/null`).  The
+    # window-positioning diagnostics ("[window_manager] Repositioning…", dex
+    # strategy + geometry readback) are essential for debugging reflow failures
+    # such as a window being left unmapped — discarding them made the slot-1
+    # unmap bug invisible in the debug log.  `|| true` still keeps a positioning
+    # failure from aborting the orchestrator loop.
     if [[ "${XDG_SESSION_DESKTOP:-}" == "gamescope" ]] || [[ -n "${GAMESCOPE_REFRESH_RATE:-}" ]]; then
         if command -v gamescope_windowing_apply_layout >/dev/null 2>&1 || type gamescope_windowing_apply_layout >/dev/null 2>&1; then
-            gamescope_windowing_apply_layout "$active" "$ruleW" "$ruleH" 2>/dev/null || true
+            gamescope_windowing_apply_layout "$active" "$ruleW" "$ruleH" || true
         else
-            sync_apply_layout "$active" "$ruleW" "$ruleH" 2>/dev/null || true
+            sync_apply_layout "$active" "$ruleW" "$ruleH" || true
         fi
     else
-        sync_apply_layout "$active" "$ruleW" "$ruleH" 2>/dev/null || true
+        sync_apply_layout "$active" "$ruleW" "$ruleH" || true
     fi
 }
 

@@ -159,6 +159,16 @@ _wait_for_minecraft_ready() {
         if grep -q "Sound engine started" "$log" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - deadline + timeout_s ))
             _info "$label: Minecraft ready after ${elapsed}s"
+            # Observation delay: pause after the game reports ready so a human
+            # watching the screen can actually SEE the instance (and the layout
+            # reflow settle) before the test moves on to add/kill the next one.
+            # Defaults to 0 so automated/CI runs stay fast; set to e.g. 30 for a
+            # live demo run.  Also gives the window time to stabilise post-map.
+            local observe="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-0}"
+            if [[ "$observe" -gt 0 ]] 2>/dev/null; then
+                _info "$label: observation delay ${observe}s (SPLITSCREEN_TEST_OBSERVE_DELAY_S)"
+                sleep "$observe"
+            fi
             return 0
         fi
         sleep 5
