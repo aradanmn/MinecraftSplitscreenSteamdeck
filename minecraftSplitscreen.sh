@@ -761,60 +761,34 @@ launchNested() {
     fi
     echo "[launchNested] nested resolution ${W}x${H}" >> "$LOG"
 
-    # Snapshot existing X sockets — XWayland ignores --xwayland-display and auto-picks
-    # the lowest free number, so we detect the ACTUAL display it creates rather than
-    # assuming.  (Confirmed on-Deck: requesting :2 yields :1 when :1 is free.)
+    # Snapshot existing X sockets so the nested session can identify which XWayland
+    # display kwin creates — it auto-picks the lowest free number and ignores
+    # --xwayland-display (confirmed on-Deck: requesting :2 yields :1 when free).
+    # Passed to the session child via env as a comma-wrapped list.
     local x_before
-    x_before=$(ls /tmp/.X11-unix/ 2>/dev/null | sort)
+    x_before=",$(ls /tmp/.X11-unix/ 2>/dev/null | tr '\n' ',')"
 
-    # xauth file: passed to kwin for completeness, but the nested XWayland accepts
-    # local same-user connections without enforcing it (confirmed on-Deck), so an
-    # empty file is fine for clients too.
-    local xauth="/tmp/splitscreen-nested-xauth-$$"
-    : > "$xauth"
-
-    # Launch the bare nested compositor (no Plasma → full-screen, no panel).
-    local nested_wl="splitscreen-nested-$$"
-    kwin_wayland \
+    # Re-invoke THIS script as kwin's session leader.  kwin_wayland becomes the
+    # FOREGROUND process so Steam/gamescope tracks and focuses it — a backgrounded
+    # nested compositor never gets focus in Game Mode (confirmed on-Deck: gamescope
+    # only displays apps launched through Steam).  kwin launches the session command
+    # with WAYLAND_DISPLAY + DISPLAY pointing at the nested compositor; _nestedSession
+    # runs the orchestrator + tests there and then exits, which makes kwin — and thus
+    # the Steam "game" — exit too.
+    local self; self="$(readlink -f "$0")"
+    echo "[launchNested] exec nested kwin ${W}x${H} → _nestedSession (test=${TEST_NUMBER:-all})" >> "$LOG"
+    exec kwin_wayland \
         --width "$W" --height "$H" \
         --no-lockscreen --no-global-shortcuts \
-        --socket "$nested_wl" \
-        --xwayland --xwayland-display :2 --xwayland-xauthority "$xauth" \
-        >> "$LOG" 2>&1 &
-    local kwin_pid=$!
-    echo "[launchNested] kwin_wayland PID=$kwin_pid socket=$nested_wl (detecting display…)" >> "$LOG"
-
-    # Detect the new X socket → actual nested display, and confirm it answers.
-    local nested_display="" i newx
-    for i in $(seq 1 60); do
-        newx=$(comm -13 <(printf '%s\n' "$x_before") <(ls /tmp/.X11-unix/ 2>/dev/null | sort) | head -1)
-        if [[ -n "$newx" ]]; then
-            nested_display=":${newx#X}"
-            if DISPLAY="$nested_display" XAUTHORITY="$xauth" xdpyinfo >/dev/null 2>&1; then break; fi
-            nested_display=""
-        fi
-        kill -0 "$kwin_pid" 2>/dev/null || { echo "[launchNested] kwin exited early" >> "$LOG"; break; }
-        sleep 0.5
-    done
-    if [[ -z "$nested_display" ]]; then
-        echo "[launchNested] ERROR: nested XWayland never became ready" >> "$LOG"
-        _kill_tree "$kwin_pid" KILL; rm -f "$xauth"; return 1
-    fi
-    echo "[launchNested] nested XWayland ready on $nested_display" >> "$LOG"
-
-    # Point the orchestrator + instances at the nested display.
-    export DISPLAY="$nested_display" XAUTHORITY="$xauth" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
-
-    _nested_cleanup() {
-        [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && _kill_tree "$_PHASE_B_ORCH_PID" KILL
-        _kill_tree "$kwin_pid" TERM; sleep 1; _kill_tree "$kwin_pid" KILL
-        rm -f "$xauth" "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
-    }
-    trap '_nested_cleanup' EXIT
-
-    _run_phase_b_session
-    _nested_cleanup
-    trap - EXIT
+        --xwayland \
+        -- env \
+            SPLITSCREEN_DEBUG_LOG="$LOG" \
+            SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
+            SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
+            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-30}" \
+            TEST_NUMBER="${TEST_NUMBER:-all}" \
+            _NESTED_X_BEFORE="$x_before" \
+            bash "$self" _nestedSession
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -873,6 +847,49 @@ case "${1:-}" in
         # Usage: bash minecraftSplitscreen.sh testNested [N]
         echo "[main] testNested — bare nested KWin compositor" >> "$LOG"
         launchNested "$@"
+        ;;
+    _nestedSession)
+        # INTERNAL: runs INSIDE the bare nested kwin (launched by launchNested's
+        # `exec kwin_wayland … -- … bash "$0" _nestedSession`).  kwin sets
+        # WAYLAND_DISPLAY + DISPLAY for this session; resolve/confirm the nested X
+        # display, run the Phase B session against it, then terminate kwin so the
+        # Steam "game" exits cleanly.
+        echo "[_nestedSession] start (DISPLAY=${DISPLAY:-<unset>})" >> "$LOG"
+        _ns_display="${DISPLAY:-}"
+        _ns_ready=0
+        for _i in $(seq 1 60); do
+            if [[ -n "$_ns_display" ]] && DISPLAY="$_ns_display" xdpyinfo >/dev/null 2>&1; then
+                _ns_ready=1; break
+            fi
+            # Fallback: kwin didn't export DISPLAY — find the new X socket vs the
+            # snapshot launchNested passed in _NESTED_X_BEFORE.
+            _newx=""
+            for _x in /tmp/.X11-unix/X*; do
+                [[ -e "$_x" ]] || continue
+                _b="$(basename "$_x")"
+                case "${_NESTED_X_BEFORE:-,}" in
+                    *",$_b,"*) ;;
+                    *) _newx="$_b" ;;
+                esac
+            done
+            if [[ -n "$_newx" ]]; then
+                _ns_display=":${_newx#X}"
+                DISPLAY="$_ns_display" xdpyinfo >/dev/null 2>&1 && { _ns_ready=1; break; }
+            fi
+            sleep 0.5
+        done
+        if [[ "$_ns_ready" -ne 1 ]]; then
+            echo "[_nestedSession] ERROR: nested X display never became ready" >> "$LOG"
+            exit 1
+        fi
+        # nested XWayland accepts local same-user connections without auth; drop any
+        # inherited (stale) cookie so it can't cause a spurious rejection.
+        unset XAUTHORITY
+        export DISPLAY="$_ns_display" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+        echo "[_nestedSession] nested display ready: $DISPLAY" >> "$LOG"
+        _run_phase_b_session
+        echo "[_nestedSession] session complete — terminating nested kwin (PPID=$PPID)" >> "$LOG"
+        kill -TERM "$PPID" 2>/dev/null || true
         ;;
     *)
         # Normal mode
