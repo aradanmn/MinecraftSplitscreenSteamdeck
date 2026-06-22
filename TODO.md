@@ -21,6 +21,8 @@
 
 - [ ] Test 3.4 FAIL is teardown TIMING, not windowing: when P1 disconnects, teardown (SIGTERM→10s grace→SIGKILL→watchdog SLOT_DIED) + 3-player load takes >30s, so `_wait_for_slot_inactive 1 30` times out. Fix: bump that assertion window (e.g. 45–60s) and/or speed teardown. Confirmed 2026-06-21: windows tile correctly (half→quad→half), 3.1/3.2/3.3/3.5 pass, only 3.4 times out.
 - [ ] Run `test 4` (quad, all 4) + desktop-mode pass of the nested-Plasma path.
+- [ ] BUG (issue A, test 3 quad): a window re-moved from an existing override_redirect position does not visually relocate, even though dex remap reports the new geometry. In test 3, slot 2 was commanded half-bottom→quad-top-right (readback=[640 0 640 360]) but stayed visually at half-bottom; P1 (also re-moved) and P3 (fresh map) were correct. So freshly-mapped windows tile fine; RE-tiling an already-override_redirect window is the problem. Next: reproduce test 3, during the quad phase poll the ACTUAL geometry of slot 2's WID via xwininfo on the nested display — determine if X really has it at top-right (→ compositor/repaint issue, maybe need an expose/damage or restack) or it bounced back (→ a racing reflow). Possibly fix by mapping at the new geom in one shot, or forcing a redraw.
+- [ ] BUG (issue B): nested Plasma session didn't exit after the test → Steam stayed on the running-game overlay until 'Abort Game'. Added explicit session logout + startplasma kill at end of launchTestFromPlasma (UNVERIFIED) — confirm it returns to Steam cleanly next session.
 
 - [ ] Complete Phase B test run (Tests 1–7) on Deck — never finished cleanly
   - Deck: `ssh deck@192.168.1.131` → `git pull origin feat/gamescope-windowing`
