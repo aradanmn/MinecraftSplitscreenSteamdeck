@@ -94,7 +94,7 @@ The hardcoded-`main` references become correct once the branch *is* main:
 ### D. Cleanup (do with the merge)
 - ✅ **`launcher_script_generator.sh` deleted** (831b6cd) — retired per the A0 decision.
 - ✅ **TinyWM removed entirely** (d96ad38) — `modules/tinywm.py` deleted, the ~180-line block stripped from `window_manager.sh`, and `--with-tinywm` removed from the tests. (Never worked; no live callers.)
-- **Still TODO — `modules/gamescope_windowing.sh` + `modules/gamescope_window_control.py`** (abandoned gamescope-direct-windowing approach). NOT a clean `rm`: `gamescope_windowing.sh` is referenced by guarded `gamescope_windowing_apply_layout` calls in `orchestrator.sh`/`instance_lifecycle.sh`/`window_manager.sh` (always-false at runtime since it's never sourced, but the dead branches should be removed too); `gamescope_window_control.py` is referenced by `tests/gamescope-layout-test.sh`. These also hold the last stray `tinywm` comment-mentions.
+- ✅ **gamescope-windowing dead code removed** (5bec629) — deleted `gamescope_windowing.sh`, `gamescope_window_control.py`, and `tests/gamescope-layout-test.sh`; collapsed the always-false guard blocks to their real branch in `orchestrator.sh`/`instance_lifecycle.sh`/`window_manager.sh` (`_GW_ANCHOR_PID` gone; `sync_apply_layout` is now a thin `apply_layout` wrapper). Behavior-preserving. **Zero `gamescope_windowing`/`tinywm`/`_GW_ANCHOR_PID` references remain in code.**
 - **Delete/relocate stale docs:** `DECISION_NEEDED.md`, `GAMESCOPE_INVESTIGATION.md`, `GAMESCOPE_RESEARCH.md` (untracked), and the pile of `SESSION-*.md` / `RAW-SESSION-*.md` (move to `sessions/`).
 
 ### E. Known functional issues at merge time (decide fix-before vs document-and-follow-up)
@@ -159,7 +159,7 @@ Most of these ship with a stock SteamOS desktop, so the practical value is a cle
 ## Suggested order
 _Decisions locked (2026-06-22): launcher = Option B (deploy hand-written + auto-detect) + deploy-time version stamping; generator retired; platform support = hard-stop on missing KDE/gamescope (no DE-agnostic windowing); targets = SteamOS/Deck, Bazzite KDE/handheld, CachyOS-with-KDE._
 
-_Progress (2026-06-22, small commits on the branch): ✅ generator retired (831b6cd); ✅ A0 version stamping + `--version` (71c1112); ✅ TinyWM removed (d96ad38); ✅ H — README rewritten for novices + platform requirements. Remaining below._
+_Progress (2026-06-22, small commits on the branch): ✅ generator retired (831b6cd); ✅ A0 version stamping + `--version` (71c1112); ✅ TinyWM removed (d96ad38); ✅ H — README rewritten for novices (4aa536f); ✅ gamescope-windowing dead code removed (5bec629). Remaining below._
 1. **A1** — wire the production `launchFromPlasma` flow (nested-Plasma + windowing + real orchestrator) into the hand-written launcher. Test in Game Mode. _(A0 decided: Option B.)_
 2. **A0 stamping** — add the `__MCSS_VERSION__`/`COMMIT`/`BUILD_DATE` placeholders + sed-stamp in `setup_splitscreen_launcher_script`; add a `--version` flag.
 3. **G** — hard-stop dependency + KDE/gamescope preflight (install-time + launch-time), distro-aware hints.
