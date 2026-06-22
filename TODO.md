@@ -19,6 +19,9 @@
 
 ## Immediate — Phase B testing
 
+- [ ] Test 3.4 FAIL is teardown TIMING, not windowing: when P1 disconnects, teardown (SIGTERM→10s grace→SIGKILL→watchdog SLOT_DIED) + 3-player load takes >30s, so `_wait_for_slot_inactive 1 30` times out. Fix: bump that assertion window (e.g. 45–60s) and/or speed teardown. Confirmed 2026-06-21: windows tile correctly (half→quad→half), 3.1/3.2/3.3/3.5 pass, only 3.4 times out.
+- [ ] Run `test 4` (quad, all 4) + desktop-mode pass of the nested-Plasma path.
+
 - [ ] Complete Phase B test run (Tests 1–7) on Deck — never finished cleanly
   - Deck: `ssh deck@192.168.1.131` → `git pull origin feat/gamescope-windowing`
   - Launch Steam shortcut; watch `~/splitscreen-phase-b-test-latest.log` + `/tmp/splitscreen-debug-latest.log`
