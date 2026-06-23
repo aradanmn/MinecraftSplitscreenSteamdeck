@@ -35,22 +35,30 @@ kwin_qdbus() {
     else return 127; fi
 }
 
-# Ensure org.kde.KWin is reachable. In-session this is a no-op. Externally (test
-# harness over SSH) import DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR from the
-# nested kwin_wayland process so qdbus talks to the SAME bus KWin is on.
+# Ensure org.kde.KWin is reachable. In-session this is a no-op (the ambient bus
+# IS the nested Plasma session bus). Externally (test harness over SSH) we import
+# DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR from a nested-session process so qdbus
+# talks to the SAME bus KWin is on. We try every candidate process and VERIFY each
+# address actually reaches org.kde.KWin before committing — the process tree is
+# kwin_wayland_wrapper -> kwin_wayland and `pgrep -x` on the bare comm is flaky, so
+# match cmdlines and probe.
 _kwin_import_session_env() {
     if kwin_qdbus org.kde.KWin >/dev/null 2>&1; then return 0; fi
 
-    local kpid
-    kpid=$(pgrep -x kwin_wayland 2>/dev/null | head -1)
-    if [[ -n "$kpid" && -r "/proc/$kpid/environ" ]]; then
-        local addr rtd
-        addr=$(tr '\0' '\n' < "/proc/$kpid/environ" 2>/dev/null | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -1)
-        rtd=$(tr '\0' '\n' < "/proc/$kpid/environ" 2>/dev/null | sed -n 's/^XDG_RUNTIME_DIR=//p' | head -1)
-        [[ -n "$addr" ]] && export DBUS_SESSION_BUS_ADDRESS="$addr"
-        [[ -n "$rtd"  ]] && export XDG_RUNTIME_DIR="$rtd"
-    fi
-    kwin_qdbus org.kde.KWin >/dev/null 2>&1
+    local p addr rtd
+    for p in $(pgrep -af 'kwin_wayland|startplasma-wayland|plasma_session' 2>/dev/null | awk '{print $1}'); do
+        [[ -r "/proc/$p/environ" ]] || continue
+        addr=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -1)
+        [[ -z "$addr" ]] && continue
+        rtd=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^XDG_RUNTIME_DIR=//p' | head -1)
+        if DBUS_SESSION_BUS_ADDRESS="$addr" XDG_RUNTIME_DIR="${rtd:-${XDG_RUNTIME_DIR:-}}" \
+               kwin_qdbus org.kde.KWin >/dev/null 2>&1; then
+            export DBUS_SESSION_BUS_ADDRESS="$addr"
+            [[ -n "$rtd" ]] && export XDG_RUNTIME_DIR="$rtd"
+            return 0
+        fi
+    done
+    return 1
 }
 
 kwin_positioner_available() {
