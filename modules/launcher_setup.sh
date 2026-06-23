@@ -131,6 +131,7 @@ install_runtime_modules() {
     local runtime_mods=(
         "dock_detection.sh"
         "controller_monitor.sh"
+        "kwin_positioner.sh"
         "window_manager.sh"
         "instance_lifecycle.sh"
         "watchdog.sh"

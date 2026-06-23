@@ -241,6 +241,42 @@ _get_wid_from_state() {
     echo "$wid"
 }
 
+# _get_pid_from_state: Read a slot's Minecraft (java) PID from the state JSON.
+# $1 = slot (1-4).  Output: PID on stdout, or empty string.
+# The KWin positioner matches windows by PID (window.windowId is undefined in
+# KWin 6.x), so this is the primary identifier for Path-B positioning.
+_get_pid_from_state() {
+    local slot="$1"
+    local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    [[ -f "$sf" ]] && jq -r ".slots[\"${slot}\"].pid // empty" "$sf" 2>/dev/null || true
+}
+
+# _position_slot: Position a slot's window to an exact cell.
+# Path B (preferred): KWin scripting — the window stays KWin-MANAGED and KWin sets
+# frameGeometry itself, so there is no override_redirect and nothing to fight. For
+# XWayland (X11) windows KWin has synchronous geometry authority, so this is
+# reliable (deep-research 2026-06-22). Falls back to the legacy override_redirect
+# cycle only if KWin scripting is unreachable. See [[windowing-solution-confirmed]].
+# $1=slot $2=x $3=y $4=w $5=h
+_position_slot() {
+    local slot="$1" x="$2" y="$3" w="$4" h="$5"
+    local pid wid
+    pid=$(_get_pid_from_state "$slot")
+    if [[ -n "$pid" ]] && type kwin_place_windows >/dev/null 2>&1 && kwin_positioner_available; then
+        kwin_place_windows "$pid $x $y $w $h"
+        echo "[window_manager] KWin-positioned slot $slot (pid $pid) → ${w}x${h}+${x}+${y} (managed, noBorder)" >&2
+        return 0
+    fi
+    wid=$(_get_wid_from_state "$slot")
+    if [[ -n "$wid" ]]; then
+        echo "[window_manager] (fallback override_redirect) slot $slot wid $wid → ${w}x${h}+${x}+${y}" >&2
+        _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
+        return $?
+    fi
+    echo "[window_manager] slot $slot: no pid or wid available to position" >&2
+    return 1
+}
+
 # --- Public API ---
 
 # Determine grid mode from the set of active slot numbers.
@@ -354,12 +390,9 @@ apply_layout() {
     # In full mode, only slot 1 matters — no placeholders needed for other slots
     if [[ "$grid_mode" == "full" ]]; then
         local wid
-        wid=$(_get_wid_from_state 1)
-        if [[ -n "$wid" ]]; then
-            echo "[window_manager] Repositioning slot 1: window $wid → fullscreen" >&2
-            _apply_override_redirect_cycle "$wid" 0 0 "$screen_w" "$screen_h"
-            _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
-        fi
+        echo "[window_manager] Repositioning slot 1 → fullscreen ${screen_w}x${screen_h}" >&2
+        _position_slot 1 0 0 "$screen_w" "$screen_h"
+        wid=$(_get_wid_from_state 1); [[ -n "$wid" ]] && _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
         return 0
     fi
 
@@ -405,26 +438,15 @@ apply_layout() {
             # Find and reposition the Minecraft window.
             # _get_wid_from_state prefers WID from state file (reliable in gamescope)
             # and falls back to xdotool name search for X11 sessions.
+            # Path B: position via KWin scripting (window stays KWin-managed; no
+            # override_redirect). KWin holds the geometry, so we set it once per
+            # reflow rather than fighting/​re-asserting a tiler. _position_slot
+            # falls back to the legacy OR cycle only if KWin scripting is down.
+            echo "[window_manager] Repositioning slot $slot → ${w}x${h}+${x}+${y}" >&2
+            _position_slot "$slot" "$x" "$y" "$w" "$h"
+            echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [kwin frameGeometry]" >&2
             local wid
-            wid=$(_get_wid_from_state "$slot")
-            if [[ -n "$wid" ]]; then
-                echo "[window_manager] Repositioning slot $slot: window $wid → ${w}x${h}+${x}+${y}" >&2
-
-                # KEY FIX: Set override_redirect via Python ctypes unmap/remap cycle.
-                # KWin in --x11-display mode tiles windows on MapNotify.
-                # Setting override_redirect post-map is too late — KWin already
-                # decided the layout.  Solution: unmap first (so KWin forgets
-                # the window), set override_redirect, then remap at desired
-                # geometry.  The window becomes "unmanaged" from KWin's POV.
-                # Using Python ctypes X11 directly is more reliable than xdotool
-                # inside gamescope's XWayland where xdotool's windowmove/windowsize
-                # may return success but have no visual effect.
-                _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
-                echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [override_redirect via unmap/remap]" >&2
-                _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
-            else
-                echo "[window_manager] Window for slot $slot not found (SplitscreenP${slot})" >&2
-            fi
+            wid=$(_get_wid_from_state "$slot"); [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
         else
             # Vacant slot — spawn placeholder
             _spawn_placeholder "$slot" "$x" "$y" "$w" "$h"
