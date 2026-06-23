@@ -9,9 +9,12 @@
 # TODO Issue A.
 #
 # Instead we drive KWin's OWN scripting API over D-Bus: load a one-shot JS that
-# finds each target window by PID, detaches it from any tile, unmaximizes it,
-# removes its border (noBorder), and sets frameGeometry to the exact cell. KWin
-# is the one moving the window, so there is no race and nothing to re-grab.
+# finds each target window by PID, clears any tile/maximize/fullscreen state (only
+# when set), and sets frameGeometry to the exact cell. KWin is the one moving the
+# window, so there is no race and nothing to re-grab. We deliberately do NOT toggle
+# noBorder here (it makes KWin recreate the frame → unmaps the client + clobbers
+# geometry); the inherent ~1px border is tolerated and decoration, if a titlebar
+# actually appears, is removed once via a KWin window rule (not per-reflow).
 #
 # ONE-SHOT by design: we load → run → unload each call. We do NOT install a
 # persistent windowAdded hook — the old persistent "Border Enforcer" KWin script
