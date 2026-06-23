@@ -106,11 +106,15 @@ kwin_place_windows() {
             var w = wins[i];
             if (!w || w.pid !== tgt.pid) continue;
             if (w.specialWindow || w.desktopWindow || w.dock) continue;
-            try { w.tile = null; } catch (e) {}
-            try { if (typeof w.setMaximize === "function") w.setMaximize(false, false); } catch (e) {}
-            try { w.fullScreen = false; } catch (e) {}
-            try { w.noBorder = true; } catch (e) {}
-            try { w.keepAbove = false; } catch (e) {}
+            // Clear any state that would override geometry — but ONLY when actually
+            // set, so we never trigger a no-op state change. Crucially we do NOT
+            // toggle w.noBorder: setting it makes KWin destroy+recreate the window
+            // frame, which unmaps the client and clobbers the geometry we set in the
+            // same pass (the unmap / not-sticking bug). Decoration is handled once via
+            // a window rule if needed; the inherent ~1px border is tolerated.
+            try { if (w.tile) w.tile = null; } catch (e) {}
+            try { if (typeof w.setMaximize === "function" && w.maximizeMode !== 0) w.setMaximize(false, false); } catch (e) {}
+            try { if (w.fullScreen) w.fullScreen = false; } catch (e) {}
             var g = Object.assign({}, w.frameGeometry);
             g.x = tgt.x; g.y = tgt.y; g.width = tgt.w; g.height = tgt.h;
             w.frameGeometry = g;
