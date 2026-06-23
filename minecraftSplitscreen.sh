@@ -639,7 +639,12 @@ launchTestFromPlasma() {
     # for this interactive Game-Mode path.  _run_phase_b_session initialises the
     # FIFO + state file itself.
     export SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
-    _run_phase_b_session
+    if [[ "${TEST_NUMBER:-}" == "8" ]]; then
+        echo "[launchTestFromPlasma] TEST 8 — single-instance position sweep" >> "$LOG"
+        _run_position_sweep_session
+    else
+        _run_phase_b_session
+    fi
 
     # Final instance cleanup, then tear down KWin explicitly (cleaner log ordering).
     if declare -f teardown_all_instances >/dev/null 2>&1; then
@@ -719,6 +724,82 @@ _run_phase_b_session() {
     sleep 1
     _kill_tree "$_PHASE_B_ORCH_PID" KILL
     rm -f "$fifo" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _run_position_sweep_session  (TEST 8 — single-instance position sweep)
+# Spawn ONE instance (slot 1) and move it through every layout position in turn —
+# full, top half, bottom half, and all four quad cells — pausing at each so the
+# user can SEE whether the window actually moves on screen. Logs the geometry
+# immediately after each move AND again after the observation delay, so a revert
+# (e.g. the Splitscreen mod re-asserting its own position every frame) shows up in
+# the log even between captures.
+#
+# Purpose: isolate window POSITIONING from all the multi-instance confounders
+# (reflows, slot-1-vs-others, focus/restack). If a single window won't move or
+# won't STAY, the next step is to retry with the Splitscreen mod removed — it is
+# the one constant across every failed attempt and may be pinning each window to
+# its splitscreen.properties region.
+# ─────────────────────────────────────────────────────────────────────────────
+_run_position_sweep_session() {
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
+    local W H
+    W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
+    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=720
+    local hw=$((W/2)) hh=$((H/2))
+    local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-12}"
+    echo "[sweep] single-instance position sweep on ${W}x${H}, observe ${delay}s/step" >> "$LOG"
+
+    # Give the mod its single-instance config, then spawn slot 1 only.
+    if declare -f _write_splitscreen_properties >/dev/null 2>&1; then
+        _write_splitscreen_properties 1 "1" 2>/dev/null || true
+    fi
+    echo "[sweep] spawning slot 1 (single instance)…" >> "$LOG"
+    spawn_instance 1 "" "" >> "$LOG" 2>&1 || true
+
+    local wid="" i
+    for i in $(seq 1 60); do
+        wid=$(_get_wid_from_state 1 2>/dev/null || true)
+        [[ -n "$wid" ]] && break
+        sleep 1
+    done
+    if [[ -z "$wid" ]]; then
+        echo "[sweep] ERROR: slot 1 window never appeared — aborting sweep" >> "$LOG"
+        declare -f teardown_all_instances >/dev/null 2>&1 && teardown_all_instances 2>/dev/null || true
+        return 1
+    fi
+    echo "[sweep] slot 1 wid=$wid — beginning sweep" >> "$LOG"
+
+    _sweep_geo() { xwininfo -id "$1" 2>/dev/null | awk '/Absolute upper-left X/{x=$NF}/Absolute upper-left Y/{y=$NF}/Width:/{w=$NF}/Height:/{h=$NF}/Map State/{m=$NF}END{if(w=="")print "<none>";else printf "%sx%s+%s+%s %s",w,h,x,y,m}'; }
+
+    local positions=(
+        "FULL 0 0 $W $H"
+        "TOP_HALF 0 0 $W $hh"
+        "BOTTOM_HALF 0 $hh $W $hh"
+        "QUAD_TL 0 0 $hw $hh"
+        "QUAD_TR $hw 0 $hw $hh"
+        "QUAD_BL 0 $hh $hw $hh"
+        "QUAD_BR $hw $hh $hw $hh"
+    )
+    local p name x y w h
+    for p in "${positions[@]}"; do
+        read -r name x y w h <<< "$p"
+        echo "[sweep] ===== $name → target ${w}x${h}+${x}+${y} =====" >> "$LOG"
+        _position_slot 1 "$x" "$y" "$w" "$h" >> "$LOG" 2>&1 || true
+        sleep 2
+        echo "[sweep]   immediately: $(_sweep_geo "$wid")" >> "$LOG"
+        sleep "$delay"
+        echo "[sweep]   after ${delay}s:  $(_sweep_geo "$wid")" >> "$LOG"
+    done
+
+    echo "[sweep] sweep complete — tearing down" >> "$LOG"
+    declare -f teardown_all_instances >/dev/null 2>&1 && teardown_all_instances 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
