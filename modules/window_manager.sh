@@ -264,7 +264,7 @@ _position_slot() {
     pid=$(_get_pid_from_state "$slot")
     if [[ -n "$pid" ]] && type kwin_place_windows >/dev/null 2>&1 && kwin_positioner_available; then
         kwin_place_windows "$pid $x $y $w $h"
-        echo "[window_manager] KWin-positioned slot $slot (pid $pid) → ${w}x${h}+${x}+${y} (managed, noBorder)" >&2
+        echo "[window_manager] KWin-positioned slot $slot (pid $pid) → ${w}x${h}+${x}+${y} (managed, frameGeometry)" >&2
         return 0
     fi
     wid=$(_get_wid_from_state "$slot")
@@ -452,6 +452,24 @@ apply_layout() {
             _spawn_placeholder "$slot" "$x" "$y" "$w" "$h"
         fi
     done
+
+    # Settle + single re-assert (the "let it settle, then position" fix).
+    # A freshly-mapped Minecraft/XWayland window is still finishing setup when the
+    # first reflow positions it, so the geometry can be dropped/clobbered. KWin
+    # HOLDS managed-window geometry, so ONE re-assert after a short settle is enough
+    # — no continuous loop (that's what caused the old persistent-script issues).
+    # Skip in full mode (single window) and when disabled. Tunable via env.
+    if [[ "${MCSS_REASSERT:-1}" == "1" && "$grid_mode" != "full" && -n "${active_slots// }" ]]; then
+        sleep "${MCSS_REASSERT_DELAY_S:-1.2}"
+        local rs
+        for rs in $active_slots; do
+            local rgeo rx ry rw rh
+            rgeo=$(compute_slot_geometry "$rs" "$grid_mode" "$screen_w" "$screen_h")
+            read -r rx ry rw rh <<< "$rgeo"
+            _position_slot "$rs" "$rx" "$ry" "$rw" "$rh"
+        done
+        echo "[window_manager] re-asserted layout for active slots: $active_slots" >&2
+    fi
 }
 
 # Kill all placeholder windows spawned by this module.
