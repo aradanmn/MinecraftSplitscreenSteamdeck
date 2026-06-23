@@ -50,7 +50,7 @@ echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_
 
 # Source runtime orchestrator modules
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-for _mod in dock_detection.sh controller_monitor.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+for _mod in dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
