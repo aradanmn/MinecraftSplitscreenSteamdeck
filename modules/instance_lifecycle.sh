@@ -178,8 +178,14 @@ _build_bwrap_command() {
         --dev-bind /home /home
         --dev-bind /run /run
         --dev-bind /dev/dri /dev/dri
-        --dev-bind "${event_node}" "${event_node}"
     )
+
+    # event_node is optional — for a controller-less single instance (empty/missing)
+    # skip the bind rather than handing bwrap an invalid empty source path (which
+    # aborts the whole sandbox launch).
+    if [[ -n "$event_node" && -e "$event_node" ]]; then
+        cmd+=(--dev-bind "${event_node}" "${event_node}")
+    fi
 
     # js_node is optional — char devices fail -f; use -e which matches any file type
     if [[ -e "$js_node" ]]; then
@@ -452,9 +458,16 @@ spawn_instance() {
         mask_controllers=("${@:4}")
     fi
 
-    if [[ -z "$slot" || -z "$event_node" || -z "$js_node" ]]; then
-        echo "[spawn_instance] ERROR: slot, event_node, and js_node are required" >&2
+    if [[ -z "$slot" ]]; then
+        echo "[spawn_instance] ERROR: slot is required" >&2
         return 1
+    fi
+    # event_node/js_node may be empty for a controller-LESS single instance — e.g.
+    # P1 on the Deck's built-in controls (orchestrator single-player entry) or the
+    # test-8 position sweep. In that case the bwrap sandbox simply doesn't bind/mask
+    # a dedicated controller (no isolation), which is fine when only one instance runs.
+    if [[ -z "$event_node" || -z "$js_node" ]]; then
+        echo "[spawn_instance] slot $slot: no controller node(s) — launching without controller isolation" >&2
     fi
 
     local bwrap_cmd
