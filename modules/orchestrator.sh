@@ -90,6 +90,21 @@ _find_free_slot() {
 }
 
 # =============================================================================
+# HELPER: map a removed controller's event node back to the active slot it owns.
+# controller_monitor emits "CONTROLLER_REMOVE <event_node>" (a /dev/input/event*
+# path), so the remove handler must look the slot up by that node — it is NOT a
+# slot number. Returns the slot on stdout, empty if no active slot owns the node.
+# =============================================================================
+_find_slot_by_event_node() {
+    local node="$1"
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    [[ -n "$node" && -f "$state" ]] || return 0
+    jq -r --arg n "$node" \
+        'first(.slots | to_entries[] | select(.value.active == true and .value.event_node == $n) | .key) // empty' \
+        "$state" 2>/dev/null
+}
+
+# =============================================================================
 # HELPER: compute and persist the reflowed layout for all active slots
 # Writes new kwinrulesrc and calls sync_apply_layout to reposition windows.
 # =============================================================================
@@ -225,14 +240,24 @@ _handle_msg() {
             ;;
 
         CONTROLLER_REMOVE)
-            local slot="$msg_arg"
+            # Format-aware: the real controller_monitor emits the removed device's
+            # EVENT NODE ("CONTROLLER_REMOVE /dev/input/eventX"); the test harness (and
+            # manual injection) may pass a bare slot number. Resolve both — passing the
+            # event node straight through as a slot was why disconnects were silently
+            # ignored and instances never tore down (no reflow → survivors didn't resize).
+            local slot=""
+            if [[ "$msg_arg" =~ ^[1-9][0-9]*$ ]]; then
+                slot="$msg_arg"                                   # explicit slot number
+            elif [[ -n "$msg_arg" ]]; then
+                slot=$(_find_slot_by_event_node "$msg_arg")       # device-node → slot
+            fi
             if [[ -z "$slot" ]] || ! slot_is_active "$slot" 2>/dev/null; then
-                echo "[orchestrator] CONTROLLER_REMOVE: slot $slot not active — ignoring" >&2
+                echo "[orchestrator] CONTROLLER_REMOVE: no active slot for '$msg_arg' — ignoring" >&2
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_REMOVE → slot $slot (tearing down)" >&2
             teardown_instance "$slot" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
-            _reflow_layout
+            _reflow_layout || echo "[orchestrator] WARNING: post-CONTROLLER_REMOVE reflow failed (slot $slot)" >&2
             ;;
 
         SLOT_DIED)
