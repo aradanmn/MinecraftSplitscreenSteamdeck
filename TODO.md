@@ -16,6 +16,19 @@ test surfaced two production-only bugs (the simulated-controller test path never
   (or by window class), tolerant of the title flash.
 - [ ] Then: re-validate the real shortcut, STRIP test code, merge branch→main (branch tree wins).
 
+## Codebase bug audit (2026-06-23) — see docs/BUG-AUDIT-2026-06-23.md
+Multi-agent audit, adversarially verified: 27 distinct confirmed bugs (2 Critical, 14 High,
+8 Medium, 3 Low). C1 = the CONTROLLER_ADD parse bug above (confirmed 5×). Highest-value NEW
+finds to fix alongside the production work:
+- [ ] **H1 — controller_monitor udevadm runs in a pipe subshell** (`… | while`), so `prev_nodes`
+  never persists → device add/remove detection breaks after the first event. FIX: `while …; done
+  < <(udevadm monitor …)`. (Directly relevant to the controller churn we saw.)
+- [ ] **H2 — dex.sh: 6 `action_*` handlers unpack `args[]` with no bounds check** → IndexError
+  crashes the backend on a short call. FIX: `if len(args) < N: return`.
+- [ ] **H4 — window_manager `_verify_window_geometry` clobbers `ah` with a redundant 2nd query**
+  → inverts geometry match. FIX: delete the second query.
+- [ ] Remaining High/Medium/Low: see the audit doc. Many are robustness/magic-number hygiene.
+
 ## Research — bare nested KWin on SteamOS 3.8 (Game Mode)
 
 - [ ] **TESTED 2026-06-22 (testNested 2 on feat/gamescope-bare-kwin):** the
