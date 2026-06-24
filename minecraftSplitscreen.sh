@@ -671,6 +671,17 @@ launchProdFromPlasma() {
         return 1
     fi
 
+    # Initialise the FIFO + state file. main() ensures the FIFO but NOT the state file;
+    # the test path does this in _run_phase_b_session. Without SPLITSCREEN_STATE the
+    # watchdog/spawn fail ("SPLITSCREEN_STATE is not set") so nothing launches → gamescope
+    # shows only the spinner. (2026-06-23)
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
     # Run the real orchestrator. It blocks until the session ends (P1/Deck instance
     # exits). Output to the log directly (NO pipe — a pipe's write-end would be inherited
     # by bwrap descendants and stall the orchestrator's FIFO reads).
