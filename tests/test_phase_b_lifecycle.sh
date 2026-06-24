@@ -333,7 +333,14 @@ test_docked_two_players() {
     count_2=$(get_active_slots 2>/dev/null | wc -w)
     _info "Active slots after P2: $(get_active_slots 2>/dev/null)"
 
-    # P2 disconnects → slot 2 teardown + reflow
+    # P2 disconnects → slot 2 teardown + reflow.
+    # NOTE: the REAL controller_monitor emits the device's EVENT NODE
+    # ("CONTROLLER_REMOVE /dev/input/eventX"); the orchestrator resolves that back to a
+    # slot via _find_slot_by_event_node. We inject a bare slot number here because every
+    # fake controller in this harness shares event_node=/dev/null (bwrap needs a bindable
+    # path), so node-form removal would be ambiguous. The handler accepts BOTH forms —
+    # the node→slot path is the production one and was the cause of disconnects being
+    # ignored before the fix (a remove-path twin of the C1 add-path bug).
     _inject "CONTROLLER_REMOVE 2"
     if _wait_for_slot_inactive 2 30 "Test 2"; then
         _pass "Test 2.3 — Slot 2 torn down on disconnect"
