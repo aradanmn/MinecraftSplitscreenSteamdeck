@@ -626,30 +626,10 @@ _end_nested_session() {
     done
 }
 
-# _install_kwin_borderless_rule: de-decorate the Minecraft windows via a KWin window RULE
-# (caption substring "Minecraft", Force noborder), applied once at map — the job the removed
-# Splitscreen mod did with GLFW_DECORATED, but without the per-reflow noBorder-toggle frame
-# recreate. Reconfigure so the running nested KWin picks it up before instances map.
-# NOTE: overwrites ~/.config/kwinrulesrc — the splitscreen launch owns KWin config in the
-# nested Game-Mode session (the legacy launcher already wrote this file).
-_install_kwin_borderless_rule() {
-    mkdir -p ~/.config 2>/dev/null || true
-    cat > ~/.config/kwinrulesrc <<'KRULES'
-[General]
-count=1
-rules=mcss-borderless
-
-[mcss-borderless]
-Description=Minecraft Splitscreen borderless
-title=Minecraft
-titlematch=1
-noborder=true
-noborderrule=2
-KRULES
-    qdbus org.kde.KWin /KWin reconfigure 2>/dev/null \
-        || qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
-    echo "[launchTestFromPlasma] installed KWin borderless window rule (title~Minecraft)" >> "$LOG"
-}
+# (Decoration is handled by kwin_set_noborder <pid> in spawn_instance — set ONCE when the
+# window appears. The earlier at-map "No titlebar and frame" window rule was removed
+# 2026-06-23: it missed because Minecraft sets its caption/WM_CLASS only AFTER mapping, so
+# the rule had nothing to match at evaluation time, and it clobbered ~/.config/kwinrulesrc.)
 
 # launchTestFromPlasma
 # Called from KDE autostart inside the nested test session.
@@ -670,10 +650,6 @@ launchTestFromPlasma() {
     ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
     _PANEL_KILLER_PID=$!
 
-    # De-decorate Minecraft windows via a one-time KWin rule (replaces the removed
-    # Splitscreen mod's GLFW_DECORATED handling). KWin owns geometry now, so this just
-    # strips the title bar; positioning is done by kwin_place_windows.
-    _install_kwin_borderless_rule
 
     # Tear down the nested KWin session, stop the panel killer, and restore the
     # leaked session env on exit — prevents a permanent black screen / sddm restart

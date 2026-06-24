@@ -12,9 +12,9 @@
 # finds each target window by PID, clears any tile/maximize/fullscreen state (only
 # when set), and sets frameGeometry to the exact cell. KWin is the one moving the
 # window, so there is no race and nothing to re-grab. We deliberately do NOT toggle
-# noBorder here (it makes KWin recreate the frame → unmaps the client + clobbers
-# geometry); the inherent ~1px border is tolerated and decoration, if a titlebar
-# actually appears, is removed once via a KWin window rule (not per-reflow).
+# noBorder in the PER-REFLOW place path (it makes KWin recreate the frame → unmaps the
+# client + clobbers geometry). Decoration is handled separately by kwin_set_noborder,
+# called ONCE per window at spawn (before positioning).
 #
 # ONE-SHOT by design: we load → run → unload each call. We do NOT install a
 # persistent windowAdded hook — the old persistent "Border Enforcer" KWin script
@@ -28,7 +28,8 @@
 #
 # Public API:
 #   kwin_positioner_available            -> 0 if KWin scripting is reachable
-#   kwin_place_windows "PID X Y W H" ... -> place each (pid -> cell), borderless
+#   kwin_place_windows "PID X Y W H" ... -> place each (pid -> cell) via frameGeometry
+#   kwin_set_noborder <pid>              -> strip title bar/border once (at spawn)
 # =============================================================================
 
 # qdbus wrapper — prefer the Qt6 build (Plasma 6).
@@ -146,6 +147,45 @@ KWINJS
     # Let run() apply the geometry before we unload (unload can abort a live run).
     sleep 0.2
     kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$name" >/dev/null 2>&1
+    rm -f "$jsfile"
+    return 0
+}
+
+# kwin_set_noborder <pid>: strip the title bar/border from the window(s) owned by <pid>
+# via KWin scripting (w.noBorder = true), ONCE. Setting noBorder makes KWin recreate the
+# decoration (a brief reparent), so call this exactly once when the window first appears —
+# NOT per reflow (repeated recreates unmap/clobber geometry). Replaces the at-map "No
+# titlebar and frame" window rule, which is unreliable because Minecraft sets its caption/
+# WM_CLASS only AFTER mapping, so the rule has nothing to match at evaluation time.
+kwin_set_noborder() {
+    local pid="$1"
+    [[ -z "$pid" ]] && return 1
+    if ! _kwin_import_session_env; then
+        echo "[kwin_positioner] ERROR: org.kde.KWin not reachable (noborder)" >&2
+        return 1
+    fi
+    local name="mcss_noborder_${pid}_${RANDOM}" jsfile="/tmp/${name}.js"
+    cat > "$jsfile" <<KWINJS
+(function () {
+    var wins = (typeof workspace.windowList === "function") ? workspace.windowList() : workspace.clientList();
+    var n = 0;
+    for (var i = 0; i < wins.length; i++) {
+        var w = wins[i];
+        if (!w || w.pid !== ${pid}) continue;
+        if (w.specialWindow || w.desktopWindow || w.dock) continue;
+        try { w.noBorder = true; n++; } catch (e) {}
+    }
+    print("[kwin_noborder] pid=${pid} set noBorder on " + n + " window(s)");
+})();
+KWINJS
+    local id
+    id=$(kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$jsfile" "$name" 2>/dev/null | tr -dc '0-9')
+    if [[ -n "$id" ]]; then
+        kwin_qdbus org.kde.KWin "/Scripting/Script${id}" org.kde.kwin.Script.run >/dev/null 2>&1 \
+            || kwin_qdbus org.kde.KWin "/${id}" org.kde.kwin.Script.run >/dev/null 2>&1
+        sleep 0.2
+        kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$name" >/dev/null 2>&1
+    fi
     rm -f "$jsfile"
     return 0
 }
