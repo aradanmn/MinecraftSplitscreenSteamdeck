@@ -13,6 +13,14 @@
 #
 # =============================================================================
 
+# Per-instance JVM heap (MiB). Up to four instances run concurrently for 4-player
+# splitscreen, so the TOTAL must fit alongside SteamOS + gamescope + nested KWin on
+# a 16 GB Steam Deck. 4 × 3072 ≈ 12 GiB leaves headroom; the previous 4 × 4096 =
+# 16 GiB would OOM at 3–4 players. Single/two-player sessions are unaffected (3 GiB
+# is ample for vanilla + Sodium). Override via MCSS_MAX_MEM_MB / MCSS_MIN_MEM_MB.
+: "${MCSS_MAX_MEM_MB:=3072}"
+: "${MCSS_MIN_MEM_MB:=512}"
+
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
 # Each instance gets the same mods but separate configurations for splitscreen
@@ -108,8 +116,8 @@ OverrideMemory=true
 OverrideNativeWorkarounds=false
 OverrideWindow=false
 JavaPath=$JAVA_PATH
-MinMemAlloc=512
-MaxMemAlloc=4096
+MinMemAlloc=${MCSS_MIN_MEM_MB}
+MaxMemAlloc=${MCSS_MAX_MEM_MB}
 IntendedVersion=$MC_VERSION
 EOF
 
@@ -718,10 +726,10 @@ handle_instance_update() {
         fi
 
         if ! grep -q "^MinMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MinMemAlloc=512" >> "$instance_dir/instance.cfg"
+            echo "MinMemAlloc=${MCSS_MIN_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         if ! grep -q "^MaxMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MaxMemAlloc=4096" >> "$instance_dir/instance.cfg"
+            echo "MaxMemAlloc=${MCSS_MAX_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         print_success "✅ Instance configuration updated"
     fi

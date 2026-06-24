@@ -114,6 +114,24 @@ _find_slot_by_event_node() {
 }
 
 # =============================================================================
+# HELPER: collect (event_node, js_node) pairs for every ACTIVE slot OTHER than
+# the given one, for bwrap controller masking. Emits one "<event> <js>" line per
+# such slot, using the literal "null" for an unset field. _build_bwrap_command's
+# `-e` guard skips non-existent / "null" paths, and always emitting BOTH fields
+# keeps the (event, js) pairing aligned for its 2-fields-at-a-time consumer.
+# =============================================================================
+_collect_mask_pairs() {
+    local current="$1"
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    [[ -f "$state" ]] || return 0
+    jq -r --arg cur "$current" \
+        '.slots | to_entries[]
+         | select(.value.active == true and .key != $cur)
+         | "\(.value.event_node // "null") \(.value.js_node // "null")"' \
+        "$state" 2>/dev/null
+}
+
+# =============================================================================
 # HELPER: compute and persist the reflowed layout for all active slots
 # Writes new kwinrulesrc and calls sync_apply_layout to reposition windows.
 # =============================================================================
@@ -225,14 +243,25 @@ _handle_msg() {
                 [[ "$event_node" == "$js_node" ]] && js_node=""
             fi
 
-            # ── Controller isolation bridge (feat/controlify-isolation) ───────
-            # TODO: Pass mask_controllers=() for all OTHER active slots so
-            # each sandbox only exposes one controller. Implementation:
-            #   1. Collect all (event_node, js_node) pairs for slots OTHER than this one
-            #   2. Pass them as trailing args to spawn_instance
-            #   3. In _build_bwrap_command, these become --bind /dev/null masks
-            #   4. Set SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 per-slot
-            # Currently passes only this slot's controller (no masking yet).
+            # ── Controller isolation ──────────────────────────────────────────
+            # Mask every OTHER active slot's controller nodes inside this sandbox
+            # so only THIS player's pad reaches this instance. The masking itself
+            # lives in _build_bwrap_command (--bind /dev/null per node); here we
+            # collect the other active slots' (event_node, js_node) pairs from the
+            # state file and forward them as trailing args to spawn_instance.
+            # Non-existent / "null" paths are skipped by the builder's -e guard, and
+            # SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 is already set per-slot.
+            # NOTE (pre-existing limitation): bwrap mounts are fixed at launch, so a
+            # slot that spawned earlier cannot retroactively mask a later joiner —
+            # isolation is strongest for the most-recently-joined player. Full
+            # symmetric isolation would require re-spawning earlier slots.
+            local -a _mask_pairs=()
+            local _mp_ev _mp_js
+            while read -r _mp_ev _mp_js; do
+                [[ -z "$_mp_ev" ]] && continue
+                _mask_pairs+=("$_mp_ev" "$_mp_js")
+            done < <(_collect_mask_pairs "$slot")
+
             # Run spawn_instance in the background so the FIFO event loop is
             # never blocked — spawn_instance polls for java+window for up to
             # 120s, and any SLOT_DIED fired while it runs must be processed
@@ -246,10 +275,10 @@ _handle_msg() {
                 _si_log=$(mktemp "${TMPDIR:-/tmp}/spawn_instance_slot${_slot}_XXXXXX.log") || _si_log=""
                 trap '[[ -n "$_si_log" ]] && rm -f "$_si_log"' EXIT
                 if [[ -n "$_si_log" ]]; then
-                    spawn_instance "$_slot" "$_en" "$_jn" >"$_si_log" 2>&1 || true
+                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" >"$_si_log" 2>&1 || true
                     sed 's/^/[orchestrator] /' < "$_si_log" >&2
                 else
-                    spawn_instance "$_slot" "$_en" "$_jn" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
                 fi
                 sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
                 _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
