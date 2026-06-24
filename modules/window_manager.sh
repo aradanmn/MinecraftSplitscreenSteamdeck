@@ -154,21 +154,21 @@ _verify_window_geometry() {
     local ex="$3" ey="$4" ew="$5" eh="$6"
     local ax ay aw ah
     local geo
+    # ONE query captures all four fields atomically. The previous code re-queried for
+    # ah on a second line (H4), pairing a stale aw with a fresh ah and inverting the
+    # match whenever the window moved between the two reads.
     geo=$(dex_getgeometry "$wid" 2>/dev/null || echo "")
-    if [[ -n "$geo" ]]; then
-        read -r ax ay aw ah <<< "$geo"
-    else
-        ax="?"; ay="?"; aw="?"; ah="?"
-    fi
-    ah=$(dex_getgeometry "$wid" 2>/dev/null | awk '{print $4}' || echo "?")
-    if [[ "$ax" != "?" && "$ay" != "?" && "$aw" != "?" && "$ah" != "?" ]]; then
+    read -r ax ay aw ah <<< "$geo"
+    # H5: require all four to be integers before any numeric comparison — a partial or
+    # empty read would otherwise crash the [[ -ne ]] test with "operand expected".
+    if [[ "$ax" =~ ^-?[0-9]+$ && "$ay" =~ ^-?[0-9]+$ && "$aw" =~ ^[0-9]+$ && "$ah" =~ ^[0-9]+$ ]]; then
         if [[ "$ax" -ne "$ex" || "$ay" -ne "$ey" || "$aw" -ne "$ew" || "$ah" -ne "$eh" ]]; then
             echo "[window_manager] WARNING: slot $slot geometry mismatch: wanted ${ex},${ey} ${ew}x${eh} but got ${ax},${ay} ${aw}x${ah}" >&2
         else
             echo "[window_manager] Verify slot $slot: geometry OK (${ax},${ay} ${aw}x${ah})" >&2
         fi
     else
-        echo "[window_manager] WARNING: slot $slot geometry check failed — could not query window $wid (got ax=$ax ay=$ay aw=$aw ah=$ah)" >&2
+        echo "[window_manager] WARNING: slot $slot geometry check failed — could not query window $wid (got '${geo}')" >&2
     fi
 }
 
