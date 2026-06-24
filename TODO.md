@@ -1,33 +1,31 @@
 # TODO
 
-## Production launch (A1) — 2 bugs to fix before merge (2026-06-23)
+## Production launch (A1) — 2 bugs FIXED IN CODE, pending Deck re-validation (2026-06-24)
 Windowing engine VALIDATED (test 4: borderless + tile + scale-down + clean exit). Mod removed
-from instances + installer. Production `launchFromPlasma` wired + spawns, but the real-shortcut
-test surfaced two production-only bugs (the simulated-controller test path never hit them):
-- [ ] **CONTROLLER_ADD field mismatch.** `controller_monitor` emits 4 fields
-  `CONTROLLER_ADD <event> <js> <vendor> <product>`; orchestrator `_handle_msg` parses
-  `js_node="${msg_arg#* }"` (everything after first space) → js_node = "/dev/input/js1 0000 0000".
-  FIX: parse js_node as the 2nd token only (drop vendor/product, or use them explicitly).
-- [ ] **Window not detected (`wid=null`) — the on-screen symptom.** Two java per instance; the
-  game window is owned by the CHILD java, not the pid spawn_instance stored. And
-  `_poll_for_window` searches title `SplitscreenP{slot}` which FLASHES to `Minecraft* 26.1.2`
-  before the search → falls back to the wrong pid → wid=null → no positioning/de-decoration →
-  raw windowed+titled window. FIX: detect across the instance's whole java/bwrap process tree
-  (or by window class), tolerant of the title flash.
-- [ ] Then: re-validate the real shortcut, STRIP test code, merge branch→main (branch tree wins).
+from instances + installer. Production `launchFromPlasma` wired + spawns. Both production-only
+bugs the real-shortcut test surfaced are now fixed in code (32219db) — the test path bypassed
+the producer half (hand-injected 2-field FIFO messages), which is why it never hit them:
+- [x] **CONTROLLER_ADD field mismatch (C1).** orchestrator `_handle_msg` now `read -r`s all 4
+  fields instead of `${msg_arg#* }`. Test harness updated to inject the real 4-field format so
+  the seam can't silently diverge again.
+- [x] **Window not detected (`wid=null`).** `_poll_for_window` now searches the slot's WHOLE
+  java subtree by `_NET_WM_PID` (`_collect_slot_pids`), not just the stored pid, and re-asserts
+  the `SplitscreenP{slot}` title (incl. a bounded background title-keeper) so it survives the
+  game's caption flash to `Minecraft* <ver>`.
+- [ ] **NEXT: re-validate the real shortcut on the Deck**, then STRIP test code, merge
+  branch→main (branch tree wins). ← only remaining gate; needs a live run + your eyes on screen.
 
-## Codebase bug audit (2026-06-23) — see docs/BUG-AUDIT-2026-06-23.md
+## Codebase bug audit (2026-06-23) — ALL 27 ADDRESSED IN CODE (2026-06-24) — docs/BUG-AUDIT-2026-06-23.md
 Multi-agent audit, adversarially verified: 27 distinct confirmed bugs (2 Critical, 14 High,
-8 Medium, 3 Low). C1 = the CONTROLLER_ADD parse bug above (confirmed 5×). Highest-value NEW
-finds to fix alongside the production work:
-- [ ] **H1 — controller_monitor udevadm runs in a pipe subshell** (`… | while`), so `prev_nodes`
-  never persists → device add/remove detection breaks after the first event. FIX: `while …; done
-  < <(udevadm monitor …)`. (Directly relevant to the controller churn we saw.)
-- [ ] **H2 — dex.sh: 6 `action_*` handlers unpack `args[]` with no bounds check** → IndexError
-  crashes the backend on a short call. FIX: `if len(args) < N: return`.
-- [ ] **H4 — window_manager `_verify_window_geometry` clobbers `ah` with a redundant 2nd query**
-  → inverts geometry match. FIX: delete the second query.
-- [ ] Remaining High/Medium/Low: see the audit doc. Many are robustness/magic-number hygiene.
+8 Medium, 3 Low). Every item is now fixed in code or reviewed-as-not-applicable. Commits:
+32219db (C1, H1, window-detection) · 7cab3bb (dex H2/H3/M7) · 1fc05c2 (H4/H5/H7/H8) ·
+2bf65e9 (M5/M6) · a0ec2b8 (H9/H10/M1/M2/M4/L2; M3 reviewed n/a) · f9a401c (H6/L1/H14) ·
+3ec2df1 (H12/H13; M8 reviewed n/a) · e4538a0 (H11) · a39a4ab (L3 jq --arg).
+- Reviewed-as-not-applicable: **M3** (apply_layout's empty-W/H path re-queries live via
+  `_get_screen_resolution`, not stale), **M8** (bash `${arr[@]:0:20}` is safe on short arrays;
+  `set +e` windows in instance_creation are intentional).
+- Deferred (LOW, very low risk): the DEBUG_MODE temp file in instance_creation (off by default)
+  and a couple of vague L3 mask-arg/magic-sleep notes — see the audit doc.
 
 ## Research — bare nested KWin on SteamOS 3.8 (Game Mode)
 
