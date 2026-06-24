@@ -85,7 +85,14 @@ kwin_place_windows() {
     local targets_js="[" spec pid x y w h
     for spec in "$@"; do
         read -r pid x y w h <<< "$spec"
-        [[ -z "$pid" || -z "$h" ]] && continue
+        # H7: validate every field is an integer before interpolating into the JS
+        # literal. A blank/garbage field would otherwise emit e.g. `pid:abc` — a bare
+        # identifier that throws or silently matches nothing inside the KWin script.
+        if ! [[ "$pid" =~ ^[0-9]+$ && "$x" =~ ^-?[0-9]+$ && "$y" =~ ^-?[0-9]+$ \
+                && "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ ]]; then
+            echo "[kwin_positioner] WARNING: skipping malformed target spec '$spec'" >&2
+            continue
+        fi
         targets_js+="{pid:${pid},x:${x},y:${y},w:${w},h:${h}},"
     done
     targets_js="${targets_js%,}]"
@@ -133,9 +140,13 @@ kwin_place_windows() {
 KWINJS
 
     local id
-    id=$(kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$jsfile" "$name" 2>/dev/null | tr -dc '0-9')
-    if [[ -z "$id" ]]; then
-        echo "[kwin_positioner] ERROR: loadScript returned no id" >&2
+    # H8: do NOT strip non-digits with `tr -dc '0-9'` — that turns an error reply like
+    # "ERROR: 123" into the bogus script id "123". Capture raw, then require the whole
+    # trimmed string to be a plain integer.
+    id=$(kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$jsfile" "$name" 2>/dev/null)
+    id="${id//[$'\t\r\n ']/}"
+    if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+        echo "[kwin_positioner] ERROR: loadScript returned no valid id (got '${id}')" >&2
         rm -f "$jsfile"
         return 1
     fi
