@@ -1862,7 +1862,7 @@ select_user_mods() {
     
     # Build list of user-selectable mods by filtering out framework and required mods
     # Framework mods (Fabric API, etc.) are installed automatically as dependencies
-    # Required mods (Controllable, Splitscreen Support) are always installed
+    # Required mods (Controlify) are always installed
     local user_mod_indexes=()    # Indexes of mods user can choose from
     local install_all_mods=false # Flag for "install all" option
     
@@ -1893,7 +1893,7 @@ select_user_mods() {
     echo ""
     echo "Enter the numbers of the mods you want to install (e.g., '1 3 5' or '1-5'):"
     echo "  0 = Install all available mods (default)"
-    echo "  -1 = Install only required mods (Controllable and Splitscreen Support)"
+    echo "  -1 = Install only required mods (Controlify)"
     echo ""
     
     local mod_selection

@@ -100,57 +100,9 @@ _atomic_write() {
     mv "$tmp" "$target"
 }
 
-# _write_splitscreen_properties: Write splitscreen.properties for a given slot.
-# $1 = slot (1-4)
-# $2 = space-separated active slots (used to determine grid mode)
-_write_splitscreen_properties() {
-    local slot="$1"
-    local active_slots="${2:-}"
-
-    local grid_mode
-    grid_mode=$(compute_grid_mode "$active_slots")
-
-    local mode_value
-    case "$grid_mode" in
-        full)
-            mode_value="FULLSCREEN"
-            ;;
-        half)
-            case "$slot" in
-                1) mode_value="TOP" ;;
-                2) mode_value="BOTTOM" ;;
-                *) mode_value="FULLSCREEN" ;; # fallback
-            esac
-            ;;
-        quad)
-            case "$slot" in
-                1) mode_value="TOP_LEFT" ;;
-                2) mode_value="TOP_RIGHT" ;;
-                3) mode_value="BOTTOM_LEFT" ;;
-                4) mode_value="BOTTOM_RIGHT" ;;
-                *) mode_value="FULLSCREEN" ;; # fallback
-            esac
-            ;;
-        *)
-            mode_value="FULLSCREEN"
-            ;;
-    esac
-
-    local launcher_dir
-    launcher_dir=$(_get_launcher_dir)
-
-    local config_dir="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config"
-    local prop_file="${config_dir}/splitscreen.properties"
-
-    mkdir -p "$config_dir"
-
-    cat > "$prop_file" <<PROPEOF
-gap=1
-mode=${mode_value}
-PROPEOF
-
-    echo "[instance_lifecycle] Wrote splitscreen.properties for slot $slot: mode=$mode_value (grid=$grid_mode)" >&2
-}
+# (_write_splitscreen_properties removed 2026-06-23 — the Splitscreen Support mod that
+# consumed .minecraft/config/splitscreen.properties is no longer installed; KWin does the
+# window tiling. See [[windowing-solution-confirmed]].)
 
 # _build_bwrap_command: Construct a bwrap command string with printf '%q' quoting.
 # $1 = slot, $2 = event_node, $3 = js_node
@@ -507,19 +459,8 @@ spawn_instance() {
         return 0
     fi
 
-    # 1. Write splitscreen.properties — need active slots for grid determination
-    local active_slots
-    active_slots=$(get_active_slots)
-    # Include this slot in the active set for grid computation
-    local new_active="${active_slots} ${slot}"
-    new_active=$(echo "$new_active" | tr -s ' ' | sed 's/^ //;s/ $//')
-    _write_splitscreen_properties "$slot" "$new_active"
-    # Also update all already-active slots so they see the correct layout
-    # (they were written with old player count before this slot joined)
-    local _other_slot
-    for _other_slot in $active_slots; do
-        _write_splitscreen_properties "$_other_slot" "$new_active"
-    done
+    # (Removed splitscreen.properties writing 2026-06-23 — the Splitscreen mod that read
+    # it is gone; KWin does the tiling now.)
 
     # 2. Clear selected_controllers.json
     local launcher_dir
