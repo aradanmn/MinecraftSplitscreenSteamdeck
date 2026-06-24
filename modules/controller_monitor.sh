@@ -570,6 +570,12 @@ start_controller_monitor() {
     # the scan logged "Initial devices" but emitted no ADD, so the orchestrator waited
     # forever. (The test harness injects CONTROLLER_ADD into the FIFO directly, so it never
     # exercised this path.)
+    # CONTROLLER_MONITOR_SKIP_INITIAL_EMIT=1: still snapshot the baseline (prev_nodes) so
+    # the udev diff below won't re-add already-present pads, but do NOT emit CONTROLLER_ADD
+    # for them. docked_flow sets this because it now does the already-connected acquisition
+    # itself (the START bookend), so emitting here too would double-spawn. When unset (e.g.
+    # handheld_flow), this scan both baselines AND emits, preserving the original behavior.
+    local skip_emit="${CONTROLLER_MONITOR_SKIP_INITIAL_EMIT:-0}"
     local prev_nodes=""
     local cline
     while IFS= read -r cline; do
@@ -580,8 +586,12 @@ start_controller_monitor() {
         phys_vendor=$(echo "$cline" | awk '{print $3}')
         phys_product=$(echo "$cline" | awk '{print $4}')
         prev_nodes="$prev_nodes $ev"
-        echo "[controller_monitor] Initial controller present: $ev $js_node $phys_vendor $phys_product" >&2
-        echo "CONTROLLER_ADD $ev $js_node $phys_vendor $phys_product" >> "$fifo"
+        if [[ "$skip_emit" != "1" ]]; then
+            echo "[controller_monitor] Initial controller present: $ev $js_node $phys_vendor $phys_product" >&2
+            echo "CONTROLLER_ADD $ev $js_node $phys_vendor $phys_product" >> "$fifo"
+        else
+            echo "[controller_monitor] Initial controller present (baseline only, emit skipped): $ev" >&2
+        fi
     done < <(list_eligible_controllers "$mode")
 
     echo "[controller_monitor] Initial devices:$prev_nodes" >&2
