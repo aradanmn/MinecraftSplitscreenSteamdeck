@@ -405,7 +405,7 @@ get_bwrap_pid() {
         return 0
     fi
 
-    jq -r ".slots[\"$slot\"].bwrap_pid // empty" <<< "$state" 2>/dev/null
+    jq -r --arg s "$slot" '.slots[$s].bwrap_pid // empty' <<< "$state" 2>/dev/null
 }
 
 # Return the Java PID for a slot.
@@ -419,7 +419,7 @@ get_java_pid() {
         return 0
     fi
 
-    jq -r ".slots[\"$slot\"].pid // empty" <<< "$state" 2>/dev/null
+    jq -r --arg s "$slot" '.slots[$s].pid // empty' <<< "$state" 2>/dev/null
 }
 
 # Return the X11 window ID (WID) for a slot, or empty if not known.
@@ -434,7 +434,7 @@ get_window_id() {
         return 0
     fi
 
-    jq -r ".slots[\"$slot\"].wid // empty" <<< "$state" 2>/dev/null
+    jq -r --arg s "$slot" '.slots[$s].wid // empty' <<< "$state" 2>/dev/null
 }
 
 # --- Public API ---
@@ -698,7 +698,7 @@ slot_is_active() {
     fi
 
     local is_active
-    is_active=$(jq -r ".slots[\"$slot\"].active // false" <<< "$state" 2>/dev/null)
+    is_active=$(jq -r --arg s "$slot" '.slots[$s].active // false' <<< "$state" 2>/dev/null)
 
     if [[ "$is_active" == "true" ]]; then
         return 0
