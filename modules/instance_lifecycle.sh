@@ -595,6 +595,14 @@ spawn_instance() {
         echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
     fi
 
+    # 7.5 Strip the title bar ONCE, now that the window exists (the at-map KWin rule is
+    # unreliable — Minecraft sets its caption/WM_CLASS only after mapping). Done by PID,
+    # before layout, so the noBorder frame-recreate happens before positioning (not during
+    # a reflow, where it would clobber the geometry we just set).
+    if [[ -n "$java_pid" ]] && type kwin_set_noborder >/dev/null 2>&1; then
+        kwin_set_noborder "$java_pid" 2>/dev/null || true
+    fi
+
     # 8. Apply layout with all currently active slots
     local updated_active
     updated_active=$(get_active_slots)
