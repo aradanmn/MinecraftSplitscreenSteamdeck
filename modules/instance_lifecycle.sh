@@ -43,6 +43,13 @@ readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
 # a few times over this window to win the race so the label sticks on screen.
 readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT=15
 readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S=1
+# Window poll can take longer than the java poll (MC takes 60-90s to open its window).
+readonly INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S=120
+# H11: derive loop iteration counts from timeout / interval instead of hardcoding 120/240
+# (which silently duplicated the constants). awk handles the fractional 0.5s interval.
+INSTANCE_LIFECYCLE_JAVA_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
+INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
+readonly INSTANCE_LIFECYCLE_JAVA_POLL_ITERS INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS
 readonly INSTANCE_LIFECYCLE_DEFAULT_LAUNCHER_DIR="$HOME/.local/share/PolyMC"
 readonly INSTANCE_LIFECYCLE_DEFAULT_STATE_FILE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 
@@ -229,7 +236,7 @@ _poll_for_java() {
     launcher_dir=$(_get_launcher_dir)
     local search_pattern="instances/latestUpdate-${slot}/natives"
 
-    local max_iterations=120   # POLL_TIMEOUT_S(60) / POLL_INTERVAL_S(0.5)
+    local max_iterations="$INSTANCE_LIFECYCLE_JAVA_POLL_ITERS"
 
     local _i
     for (( _i = 0; _i < max_iterations; _i++ )); do
@@ -293,7 +300,7 @@ _emit_pid_tree() {
 _poll_for_window() {
     local slot="$1"
 
-    local max_iterations=240    # 120s at 0.5s interval (Minecraft takes 60-90s to load)
+    local max_iterations="$INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS"
 
     local _i
     for (( _i = 0; _i < max_iterations; _i++ )); do
@@ -334,7 +341,7 @@ _poll_for_window() {
         sleep "$INSTANCE_LIFECYCLE_POLL_INTERVAL_S"
     done
 
-    echo "[instance_lifecycle] WARNING: Window for slot $slot not found within 120s" >&2
+    echo "[instance_lifecycle] WARNING: Window for slot $slot not found within ${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}s" >&2
     echo ""
     return 1
 }
