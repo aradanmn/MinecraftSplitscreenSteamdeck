@@ -28,13 +28,17 @@
 #
 # Environment:
 #   DEX_DISPLAY — override DISPLAY (default: $DISPLAY or :0)
-#   DEX_PY_SCRIPT — path to generated Python script (default: /tmp/dex_$$.py)
+#   DEX_PY_SCRIPT — path to generated Python script
+#                   (default: $XDG_RUNTIME_DIR/dex_$$.py, falling back to /tmp/dex_$$.py)
 # =============================================================================
 
 set -euo pipefail
 
 DEX_DISPLAY="${DEX_DISPLAY:-${DISPLAY:-:0}}"
-DEX_PY_SCRIPT="${DEX_PY_SCRIPT:-/tmp/dex_$$.py}"
+# Prefer $XDG_RUNTIME_DIR (per-session tmpfs, auto-removed by systemd on logout) over
+# /tmp so the generated backend doesn't leak on crash — the cleanup is not EXIT-trapped
+# by design (the script must survive across many dex invocations in one shell). M7.
+DEX_PY_SCRIPT="${DEX_PY_SCRIPT:-${XDG_RUNTIME_DIR:-/tmp}/dex_$$.py}"
 
 # ============================================================
 # Generate the Python backend script once, then call it for each op.
@@ -451,8 +455,12 @@ def action_set_root_atom(args):
 
 def action_get_active_wid(args):
     prop = get_prop(root, '_NET_ACTIVE_WINDOW')
-    if prop and len(prop) >= 4:
-        wid = struct.unpack('<I' if ctypes.sizeof(ctypes.c_ulong) == 4 else '<Q', prop[:8])[0]
+    # Match the byte count to the format: <I reads 4, <Q reads 8. The old check
+    # required >=4 but unpacked prop[:8] with <Q → struct.error on a short prop (H3).
+    fmt = '<I' if ctypes.sizeof(ctypes.c_ulong) == 4 else '<Q'
+    need = 4 if fmt == '<I' else 8
+    if prop and len(prop) >= need:
+        wid = struct.unpack(fmt, prop[:need])[0]
         if wid:
             print(wid)
 
@@ -465,33 +473,6 @@ def action_find_minecraft(args):
         for c in query_tree(w):
             recurse(c)
     recurse(root)
-
-def action_spawn_placeholder(args):
-    """Spawn a GTK black placeholder window. Runs in foreground."""
-    slot, x, y, w, h = args[0], int(args[1]), int(args[2]), int(args[3]), int(args[4])
-    # Fork a child to run GTK
-    pid = os.fork()
-    if pid == 0:
-        # Child: spawn GTK window
-        try:
-            import gi
-            gi.require_version('Gtk', '3.0')
-            from gi.repository import Gtk, Gdk, GLib
-            win = Gtk.Window()
-            win.set_decorated(False)
-            win.set_default_size(w, h)
-            win.move(x, y)
-            win.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0, 0, 1))
-            win.set_title(f'SplitscreenBlack{slot}')
-            win.show_all()
-            Gtk.main()
-        except Exception as e:
-            print(f"GTK placeholder failed: {e}", file=sys.stderr)
-            os._exit(1)
-        os._exit(0)
-    else:
-        # Parent: print the PID so caller can track it
-        print(pid)
 
 def action_set_decorations(args):
     """Toggle WM decorations (title bar/border) via _MOTIF_WM_HINTS.
@@ -532,7 +513,6 @@ ACTIONS = {
     'set_root_atom': action_set_root_atom,
     'get_active_wid': action_get_active_wid,
     'find_minecraft': action_find_minecraft,
-    'spawn_placeholder': action_spawn_placeholder,
 }
 
 if len(sys.argv) < 2:
@@ -544,7 +524,15 @@ action_name = sys.argv[1]
 action_args = sys.argv[2:]
 
 if action_name in ACTIONS:
-    ACTIONS[action_name](action_args)
+    # Central guard for the whole action family: a short arg list (IndexError) or a
+    # non-numeric wid/coord (ValueError) becomes a clean usage error + nonzero exit
+    # instead of an opaque Python traceback (audit H2 / L3). Callers already tolerate
+    # nonzero dex exits (|| true), so this fails safe.
+    try:
+        ACTIONS[action_name](action_args)
+    except (IndexError, ValueError) as e:
+        print(f"dex: bad or missing arguments for '{action_name}': {e}", file=sys.stderr)
+        sys.exit(2)
 else:
     print(f"Unknown action: {action_name}", file=sys.stderr)
     sys.exit(1)
