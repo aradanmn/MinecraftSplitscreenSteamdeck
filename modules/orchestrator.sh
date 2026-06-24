@@ -29,6 +29,10 @@ readonly ORCHESTRATOR_MAX_SLOTS=4
 readonly ORCHESTRATOR_SPAWN_DELAY_S=3
 # FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
 readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
+# docked_flow: number of consecutive empty (zero active slots) loop iterations to tolerate
+# AFTER at least one player has joined before ending the session. Gives a short grace
+# (~ticks × FIFO read timeout) so a disconnect-then-reconnect doesn't kill the session.
+readonly ORCHESTRATOR_EMPTY_EXIT_TICKS=2
 
 # PID tracking for background workers
 _WATCHDOG_PID=""
@@ -453,6 +457,14 @@ docked_flow() {
     fi
 
     # ── Event loop
+    # Session-end latch: docked starts EMPTY (no instance is spawned on entry — we wait
+    # for the first CONTROLLER_ADD), so we must NOT exit just because the active count is
+    # zero. Only once at least one player has joined (had_players) does a sustained return
+    # to zero mean "everyone quit → end the session" — mirroring handheld_flow, which
+    # exits when its single slot dies. A short grace (ORCHESTRATOR_EMPTY_EXIT_TICKS) keeps
+    # a disconnect-then-reconnect from tearing the session down.
+    local had_players=false
+    local empty_ticks=0
     while true; do
         local msg
         if msg=$(_read_fifo_msg "$ORCHESTRATOR_FIFO_READ_TIMEOUT_S"); then
@@ -472,16 +484,21 @@ docked_flow() {
         # Independent liveness reap (don't rely solely on the watchdog — H9).
         _reap_dead_slots
 
-        # Check if we should settle (no active slots + timeout → exit)
+        # Session-end check: exit once everyone who joined has quit.
         local active
         active=$(get_active_slots)
-        if [[ -z "$active" ]]; then
-            echo "[orchestrator] No active slots — idle" >&2
-            # The loop keeps waiting; if no ADD/DISPLAY arrives within
-            # a reasonable window and nothing is running, the docked
-            # session naturally ends when the user quits via Steam.
-            # TODO: add a SESSION_END message type for clean exit
+        if [[ -n "$active" ]]; then
+            had_players=true
+            empty_ticks=0
+        elif [[ "$had_players" == true ]]; then
+            empty_ticks=$((empty_ticks + 1))
+            echo "[orchestrator] No active slots after players joined — empty tick ${empty_ticks}/${ORCHESTRATOR_EMPTY_EXIT_TICKS}" >&2
+            if (( empty_ticks >= ORCHESTRATOR_EMPTY_EXIT_TICKS )); then
+                echo "[orchestrator] All players have quit — ending docked session" >&2
+                break
+            fi
         fi
+        # (Before any player joins, an empty active set is the normal startup state — idle.)
     done
 
     cleanup
