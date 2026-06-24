@@ -38,6 +38,11 @@ readonly INSTANCE_LIFECYCLE_POLL_INTERVAL_S=0.5
 readonly INSTANCE_LIFECYCLE_POLL_TIMEOUT_S=60
 readonly INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S=30
 readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
+# Title-keeper: after the window is found, Minecraft's own startup overwrites the
+# caption (SplitscreenP<slot> → "Minecraft* <ver>" — the flash). Re-assert our name
+# a few times over this window to win the race so the label sticks on screen.
+readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT=15
+readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S=1
 readonly INSTANCE_LIFECYCLE_DEFAULT_LAUNCHER_DIR="$HOME/.local/share/PolyMC"
 readonly INSTANCE_LIFECYCLE_DEFAULT_STATE_FILE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 
@@ -242,14 +247,49 @@ _poll_for_java() {
     return 1
 }
 
+# _collect_slot_pids: echo every PID that could own the slot's Minecraft window —
+# all java processes referencing the slot's natives dir PLUS their full descendant
+# trees. A modern Minecraft instance has >1 java process (the launcher's child + the
+# game JVM), and the GLFW window's _NET_WM_PID can belong to a child we did NOT store
+# as get_java_pid (which is just head -1 of the natives match). Searching only that
+# one PID is why window detection returned wid=null in production (2026-06-23). One
+# PID per line, de-duplicated.
+_collect_slot_pids() {
+    local slot="$1"
+    local search_pattern="instances/latestUpdate-${slot}/natives"
+    local roots root
+    roots=$(pgrep -f "$search_pattern" 2>/dev/null || true)
+    {
+        local pid
+        for root in $roots; do
+            _emit_pid_tree "$root"
+        done
+    } | awk 'NF && !seen[$0]++'
+}
+
+# _emit_pid_tree: recursively echo a PID and all of its descendants (one per line).
+_emit_pid_tree() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return 0
+    echo "$pid"
+    local child
+    for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+        _emit_pid_tree "$child"
+    done
+}
+
 # _poll_for_window: Wait for the Minecraft window to appear.
 # $1 = slot
 # Returns window ID on stdout, empty string if timeout.
 # Strategy (via dex — the single X11 layer):
-#   1. dex_search --name "SplitscreenP<slot>" — works only with LWJGL 2
-#   2. dex_search --pid <java_pid> (matches _NET_WM_PID) — LWJGL 3 (MC 1.18+)
-#      On match: rename WM_NAME (dex_set_name) so apply_layout / _get_wid_from_state
-#      can find it by name on future calls. Positioning is apply_layout's job.
+#   1. dex_search --name "SplitscreenP<slot>" — works only with LWJGL 2 (the title
+#      property is ignored by LWJGL 3 / GLFW, and modern MC overwrites the caption to
+#      "Minecraft* <ver>" right after mapping — the title-flash — so this rarely hits).
+#   2. dex_search --pid <pid> across the slot's WHOLE java subtree (matches _NET_WM_PID)
+#      — LWJGL 3 (MC 1.18+). On match: rename WM_NAME (dex_set_name) so apply_layout /
+#      _get_wid_from_state can find it by name on future calls. Positioning is
+#      apply_layout's job. Searching the subtree (not just the stored java_pid) is what
+#      makes this tolerant of the two-java-per-instance / wrong-stored-pid case.
 _poll_for_window() {
     local slot="$1"
 
@@ -266,33 +306,29 @@ _poll_for_window() {
         fi
 
         # Strategy 2: PID-based after a short warm-up (LWJGL3 ignores the title
-        # property; match the JVM's _NET_WM_PID instead).
+        # property; match the JVM's _NET_WM_PID instead). Try EVERY pid in the slot's
+        # java subtree, not just the stored java_pid — the window can belong to a child.
         if (( _i > 10 )); then
-            local java_pid
-            java_pid=$(get_java_pid "$slot")
-            if [[ -n "$java_pid" ]]; then
-                # tail -1 picks the most-recently-opened window from this PID tree
+            local cand_pid
+            while IFS= read -r cand_pid; do
+                [[ -n "$cand_pid" ]] || continue
+                # tail -1 picks the most-recently-opened window for this PID
                 # (avoids grabbing PrismLauncher's own launch dialog if still open)
-                wid=$(dex_search --pid "$java_pid" 2>/dev/null | tail -1 || true)
+                wid=$(dex_search --pid "$cand_pid" 2>/dev/null | tail -1 || true)
                 if [[ -n "$wid" ]]; then
-                    echo "[instance_lifecycle] Found window by PID $java_pid for slot $slot: wid=$wid" >&2
+                    echo "[instance_lifecycle] Found window by PID $cand_pid for slot $slot: wid=$wid" >&2
                     # Rename WM_NAME so apply_layout / _get_wid_from_state can find
-                    # it by name on subsequent calls.
+                    # it by name on subsequent calls — and so it survives the caption
+                    # flash to "Minecraft* <ver>".
                     dex_set_name "$wid" "SplitscreenP${slot}" 2>/dev/null || true
 
                     # NOTE: window POSITIONING (override_redirect + move/resize) is
                     # intentionally NOT done here. apply_layout() positions every
                     # active slot via dex right after spawn_instance records this WID.
-                    # This function previously carried TWO inline-ctypes OR-cycle
-                    # copies (gamescope + desktop, both with the old pointer-
-                    # truncation + 1<<3 valuemask bugs) plus an xdotool fallback;
-                    # all removed in favour of the single verified dex X11 layer.
-                    # The STEAM_GAME/STEAM_OVERLAY plane setup also went away — it
-                    # targets bare gamescope, not the nested-KWin approach we use.
                     echo "$wid"
                     return 0
                 fi
-            fi
+            done < <(_collect_slot_pids "$slot")
         fi
 
         sleep "$INSTANCE_LIFECYCLE_POLL_INTERVAL_S"
@@ -534,6 +570,22 @@ spawn_instance() {
     if [[ -n "$window_id" ]]; then
         update_slot_state "$slot" "{\"wid\": ${window_id}}"
         echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
+
+        # 7.1 Title-keeper (belt-and-suspenders): _poll_for_window already restored the
+        # SplitscreenP<slot> name once on match, but the game can flash its own caption
+        # ("Minecraft* <ver>") slightly later during title-screen init. Re-assert our
+        # name a few times in the background so the label sticks. Backgrounded + bounded
+        # so it never blocks spawn_instance and self-exits (no reaping needed).
+        if type dex_set_name >/dev/null 2>&1; then
+            (
+                _k=0
+                while (( _k < INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT )); do
+                    dex_set_name "$window_id" "SplitscreenP${slot}" 2>/dev/null || true
+                    sleep "$INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S"
+                    _k=$(( _k + 1 ))
+                done
+            ) &
+        fi
     fi
 
     # 7.5 Strip the title bar via _MOTIF_WM_HINTS (the standard X way, set on the WID by

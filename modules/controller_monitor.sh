@@ -582,7 +582,11 @@ start_controller_monitor() {
     # Monitor loop using udevadm
     if command -v "$udevadm_cmd" >/dev/null 2>&1; then
         echo "[controller_monitor] Using $udevadm_cmd for device monitoring" >&2
-        "$udevadm_cmd" monitor --subsystem-match=input --udev 2>/dev/null | while IFS= read -r raw_line; do
+        # NOTE: process substitution (NOT a pipe) so the loop runs in THIS shell and
+        # `prev_nodes` persists across iterations. With `udevadm | while …` the loop is a
+        # subshell — prev_nodes resets every event and device-change detection breaks after
+        # the first add/remove (audit H1, 2026-06-23).
+        while IFS= read -r raw_line; do
             # udevadm output lines (real format):
             # UDEV  [1701234567.123456] add      /devices/virtual/input/input652 (input)
             # UDEV  [1701234567.456789] remove   /devices/virtual/input/input652 (input)
@@ -609,7 +613,7 @@ start_controller_monitor() {
                 _check_devices_changed "$mode" "$prev_nodes"
                 prev_nodes="$new_nodes"
             fi
-        done
+        done < <("$udevadm_cmd" monitor --subsystem-match=input --udev 2>/dev/null)
     else
         # Fallback: poll
         echo "[controller_monitor] $udevadm_cmd not available, polling every 2s" >&2
