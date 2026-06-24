@@ -33,6 +33,11 @@ readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
 # AFTER at least one player has joined before ending the session. Gives a short grace
 # (~ticks × FIFO read timeout) so a disconnect-then-reconnect doesn't kill the session.
 readonly ORCHESTRATOR_EMPTY_EXIT_TICKS=2
+# docked_flow startup: poll this long for already-connected controllers before handing
+# off to the hotplug monitor. A short window (not a single one-shot scan) because Steam
+# Input creates its 28de:11ff virtual pads with a delay and staggered. If NONE appear in
+# this window, docked has no player (can't play on the built-in pad) → clean exit.
+readonly ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=5
 
 # PID tracking for background workers
 _WATCHDOG_PID=""
@@ -195,6 +200,14 @@ _handle_msg() {
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_ADD → slot $slot (spawning instance)" >&2
+
+            # Reserve the slot synchronously NOW — before backgrounding spawn_instance,
+            # which is what normally marks it active. Without this, a rapid back-to-back
+            # CONTROLLER_ADD (the startup acquisition loop, or several pads connecting at
+            # once) could have the next _find_free_slot hand out THIS same slot before the
+            # backgrounded spawn marks it → two instances on one slot. spawn_instance still
+            # writes the full preliminary state (event/js/pid/bwrap) right after.
+            update_slot_state "$slot" '{"active": true}'
 
             # Extract controller fields from the CONTROLLER_ADD arg if provided.
             # Format (controller_monitor emits 4 fields):
@@ -435,11 +448,41 @@ docked_flow() {
     # know about the built-in's event node to exclude it.
     # ────────────────────────────────────────────────────────────────────
 
-    # ── Start controller monitor (docked mode — ALL eligible controllers)
+    # ── Startup controller acquisition (the START bookend).
+    # Spawn instances for controllers ALREADY connected at launch — the common case in
+    # docked mode (you plug pads in, then launch). We poll for a short window rather than
+    # a single one-shot scan because Steam Input creates its 28de:11ff virtual pads with a
+    # delay and staggered, so one scan races and can miss them ("nothing spawns at start").
+    # Each newly-seen controller is dispatched immediately (first one spawns at t=0); the
+    # window just catches stragglers. If NONE appear, docked has no player → clean exit
+    # (you can't play docked on the built-in pad).
+    local -A _acquired=()
+    local _aq_t=0 _aq_line _aq_ev
+    while (( _aq_t < ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S )); do
+        while IFS= read -r _aq_line; do
+            [[ -z "$_aq_line" ]] && continue
+            _aq_ev=$(echo "$_aq_line" | awk '{print $1}')
+            [[ -n "${_acquired[$_aq_ev]:-}" ]] && continue   # dedup across poll iterations
+            _acquired[$_aq_ev]=1
+            echo "[orchestrator] startup-acquire → CONTROLLER_ADD $_aq_line" >&2
+            _handle_msg "CONTROLLER_ADD $_aq_line"
+        done < <(list_eligible_controllers docked 2>/dev/null)
+        sleep 1
+        _aq_t=$((_aq_t + 1))
+    done
+    if (( ${#_acquired[@]} == 0 )); then
+        echo "[orchestrator] No controller within ${ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S}s — docked needs an external controller; exiting to Steam" >&2
+        cleanup
+        return 0
+    fi
+
+    # ── Start controller monitor (HOTPLUG-ONLY: skip its one-shot initial emit since we
+    # just acquired the already-connected pads above; it still snapshots the baseline so
+    # its udev diff doesn't re-add them → no double-spawn).
     if type start_controller_monitor >/dev/null 2>&1; then
-        start_controller_monitor docked &
+        CONTROLLER_MONITOR_SKIP_INITIAL_EMIT=1 start_controller_monitor docked &
         _CONTROLLER_MONITOR_PID=$!
-        echo "[orchestrator] Controller monitor PID: $_CONTROLLER_MONITOR_PID" >&2
+        echo "[orchestrator] Controller monitor PID: $_CONTROLLER_MONITOR_PID (hotplug-only)" >&2
     fi
 
     # ── Start dock detection (watch for docked→handheld transitions)
@@ -457,12 +500,13 @@ docked_flow() {
     fi
 
     # ── Event loop
-    # Session-end latch: docked starts EMPTY (no instance is spawned on entry — we wait
-    # for the first CONTROLLER_ADD), so we must NOT exit just because the active count is
-    # zero. Only once at least one player has joined (had_players) does a sustained return
-    # to zero mean "everyone quit → end the session" — mirroring handheld_flow, which
-    # exits when its single slot dies. A short grace (ORCHESTRATOR_EMPTY_EXIT_TICKS) keeps
-    # a disconnect-then-reconnect from tearing the session down.
+    # Session-end latch (the END bookend). Acquisition above guarantees ≥1 controller, but
+    # the spawn it triggers is backgrounded, so the slot may not read active for the first
+    # iteration or two — don't exit on a transient empty. Only once a slot has actually
+    # read active (had_players) does a sustained return to zero mean "everyone quit → end
+    # the session" — mirroring handheld_flow, which exits when its single slot dies. A short
+    # grace (ORCHESTRATOR_EMPTY_EXIT_TICKS) also keeps a disconnect-then-reconnect from
+    # tearing the session down.
     local had_players=false
     local empty_ticks=0
     while true; do
