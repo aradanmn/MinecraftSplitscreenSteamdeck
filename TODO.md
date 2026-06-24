@@ -116,25 +116,44 @@ Can be done any time; not blocking Phase B.
 
 ---
 
-## Deferred to Phase 3/4 (PR time — when merging feat/gamescope-windowing → main)
+## Deferred to Phase 3/4 — production landing (feat/gamescope-windowing → main)
 
 Until then: development workflow is `git pull` on the Deck.
+Full analysis (install→run flow trace, runtime-deps table, merge mechanics) is archived in
+[docs/archive/INTEGRATION-PLAN.md](docs/archive/INTEGRATION-PLAN.md).
 
-- [ ] Rename `minecraftSplitscreen.sh` → `mcss.sh`
-  - Update `launcher_setup.sh`: `launcher_script`, `local_script`, `remote_script` variables
-  - Update `desktop_launcher.sh`: `launcher_script_path` + print statements
-- [ ] Fix installer hardcoded `main` branch URLs
-  - `install-minecraft-splitscreen.sh` `REPO_BASE_URL`
-  - `launcher_setup.sh` `base_url` in `install_runtime_modules`
-  - `setup_splitscreen_launcher_script` `remote_script`
-- [ ] Add test script deployment to installer (`tests/test_phase_b_lifecycle.sh` → `~/.local/share/PolyMC/tests/`)
-- [ ] Update `launcher_script_generator.sh` to match current `minecraftSplitscreen.sh` (windowing code, dex.sh sourcing, session-env guard, timestamped logs, etc.)
-- [ ] PR `feat/gamescope-windowing` → `main`
+Decisions locked (2026-06-22): launcher = deploy the hand-written modular script + auto-detect
+config at runtime (generator retired); platform = hard-stop on missing KDE/gamescope (no
+DE-agnostic windowing); targets = SteamOS/Deck, Bazzite KDE/handheld, CachyOS-with-KDE.
 
----
+- [ ] **A1 (BLOCKER) — wire the production `launchFromPlasma` flow.** The Steam shortcut runs
+  `minecraftSplitscreen.sh launchFromPlasma`, but no such case exists → it falls through to `*)` →
+  bare `main()` with NO nested compositor and NO panel strip. The working windowing lives only in
+  the test path (`testPlasma`→`launchTestFromPlasma`). Fix: factor the nested-Plasma session setup
+  into a shared helper; `launchFromPlasma` runs it with `main()` inside (production), `test` runs it
+  with the harness inside. Without this, a real Steam launch gets no splitscreen — single most
+  important functional item.
+- [ ] **G — dependency + KDE/gamescope preflight HARD STOP** (install-time in `main_workflow.sh`
+  near `ensure_bwrap_installed`, and launch-time at the top of `minecraftSplitscreen.sh`). Required:
+  `jq python3 bwrap dbus-run-session kwin_wayland startplasma-wayland kscreen-doctor xdpyinfo`
+  (+ `gamescope` for the Game Mode path). Missing any → hard stop with a distro-aware hint
+  (CachyOS/Arch `pacman -S`; SteamOS `steamos-readonly disable && pacman`; Bazzite GNOME = unsupported).
+- [ ] Rename `minecraftSplitscreen.sh` → `mcss.sh` (cascades: `launcher_setup.sh`
+  `launcher_script`/`local_script`/`remote_script`; `desktop_launcher.sh` `launcher_script_path` +
+  prints; `add-to-steam.py`).
+- [ ] Add test-script deployment to installer (`tests/` → device, e.g. `~/.local/share/PolyMC/tests/`).
+- [ ] **B — PR/merge the branch as the new `main`.** History diverged (main +51 / branch +234, no
+  fast-forward; main's tree is fully superseded). Make the branch tree authoritative (merge `-X theirs`,
+  or reset main to the branch after review) — do NOT hand-resolve conflicts against the dead architecture.
+- [ ] **C — after merge, verify** a clean `curl | bash` install from main on each target. The
+  hardcoded-`main` URLs (`install-minecraft-splitscreen.sh` `REPO_BASE_URL`; `launcher_setup.sh`
+  `base_url`/`remote_script`; `main_workflow.sh` accounts.json; `steam_integration.sh` add-to-steam.py)
+  auto-resolve once the branch IS main — just re-verify, no edits needed.
+- [ ] **F (deferred/optional):** bare-KWin research round (`kwin_wayland_wrapper` vs raw `kwin_wayland`;
+  `KWIN_COMPOSE=Q`; EGL platform env) — keep `feat/gamescope-bare-kwin` separate, not mergeable.
 
-## Stale files to clean up
-
-- [ ] `DECISION_NEEDED.md` — from Bazzite Rev3 / Border Enforcer era. Superseded: we now run KWin nested inside gamescope via `nestedPlasma()`, so "skip KWin in Game Mode" is moot. Delete.
-- [ ] `GAMESCOPE_INVESTIGATION.md`, `GAMESCOPE_RESEARCH.md` — same era, same conclusion. Archive or delete.
-- [ ] `modules/gamescope_windowing.sh` — confirmed dead code (marked DEAD/UNUSED in header). Delete when cleaning up.
+Done on the branch (previously tracked here / in INTEGRATION-PLAN): A0 launcher decision + version
+stamping & `--version` (71c1112); `launcher_script_generator.sh` retired (831b6cd); TinyWM removed
+(d96ad38); gamescope-windowing dead code incl. `modules/gamescope_windowing.sh` removed (5bec629);
+H — README "Will it work on my device?" platforms/requirements section (4aa536f); Splitscreen mod
+removed from the installer (bdf08af).
