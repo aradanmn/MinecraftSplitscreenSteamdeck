@@ -144,8 +144,10 @@ _detect_via_kscreen_doctor() {
             continue
         fi
         if [[ "$line" == *"enabled"* ]]; then
+            # H14: "Output: <index> <name> enabled …" → name is field 3, not 2 ($2 is
+            # the output index). Only used in the log line, but get it right.
             local name
-            name=$(echo "$line" | awk '{print $2}')
+            name=$(echo "$line" | awk '{print $3}')
             echo "[dock_detection] Found enabled non-eDP output via kscreen-doctor: $name → docked" >&2
             echo "docked"
             return 0
@@ -240,7 +242,7 @@ watch_display_mode() {
             new_mode=$(get_display_mode)
             if [[ "$new_mode" != "$current_mode" ]]; then
                 echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
-                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo"
+                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
                 current_mode="$new_mode"
             fi
         done
@@ -252,7 +254,7 @@ watch_display_mode() {
             new_mode=$(get_display_mode)
             if [[ "$new_mode" != "$current_mode" ]]; then
                 echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
-                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo"
+                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
                 current_mode="$new_mode"
             fi
         done

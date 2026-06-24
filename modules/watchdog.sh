@@ -39,6 +39,10 @@ start_watchdog() {
 
     echo "[watchdog] Starting watchdog (poll interval: ${poll_interval}s)" >&2
 
+    # L1: exit cleanly on TERM/INT so cleanup()'s TERM (before its KILL) reaps us
+    # without needing the force-kill.
+    trap 'exit 0' TERM INT
+
     while true; do
         sleep "$poll_interval"
 
@@ -74,7 +78,9 @@ start_watchdog() {
 
                 if $dead && [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
                     echo "[watchdog] Slot $slot $reason gone → SLOT_DIED" >&2
-                    echo "SLOT_DIED $slot" >> "$fifo"
+                    # H6: tolerate a broken pipe (orchestrator closed the read end) —
+                    # a failed FIFO write under `set -e` would otherwise kill the watchdog.
+                    echo "SLOT_DIED $slot" >> "$fifo" || true
                     _WATCHDOG_REPORTED[$slot]=1
                 fi
             else
