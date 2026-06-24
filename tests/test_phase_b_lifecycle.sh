@@ -243,14 +243,19 @@ test_handheld_single_player() {
     # The deck-built-in vs external-controller distinction is cosmetic here;
     # both go through docked_flow's CONTROLLER_ADD dispatch.
 
+    # Inject the REAL 4-field CONTROLLER_ADD format that controller_monitor emits:
+    #   CONTROLLER_ADD <event_node> <js_node> <vendor> <product>
+    # (Using 2 fields here previously hid audit bug C1 — the orchestrator's parse
+    # leaked the trailing vendor/product into js_node, but the test never sent them.)
     # Two DISTINCT dead device nodes (/dev/null event, /dev/zero js): bwrap binds
     # both, SDL sees no /dev/input/* controller, Minecraft loads without input.
     # They must differ — the orchestrator blanks js_node if event==js (its sentinel
     # for the single-arg CONTROLLER_ADD form), which would fail spawn_instance.
+    # vendor/product are dummy (0000 0000); spawn_instance ignores them for now.
     local slot=1
     if ! slot_is_active "$slot" 2>/dev/null; then
         _prep_slot "$slot"
-        _inject "CONTROLLER_ADD /dev/null /dev/zero"
+        _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     else
         _info "Slot $slot already active — skipping ADD"
     fi
@@ -297,7 +302,7 @@ test_docked_two_players() {
 
     # Player 1 connects → slot 1
     _prep_slot 1
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     if _wait_for_slot_active 1 30 "Test 2"; then
         _pass "Test 2.1 — Slot 1 bwrap started"
     else
@@ -312,7 +317,7 @@ test_docked_two_players() {
 
     # Player 2 connects → slot 2
     _prep_slot 2
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     if _wait_for_slot_active 2 30 "Test 2"; then
         _pass "Test 2.2 — Slot 2 bwrap started"
     else
@@ -355,7 +360,7 @@ test_docked_three_players() {
 
     for slot in 1 2 3; do
         _prep_slot "$slot"
-        _inject "CONTROLLER_ADD /dev/null /dev/zero"
+        _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
         if _wait_for_slot_active "$slot" 30 "Test 3"; then
             _pass "Test 3.1 — Slot $slot bwrap started"
         else
@@ -412,7 +417,7 @@ test_max_four() {
 
     for slot in 1 2 3 4; do
         _prep_slot "$slot"
-        _inject "CONTROLLER_ADD /dev/null /dev/zero"
+        _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
         _wait_for_slot_active "$slot" 30 "Test 4" || { _fail "Test 4.1 — Slot $slot did not start"; return 0; }
         _wait_for_minecraft_ready "$slot" 600 "Test 4-P${slot}" || { return 0; }
     done
@@ -427,7 +432,7 @@ test_max_four() {
     fi
 
     # 5th controller — should be ignored (all 4 slots full)
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     sleep 2
     active=$(get_active_slots 2>/dev/null | wc -w)
     if (( active == 4 )); then
@@ -453,11 +458,11 @@ test_docked_to_handheld() {
 
     # Launch 2 players
     _prep_slot 1
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     _wait_for_slot_active 1 30 "Test 5"
     _wait_for_minecraft_ready 1 600 "Test 5-P1" || { return 0; }
     _prep_slot 2
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     _wait_for_slot_active 2 30 "Test 5"
     _wait_for_minecraft_ready 2 600 "Test 5-P2" || { return 0; }
 
@@ -496,7 +501,7 @@ test_load_timing() {
     local t_start t_end elapsed
     t_start=$(date +%s%N)
     _prep_slot 1
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     _wait_for_slot_active 1 30 "Test 6-P1" || { _fail "Test 6 — Slot 1 bwrap did not start"; return 0; }
     _wait_for_minecraft_ready 1 600 "Test 6-P1" || { return 0; }
     t_end=$(date +%s%N)
@@ -508,7 +513,7 @@ test_load_timing() {
     _info "Timing load for P2 (with P1 already rendering)..."
     t_start=$(date +%s%N)
     _prep_slot 2
-    _inject "CONTROLLER_ADD /dev/null /dev/zero"
+    _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
     _wait_for_slot_active 2 30 "Test 6-P2" || { _fail "Test 6 — Slot 2 bwrap did not start"; return 0; }
     _wait_for_minecraft_ready 2 600 "Test 6-P2" || { return 0; }
     t_end=$(date +%s%N)
@@ -533,7 +538,7 @@ test_full_lifecycle() {
     # Launch 4 players
     for slot in 1 2 3 4; do
         _prep_slot "$slot"
-        _inject "CONTROLLER_ADD /dev/null /dev/zero"
+        _inject "CONTROLLER_ADD /dev/null /dev/zero 0000 0000"
         _wait_for_slot_active "$slot" 30 "Test 7" || { _fail "Test 7.1 — Slot $slot did not start"; return 0; }
         _wait_for_minecraft_ready "$slot" 600 "Test 7-P${slot}" || { return 0; }
     done

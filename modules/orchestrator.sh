@@ -134,12 +134,19 @@ _handle_msg() {
             fi
             echo "[orchestrator] CONTROLLER_ADD → slot $slot (spawning instance)" >&2
 
-            # Extract event_node and js_node from the CONTROLLER_ADD arg if provided
-            # Format: "CONTROLLER_ADD /dev/input/eventX /dev/input/jsX"
-            local event_node="" js_node=""
+            # Extract controller fields from the CONTROLLER_ADD arg if provided.
+            # Format (controller_monitor emits 4 fields):
+            #   "CONTROLLER_ADD /dev/input/eventX /dev/input/jsX <vendor> <product>"
+            # The old `${msg_arg#* }` parse took "everything after the first space" as
+            # js_node, which polluted it with the trailing vendor/product on the real
+            # 4-field message (audit C1). The test harness injected only 2 fields so it
+            # never caught this. read -r splits all fields cleanly; trailing vendor/
+            # product are captured (unused for now) instead of leaking into js_node.
+            local event_node="" js_node="" phys_vendor="" phys_product=""
             if [[ -n "$msg_arg" ]]; then
-                event_node="${msg_arg%% *}"
-                js_node="${msg_arg#* }"
+                read -r event_node js_node phys_vendor phys_product <<< "$msg_arg"
+                # Single-arg form sentinel: monitor sets js_node==event_node when there
+                # is no distinct js node — blank it so spawn_instance skips the js bind.
                 [[ "$event_node" == "$js_node" ]] && js_node=""
             fi
 
