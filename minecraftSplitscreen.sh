@@ -605,17 +605,25 @@ DEOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _kill_nested_compositor: end the nested KWin compositor RELIABLY. kwin_wayland_wrapper
-# RESPAWNS kwin_wayland, so killing kwin alone just brings it back and the nested session
-# (the "game" Steam tracks) never exits — gamescope then sits on the Abort-Game overlay.
-# Kill the WRAPPER (by full cmdline) first, then the compositor. (2026-06-23: confirmed the
-# wrapper was the reason "the game won't exit".)
-_kill_nested_compositor() {
-    pkill -TERM -f kwin_wayland_wrapper 2>/dev/null || true
-    pkill -TERM -x kwin_wayland 2>/dev/null || true
-    sleep 1
-    pkill -KILL -f kwin_wayland_wrapper 2>/dev/null || true
-    pkill -KILL -x kwin_wayland 2>/dev/null || true
+# _end_nested_session: tear down the WHOLE nested Plasma session so Steam's reaper
+# releases and gamescope returns to the library. Two gotchas (both confirmed 2026-06-23):
+#   1. kwin_wayland_wrapper RESPAWNS kwin_wayland — kill the wrapper first or kwin comes back.
+#   2. Plasma session services (baloo_file, kded, kglobalacceld, kactivitymanagerd, …)
+#      survive a compositor-only teardown, get adopted by Steam's subreaper, and keep the
+#      "game" alive forever (Abort-Game overlay) — the reaper waits on the whole descendant
+#      tree. So reap them too. TERM pass, then KILL pass.
+_end_nested_session() {
+    local sig svc
+    for sig in TERM KILL; do
+        pkill -"$sig" -f kwin_wayland_wrapper 2>/dev/null || true
+        pkill -"$sig" -x kwin_wayland 2>/dev/null || true
+        for svc in startplasma-wayland plasma_session baloo_file kded6 \
+                   kglobalacceld kactivitymanagerd kscreen_backend_launcher \
+                   xdg-desktop-portal-kde; do
+            pkill -"$sig" -f "$svc" 2>/dev/null || true
+        done
+        [ "$sig" = TERM ] && sleep 1
+    done
 }
 
 # _install_kwin_borderless_rule: de-decorate the Minecraft windows via a KWin window RULE
@@ -670,7 +678,7 @@ launchTestFromPlasma() {
     # Tear down the nested KWin session, stop the panel killer, and restore the
     # leaked session env on exit — prevents a permanent black screen / sddm restart
     # loop if the test hangs, crashes, or is interrupted.
-    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _kill_nested_compositor' EXIT
+    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT
 
     if ! declare -f docked_flow >/dev/null 2>&1; then
         echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
@@ -696,19 +704,16 @@ launchTestFromPlasma() {
     kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
     trap - EXIT
     _restore_session_env
-    _kill_nested_compositor
 
-    # End the nested Plasma session so Steam/gamescope sees the "game" exit.
-    # Killing KWin alone does NOT make `dbus-run-session startplasma-wayland`
-    # (the process Steam tracks) return, so gamescope sat on the running-game
-    # overlay until the user pressed "Abort Game".  Log out the Plasma session
-    # gracefully, then fall back to terminating the session leader.  [UNVERIFIED
-    # 2026-06-21 — added end-of-night; confirm next session.]
+    # Graceful Plasma logout first (lets session services stop cleanly), then FORCE-reap
+    # the WHOLE nested session — compositor, wrapper, AND the Plasma helpers (baloo_file,
+    # kded, …) that otherwise survive, get adopted by Steam's subreaper, and keep the
+    # "game" alive (gamescope Abort-Game overlay). 2026-06-23: baloo_file adopted by the
+    # reaper was confirmed to be why the game wouldn't exit on its own.
     qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null \
         || qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null || true
     sleep 1
-    pkill -x plasma_session 2>/dev/null || true
-    pkill -f startplasma-wayland 2>/dev/null || true
+    _end_nested_session
     echo "[launchTestFromPlasma] complete" >> "$LOG"
 }
 
