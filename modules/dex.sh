@@ -15,8 +15,6 @@
 #   dex_raise <wid>                   — raise window
 #   dex_set_name <wid> <name>        — set _NET_WM_NAME
 #   dex_set_override_redirect <wid> <0|1> — set override-redirect flag
-#   dex_set_fullscreen <wid> <0|1>   — set/clear _NET_WM_STATE_FULLSCREEN
-#   dex_set_skip_taskbar <wid> <0|1> — set/clear _NET_WM_STATE_SKIP_TASKBAR
 #   dex_get_root_wid                 — stdout: root window ID
 #   dex_get_active_wid               — stdout: active window ID (_NET_ACTIVE_WINDOW)
 #   dex_set_root_atom <atom_name> <value> — set property on root window
@@ -24,7 +22,6 @@
 #   dex_list_windows                 — stdout: WID+name pairs for all windows
 #   dex_wid_from_state <slot>        — stdout: WID from splitscreen_state.json
 #   dex_find_minecraft_windows       — stdout: "WID SLOT" for each SplitscreenP{N}
-#   dex_spawn_placeholder <slot> <x> <y> <w> <h> — GTK black placeholder window
 #
 # Environment:
 #   DEX_DISPLAY — override DISPLAY (default: $DISPLAY or :0)
@@ -54,9 +51,8 @@ Actions: root_wid, list, get_wm_name <wid>, search_name <pattern>,
          resize <wid> <w> <h>, move_resize <wid> <x> <y> <w> <h>,
          raise <wid>, set_name <wid> <name>,
          set_override_redirect <wid> <0|1>,
-         set_fullscreen <wid> <0|1>, set_skip_taskbar <wid> <0|1>,
          set_root_atom <name> <value>, get_active_wid,
-         find_minecraft, spawn_placeholder <slot> <x> <y> <w> <h>
+         find_minecraft
 """
 import ctypes, ctypes.util, sys, os, struct, signal
 
@@ -172,7 +168,11 @@ def get_prop(wid, atom_name):
 
 def change_prop32(wid, atom_name, values):
     a = atom(atom_name)
-    arr = (ctypes.c_uint32 * len(values))(*values)
+    # Xlib treats format-32 property data as an array of C `long` (8 bytes on
+    # 64-bit), NOT 32-bit ints — it reads sizeof(long) per element. A c_uint32
+    # array (4-byte stride) under-allocates and lands each value in the wrong
+    # half-word. Use c_long so the stride matches what XChangeProperty reads. N9.
+    arr = (ctypes.c_long * len(values))(*values)
     _lib.XChangeProperty(dpy, Window(wid), a, Atom(4), 32, 0,
                           ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)),
                           ctypes.c_int(len(values)))
@@ -404,50 +404,6 @@ def action_set_override_redirect(args):
     _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
     _lib.XFlush(dpy)
 
-def _send_client_msg(wid, msg_type, data0, data1, data2, data3, data4):
-    """Send a ClientMessage event to the root window."""
-    # Use raw ctypes to build the event
-    buf = ctypes.create_string_buffer(60)  # sizeof(XClientMessageEvent) = 60
-    # type (int) at offset 0
-    ctypes.memmove(buf, ctypes.byref(ctypes.c_int(33)), 4)
-    # serial (ulong) at offset 4 (ignored)
-    # send_event (Bool) at offset 8+4 depending on alignment
-    # window (Window=ulong) at offset... depends on arch
-    # Simpler: use XSendEvent with properly packed data
-    ev_buf = struct.pack(
-        '=i4xI' + ('I' if ctypes.sizeof(ctypes.c_ulong) == 4 else 'Q') + '4x5I',
-        33,  # type = ClientMessage
-        0,   # serial (unused)
-        wid,  # window
-        msg_type, data0, data1, data2, data3, data4
-    )
-    # Actually let's just use the simple approach - XChangeProperty instead
-    # of ClientMessage for _NET_WM_STATE
-    pass
-
-def action_set_fullscreen(args):
-    wid, val = int(args[0]), int(args[1])
-    state_atom = atom('_NET_WM_STATE_FULLSCREEN')
-    net_wm_state = atom('_NET_WM_STATE')
-    action = 1 if val else 0  # _NET_WM_STATE_ADD or _NET_WM_STATE_REMOVE
-    # Write via XChangeProperty on the window
-    arr = (ctypes.c_uint32 * 5)(action, state_atom, 0, 0, 0)
-    _lib.XChangeProperty(dpy, Window(wid), net_wm_state, Atom(4), 32, 0,
-                          ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)),
-                          ctypes.c_int(1))  # just 1 element
-    _lib.XFlush(dpy)
-
-def action_set_skip_taskbar(args):
-    wid, val = int(args[0]), int(args[1])
-    state_atom = atom('_NET_WM_STATE_SKIP_TASKBAR')
-    net_wm_state = atom('_NET_WM_STATE')
-    action = 1 if val else 0
-    arr = (ctypes.c_uint32 * 5)(action, state_atom, 0, 0, 0)
-    _lib.XChangeProperty(dpy, Window(wid), net_wm_state, Atom(4), 32, 0,
-                          ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)),
-                          ctypes.c_int(1))
-    _lib.XFlush(dpy)
-
 def action_set_root_atom(args):
     name, value = args[0], int(args[1])
     change_prop32(root, name, [value])
@@ -485,8 +441,12 @@ def action_set_decorations(args):
     wid = int(args[0])
     decorated = int(args[1]) if len(args) > 1 else 0
     a = atom('_MOTIF_WM_HINTS')
+    # format-32 data is read by Xlib as C `long` (8 bytes on 64-bit). A c_uint32
+    # array (4-byte stride) made XChangeProperty over-read 20 bytes past the buffer
+    # and scattered [flags, 0, decorations, 0, 0] across the wrong MWM fields. Use
+    # c_long so the 5-long payload [flags=2, 0, decorations, 0, 0] lands correctly. N9.
     vals = [2, 0, (1 if decorated else 0), 0, 0]
-    arr = (ctypes.c_uint32 * 5)(*vals)
+    arr = (ctypes.c_long * 5)(*vals)
     _lib.XChangeProperty(dpy, Window(wid), a, a, 32, 0,
                          ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)), ctypes.c_int(5))
     _lib.XFlush(dpy)
@@ -507,8 +467,6 @@ ACTIONS = {
     'raise': action_raise_win,
     'set_name': action_set_name,
     'set_override_redirect': action_set_override_redirect,
-    'set_fullscreen': action_set_fullscreen,
-    'set_skip_taskbar': action_set_skip_taskbar,
     'set_decorations': action_set_decorations,
     'set_root_atom': action_set_root_atom,
     'get_active_wid': action_get_active_wid,
@@ -574,8 +532,6 @@ dex_move_resize_remap(){ _dex_run move_resize_remap "$1" "$2" "$3" "$4" "$5"; }
 dex_raise()      { _dex_run raise "$1"; }
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
-dex_set_fullscreen() { _dex_run set_fullscreen "$1" "$2"; }
-dex_set_skip_taskbar() { _dex_run set_skip_taskbar "$1" "$2"; }
 dex_set_decorations() { _dex_run set_decorations "$1" "${2:-0}"; }
 dex_get_root_wid() { _dex_run root_wid; }
 dex_get_active_wid() { _dex_run get_active_wid; }
@@ -583,10 +539,6 @@ dex_set_root_atom() { _dex_run set_root_atom "$1" "$2"; }
 dex_get_wm_name() { _dex_run get_wm_name "$1"; }
 dex_list_windows() { _dex_run list; }
 dex_find_minecraft_windows() { _dex_run find_minecraft; }
-dex_spawn_placeholder() {
-    local slot="$1" x="$2" y="$3" w="$4" h="$5"
-    _dex_run spawn_placeholder "$slot" "$x" "$y" "$w" "$h"
-}
 
 dex_wid_from_state() {
     local slot="$1"

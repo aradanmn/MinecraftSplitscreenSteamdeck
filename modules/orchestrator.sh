@@ -43,6 +43,10 @@ readonly ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=5
 _WATCHDOG_PID=""
 _CONTROLLER_MONITOR_PID=""
 _DOCK_MONITOR_PID=""
+# N2: PIDs of backgrounded spawn_instance brace groups. _handle_msg appends here so
+# cleanup() can kill any orphan spawn subshell that would otherwise keep polling for
+# a window (up to 120s) and map it AFTER teardown.
+_SPAWN_PIDS=()
 
 # =============================================================================
 # HELPER: read a single message from the FIFO
@@ -271,18 +275,31 @@ _handle_msg() {
                 # M1: mktemp can fail (full /tmp) → empty path. M2: this brace group runs
                 # in a backgrounded subshell, so an EXIT trap reaps the temp even if the
                 # subshell is signalled. Fall back to streaming directly if mktemp fails.
-                local _si_log
+                local _si_log _si_rc
                 _si_log=$(mktemp "${TMPDIR:-/tmp}/spawn_instance_slot${_slot}_XXXXXX.log") || _si_log=""
                 trap '[[ -n "$_si_log" ]] && rm -f "$_si_log"' EXIT
+                # N1: capture spawn_instance's REAL exit status (the old `|| true` swallowed
+                # it). On failure the slot was reserved active:true above but never gets a
+                # bwrap_pid, so _reap_dead_slots skips it forever ("still launching") and one
+                # of the 4 slots is permanently dead. Clear the reservation to free the slot.
                 if [[ -n "$_si_log" ]]; then
-                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" >"$_si_log" 2>&1 || true
+                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" >"$_si_log" 2>&1
+                    _si_rc=$?
                     sed 's/^/[orchestrator] /' < "$_si_log" >&2
                 else
-                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" 2>&1 | sed 's/^/[orchestrator] /' >&2
+                    _si_rc=${PIPESTATUS[0]}
                 fi
-                sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
-                _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
+                if (( _si_rc != 0 )); then
+                    echo "[orchestrator] spawn_instance failed for slot $_slot — slot released" >&2
+                    update_slot_state "$_slot" '{"active": false, "pid": null, "bwrap_pid": null, "event_node": null, "js_node": null, "wid": null}'
+                else
+                    sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
+                    _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
+                fi
             } &
+            # N2: track the spawn subshell so cleanup() can kill it on teardown.
+            _SPAWN_PIDS+=($!)
             ;;
 
         CONTROLLER_REMOVE)
@@ -422,7 +439,13 @@ handheld_flow() {
     # ── Spawn slot 1 (single player)
     # No controller masking needed — only one instance, one controller.
     echo "[orchestrator] Spawning single instance for handheld mode" >&2
-    spawn_instance 1 "" "" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+    # N3: docked→handheld keeps slot 1 alive and re-enters handheld_flow; spawning again
+    # would double-spawn over the survivor. Only spawn when slot 1 isn't already active.
+    if ! slot_is_active 1 2>/dev/null; then
+        spawn_instance 1 "" "" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+    else
+        echo "[orchestrator] handheld: slot 1 already active — not respawning" >&2
+    fi
 
     # ── Event loop
     while true; do
@@ -666,6 +689,20 @@ cleanup() {
         kill -KILL "$_DOCK_MONITOR_PID" 2>/dev/null || true
         echo "[orchestrator] Dock monitor PID $_DOCK_MONITOR_PID killed" >&2
     fi
+
+    # ── Kill any in-flight spawn subshells (N2)
+    # A backgrounded spawn_instance brace group polls for java+window up to 120s; if one
+    # is still running at teardown it could map a window AFTER cleanup. Kill them all.
+    local _sp
+    for _sp in "${_SPAWN_PIDS[@]}"; do
+        if [[ -n "$_sp" ]] && kill -0 "$_sp" 2>/dev/null; then
+            kill -TERM "$_sp" 2>/dev/null || true
+            sleep 0.2
+            kill -KILL "$_sp" 2>/dev/null || true
+            echo "[orchestrator] Spawn subshell PID $_sp killed" >&2
+        fi
+    done
+    _SPAWN_PIDS=()
 
     # ── Tear down all instances
     if type teardown_all_instances >/dev/null 2>&1; then

@@ -190,13 +190,21 @@ kwin_set_noborder() {
 })();
 KWINJS
     local id
-    id=$(kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$jsfile" "$name" 2>/dev/null | tr -dc '0-9')
-    if [[ -n "$id" ]]; then
-        kwin_qdbus org.kde.KWin "/Scripting/Script${id}" org.kde.kwin.Script.run >/dev/null 2>&1 \
-            || kwin_qdbus org.kde.KWin "/${id}" org.kde.kwin.Script.run >/dev/null 2>&1
-        sleep 0.2
-        kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$name" >/dev/null 2>&1
+    # H8: do NOT strip non-digits with `tr -dc '0-9'` — that turns an error reply like
+    # "ERROR: 123" into the bogus script id "123". Capture raw, then require the whole
+    # trimmed string to be a plain integer.
+    id=$(kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$jsfile" "$name" 2>/dev/null)
+    id="${id//[$'\t\r\n ']/}"
+    if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+        echo "[kwin_positioner] ERROR: loadScript returned no valid id (got '${id}')" >&2
+        rm -f "$jsfile"
+        return 1
     fi
+
+    kwin_qdbus org.kde.KWin "/Scripting/Script${id}" org.kde.kwin.Script.run >/dev/null 2>&1 \
+        || kwin_qdbus org.kde.KWin "/${id}" org.kde.kwin.Script.run >/dev/null 2>&1
+    sleep 0.2
+    kwin_qdbus org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$name" >/dev/null 2>&1
     rm -f "$jsfile"
     return 0
 }
