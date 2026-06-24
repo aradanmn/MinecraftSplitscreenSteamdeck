@@ -605,6 +605,44 @@ DEOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# _kill_nested_compositor: end the nested KWin compositor RELIABLY. kwin_wayland_wrapper
+# RESPAWNS kwin_wayland, so killing kwin alone just brings it back and the nested session
+# (the "game" Steam tracks) never exits — gamescope then sits on the Abort-Game overlay.
+# Kill the WRAPPER (by full cmdline) first, then the compositor. (2026-06-23: confirmed the
+# wrapper was the reason "the game won't exit".)
+_kill_nested_compositor() {
+    pkill -TERM -f kwin_wayland_wrapper 2>/dev/null || true
+    pkill -TERM -x kwin_wayland 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f kwin_wayland_wrapper 2>/dev/null || true
+    pkill -KILL -x kwin_wayland 2>/dev/null || true
+}
+
+# _install_kwin_borderless_rule: de-decorate the Minecraft windows via a KWin window RULE
+# (caption substring "Minecraft", Force noborder), applied once at map — the job the removed
+# Splitscreen mod did with GLFW_DECORATED, but without the per-reflow noBorder-toggle frame
+# recreate. Reconfigure so the running nested KWin picks it up before instances map.
+# NOTE: overwrites ~/.config/kwinrulesrc — the splitscreen launch owns KWin config in the
+# nested Game-Mode session (the legacy launcher already wrote this file).
+_install_kwin_borderless_rule() {
+    mkdir -p ~/.config 2>/dev/null || true
+    cat > ~/.config/kwinrulesrc <<'KRULES'
+[General]
+count=1
+rules=mcss-borderless
+
+[mcss-borderless]
+Description=Minecraft Splitscreen borderless
+title=Minecraft
+titlematch=1
+noborder=true
+noborderrule=2
+KRULES
+    qdbus org.kde.KWin /KWin reconfigure 2>/dev/null \
+        || qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
+    echo "[launchTestFromPlasma] installed KWin borderless window rule (title~Minecraft)" >> "$LOG"
+}
+
 # launchTestFromPlasma
 # Called from KDE autostart inside the nested test session.
 # Starts docked_flow in background, runs the Phase B lifecycle test
@@ -624,10 +662,15 @@ launchTestFromPlasma() {
     ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
     _PANEL_KILLER_PID=$!
 
+    # De-decorate Minecraft windows via a one-time KWin rule (replaces the removed
+    # Splitscreen mod's GLFW_DECORATED handling). KWin owns geometry now, so this just
+    # strips the title bar; positioning is done by kwin_place_windows.
+    _install_kwin_borderless_rule
+
     # Tear down the nested KWin session, stop the panel killer, and restore the
     # leaked session env on exit — prevents a permanent black screen / sddm restart
     # loop if the test hangs, crashes, or is interrupted.
-    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; pkill -TERM kwin_wayland 2>/dev/null; sleep 1; pkill -KILL kwin_wayland 2>/dev/null || true' EXIT
+    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _kill_nested_compositor' EXIT
 
     if ! declare -f docked_flow >/dev/null 2>&1; then
         echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
@@ -653,9 +696,7 @@ launchTestFromPlasma() {
     kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
     trap - EXIT
     _restore_session_env
-    pkill -TERM kwin_wayland 2>/dev/null || true
-    sleep 2
-    pkill -KILL kwin_wayland 2>/dev/null || true
+    _kill_nested_compositor
 
     # End the nested Plasma session so Steam/gamescope sees the "game" exit.
     # Killing KWin alone does NOT make `dbus-run-session startplasma-wayland`
