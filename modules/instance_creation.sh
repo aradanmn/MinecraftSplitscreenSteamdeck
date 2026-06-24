@@ -182,8 +182,11 @@ EOF
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
         local target_instance_dir="$TARGET_DIR/instances/$instance_name"
-        local preserve_options_txt=false
-        
+        # H12: do NOT re-declare preserve_options_txt=false here — it would discard the
+        # value handle_instance_update set above (line ~80), so a normal-location update
+        # always lost options.txt. Keep that value; the cross-location branch below may
+        # still force it true.
+
         # For updates, check if we're working with an existing instance in a different location
         if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$TARGET_DIR/instances" ]]; then
             target_instance_dir="$instances_dir/$instance_name"
@@ -366,7 +369,7 @@ EOF
                 print_debug "Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
                 
                 # Try exact version match first
-                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                 print_debug "Exact version match result: ${mod_url:-'(empty)'}"
                 
                 # Try major.minor version if exact match failed  
@@ -376,14 +379,14 @@ EOF
                     print_debug "Trying major.minor version: $mc_major_minor"
                     
                     # Try exact major.minor
-                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                     print_debug "Major.minor match result: ${mod_url:-'(empty)'}"
                     
                     # Try wildcard version (e.g., "1.21.x")
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                         local mc_major_minor_x="$mc_major_minor.x"
                         print_debug "Trying wildcard version: $mc_major_minor_x"
-                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                         print_debug "Wildcard match result: ${mod_url:-'(empty)'}"
                     fi
                     
@@ -396,7 +399,7 @@ EOF
                             local prev_patch=$((mc_patch_version - 1))
                             local mc_prev_version="$mc_major_minor.$prev_patch"
                             print_debug "Trying limited backwards compatibility with: $mc_prev_version"
-                            mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                            mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                             print_debug "Limited backwards compatibility result: ${mod_url:-'(empty)'}"
                         fi
                     fi
@@ -405,7 +408,7 @@ EOF
                 # If still no URL found, try the latest Fabric version for any compatible release
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                     print_debug "Trying latest Fabric version (any compatible release)"
-                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                     print_debug "Latest Fabric match result: ${mod_url:-'(empty)'}"
                 fi
                 
