@@ -88,8 +88,10 @@ readonly INSTALLER_MODULE_FILES=(
 # Runtime orchestrator modules — deployed to TARGET_DIR/modules/ so the launcher
 # can source them at play time. NOT sourced by the installer.
 readonly RUNTIME_MODULE_FILES=(
+    "preflight.sh"
     "dock_detection.sh"
     "controller_monitor.sh"
+    "kwin_positioner.sh"
     "window_manager.sh"
     "instance_lifecycle.sh"
     "watchdog.sh"

@@ -62,7 +62,13 @@ main() {
     # =============================================================================
     # CORE SYSTEM REQUIREMENTS VALIDATION
     # =============================================================================
-    
+
+    # HARD STOP before downloading anything if the KDE/Plasma/KWin stack (or other
+    # critical deps) is missing — the splitscreen windowing requires it (item G).
+    if declare -f _preflight_deps >/dev/null 2>&1; then
+        _preflight_deps install || exit 1
+    fi
+
     ensure_bwrap_installed         # Verify/install bubblewrap (required by the launcher sandbox)
     download_prism_launcher        # Download PolyMC AppImage for splitscreen launcher usage
     
