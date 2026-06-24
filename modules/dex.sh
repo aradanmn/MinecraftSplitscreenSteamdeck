@@ -493,6 +493,23 @@ def action_spawn_placeholder(args):
         # Parent: print the PID so caller can track it
         print(pid)
 
+def action_set_decorations(args):
+    """Toggle WM decorations (title bar/border) via _MOTIF_WM_HINTS.
+    args: <wid> <0|1>  (0 = borderless / no decorations, 1 = decorated).
+    This is the standard X way to request borderless. KWin honours the property
+    change in its normal event loop (no synchronous decoration recreate), so unlike
+    KWin-scripting w.noBorder it does NOT block/hang the caller. _MOTIF_WM_HINTS is
+    5 longs [flags, functions, decorations, input_mode, status];
+    flags = MWM_HINTS_DECORATIONS (1<<1 = 2)."""
+    wid = int(args[0])
+    decorated = int(args[1]) if len(args) > 1 else 0
+    a = atom('_MOTIF_WM_HINTS')
+    vals = [2, 0, (1 if decorated else 0), 0, 0]
+    arr = (ctypes.c_uint32 * 5)(*vals)
+    _lib.XChangeProperty(dpy, Window(wid), a, a, 32, 0,
+                         ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)), ctypes.c_int(5))
+    _lib.XFlush(dpy)
+
 # ---- Dispatch ----
 ACTIONS = {
     'root_wid': action_root_wid,
@@ -511,6 +528,7 @@ ACTIONS = {
     'set_override_redirect': action_set_override_redirect,
     'set_fullscreen': action_set_fullscreen,
     'set_skip_taskbar': action_set_skip_taskbar,
+    'set_decorations': action_set_decorations,
     'set_root_atom': action_set_root_atom,
     'get_active_wid': action_get_active_wid,
     'find_minecraft': action_find_minecraft,
@@ -570,6 +588,7 @@ dex_set_name()   { _dex_run set_name "$1" "$2"; }
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
 dex_set_fullscreen() { _dex_run set_fullscreen "$1" "$2"; }
 dex_set_skip_taskbar() { _dex_run set_skip_taskbar "$1" "$2"; }
+dex_set_decorations() { _dex_run set_decorations "$1" "${2:-0}"; }
 dex_get_root_wid() { _dex_run root_wid; }
 dex_get_active_wid() { _dex_run get_active_wid; }
 dex_set_root_atom() { _dex_run set_root_atom "$1" "$2"; }
