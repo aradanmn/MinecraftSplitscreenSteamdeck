@@ -18,11 +18,16 @@ the producer half (hand-injected 2-field FIFO messages), which is why it never h
 - [x] **CONTROLLER_REMOVE event-node bug (C1 twin), found live → fixed (6c24642).** Handler
   was treating the device-node arg as a slot number → disconnects ignored, no re-tile.
   Now format-aware (slot number OR event node via _find_slot_by_event_node). Deployed.
-- [x] **Docked-mode clean exit → fixed in code (43f7639), pending Deck validation.** UX
-  decided: all players quit → exit. docked_flow now mirrors handheld via a had_players
-  latch + short empty grace (ORCHESTRATOR_EMPTY_EXIT_TICKS) so it ends once everyone who
-  joined has quit, without exiting at the empty startup state. Deployed. NEXT: live-verify
-  that quitting/disconnecting all instances returns cleanly to Steam.
+- [x] **Docked session lifecycle bookends → fixed in code, pending Deck validation.**
+  - END (43f7639): all players quit → exit. had_players latch + ORCHESTRATOR_EMPTY_EXIT_TICKS
+    grace so it ends once everyone who joined has quit, without exiting at startup.
+  - START (3114691): docked_flow now does a 5s controller-acquisition poll at the start —
+    spawns already-connected pads (robust to Steam's staggered virtual-pad creation, which
+    the old one-shot monitor scan raced), and exits to Steam if none appear. Monitor is now
+    hotplug-only (SKIP_INITIAL_EMIT) to avoid double-spawn. Slot now reserved synchronously
+    in _handle_msg before backgrounding spawn (no rapid-ADD slot collision).
+  - NEXT: live-verify — (a) launch with pads already connected → all spawn; (b) launch with
+    none → exits to Steam after 5s; (c) all quit mid-session → returns to Steam.
 - [ ] **Real deploy step (NEW).** Launcher runs from `~/.local/share/PolyMC/`, a separate
   copy from the git clone — `git pull` alone doesn't update it (caused a stale-code run).
   Wire a deploy/self-update so pull≠deploy can't recur.
