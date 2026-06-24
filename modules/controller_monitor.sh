@@ -556,14 +556,25 @@ start_controller_monitor() {
 
     echo "[controller_monitor] Starting controller monitor in $mode mode" >&2
 
-    # Initial device snapshot
+    # Initial device snapshot. EMIT a CONTROLLER_ADD for each ALREADY-connected eligible
+    # controller — the udevadm loop below only reacts to NEW connect/disconnect events, so
+    # without this a controller plugged in BEFORE launch never spawns an instance. This was
+    # the production launchFromPlasma "black screen / nothing launches" bug (2026-06-23):
+    # the scan logged "Initial devices" but emitted no ADD, so the orchestrator waited
+    # forever. (The test harness injects CONTROLLER_ADD into the FIFO directly, so it never
+    # exercised this path.)
     local prev_nodes=""
     local cline
     while IFS= read -r cline; do
         [[ -z "$cline" ]] && continue
-        local ev
+        local ev js_node phys_vendor phys_product
         ev=$(echo "$cline" | awk '{print $1}')
+        js_node=$(echo "$cline" | awk '{print $2}')
+        phys_vendor=$(echo "$cline" | awk '{print $3}')
+        phys_product=$(echo "$cline" | awk '{print $4}')
         prev_nodes="$prev_nodes $ev"
+        echo "[controller_monitor] Initial controller present: $ev $js_node $phys_vendor $phys_product" >&2
+        echo "CONTROLLER_ADD $ev $js_node $phys_vendor $phys_product" >> "$fifo"
     done < <(list_eligible_controllers "$mode")
 
     echo "[controller_monitor] Initial devices:$prev_nodes" >&2
