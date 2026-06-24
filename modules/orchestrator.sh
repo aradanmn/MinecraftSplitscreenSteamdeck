@@ -26,9 +26,9 @@ set -euo pipefail
 
 # ── Module-level constants ───────────────────────────────────────────────────
 readonly ORCHESTRATOR_MAX_SLOTS=4
-readonly ORCHESTRATOR_SETTLE_DELAY_S=10
 readonly ORCHESTRATOR_SPAWN_DELAY_S=3
-readonly ORCHESTRATOR_IDLE_TIMEOUT_S=30
+# FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
+readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
 
 # PID tracking for background workers
 _WATCHDOG_PID=""
@@ -98,18 +98,61 @@ _reflow_layout() {
     active=$(get_active_slots)
     [[ -z "$active" ]] && return 0
 
-    local ruleW ruleH
-    ruleW=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1) || ruleW=1280
-    ruleH=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2) || ruleH=800
+    # M4: robust dimension parse. The old `awk $2 | cut` chain returned empty (not the
+    # fallback) when xdpyinfo was missing or its format differed, because the pipe's
+    # exit status came from `cut` succeeding on empty input. Parse with sed, then
+    # validate each is an integer and fall back otherwise.
+    local ruleW ruleH dims
+    dims=$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+x[0-9]\+\).*/\1/p' | head -1)
+    ruleW="${dims%x*}"
+    ruleH="${dims#*x}"
+    [[ "$ruleW" =~ ^[0-9]+$ ]] || ruleW=1280
+    [[ "$ruleH" =~ ^[0-9]+$ ]] || ruleH=800
 
     # Reflow via the window manager.
     # NOTE: stderr is intentionally NOT suppressed (was `2>/dev/null`).  The
     # window-positioning diagnostics ("[window_manager] Repositioning…", dex
     # strategy + geometry readback) are essential for debugging reflow failures
     # such as a window being left unmapped — discarding them made the slot-1
-    # unmap bug invisible in the debug log.  `|| true` still keeps a positioning
-    # failure from aborting the orchestrator loop.
-    sync_apply_layout "$active" "$ruleW" "$ruleH" || true
+    # unmap bug invisible in the debug log.
+    # H10: surface a reflow failure (return non-zero) instead of swallowing it with
+    # `|| true`. Callers decide whether to log/retry; the orchestrator loop never
+    # aborts on it because each call site tolerates the non-zero return.
+    if ! sync_apply_layout "$active" "$ruleW" "$ruleH"; then
+        echo "[orchestrator] WARNING: reflow (sync_apply_layout) failed for slots: $active" >&2
+        return 1
+    fi
+    return 0
+}
+
+# =============================================================================
+# _reap_dead_slots — orchestrator-side liveness safety net (H9).
+# The watchdog normally emits SLOT_DIED, but slot_is_active() only reads the state
+# flag, so if the watchdog dies the event loop would spin forever with slots marked
+# active long after their processes exited (gamescope stuck on the spinner, never
+# returning to Steam). Independently verify each active slot's process and tear down
+# any whose bwrap leader + java are both gone. Skips slots still launching (no
+# bwrap_pid recorded yet) so it never races spawn_instance.
+# =============================================================================
+_reap_dead_slots() {
+    local active slot
+    active=$(get_active_slots)
+    [[ -z "$active" ]] && return 0
+    for slot in $active; do
+        local bwrap_pid java_pid
+        bwrap_pid=$(get_bwrap_pid "$slot")
+        # No bwrap pid yet → instance is still launching; leave it alone.
+        [[ -z "$bwrap_pid" ]] && continue
+        kill -0 "$bwrap_pid" 2>/dev/null && continue
+        # bwrap leader is dead; confirm java is gone too before reaping.
+        java_pid=$(get_java_pid "$slot")
+        if [[ -n "$java_pid" ]] && kill -0 "$java_pid" 2>/dev/null; then
+            continue
+        fi
+        echo "[orchestrator] Slot $slot processes gone (watchdog may be down) — reaping" >&2
+        teardown_instance "$slot" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+        _reflow_layout || echo "[orchestrator] WARNING: reflow after reap failed (slot $slot)" >&2
+    done
 }
 
 # =============================================================================
@@ -164,13 +207,20 @@ _handle_msg() {
             # immediately (not after a 2-minute wait).
             local _slot="$slot" _en="$event_node" _jn="$js_node"
             {
+                # M1: mktemp can fail (full /tmp) → empty path. M2: this brace group runs
+                # in a backgrounded subshell, so an EXIT trap reaps the temp even if the
+                # subshell is signalled. Fall back to streaming directly if mktemp fails.
                 local _si_log
-                _si_log=$(mktemp /tmp/spawn_instance_slot${_slot}_XXXXXX.log)
-                spawn_instance "$_slot" "$_en" "$_jn" >"$_si_log" 2>&1 || true
-                sed 's/^/[orchestrator] /' < "$_si_log" >&2
-                rm -f "$_si_log"
+                _si_log=$(mktemp "${TMPDIR:-/tmp}/spawn_instance_slot${_slot}_XXXXXX.log") || _si_log=""
+                trap '[[ -n "$_si_log" ]] && rm -f "$_si_log"' EXIT
+                if [[ -n "$_si_log" ]]; then
+                    spawn_instance "$_slot" "$_en" "$_jn" >"$_si_log" 2>&1 || true
+                    sed 's/^/[orchestrator] /' < "$_si_log" >&2
+                else
+                    spawn_instance "$_slot" "$_en" "$_jn" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+                fi
                 sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
-                _reflow_layout
+                _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
             } &
             ;;
 
@@ -193,11 +243,15 @@ _handle_msg() {
             fi
             echo "[orchestrator] SLOT_DIED for slot $slot — cleaning up" >&2
             local _td_log
-            _td_log=$(mktemp /tmp/teardown_slot${slot}_XXXXXX.log)
-            teardown_instance "$slot" >"$_td_log" 2>&1 || true
-            sed 's/^/[orchestrator] /' < "$_td_log" >&2
-            rm -f "$_td_log"
-            _reflow_layout
+            _td_log=$(mktemp "${TMPDIR:-/tmp}/teardown_slot${slot}_XXXXXX.log") || _td_log=""
+            if [[ -n "$_td_log" ]]; then
+                teardown_instance "$slot" >"$_td_log" 2>&1 || true
+                sed 's/^/[orchestrator] /' < "$_td_log" >&2
+                rm -f "$_td_log"
+            else
+                teardown_instance "$slot" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
+            fi
+            _reflow_layout || echo "[orchestrator] WARNING: post-SLOT_DIED reflow failed (slot $slot)" >&2
             ;;
 
         DISPLAY_MODE_CHANGE)
@@ -300,8 +354,10 @@ handheld_flow() {
     spawn_instance 1 "" "" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
 
     # ── Event loop
-    local reflow_needed=false
     while true; do
+        # Independent liveness reap (don't rely solely on the watchdog — H9).
+        _reap_dead_slots
+
         # Check if the main instance is still alive
         if ! slot_is_active 1 2>/dev/null; then
             echo "[orchestrator] Slot 1 is no longer active — exiting handheld flow" >&2
@@ -309,7 +365,7 @@ handheld_flow() {
         fi
 
         local msg
-        if msg=$(_read_fifo_msg 5); then
+        if msg=$(_read_fifo_msg "$ORCHESTRATOR_FIFO_READ_TIMEOUT_S"); then
             echo "[orchestrator] FIFO message: $msg" >&2
             _handle_msg "$msg" || break
         fi
@@ -374,7 +430,7 @@ docked_flow() {
     # ── Event loop
     while true; do
         local msg
-        if msg=$(_read_fifo_msg 5); then
+        if msg=$(_read_fifo_msg "$ORCHESTRATOR_FIFO_READ_TIMEOUT_S"); then
             echo "[orchestrator] FIFO message: $msg" >&2
             _handle_msg "$msg" || {
                 local exit_code=$?
@@ -387,6 +443,9 @@ docked_flow() {
                 break
             }
         fi
+
+        # Independent liveness reap (don't rely solely on the watchdog — H9).
+        _reap_dead_slots
 
         # Check if we should settle (no active slots + timeout → exit)
         local active
