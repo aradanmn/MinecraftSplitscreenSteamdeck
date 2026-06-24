@@ -605,6 +605,92 @@ DEOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# launchFromPlasma — PRODUCTION outer entry (this is the LaunchOptions the Steam
+# shortcut runs). Starts the nested KDE/Plasma session exactly like testPlasma, but
+# the autostart runs the PRODUCTION inner handler (prodFromPlasma → the real
+# orchestrator) instead of the test harness. A1 (2026-06-23): without this case the
+# Steam shortcut fell through to a bare main() with NO nested compositor / no tiling,
+# so a real user got no splitscreen — the working windowing lived only in `test`.
+# NOTE: kept parallel to testPlasma (not refactored into a shared helper) to avoid
+# regressing the validated test path; DRY in a later cleanup.
+# ─────────────────────────────────────────────────────────────────────────────
+launchFromPlasma() {
+    echo "[launchFromPlasma] start (production)" >> "$LOG"
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
+
+    cat > /tmp/kwin_wayland_wrapper <<WEOF
+#!/bin/bash
+/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
+WEOF
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
+
+    local SCRIPT_PATH
+    SCRIPT_PATH="$(readlink -f "$0")"
+    mkdir -p ~/.config/autostart
+    cat > ~/.config/autostart/splitscreen-prod.desktop <<DEOF
+[Desktop Entry]
+Name=Splitscreen
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} prodFromPlasma
+Type=Application
+X-KDE-AutostartScript=true
+DEOF
+    _snapshot_session_env
+    echo "[launchFromPlasma] autostart written (→ prodFromPlasma), exec startplasma-wayland" >> "$LOG"
+    exec dbus-run-session startplasma-wayland
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchProdFromPlasma — PRODUCTION inner handler (runs inside the nested Plasma
+# session, from launchFromPlasma's autostart). Same nested-session scaffolding as
+# launchTestFromPlasma (strip the panel for full real estate, clean full-session
+# teardown on exit) but runs the REAL orchestrator main() — the FIFO event loop +
+# controller monitor + spawn slot 1 + reflow — instead of the test harness.
+# ─────────────────────────────────────────────────────────────────────────────
+launchProdFromPlasma() {
+    echo "[launchProdFromPlasma] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-prod.desktop ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+
+    # Strip the Plasma panel (black backdrop, full tiling area); respawn-killer loop.
+    pkill -x plasmashell 2>/dev/null || true
+    ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
+    _PANEL_KILLER_PID=$!
+
+    # On exit: restore leaked session env, stop the panel killer, reap the WHOLE nested
+    # session (so Steam/gamescope return to the library — see _end_nested_session).
+    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT
+
+    if ! declare -f main >/dev/null 2>&1; then
+        echo "[launchProdFromPlasma] ERROR: orchestrator main() not available — modules not sourced?" >> "$LOG"
+        return 1
+    fi
+
+    # Run the real orchestrator. It blocks until the session ends (P1/Deck instance
+    # exits). Output to the log directly (NO pipe — a pipe's write-end would be inherited
+    # by bwrap descendants and stall the orchestrator's FIFO reads).
+    main >> "$LOG" 2>&1 || true
+
+    # Final teardown.
+    if declare -f teardown_all_instances >/dev/null 2>&1; then
+        teardown_all_instances 2>/dev/null || true
+    fi
+    kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
+    trap - EXIT
+    _restore_session_env
+    qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null \
+        || qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null || true
+    sleep 1
+    _end_nested_session
+    echo "[launchProdFromPlasma] complete" >> "$LOG"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # _end_nested_session: tear down the WHOLE nested Plasma session so Steam's reaper
 # releases and gamescope returns to the library. Two gotchas (both confirmed 2026-06-23):
 #   1. kwin_wayland_wrapper RESPAWNS kwin_wayland — kill the wrapper first or kwin comes back.
@@ -895,6 +981,24 @@ launchNested() {
 # dispatch_mode is set by the test/testPlasma wrappers to override the
 # default behavior when running automated tests inside nested KDE.
 case "${1:-}" in
+    launchFromPlasma)
+        # PRODUCTION entry — this is the LaunchOptions the Steam shortcut runs
+        # (set by add-to-steam.py). Start the nested Plasma session; its autostart
+        # re-invokes this script as `prodFromPlasma` INSIDE the session. (A1: previously
+        # this fell through to `*) → main()` with no nested compositor = no splitscreen.)
+        echo "[main] Production launch — launchFromPlasma (starting nested Plasma)" >> "$LOG"
+        launchFromPlasma
+        ;;
+    prodFromPlasma)
+        # PRODUCTION inner handler — runs INSIDE the nested Plasma session (from the
+        # launchFromPlasma autostart). Strips the panel + runs the real orchestrator.
+        echo "[main] Production launch — prodFromPlasma (inside nested Plasma)" >> "$LOG"
+        if declare -f launchProdFromPlasma >/dev/null 2>&1; then
+            launchProdFromPlasma
+        else
+            echo "[main] ERROR: launchProdFromPlasma not available — modules not sourced?" >> "$LOG"
+        fi
+        ;;
     test)
         # Phase B lifecycle test: first call from outside nested session.
         # Optional second arg is a test number for the harness.
