@@ -223,14 +223,14 @@ _position_slot() {
 
 # --- Public API ---
 
-# Determine grid mode from the set of active slot numbers.
-# Arguments: $1 = space-separated list of active slot numbers, e.g. "1 3"
-# Output: "full", "half", or "quad" on stdout.
-# Empty input → "full".
+# Determine grid mode from the COUNT of active slots (NOT the highest slot number).
+# Arguments: $1 = space-separated list of active slot numbers, e.g. "2 4"
+# Output: "full" (1), "half" (2), or "quad" (3-4) on stdout. Empty → "full".
+# Count-based so the layout collapses correctly on scale-down: e.g. 2 players in
+# slots {2,4} → "half" (two halves), 1 player in slot 4 → "full" (fullscreen).
+# (Was highest-slot-based, which left {2,4} as "quad" and a lone slot-4 in a corner.)
 compute_grid_mode() {
     local active_slots="${1:-}"
-
-    # Normalize: trim, compress whitespace
     active_slots=$(echo "$active_slots" | tr -s ' ' | sed 's/^ //;s/ $//')
 
     if [[ -z "$active_slots" ]]; then
@@ -238,31 +238,21 @@ compute_grid_mode() {
         return 0
     fi
 
-    # Find the highest active slot number
-    local highest=0
-    local slot
+    local count=0 slot
     for slot in $active_slots; do
-        if [[ "$slot" =~ ^[1-4]$ ]]; then
-            if (( slot > highest )); then
-                highest=$slot
-            fi
-        fi
+        [[ "$slot" =~ ^[1-4]$ ]] && (( count++ ))
     done
 
-    if (( highest <= 0 )); then
-        echo "full"
-    elif (( highest == 1 )); then
-        echo "full"
-    elif (( highest == 2 )); then
-        echo "half"
-    else
-        echo "quad"
+    if   (( count <= 1 )); then echo "full"
+    elif (( count == 2 )); then echo "half"
+    else                        echo "quad"
     fi
 }
 
-# Compute geometry for a given slot in a given grid mode.
-# Arguments: $1=slot(1-4), $2=grid_mode(full|half|quad), $3=screen_w, $4=screen_h
-# Output: "x y w h" on stdout.
+# Compute geometry for a CELL INDEX (1-based position in the grid) in a grid mode.
+# Arguments: $1=cell(1-4), $2=grid_mode(full|half|quad), $3=screen_w, $4=screen_h
+# Output: "x y w h" on stdout. Callers pass the slot's ORDER among active slots (not the
+# slot number), so active slots fill cells top-to-bottom / left-to-right.
 compute_slot_geometry() {
     local slot="${1:-1}"
     local grid_mode="${2:-full}"
@@ -302,7 +292,8 @@ compute_slot_geometry() {
 
 # Apply the full layout for the current active slots.
 # Arguments: $1=active_slots (space-separated), $2=screen_w, $3=screen_h
-# Effects: repositions Minecraft windows, spawns/kills black placeholders.
+# Effects: repositions the active Minecraft windows via KWin scripting. Grid mode is by
+# active COUNT; active slots fill cells by order (so scale-down collapses correctly).
 apply_layout() {
     local active_slots="${1:-}"
     local screen_w="${2:-}"
@@ -331,77 +322,44 @@ apply_layout() {
         done
     fi
 
-    # In full mode, only slot 1 matters — no placeholders needed for other slots
-    if [[ "$grid_mode" == "full" ]]; then
-        local wid
-        echo "[window_manager] Repositioning slot 1 → fullscreen ${screen_w}x${screen_h}" >&2
-        _position_slot 1 0 0 "$screen_w" "$screen_h"
-        wid=$(_get_wid_from_state 1); [[ -n "$wid" ]] && _verify_window_geometry 1 "$wid" 0 0 "$screen_w" "$screen_h"
-        return 0
-    fi
-
+    # Map each active slot to a CELL by its ORDER among the active slots (1st active →
+    # cell 1, 2nd → cell 2, …). grid_mode is by COUNT and compute_slot_geometry maps a
+    # cell index → rectangle, so active slots fill the grid top-to-bottom / left-to-right
+    # regardless of WHICH slot numbers are active. This makes scale-down collapse
+    # correctly — 2 players → two halves, 1 player → fullscreen, no empty corners — and
+    # removes the old "full mode only repositions slot 1" bug (a lone survivor in slot 4
+    # would never go fullscreen).
     local -a active_array=($active_slots)
+    local slot cell geometry x y w h wid
 
-    # Determine the highest slot number the current grid supports.
-    # Slots beyond this limit are simply ignored — they have no defined
-    # geometry in this grid mode and must not receive placeholder windows.
-    local max_grid_slot
-    case "$grid_mode" in
-        half) max_grid_slot=2 ;;
-        quad) max_grid_slot=4 ;;
-        *)    max_grid_slot=1 ;;
-    esac
-
-    # Process only slots within the grid capacity
-    local slot
-    for slot in 1 2 3 4; do
-        if (( slot > max_grid_slot )); then
-            continue
-        fi
-        local is_active=0
-        local as
-        for as in "${active_array[@]}"; do
-            if [[ "$as" == "$slot" ]]; then
-                is_active=1
-                break
-            fi
-        done
-
-        local geometry
-        geometry=$(compute_slot_geometry "$slot" "$grid_mode" "$screen_w" "$screen_h")
-        local x y w h
+    cell=0
+    for slot in "${active_array[@]}"; do
+        [[ "$slot" =~ ^[1-4]$ ]] || continue
+        cell=$((cell+1))
+        geometry=$(compute_slot_geometry "$cell" "$grid_mode" "$screen_w" "$screen_h")
         read -r x y w h <<< "$geometry"
-
-        if (( is_active != 1 )); then
-            # Vacant slot — nothing to do. plasmashell is killed so the backdrop is
-            # already black (placeholders removed 2026-06-23).
-            continue
-        fi
-
-        # Position the Minecraft window via KWin scripting (window stays KWin-managed;
-        # no override_redirect). KWin holds the geometry, so we set it once per reflow;
-        # _position_slot falls back to the legacy OR cycle only if KWin scripting is down.
-        echo "[window_manager] Repositioning slot $slot → ${w}x${h}+${x}+${y}" >&2
+        # Position via KWin scripting (window stays KWin-managed; no override_redirect).
+        # KWin holds the geometry, so we set it once per reflow; _position_slot falls back
+        # to the legacy OR cycle only if KWin scripting is unreachable.
+        echo "[window_manager] Repositioning slot $slot → cell $cell ${w}x${h}+${x}+${y} ($grid_mode)" >&2
         _position_slot "$slot" "$x" "$y" "$w" "$h"
-        echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [kwin frameGeometry]" >&2
-        local wid
+        echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode cell $cell) [kwin frameGeometry]" >&2
         wid=$(_get_wid_from_state "$slot"); [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
     done
 
-    # Settle + single re-assert (the "let it settle, then position" fix).
-    # A freshly-mapped Minecraft/XWayland window is still finishing setup when the
-    # first reflow positions it, so the geometry can be dropped/clobbered. KWin
-    # HOLDS managed-window geometry, so ONE re-assert after a short settle is enough
-    # — no continuous loop (that's what caused the old persistent-script issues).
-    # Skip in full mode (single window) and when disabled. Tunable via env.
+    # Settle + single re-assert (the "let it settle, then position" fix). A freshly-mapped
+    # Minecraft/XWayland window is still finishing setup when first positioned, so KWin can
+    # drop the geometry; one re-assert after a short settle makes it hold (KWin keeps
+    # managed-window geometry, so no continuous loop). Skip in full mode (single window).
     if [[ "${MCSS_REASSERT:-1}" == "1" && "$grid_mode" != "full" && -n "${active_slots// }" ]]; then
         sleep "${MCSS_REASSERT_DELAY_S:-1.2}"
-        local rs
-        for rs in $active_slots; do
-            local rgeo rx ry rw rh
-            rgeo=$(compute_slot_geometry "$rs" "$grid_mode" "$screen_w" "$screen_h")
-            read -r rx ry rw rh <<< "$rgeo"
-            _position_slot "$rs" "$rx" "$ry" "$rw" "$rh"
+        cell=0
+        for slot in "${active_array[@]}"; do
+            [[ "$slot" =~ ^[1-4]$ ]] || continue
+            cell=$((cell+1))
+            geometry=$(compute_slot_geometry "$cell" "$grid_mode" "$screen_w" "$screen_h")
+            read -r x y w h <<< "$geometry"
+            _position_slot "$slot" "$x" "$y" "$w" "$h"
         done
         echo "[window_manager] re-asserted layout for active slots: $active_slots" >&2
     fi
