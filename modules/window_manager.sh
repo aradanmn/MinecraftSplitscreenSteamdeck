@@ -10,8 +10,7 @@ set -euo pipefail
 # Public API:
 #   compute_grid_mode(active_slots)          — stdout: "full", "half", or "quad"
 #   compute_slot_geometry(slot, grid, W, H)  — stdout: "x y w h"
-#   apply_layout(active_slots, W, H)         — repositions windows, manages placeholders
-#   kill_all_placeholders()                  — kills all placeholder windows
+#   apply_layout(active_slots, W, H)         — repositions active windows (KWin scripting)
 #
 # Environment overrides:
 #   SPLITSCREEN_SCREEN_W, SPLITSCREEN_SCREEN_H — force screen dimensions
@@ -21,12 +20,6 @@ set -euo pipefail
 readonly WINDOW_MANAGER_DEFAULT_SCREEN_W=1280
 readonly WINDOW_MANAGER_DEFAULT_SCREEN_H=800
 readonly WINDOW_MANAGER_WINDOW_WAIT_TIMEOUT_S=30
-readonly WINDOW_MANAGER_XTERM_CHAR_W=6   # approximate pixel width per character cell
-readonly WINDOW_MANAGER_XTERM_CHAR_H=13  # approximate pixel height per character cell
-
-# --- Internal state ---
-# Track PIDs of placeholder windows: key="slot", value="pid"
-declare -A _WINDOW_MANAGER_PLACEHOLDER_PIDS
 
 # --- Internal functions ---
 
@@ -146,60 +139,11 @@ _get_screen_resolution() {
     return 0
 }
 
-# _spawn_placeholder: Create a black borderless window for a vacant slot.
-# $1 = slot (1-4)
-# $2 = x, $3 = y, $4 = w, $5 = h
-_spawn_placeholder() {
-    local slot="$1"
-    local x="$2"
-    local y="$3"
-    local w="$4"
-    local h="$5"
-
-    # Kill any existing placeholder for this slot
-    if [[ -n "${_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]:-}" ]]; then
-        kill "${_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]}" 2>/dev/null || true
-        unset '_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]'
-    fi
-
-    if command -v python3 >/dev/null 2>&1; then
-        echo "[window_manager] Spawning tkinter black placeholder for slot $slot (${w}x${h}+${x}+${y})" >&2
-        python3 -c "
-import tkinter as tk
-root = tk.Tk()
-root.configure(bg='black')
-root.overrideredirect(True)
-root.geometry('${w}x${h}+${x}+${y}')
-root.title('SplitscreenBlack${slot}')
-root.mainloop()
-" &
-        local pid=$!
-        _WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]="$pid"
-    elif command -v xterm >/dev/null 2>&1; then
-        local cols=$(( w / WINDOW_MANAGER_XTERM_CHAR_W ))
-        local rows=$(( h / WINDOW_MANAGER_XTERM_CHAR_H ))
-        (( cols < 1 )) && cols=1
-        (( rows < 1 )) && rows=1
-        echo "[window_manager] Spawning xterm placeholder for slot $slot (${cols}x${rows}+${x}+${y})" >&2
-        xterm -bg black -fg black -geometry "${cols}x${rows}+${x}+${y}" -T "SplitscreenBlack${slot}" &
-        local pid=$!
-        _WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]="$pid"
-    else
-        echo "[window_manager] ERROR: neither python3 nor xterm available for placeholder window" >&2
-        return 1
-    fi
-}
-
-# _kill_placeholder: Kill the placeholder for a specific slot.
-# $1 = slot
-_kill_placeholder() {
-    local slot="$1"
-    if [[ -n "${_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]:-}" ]]; then
-        echo "[window_manager] Killing placeholder for slot $slot (PID ${_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]})" >&2
-        kill "${_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]}" 2>/dev/null || true
-        unset '_WINDOW_MANAGER_PLACEHOLDER_PIDS[$slot]'
-    fi
-}
+# NOTE: black placeholder windows were removed 2026-06-23. They existed only to mask
+# the desktop showing through empty quad cells, but the splitscreen session kills
+# plasmashell (black backdrop), so empty cells are already black. The leaked ones
+# (their PIDs didn't survive apply_layout's background subshells) were covering the
+# real game windows. Empty cells now simply show the black backdrop.
 
 # _verify_window_geometry: After applying positioning, query the actual
 # position/size via ctypes and log it.
@@ -412,9 +356,6 @@ apply_layout() {
     local slot
     for slot in 1 2 3 4; do
         if (( slot > max_grid_slot )); then
-            # Kill any stale placeholder that may have been left from a
-            # previous layout (e.g. transitioning from quad back to half)
-            _kill_placeholder "$slot"
             continue
         fi
         local is_active=0
@@ -431,26 +372,20 @@ apply_layout() {
         local x y w h
         read -r x y w h <<< "$geometry"
 
-        if (( is_active == 1 )); then
-            # Kill placeholder if one exists for this slot
-            _kill_placeholder "$slot"
-
-            # Find and reposition the Minecraft window.
-            # _get_wid_from_state prefers WID from state file (reliable in gamescope)
-            # and falls back to xdotool name search for X11 sessions.
-            # Path B: position via KWin scripting (window stays KWin-managed; no
-            # override_redirect). KWin holds the geometry, so we set it once per
-            # reflow rather than fighting/​re-asserting a tiler. _position_slot
-            # falls back to the legacy OR cycle only if KWin scripting is down.
-            echo "[window_manager] Repositioning slot $slot → ${w}x${h}+${x}+${y}" >&2
-            _position_slot "$slot" "$x" "$y" "$w" "$h"
-            echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [kwin frameGeometry]" >&2
-            local wid
-            wid=$(_get_wid_from_state "$slot"); [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
-        else
-            # Vacant slot — spawn placeholder
-            _spawn_placeholder "$slot" "$x" "$y" "$w" "$h"
+        if (( is_active != 1 )); then
+            # Vacant slot — nothing to do. plasmashell is killed so the backdrop is
+            # already black (placeholders removed 2026-06-23).
+            continue
         fi
+
+        # Position the Minecraft window via KWin scripting (window stays KWin-managed;
+        # no override_redirect). KWin holds the geometry, so we set it once per reflow;
+        # _position_slot falls back to the legacy OR cycle only if KWin scripting is down.
+        echo "[window_manager] Repositioning slot $slot → ${w}x${h}+${x}+${y}" >&2
+        _position_slot "$slot" "$x" "$y" "$w" "$h"
+        echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode) [kwin frameGeometry]" >&2
+        local wid
+        wid=$(_get_wid_from_state "$slot"); [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
     done
 
     # Settle + single re-assert (the "let it settle, then position" fix).
@@ -472,14 +407,7 @@ apply_layout() {
     fi
 }
 
-# Kill all placeholder windows spawned by this module.
-kill_all_placeholders() {
-    echo "[window_manager] Killing all placeholders" >&2
-    local slot
-    for slot in "${!_WINDOW_MANAGER_PLACEHOLDER_PIDS[@]}"; do
-        _kill_placeholder "$slot"
-    done
-}
+# (kill_all_placeholders removed 2026-06-23 — placeholders no longer exist.)
 
 # sync_apply_layout: thin wrapper around apply_layout, kept so existing callers
 # don't need to change. (It used to branch to the gamescope-windowing approach,

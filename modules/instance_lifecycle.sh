@@ -657,10 +657,7 @@ teardown_instance() {
         kill -9 "$java_pid" 2>/dev/null || true
     fi
 
-    # 4. Kill placeholder window for this slot
-    _kill_placeholder "$slot" 2>/dev/null || true
-
-    # 5. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
+    # 4. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
     update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null, \"wid\": null}"
 
     # Layout reflow is the caller's responsibility (e.g. SLOT_DIED handler calls
