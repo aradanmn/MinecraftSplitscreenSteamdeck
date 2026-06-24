@@ -454,6 +454,13 @@ get_controller_by_index() {
     local index="${1:-1}"
     local mode="${2:-}"
 
+    # M5: validate the index before feeding it to `sed -n "${index}p"` — a blank or
+    # non-numeric value would make sed error or behave unexpectedly.
+    if ! [[ "$index" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[controller_monitor] WARNING: get_controller_by_index bad index '$index'" >&2
+        return 1
+    fi
+
     local line
     line=$(list_eligible_controllers "$mode" | sed -n "${index}p")
     if [[ -n "$line" ]]; then
@@ -506,7 +513,7 @@ _check_devices_changed() {
             local now_ms
             now_ms=$(_get_epoch_ms)
             local last_ms="${_CONTROLLER_MONITOR_DEBOUNCE_MAP["$ev"]:-0}"
-            if (( now_ms - last_ms < CONTROLLER_MONITOR_DEBOUNCE_MS )); then
+            if (( now_ms - last_ms <= CONTROLLER_MONITOR_DEBOUNCE_MS )); then
                 echo "[controller_monitor] Debounced add event for $ev (${CONTROLLER_MONITOR_DEBOUNCE_MS}ms window)" >&2
                 continue
             fi
