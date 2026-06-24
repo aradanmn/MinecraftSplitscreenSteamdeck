@@ -98,19 +98,9 @@ _reflow_layout() {
     active=$(get_active_slots)
     [[ -z "$active" ]] && return 0
 
-    # Re-compute KWin rules for the current slot count
-    local n_slots
-    n_slots=$(echo "$active" | wc -w)
     local ruleW ruleH
     ruleW=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1) || ruleW=1280
     ruleH=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2) || ruleH=800
-
-    local slot
-    for slot in $active; do
-        read _x _y _w _h < <(compute_geometry "$slot" "$n_slots" "$ruleW" "$ruleH")
-        # Write splitscreen.properties so the mod renders correctly
-        _write_splitscreen_properties "$slot" "$active" 2>/dev/null || true
-    done
 
     # Reflow via the window manager.
     # NOTE: stderr is intentionally NOT suppressed (was `2>/dev/null`).  The

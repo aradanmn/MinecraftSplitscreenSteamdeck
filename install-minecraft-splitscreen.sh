@@ -256,11 +256,12 @@ load_mods_config() {
 
     if [[ ! -f "$conf" ]]; then
         echo "[mods] mods.conf not found at ${conf} — using built-in defaults" >&2
-        REQUIRED_SPLITSCREEN_MODS=("Controlify" "Splitscreen Support")
-        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "yJgqfSDR")
+        # NOTE: the "Splitscreen Support" mod (yJgqfSDR) is NO LONGER installed — window
+        # tiling is done by KWin, not the mod (2026-06-23). Only Controlify is required.
+        REQUIRED_SPLITSCREEN_MODS=("Controlify")
+        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm")
         MODS=(
             "Controlify|modrinth|DOUdJVEm"
-            "Splitscreen Support|modrinth|yJgqfSDR"
             "Sodium|modrinth|AANobbMI"
             "Sodium Options API|modrinth|Es5v4eyq"
             "Reese's Sodium Options|modrinth|Bh37bMuy"
