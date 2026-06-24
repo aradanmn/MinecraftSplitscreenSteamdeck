@@ -1,5 +1,21 @@
 # TODO
 
+## Production launch (A1) — 2 bugs to fix before merge (2026-06-23)
+Windowing engine VALIDATED (test 4: borderless + tile + scale-down + clean exit). Mod removed
+from instances + installer. Production `launchFromPlasma` wired + spawns, but the real-shortcut
+test surfaced two production-only bugs (the simulated-controller test path never hit them):
+- [ ] **CONTROLLER_ADD field mismatch.** `controller_monitor` emits 4 fields
+  `CONTROLLER_ADD <event> <js> <vendor> <product>`; orchestrator `_handle_msg` parses
+  `js_node="${msg_arg#* }"` (everything after first space) → js_node = "/dev/input/js1 0000 0000".
+  FIX: parse js_node as the 2nd token only (drop vendor/product, or use them explicitly).
+- [ ] **Window not detected (`wid=null`) — the on-screen symptom.** Two java per instance; the
+  game window is owned by the CHILD java, not the pid spawn_instance stored. And
+  `_poll_for_window` searches title `SplitscreenP{slot}` which FLASHES to `Minecraft* 26.1.2`
+  before the search → falls back to the wrong pid → wid=null → no positioning/de-decoration →
+  raw windowed+titled window. FIX: detect across the instance's whole java/bwrap process tree
+  (or by window class), tolerant of the title flash.
+- [ ] Then: re-validate the real shortcut, STRIP test code, merge branch→main (branch tree wins).
+
 ## Research — bare nested KWin on SteamOS 3.8 (Game Mode)
 
 - [ ] **TESTED 2026-06-22 (testNested 2 on feat/gamescope-bare-kwin):** the
