@@ -595,10 +595,13 @@ spawn_instance() {
         echo "[spawn_instance] Stored WID $window_id for slot $slot" >&2
     fi
 
-    # NOTE: do NOT call kwin_set_noborder here — setting noBorder via a KWin script HANGS
-    # the scripting call (the synchronous decoration recreate stalls spawn_instance before
-    # layout, leaving every window unpositioned). 2026-06-23. Title bars are tolerated for
-    # now; revisit de-decoration with a non-blocking approach later.
+    # 7.5 Strip the title bar via _MOTIF_WM_HINTS (the standard X way, set on the WID by
+    # dex). KWin honours the property change in its event loop — NO synchronous frame
+    # recreate — so this does NOT hang spawn_instance the way the KWin-scripting noBorder
+    # did. Done before layout so the (borderless) frame == client when we position it.
+    if [[ -n "$window_id" ]] && type dex_set_decorations >/dev/null 2>&1; then
+        dex_set_decorations "$window_id" 0 2>/dev/null || true
+    fi
 
     # 8. Apply layout with all currently active slots
     local updated_active
