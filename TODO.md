@@ -12,8 +12,20 @@ the producer half (hand-injected 2-field FIFO messages), which is why it never h
   java subtree by `_NET_WM_PID` (`_collect_slot_pids`), not just the stored pid, and re-asserts
   the `SplitscreenP{slot}` title (incl. a bounded background title-keeper) so it survives the
   game's caption flash to `Minecraft* <ver>`.
-- [ ] **NEXT: re-validate the real shortcut on the Deck**, then STRIP test code, merge
-  branch→main (branch tree wins). ← only remaining gate; needs a live run + your eyes on screen.
+- [x] **Live Deck validation (2026-06-24):** fresh run confirmed on screen — clean js_node
+  (C1 fixed in prod), borderless, 1→2→3→4 tiling (full/half/quad), scale-down collapse
+  (P3 quit → survivors re-tile), 4 distinct wids. Producer fixes work on hardware.
+- [x] **CONTROLLER_REMOVE event-node bug (C1 twin), found live → fixed (6c24642).** Handler
+  was treating the device-node arg as a slot number → disconnects ignored, no re-tile.
+  Now format-aware (slot number OR event node via _find_slot_by_event_node). Deployed.
+- [ ] **Docked-mode clean exit (NEW gate).** `docked_flow` idles forever when slots empty
+  (`TODO: SESSION_END`); user couldn't exit cleanly. Need an exit trigger (active count→0,
+  or a dedicated input). DECISION NEEDED: intended docked exit UX. ← blocks merge.
+- [ ] **Real deploy step (NEW).** Launcher runs from `~/.local/share/PolyMC/`, a separate
+  copy from the git clone — `git pull` alone doesn't update it (caused a stale-code run).
+  Wire a deploy/self-update so pull≠deploy can't recur.
+- [ ] **Then: re-run the full scale-down→fullscreen→clean-exit chain on fresh code**, STRIP
+  test code, merge branch→main (branch tree wins).
 
 ## Codebase bug audit (2026-06-23) — ALL 27 ADDRESSED IN CODE (2026-06-24) — docs/BUG-AUDIT-2026-06-23.md
 Multi-agent audit, adversarially verified: 27 distinct confirmed bugs (2 Critical, 14 High,
