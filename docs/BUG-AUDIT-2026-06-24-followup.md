@@ -183,6 +183,60 @@ be rotated and removed.
 
 ---
 
-_Follow-up audit, 2026-06-24. Verifies `BUG-AUDIT-2026-06-23.md` against current code
-and adds 16 new findings (N1–N16). Items N1, N3, N4, N8 independently line-verified;
-remainder from parallel module review._
+## 5. Flow gaps — install → play (missing / overlooked steps)
+
+These are gaps *between* steps in the end-to-end journey, not line-level defects, so a
+per-module audit doesn't surface them. Traced through `install-minecraft-splitscreen.sh`
+→ `main_workflow.sh` → `instance_creation.sh` → `minecraftSplitscreen.sh` dispatch →
+`orchestrator.sh` → `spawn_instance`.
+
+- **G1 — Install-time preflight never runs.** `main_workflow.sh:68` guards the KDE/KWin
+  hard stop with `if declare -f _preflight_deps`, but the installer only sources the 10
+  *installer* modules (`install-...sh:221-230`) — `preflight.sh` is a *runtime* module,
+  not among them. So `_preflight_deps` is undefined at install time and the check is a
+  silent no-op; the hard stop only fires at launch (`minecraftSplitscreen.sh:998`). The
+  README's "the installer will tell you right away" is false. *Fix:* source `preflight.sh`
+  in the installer (or call the check before sourcing the rest).
+- **G2 — Controller isolation was not wired into the orchestrator** (the marquee
+  feature). `_build_bwrap_command` supports masking other players' nodes
+  (`instance_lifecycle.sh:121,166-167`) and `spawn_instance` accepts mask pairs as args
+  4+, but the orchestrator called `spawn_instance "$_slot" "$_en" "$_jn"` with **no mask
+  args** (`orchestrator.sh:249,252`), and said so: *"no masking yet."* So isolation rested
+  solely on SDL `SDL_JOYSTICK_DEVICE` pinning. **Addressed 2026-06-24** — the orchestrator
+  now collects every other active slot's `(event_node, js_node)` from state
+  (`_collect_mask_pairs`) and forwards them. *Pre-existing limitation:* bwrap mounts are
+  fixed at launch, so an earlier slot can't retroactively mask a later joiner; full
+  symmetric isolation needs re-spawning earlier slots. **Needs on-Deck validation.**
+- **G3 — Memory budget guaranteed OOM at 3–4 players.** Every instance was written
+  `MaxMemAlloc=4096` (`instance_creation.sh`); four concurrent = 16 GiB of JVM heap on a
+  16 GB Deck, on top of SteamOS + gamescope + nested Plasma/KWin + four GPU contexts.
+  Nothing scaled it down. **Addressed 2026-06-24** — per-instance heap is now the tunable
+  `MCSS_MAX_MEM_MB` (default 3072 → 4 × 3072 ≈ 12 GiB, with headroom; overridable). A
+  truly optimal scheme would size by *active* player count, but bwrap/JVM heap is fixed at
+  launch and can't shrink a running JVM. **Needs on-Deck validation.**
+- **G4 — No automated shared-world / LAN join.** Nothing in the tree touches Open-to-LAN,
+  server discovery, `directConnect`, port 25565, or a shared `level-name` (grep-confirmed).
+  The four instances boot to four independent main menus; making them one co-op game is a
+  manual per-session ritual (P1 create world → Open to LAN → P2–P4 → Multiplayer → join).
+  For a "couch co-op, set up for you" tool, the part that makes it co-op is the part that
+  isn't automated. *Open design item.*
+- **G5 — Docking + external controllers are mandatory for multiplayer, but undocumented.**
+  `handheld_flow` spawns only slot 1 (`orchestrator.sh:396`); multiplayer lives in
+  `docked_flow`, which requires an external display *and* external pads (the acquire loop
+  exits if none appear in 5 s). The README "How to play" never says you must dock to a
+  TV/monitor and connect external controllers. *Doc fix.*
+- **G6 — No install smoke test; `accounts.json` is a silent launch blocker.** The
+  installer never launches one instance to confirm Java + the AppImage + Fabric + mods
+  start. And instances launch with `-a "P${slot}"` (`instance_lifecycle.sh:223`); if the
+  `accounts.json` download fails with no local copy, the installer only warns
+  (`main_workflow.sh:95-101`) but the launch later fails on a missing account. *Fix:* treat
+  a missing `accounts.json` as fatal (or ship it locally), and add a one-instance smoke test.
+- **G7 — Sound-effect overlap.** Instances 2–4 mute *music* only
+  (`instance_creation.sh`); all four still mix sound effects into the same sink. *Minor.*
+
+---
+
+_Follow-up audit, 2026-06-24. Verifies `BUG-AUDIT-2026-06-23.md` against current code,
+adds 16 line-level findings (N1–N16; N1/N3/N4/N8 independently line-verified) and 7
+flow gaps (G1–G7). G2 (controller-mask bridge) and G3 (memory budget) addressed in code
+the same day — both pending on-Deck validation._
