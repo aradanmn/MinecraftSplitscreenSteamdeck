@@ -50,7 +50,7 @@ echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_
 
 # Source runtime orchestrator modules
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-for _mod in dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+for _mod in preflight.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
@@ -980,6 +980,17 @@ launchNested() {
 # ─────────────────────────────────────────────────────────────────────────────
 # dispatch_mode is set by the test/testPlasma wrappers to override the
 # default behavior when running automated tests inside nested KDE.
+
+# Fail-fast HARD STOP if the KDE/Plasma/KWin stack (or other critical deps) is missing —
+# a clear, distro-aware message beats a cryptic mid-launch crash (preflight, item G).
+# Skip only the version flag (needs no deps).
+if declare -f _preflight_deps >/dev/null 2>&1; then
+    case "${1:-}" in
+        --version|-v) : ;;
+        *) _preflight_deps launch || exit 1 ;;
+    esac
+fi
+
 case "${1:-}" in
     launchFromPlasma)
         # PRODUCTION entry — this is the LaunchOptions the Steam shortcut runs

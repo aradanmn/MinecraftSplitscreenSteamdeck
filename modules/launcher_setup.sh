@@ -129,6 +129,7 @@ install_runtime_modules() {
 
     local base_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
     local runtime_mods=(
+        "preflight.sh"
         "dock_detection.sh"
         "controller_monitor.sh"
         "kwin_positioner.sh"
