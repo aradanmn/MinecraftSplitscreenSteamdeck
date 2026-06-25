@@ -3,3 +3,6 @@ __pycache__/
 token.enc
 *.log
 *.tmp
+
+# private security holding doc — must never be committed (public repo)
+ISSUES.md
