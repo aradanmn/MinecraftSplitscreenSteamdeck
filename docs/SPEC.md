@@ -109,6 +109,30 @@ Each test is **run on a Deck, maintainer-confirmed**. 👁 = needs your eyes on 
 - [ ] README rewritten: personal-use, requires owning Minecraft, Deck-only (others
       experimental), accurate description of how it works.
 
+## 3b. Validation run — 2026-06-24 evening (on Deck, maintainer-confirmed)
+
+- **D2 Launch ✅** — Steam shortcut → nested KWin → instances, no manual step.
+- **D3 Windowing ✅✅** — borderless (N9 `c_long` fix confirmed on screen), correct tiling,
+  and scale-down: P1 killed → P2 (slot 2, the non-slot-1 survivor) resized to fullscreen.
+- **D5 Lifecycle ✅** — death detection (SLOT_DIED → reflow) + the exit bookend fired
+  ("All players have quit — ending docked session") → session ended on its own. *This was
+  this morning's "won't exit" failure — works when instances exit cleanly.*
+- **D6 Robustness ✅** — clean teardown, no orphans (even reaped a SIGKILL-surviving java),
+  gamescope/Steam healthy after.
+- **D4 Controllers ❌** — built-in Deck pad leaked in as a player (pad-ID picked the wrong
+  `28de:11ff` virtual — excluded "pad 0"/event17, but the built-in actually drove "pad 1"/
+  event27 → slot 1); external controller didn't map (Controlify showed "Steam Controller",
+  had to use touchscreen). InputPlumber D-Bus query failed → fell back to the unreliable
+  name-scan. The Steam-Deck enumeration/isolation problem.
+- **Bug B — shutdown hang (intermittent).** P1 hung after `Stopping! → IAS unloaded` (JVM
+  unkillable-by-jstack/SIGQUIT, survived SIGKILL briefly = native D-state hang); P2 went
+  through the SAME point and exited cleanly. **Likely tied to controller/SDL teardown** —
+  P1 had a real active pad bound, P2's was non-functional. **Possibly the same root cause as
+  D4.**
+
+**Convergence:** remaining v1 work is essentially ONE area — controllers. D4 + Bug B are
+probably two faces of the controller-binding problem. Launch/windowing/lifecycle are proven.
+
 ## 4. Non-goals for v1 (explicitly deferred)
 
 - **Handheld mode + live dock/undock switching.** Splitscreen is a docked feature: dock
