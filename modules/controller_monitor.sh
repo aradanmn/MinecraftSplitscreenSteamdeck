@@ -397,6 +397,10 @@ get_internal_event_node() {
 # cannot be enumerated as a player here — that is a known limitation (Steam-Input-API only).
 # DS4 / Xbox-class externals (real evdev gamepad) are the supported case.
 #
+# DO NOT key identity on `uniq`/MAC/serial: some DS4 units report the SAME Bluetooth MAC,
+# so two of them would collide. We match purely by inputN creation order + device nodes,
+# which stays correct even for same-MAC pads (each still gets its own inputN/event/js).
+#
 # Output: one line per claimed virtual: "<eventN> <jsN> <ext_vendor> <ext_product>"
 # (event/js are the VIRTUAL's; vendor/product are the matched external's). Capped at
 # CONTROLLER_MONITOR_MAX_PLAYERS.
