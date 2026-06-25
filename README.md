@@ -1,33 +1,52 @@
-# Minecraft Splitscreen for Steam Deck & Linux
+# Minecraft Splitscreen for Steam Deck
 
-Play Minecraft **splitscreen with up to 4 people on one screen** — each player with their own controller — on a Steam Deck or a Linux PC.
+Play Minecraft **splitscreen with up to 4 people on one screen** — each player with their own controller — on a Steam Deck.
 
-It's couch co-op for Minecraft: hand everyone a controller, the screen splits between you, and you all play together on a single device. No second computer needed, and no extra Minecraft accounts to buy.
+It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone a controller, the screen splits between you, and you all play together on one device. No second computer needed.
+
+> ⚠️ **Early / personal-use project.** This is under active development and is **not a public release**. It's intended for personal use by people who **already own Minecraft** (see [Requirements](#requirements)). The Steam Deck is the only supported device today.
 
 ---
 
 ## What it does
 
-- Splits the screen so **1 to 4 players** can play Minecraft at the same time on one device.
-- Each player uses **their own controller** — your buttons only control your part of the screen.
-- **Plug-and-play players:** connect another controller and a new player joins the screen; unplug it and they leave.
-- **Sets everything up for you.** It automatically installs Minecraft, the add-ons that make splitscreen work, and the behind-the-scenes pieces it needs. You don't configure anything technical.
+- Splits the screen so **1 to 4 players** can play Minecraft at once on a single Steam Deck.
+- Each player uses **their own controller** — your section of the screen is yours.
+- **Join/leave on the fly:** connect another controller and a new player's view appears; disconnect it and the screen re-tiles for whoever's left.
+- **Sets itself up:** installs Minecraft (via PolyMC), Java, the controller mod, and the behind-the-scenes pieces it needs.
+
+---
+
+## Requirements
+
+- A **Steam Deck** running SteamOS.
+- **Docked to an external display** (TV/monitor) for multiplayer. Splitscreen is a docked feature — dock first, then launch. *(Undocked/handheld runs a single player only.)*
+- **One external controller per player** — e.g. a **PS4/PS5 (DualShock 4 / DualSense), Xbox, or 8BitDo** pad, wired or Bluetooth.
+- You **own Minecraft.** This tool sets up local splitscreen "seats" on a copy you own; it is **not** a way to play Minecraft without owning it.
+
+---
+
+## A note on controllers
+
+- ✅ **External game controllers** (PS4/PS5, Xbox, 8BitDo, etc.) — each one becomes a player.
+- ➖ **The Steam Deck's built-in controls** do **not** become a player when docked. Multiplayer needs external pads; this is by design so the Deck's own sticks don't grab a slot.
+- ❌ **The Valve Steam Controller is not supported as a player** — because of how Steam routes it, the game can't use it as a regular gamepad here. Use a PS/Xbox/8BitDo-style pad instead.
 
 ---
 
 ## Will it work on my device?
 
-- ✅ **Steam Deck** — yes, this is the device it's built for. Works as-is.
-- ✅ **Other Linux PCs that use the "KDE Plasma" desktop** — for example **Bazzite** (the handheld or KDE version) or **CachyOS** set up with KDE.
-- ❌ **Linux PCs using a different desktop** (such as GNOME) are **not** supported — the program relies on KDE Plasma to arrange the split screen. If your system isn't compatible, the installer will tell you right away instead of failing later.
-
-> Not sure what you have? If you're on a **Steam Deck**, you're good to go.
+- ✅ **Steam Deck (SteamOS, Game Mode)** — yes, this is what it's built and tested for.
+- ⚠️ **Other Linux + KDE Plasma handhelds/PCs** (Bazzite KDE, CachyOS with KDE, etc.) — **experimental and untested.** They use a different controller model, so it may not work yet.
+- ❌ **Linux with a non-KDE desktop** (e.g. GNOME) — not supported; the splitscreen relies on KDE Plasma's window manager.
 
 ---
 
 ## How to install
 
-On a Steam Deck, switch to **Desktop Mode**, open the **Konsole** app (that's the terminal), and paste in these three lines:
+> The public install isn't wired up yet (it's a pre-release). The lines below are how it will work once released.
+
+On the Steam Deck, switch to **Desktop Mode**, open **Konsole** (the terminal), and run:
 
 ```sh
 wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
@@ -35,27 +54,41 @@ chmod +x install-minecraft-splitscreen.sh
 ./install-minecraft-splitscreen.sh
 ```
 
-The installer handles everything — it downloads Minecraft and the splitscreen add-ons and adds a **"Minecraft Splitscreen"** shortcut to your Steam library. It will ask a couple of simple yes/no questions as it goes.
+The installer downloads Minecraft and the splitscreen pieces and adds a **"Minecraft Splitscreen"** shortcut to your Steam library. It asks a couple of simple yes/no questions as it goes, and stops with a clear message if your device is missing something it needs.
 
 ---
 
 ## How to play
 
-1. Go back to **Game Mode** (the normal Steam Deck interface).
-2. Open your Steam library and launch **Minecraft Splitscreen**.
-3. Connect a controller for each player — everyone who connects gets their own section of the screen.
+1. **Dock** the Steam Deck to your TV/monitor and connect your external controllers.
+2. Go to **Game Mode** and launch **Minecraft Splitscreen** from your library.
+3. Each connected controller gets its own section of the screen; the layout re-tiles as players join or leave.
 4. Play together!
 
----
-
-## Good to know
-
-This program is **actively being developed**. Two-player splitscreen works well today; three- and four-player support is still being polished, and the Steam Deck is the best-supported device. If you hit a rough edge, it's likely something already being worked on.
+*(To play together in the same world, one player creates a world and opens it to LAN, and the others join from the Multiplayer menu — automatic shared-world setup isn't built yet.)*
 
 ---
 
-## Credits
+## Current status
 
-- Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen)
-- Built and maintained by [aradanmn](https://github.com/aradanmn), originally forked from [FlyingEwok](https://github.com/FlyingEwok)
-- Uses [PolyMC](https://github.com/PolyMC/PolyMC) and [Eclipse Temurin (Adoptium)](https://adoptium.net)
+Actively developed. What works on the Deck today:
+
+- ✅ Launching from the Steam shortcut into the splitscreen environment.
+- ✅ Window tiling for 1–4 players (full / half / quad) that re-flows as players join and leave.
+
+Still being finalized:
+
+- 🚧 Per-player controller assignment (making sure each external pad maps cleanly to its own player).
+- 🚧 Clean exit back to the Steam library when everyone quits.
+
+If you hit a rough edge, it's likely something already being worked on.
+
+---
+
+## Credits & license
+
+- Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen).
+- Built and maintained by [aradanmn](https://github.com/aradanmn); the installer originated from [FlyingEwok](https://github.com/FlyingEwok).
+- Uses [PolyMC](https://github.com/PolyMC/PolyMC) and [Eclipse Temurin (Adoptium)](https://adoptium.net).
+
+> **License:** not finalized yet — this project is not cleared for public redistribution pending license resolution of the inherited installer code. For personal use for now.
