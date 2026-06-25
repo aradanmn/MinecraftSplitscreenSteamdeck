@@ -1,5 +1,76 @@
 # TODO
 
+## ☐ OPEN ITEMS — consolidated 2026-06-25
+
+> Single source of truth for what's left. Status tags: **[OPEN]** not started ·
+> **[CODE]** fixed in code, NOT Deck-validated · **[WIP]** in progress now.
+> Rule: nothing is "done" until maintainer-confirmed on the Deck (see SPEC §3a/§3b).
+
+### v1 blockers (the three open bugs — SPEC §3b)
+- **[CODE] D4 — controller enumeration.** Root cause found (2026-06-24/25 live recon):
+  InputPlumber D-Bus is a DEAD END on SteamOS (service disabled, autostart skips Valve);
+  `"pad 0 = built-in"` name-scan unsound; "first in list" breaks on Steam's startup pool.
+  **FIX IMPLEMENTED + UNIT-TESTED (commit pending, NOT Deck-validated):** new
+  `_map_external_player_virtuals` positively IDs external pads (real vid:pid + jsN, not
+  28de:11ff/1205) and maps each to its Steam virtual by `inputN` creation proximity; built-in
+  (no jsN) + phantoms never claimed. `list_eligible_controllers docked` rewired; old
+  `_identify_internal_virtual_index` deprecated. 11/11 `test_controller_monitor.sh` pass incl.
+  new regression tests (phantom pool→0, external-virtual-not-ready→0/no-leak, external→its
+  virtual, cap-at-4). **NEXT: deploy + Deck-validate (built-in excluded, DS4 maps 1:1).**
+  Open: D4 *isolation* (each pad drives only its slot) is separate (N5/G2 masking) and may
+  need bind-raw-vs-virtual design call. Steam Controller has NO evdev jsN → unsupported as a
+  player (G-doc + task #4).
+- **[OPEN] Bug B — JVM shutdown D-state hang (intermittent).** Hypothesis only (controller/SDL
+  teardown); needs live `/proc/<pid>/stack|wchan|syscall` capture next hang to confirm. May
+  share a root with D4. Diagnostic procedure saved to memory.
+- **[OPEN] D6 — nested-session teardown → Abort-Game.** Root cause confirmed (research):
+  gamescope subreaper + `plasma_session` respawns helpers killed from inside the session →
+  Steam never sees exit. Fix = supervise the session from OUTSIDE (non-exec parent) and
+  collapse the whole process group, not kill named helpers from within. NOTE (per maintainer):
+  may partly resolve once D4/Bug-B let instances exit cleanly, but §3b showed it fired
+  independently — keep as its own item.
+
+### Follow-up audit (docs/BUG-AUDIT-2026-06-24-followup.md) — still open
+- **[OPEN] Partials never finished:** H9 (monitor heartbeat — dead monitor hangs loop),
+  H10 (reflow retry flag), L3 (remaining jq `--arg` at dex.sh:595 / window_manager.sh:183,195
+  + fail-on-unpaired-mask), M7 (dex `/tmp/dex_$$.py` cleanup trap when XDG_RUNTIME_DIR unset).
+- **[OPEN] Security (entry script):** N6 (predictable `/tmp/kwin_wayland_wrapper` + `PATH=/tmp:$PATH`
+  → local code-exec/TOCTOU), N7 (`_restore_session_env` reads `/tmp` file into `systemctl --user
+  set-environment` → env injection). N6/N7 overlap the D6 rewrite (the entry script).
+- **[OPEN] Runtime correctness:** N5 (controller-mask: reject odd arg counts, exclude own node —
+  ties into D4), N10 (KWin PID-only match → add caption/resourceClass), N11 (post-launch bwrap
+  `kill -0` liveness), N16 (controller_monitor enumeration race — capture device list once).
+- **[OPEN] Install/robustness:** N12 (mod-filename path traversal), N13 (`cp -r */` empty-set
+  false failure), N14 (inotifywait on vanishing sysfs connector misses hotplug), N15 (leaked
+  inotify/watch monitors survive teardown).
+- **[OPEN] Low:** 720-vs-800 res fallback; non-GNU `date +%s%N`; ignored bind/unbind/change udev
+  actions; preflight omits `kwin_wayland_wrapper`/`inotifywait`; DEBUG_MODE temp leak;
+  predictable `/tmp/mcss_place_*.js` no trap.
+
+### Flow gaps (install → play) — still open
+- **[OPEN] G1** — install-time preflight is a silent no-op (`preflight.sh` not sourced by the
+  installer); README's "installer tells you right away" is false.
+- **[OPEN] G4** — no automated shared-world / Open-to-LAN join; the part that makes it co-op is
+  manual. *Open design item.*
+- **[OPEN] G5** — README never states docking + external pads are mandatory for multiplayer.
+- **[OPEN] G6** — missing `accounts.json` is a silent launch blocker (only warns); no install
+  smoke test. Make missing accounts fatal / ship locally + add one-instance smoke test.
+- **[OPEN] G7** — instances 2–4 mute music only; sound effects still overlap into one sink.
+
+### Security carry-over
+- **[OPEN]** `token.enc` + hard-coded passphrase still committed (lower impact since required
+  mods moved to Modrinth, but rotate + stop committing).
+
+### Cleared in code since the audit (⚠️ NONE Deck-validated)
+- **[CODE]** N1 (leaked slot), N2 (orphan spawn subshells), N3 (slot-1 double-spawn),
+  N4 (EWMH state), N8 (dead `spawn_placeholder`), N9 (format-32 `c_long` — *N9 seen working
+  on screen in the D3 borderless validation*), H8 (2nd `tr -dc` site) — commit `30e6536`.
+- **[CODE]** G2 (controller-mask wiring), G3 (memory cap 4×3072) — commit `c8122f2`. ⚠️ G2/N5
+  rest on the evdev model D4 is currently reworking — may not isolate correctly until D4 lands.
+- **License (DECISION-4):** parked — distribution blocked; personal use OK.
+
+---
+
 ## Production launch (A1) — 2 bugs FIXED IN CODE, pending Deck re-validation (2026-06-24)
 Windowing engine VALIDATED (test 4: borderless + tile + scale-down + clean exit). Mod removed
 from instances + installer. Production `launchFromPlasma` wired + spawns. Both production-only

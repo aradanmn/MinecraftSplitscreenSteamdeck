@@ -260,6 +260,12 @@ _eventN_to_virtual_idx() {
     return 1
 }
 
+# DEPRECATED (2026-06-25): no longer used by list_eligible_controllers. All three of its
+# strategies proved unreliable on a real Deck — InputPlumber D-Bus is a dead end (the
+# service ships disabled, autostart skips Valve), the "pad 0 == built-in" name-scan is
+# unsound (the built-in is not reliably pad 0), and "first in list" breaks on Steam's
+# startup virtual-pad pool. Replaced by positive external-ID via inputN creation order in
+# _map_external_player_virtuals. Kept temporarily; slated for removal (see TODO dead-code).
 # _identify_internal_virtual_index: Return the 1-based index of the internal
 # gamepad's 28de:11ff virtual device in the sorted virtual device list.
 # Strategy: InputPlumber D-Bus → "pad 0" Name scan → last-in-list fallback.
@@ -365,10 +371,101 @@ get_internal_event_node() {
     return 1
 }
 
+# _map_external_player_virtuals: Positively identify external player controllers and map
+# each to the Steam virtual gamepad (28de:11ff) Steam created for it, via the kernel
+# `inputN` creation-order counter.
+#
+# Why this approach (2026-06-25, grounded in live Deck recon):
+#   - On a real Deck the built-in pad AND the puck / external Steam Controller expose NO
+#     joystick (jsN) node — only mouse/keyboard at the raw level. So the ONLY jsN-bearing
+#     devices are the 28de:11ff virtuals and REAL external pads (e.g. a DS4 054c:05c4).
+#   - Steam mints a fresh 28de:11ff virtual immediately AFTER an external connects, so that
+#     virtual carries a higher `inputN` than the external's own device. `/proc/bus/input/
+#     devices` (and `inputN`) are creation-ordered.
+#   So: enumerate real external pads + virtuals (each with inputN); per external (oldest
+#   first) claim the lowest-inputN UNCLAIMED virtual whose inputN exceeds that external's —
+#   the one Steam made for it. The built-in's virtual (oldest, made at session start) and
+#   any startup-pool phantoms are never claimed → the built-in can't leak in and phantoms
+#   can't spawn ghost players. If an external's virtual doesn't exist yet (Steam staggers
+#   creation), it's skipped this pass and the acquisition poll retries.
+#
+# Replaces the old InputPlumber-D-Bus (dead on SteamOS — service disabled, autostart skips
+# Valve) / "pad 0 == built-in" name-scan / "first-in-list" heuristics, all of which
+# mis-identified the built-in (SPEC §3b leak).
+#
+# NOTE: an external Steam Controller (via the puck) has no evdev jsN gamepad node, so it
+# cannot be enumerated as a player here — that is a known limitation (Steam-Input-API only).
+# DS4 / Xbox-class externals (real evdev gamepad) are the supported case.
+#
+# Output: one line per claimed virtual: "<eventN> <jsN> <ext_vendor> <ext_product>"
+# (event/js are the VIRTUAL's; vendor/product are the matched external's). Capped at
+# CONTROLLER_MONITOR_MAX_PLAYERS.
+_map_external_player_virtuals() {
+    local -a virtuals=()   # "inputN eventN jsN"
+    local -a externals=()  # "inputN eventN jsN vendor product"
+    local ev js vnd prd sysfs phys inputn line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        read -r ev js vnd prd sysfs phys <<< "$line"
+        inputn=""
+        [[ "$sysfs" =~ input([0-9]+)$ ]] && inputn="${BASH_REMATCH[1]}"
+        [[ -z "$inputn" || -z "$ev" || -z "$js" ]] && continue
+        if [[ "$vnd" == "$CONTROLLER_MONITOR_STEAM_VENDOR" && "$prd" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]]; then
+            virtuals+=("$inputn $ev $js")
+        else
+            externals+=("$inputn $ev $js ${vnd:-0000} ${prd:-0000}")
+        fi
+    done < <(_parse_all_gamepad_devices)
+
+    # Sort both lists ascending by inputN (creation order, oldest first).
+    local -a v_sorted=() e_sorted=()
+    (( ${#virtuals[@]}  )) && mapfile -t v_sorted < <(printf '%s\n' "${virtuals[@]}"  | sort -n -k1,1)
+    (( ${#externals[@]} )) && mapfile -t e_sorted < <(printf '%s\n' "${externals[@]}" | sort -n -k1,1)
+
+    echo "[controller_monitor] enumeration: ${#e_sorted[@]} external pad(s), ${#v_sorted[@]} virtual(s)" >&2
+    local _row
+    for _row in "${e_sorted[@]}"; do
+        echo "[controller_monitor]   external: input${_row%% *} [$(awk '{print $4":"$5}' <<<"$_row")] event$(awk '{print $2}' <<<"$_row") js$(awk '{print $3}' <<<"$_row")" >&2
+    done
+    for _row in "${v_sorted[@]}"; do
+        echo "[controller_monitor]   virtual : input${_row%% *} event$(awk '{print $2}' <<<"$_row") js$(awk '{print $3}' <<<"$_row")" >&2
+    done
+
+    # Proximity match: per external (oldest first), claim the lowest-inputN unclaimed
+    # virtual whose inputN > the external's inputN.
+    local -a claimed=()
+    local count=0 ei vi
+    for ei in "${!e_sorted[@]}"; do
+        (( count >= CONTROLLER_MONITOR_MAX_PLAYERS )) && break
+        local e_input e_ev e_js e_ven e_prod
+        read -r e_input e_ev e_js e_ven e_prod <<< "${e_sorted[$ei]}"
+        local picked=-1
+        for vi in "${!v_sorted[@]}"; do
+            local already=0 c
+            for c in "${claimed[@]}"; do [[ "$c" == "$vi" ]] && { already=1; break; }; done
+            (( already )) && continue
+            local v_input v_ev v_js
+            read -r v_input v_ev v_js <<< "${v_sorted[$vi]}"
+            if (( v_input > e_input )); then picked=$vi; break; fi
+        done
+        if (( picked >= 0 )); then
+            claimed+=("$picked")
+            local pv_input pv_ev pv_js
+            read -r pv_input pv_ev pv_js <<< "${v_sorted[$picked]}"
+            echo "[controller_monitor]   → external input${e_input} [${e_ven}:${e_prod}] claims virtual input${pv_input} (event${pv_ev} js${pv_js})" >&2
+            echo "${pv_ev} ${pv_js} ${e_ven} ${e_prod}"
+            count=$((count + 1))
+        else
+            echo "[controller_monitor]   → external input${e_input} [${e_ven}:${e_prod}] has NO virtual yet — skipped (acquisition poll will retry)" >&2
+        fi
+    done
+}
+
 # Write current eligible device list to stdout.
 # Each line: "<event_node> <js_node> <physical_vendor> <physical_product>"
 # $1 = mode ("handheld" or "docked")
-# In docked mode: only 28de:11ff devices, excluding the internal gamepad, max 4.
+# In docked mode: external player pads mapped to their Steam virtual (creation-order
+# positive ID — see _map_external_player_virtuals); built-in + phantoms excluded; max 4.
 # In handheld mode: exactly one line — the first gamepad-capable device (any VID:PID).
 list_eligible_controllers() {
     local mode="${1:-}"
@@ -394,57 +491,15 @@ list_eligible_controllers() {
         return 0
     fi
 
-    # Docked mode: 28de:11ff virtual devices, exclude internal, max MAX_PLAYERS
-    local internal_idx
-    internal_idx=$(_identify_internal_virtual_index)
-
-    # Build arrays of virtual devices and physical devices
-    local -a virtual_events=()
-    local -a virtual_js=()
-    local vline
-    while IFS= read -r vline; do
-        virtual_events+=("$(echo "$vline" | awk '{print $1}')")
-        virtual_js+=("$(echo "$vline" | awk '{print $2}')")
-    done < <(_parse_steam_virtual_devices)
-
-    local -a phys_vendors=()
-    local -a phys_products=()
-    local pline
-    while IFS= read -r pline; do
-        phys_vendors+=("$(echo "$pline" | awk '{print $1}')")
-        phys_products+=("$(echo "$pline" | awk '{print $2}')")
-    done < <(_get_physical_devices)
-
-    local count=0
-    local i
-    for (( i = 0; i < ${#virtual_events[@]}; i++ )); do
-        local v_idx=$((i + 1))  # 1-based
-
-        # Skip the internal gamepad
-        if (( v_idx == internal_idx )); then
-            continue
-        fi
-
-        # Cap at MAX_PLAYERS
-        if (( count >= CONTROLLER_MONITOR_MAX_PLAYERS )); then
-            break
-        fi
-
-        # Map to physical device: the Nth eligible virtual (0-based count)
-        # corresponds to the Nth physical device in enumeration order.
-        # Since physical and virtual devices are interleaved in /proc/bus/input/devices,
-        # and the internal gamepad's virtual is created before external virtuals,
-        # eligible virtual at position `count` maps to physical at position `count`.
-        local phys_vendor="0000"
-        local phys_product="0000"
-        if (( count < ${#phys_vendors[@]} )); then
-            phys_vendor="${phys_vendors[$count]}"
-            phys_product="${phys_products[$count]}"
-        fi
-
-        echo "/dev/input/event${virtual_events[$i]} /dev/input/js${virtual_js[$i]} $phys_vendor $phys_product"
-        count=$((count + 1))
-    done
+    # Docked mode: map external player pads → their Steam virtual gamepad by inputN
+    # creation order (positive ID). Built-in (no jsN) and startup-pool phantoms are
+    # never claimed, so they can't leak in. See _map_external_player_virtuals.
+    local _line _ev _js _vn _pr
+    while IFS= read -r _line; do
+        [[ -z "$_line" ]] && continue
+        read -r _ev _js _vn _pr <<< "$_line"
+        echo "/dev/input/event${_ev} /dev/input/js${_js} ${_vn} ${_pr}"
+    done < <(_map_external_player_virtuals)
 }
 
 # Return the event node and js node for the Nth eligible controller (1-based).
