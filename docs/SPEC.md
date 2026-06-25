@@ -114,11 +114,18 @@ Each test is **run on a Deck, maintainer-confirmed**. 👁 = needs your eyes on 
 - **D2 Launch ✅** — Steam shortcut → nested KWin → instances, no manual step.
 - **D3 Windowing ✅✅** — borderless (N9 `c_long` fix confirmed on screen), correct tiling,
   and scale-down: P1 killed → P2 (slot 2, the non-slot-1 survivor) resized to fullscreen.
-- **D5 Lifecycle ✅** — death detection (SLOT_DIED → reflow) + the exit bookend fired
-  ("All players have quit — ending docked session") → session ended on its own. *This was
-  this morning's "won't exit" failure — works when instances exit cleanly.*
-- **D6 Robustness ✅** — clean teardown, no orphans (even reaped a SIGKILL-surviving java),
-  gamescope/Steam healthy after.
+- **D5 Lifecycle ⚠️ PARTIAL** — the orchestrator-level exit is correct: death detection
+  (SLOT_DIED → reflow) + the exit bookend fired ("All players have quit — ending docked
+  session") and prodFromPlasma exited. BUT it does NOT actually return to Steam (see D6).
+- **D6 Robustness ❌ FAIL (corrected)** — initially mis-called as pass on a too-narrow
+  process check. Reality: after prodFromPlasma exits, **`startplasma-wayland` (the session
+  leader under Steam's reaper) RESPAWNS a fresh Plasma session** (new kwin_wayland_wrapper,
+  plasma_session, baloo_file, kded6, … all fresh 102xxx PIDs). `_end_nested_session` kills
+  the OLD helpers; the session manager just starts new ones. Steam's reaper keeps tracking
+  `launchFromPlasma` → never sees the game exit → **Abort-Game overlay** (this morning's
+  "won't exit cleanly"). The instance-level teardown is fine; the NESTED-SESSION teardown is
+  not. Fix: kill the session leader (startplasma-wayland / the reaper's direct child) so the
+  whole session collapses, instead of only the helpers it respawns.
 - **D4 Controllers ❌** — built-in Deck pad leaked in as a player (pad-ID picked the wrong
   `28de:11ff` virtual — excluded "pad 0"/event17, but the built-in actually drove "pad 1"/
   event27 → slot 1); external controller didn't map (Controlify showed "Steam Controller",
@@ -130,8 +137,15 @@ Each test is **run on a Deck, maintainer-confirmed**. 👁 = needs your eyes on 
   P1 had a real active pad bound, P2's was non-functional. **Possibly the same root cause as
   D4.**
 
-**Convergence:** remaining v1 work is essentially ONE area — controllers. D4 + Bug B are
-probably two faces of the controller-binding problem. Launch/windowing/lifecycle are proven.
+**Remaining v1 work (corrected) — TWO areas:**
+1. **Controllers** — D4 (built-in leak + external mapping) and Bug B (intermittent shutdown
+   hang), likely the same controller-binding root.
+2. **Nested-session teardown (D6)** — startplasma respawns the session → Abort-Game; the
+   instance-level exit logic is fine, the session-leader teardown isn't. INDEPENDENT of the
+   hang (tonight P2 exited cleanly and it STILL didn't return to Steam). This is the real
+   "won't exit cleanly" root, separate from Bug B.
+Launch + windowing are proven. Lifecycle is proven at the orchestrator level but NOT
+end-to-end back to Steam.
 
 ## 4. Non-goals for v1 (explicitly deferred)
 
