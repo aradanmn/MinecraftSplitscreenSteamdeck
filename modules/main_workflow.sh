@@ -65,11 +65,13 @@ main() {
 
     # HARD STOP before downloading anything if the KDE/Plasma/KWin stack (or other
     # critical deps) is missing — the splitscreen windowing requires it (item G).
-    if declare -f _preflight_deps >/dev/null 2>&1; then
-        _preflight_deps install || exit 1
-    fi
+    # HARD STOP before downloading/installing anything if a required program or the
+    # KDE/Plasma/KWin stack is missing. preflight.sh is now sourced by the installer entry,
+    # so this always runs. On read-only SteamOS we CANNOT install system packages, so we
+    # fail fast with a clear, distro-aware message (preflight prints the hint) instead of
+    # trying to sudo/pacman anything. (bwrap is part of preflight's required set.)
+    _preflight_deps install || exit 1
 
-    ensure_bwrap_installed         # Verify/install bubblewrap (required by the launcher sandbox)
     download_prism_launcher        # Download PolyMC AppImage for splitscreen launcher usage
     
     # =============================================================================
@@ -117,8 +119,11 @@ main() {
     
     
     create_instances             # Create 4 splitscreen instances using manual configuration
-    setup_splitscreen_launcher_script   # Install minecraftSplitscreen.sh into launcher directory
-    install_runtime_modules      # Deploy dock_detection, controller_monitor, etc. to TARGET_DIR/modules/
+    # The launcher + runtime modules ARE the product — if they don't land, the install has
+    # FAILED; stop here instead of printing "success" downstream. (A from-main install 404s
+    # here until the branch is promoted; use REPO_REF=<branch> to install from a branch.)
+    setup_splitscreen_launcher_script || { print_error "❌ Failed to install the splitscreen launcher (minecraftSplitscreen.sh) — aborting."; exit 1; }
+    install_runtime_modules || { print_error "❌ Failed to install the runtime modules — aborting; the launcher cannot run without them."; exit 1; }
     
     # =============================================================================
     # SYSTEM INTEGRATION PHASE: Optional platform integration

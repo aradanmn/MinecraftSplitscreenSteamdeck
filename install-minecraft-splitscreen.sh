@@ -225,6 +225,10 @@ done
 # Runtime orchestrator modules (dock_detection, controller_monitor, etc.) are
 # deployed to TARGET_DIR/modules/ by install_runtime_modules() — not sourced here.
 source "$MODULES_DIR/utilities.sh"
+# preflight.sh is a runtime module, but we source it at INSTALL time too so the dependency
+# hard-stop (_preflight_deps install) actually runs before we download/install anything
+# (G1: it was previously never sourced, so the install-time check silently no-op'd).
+source "$MODULES_DIR/preflight.sh"
 source "$MODULES_DIR/java_management.sh"
 source "$MODULES_DIR/launcher_setup.sh"
 source "$MODULES_DIR/version_management.sh"
