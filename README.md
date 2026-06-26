@@ -50,9 +50,13 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 
 ## How to install
 
-> The public install isn't wired up yet (it's a pre-release). The lines below are how it will work once released.
+> ⚠️ **Not installable yet — pre-release. Don't run the command below.**
+> This build has **not** been published to the install URL. The `main`-branch URL below
+> currently serves an **older, different version** of the project, so running it today
+> installs the *wrong* thing. The real install goes live once this branch is promoted to
+> `main`. *(For maintainer testing from this branch, see `docs/INSTALL-READINESS.md`.)*
 
-On the Steam Deck, switch to **Desktop Mode**, open **Konsole** (the terminal), and run:
+Once released, on the Steam Deck you'll switch to **Desktop Mode**, open **Konsole** (the terminal), and run:
 
 ```sh
 wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
