@@ -97,13 +97,13 @@ start_watchdog() {
                 # Check bwrap (launcher) PID
                 if [[ -n "$bwrap_pid" ]] && ! kill -0 "$bwrap_pid" 2>/dev/null; then
                     dead=true
-                    reason="bwrap PID $bwrap_pid"
+                    reason="bwrap PID $bwrap_pid gone"
                 fi
 
                 # Check Java (game) PID — game may have exited leaving launcher open
                 if [[ -n "$java_pid" ]] && ! kill -0 "$java_pid" 2>/dev/null; then
                     dead=true
-                    reason="Java PID $java_pid"
+                    reason="Java PID $java_pid gone"
                 fi
 
                 # Window-gone (#37): if the process still looks alive, check whether the
@@ -131,7 +131,7 @@ start_watchdog() {
                 fi
 
                 if $dead && [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
-                    echo "[watchdog] Slot $slot $reason gone → SLOT_DIED" >&2
+                    echo "[watchdog] Slot $slot $reason → SLOT_DIED" >&2
                     # H6: tolerate a broken pipe (orchestrator closed the read end) —
                     # a failed FIFO write under `set -e` would otherwise kill the watchdog.
                     echo "SLOT_DIED $slot" >> "$fifo" || true
