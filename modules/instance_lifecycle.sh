@@ -158,14 +158,24 @@ _build_bwrap_command() {
         cmd+=(--setenv "SDL_JOYSTICK_DEVICE" "${js_node}")
     fi
 
-    # Mask other controllers: use if-statements, not &&, to avoid set -e
-    # interpreting a "file not found" as a fatal error
+    # Mask other controllers so this sandbox can't see another player's pad.
+    # Use if-statements, not &&, to avoid set -e treating "file not found" as fatal.
+    # N5 (a): NEVER mask THIS slot's own node. If another (e.g. orphaned) slot still
+    #   claims the same reused node, masking it would --bind /dev/null over our own
+    #   --dev-bind (last bind wins) and leave us with no controller. Confirmed live
+    #   2026-06-26 on the disconnect→reconnect→same-node path. Compare per node.
+    # N5 (b): don't silently DROP a trailing unpaired arg — mask it too (so no node is
+    #   left visible cross-slot) and warn, since an odd count means a producer-side bug.
     while [[ $# -ge 2 ]]; do
         local mask_event="$1" mask_js="$2"
         shift 2
-        if [[ -e "$mask_event" ]]; then cmd+=(--bind /dev/null "${mask_event}"); fi
-        if [[ -e "$mask_js"    ]]; then cmd+=(--bind /dev/null "${mask_js}"); fi
+        if [[ -e "$mask_event" && "$mask_event" != "$event_node" ]]; then cmd+=(--bind /dev/null "${mask_event}"); fi
+        if [[ -e "$mask_js"    && "$mask_js"    != "$js_node"    ]]; then cmd+=(--bind /dev/null "${mask_js}"); fi
     done
+    if [[ $# -ge 1 ]]; then
+        echo "[instance_lifecycle] WARNING: slot ${slot} got an odd controller-mask arg count; masking trailing node '$1'" >&2
+        if [[ -e "$1" && "$1" != "$event_node" && "$1" != "$js_node" ]]; then cmd+=(--bind /dev/null "$1"); fi
+    fi
 
     # SDL env vars — explicitly override Steam's inherited environment:
     #   SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1:
