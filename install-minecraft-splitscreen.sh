@@ -68,8 +68,14 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
+# Repo ref (branch/tag/commit) to install FROM. Defaults to 'main'; override to test a
+# branch WITHOUT promoting it — e.g.:
+#   REPO_REF=feat/gamescope-windowing ./install-minecraft-splitscreen.sh
+# Exported so every sourced module's download URL uses the same ref.
+export REPO_REF="${REPO_REF:-main}"
+
 # GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
+readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}/modules"
 
 # Installer modules — sourced during installation to run the setup workflow.
 readonly INSTALLER_MODULE_FILES=(

@@ -83,7 +83,7 @@ setup_splitscreen_launcher_script() {
 
     local launcher_script="$TARGET_DIR/minecraftSplitscreen.sh"
     local local_script="${SCRIPT_DIR:-}/minecraftSplitscreen.sh"
-    local remote_script="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
+    local remote_script="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/minecraftSplitscreen.sh"
 
     if [[ -f "$local_script" ]]; then
         cp "$local_script" "$launcher_script"
@@ -127,7 +127,7 @@ install_runtime_modules() {
     local dest_dir="$TARGET_DIR/modules"
     mkdir -p "$dest_dir"
 
-    local base_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/modules"
+    local base_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/modules"
     local runtime_mods=(
         "preflight.sh"
         "dock_detection.sh"
