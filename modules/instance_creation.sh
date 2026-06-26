@@ -468,8 +468,11 @@ EOF
         fi
         
         # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
-        # Filename is sanitized (spaces replaced with underscores) for filesystem compatibility
-        local mod_file="$mods_dir/${mod_name// /_}.jar"
+        # N12: sanitize the WHOLE filename to [A-Za-z0-9._-] (not just spaces) so a mod
+        # title containing '/' (or other separators) can't escape mods_dir via `wget -O`.
+        # Identical to the old space→underscore behavior for ordinary names.
+        local safe_name="${mod_name//[^A-Za-z0-9._-]/_}"
+        local mod_file="$mods_dir/${safe_name}.jar"
         if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
             print_success "Success: $mod_name"
         else
