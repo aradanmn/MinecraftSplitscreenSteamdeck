@@ -96,6 +96,16 @@ setup_splitscreen_launcher_script() {
         return 1
     fi
 
+    # The launcher IS the product — fail loudly if the fetch didn't produce a real script
+    # (e.g. a 404 from a ref that doesn't have it), instead of chmod-ing an empty file and
+    # letting the installer report success downstream.
+    if [[ ! -s "$launcher_script" ]] || ! head -n1 "$launcher_script" | grep -q '^#!'; then
+        print_error "Launcher fetch failed: $launcher_script is missing/empty or not a script"
+        print_info "  (tried: ${local_script:-<none>} then ${remote_script})"
+        rm -f "$launcher_script" 2>/dev/null || true
+        return 1
+    fi
+
     chmod +x "$launcher_script"
 
     # Stamp build provenance into the deployed copy (version / commit / date).
@@ -183,29 +193,11 @@ install_runtime_modules() {
     return 0
 }
 
-# ensure_bwrap_installed: Verify bubblewrap is available; attempt pacman install if not.
-# bwrap is required by the launcher to sandbox each Minecraft instance.
+# ensure_bwrap_installed: report whether bubblewrap is available. We do NOT try to install
+# it — stock SteamOS is read-only, so `sudo pacman` isn't a viable path. The install-time
+# preflight hard-stop (preflight.sh, run before anything else) already REQUIRES bwrap and
+# prints distro-aware guidance if it's missing, so by the time this could run bwrap is
+# guaranteed present. Kept as a simple availability check; never installs.
 ensure_bwrap_installed() {
-    if command -v bwrap >/dev/null 2>&1; then
-        print_success "bwrap (bubblewrap) is available: $(command -v bwrap)"
-        return 0
-    fi
-
-    print_warning "bwrap (bubblewrap) not found — required for controller sandboxing"
-    print_info "Attempting to install via pacman..."
-
-    if command -v pacman >/dev/null 2>&1; then
-        if sudo pacman -S --noconfirm bubblewrap 2>/dev/null; then
-            print_success "bubblewrap installed successfully"
-            return 0
-        else
-            print_error "pacman install failed (read-only filesystem on SteamOS?)"
-        fi
-    fi
-
-    print_error "Could not install bwrap automatically."
-    print_info "On SteamOS: sudo steamos-devmode enable && sudo pacman -S bubblewrap"
-    print_info "On Arch:    sudo pacman -S bubblewrap"
-    print_info "The launcher will not work without bwrap. Install it before running."
-    return 1
+    command -v bwrap >/dev/null 2>&1
 }
