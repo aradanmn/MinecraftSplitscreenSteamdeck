@@ -10,6 +10,14 @@ set -euo pipefail
 # to $SPLITSCREEN_FIFO. Deduplicates: emits at most once per death;
 # stops suppressing once the orchestrator clears the slot (active: false).
 #
+# ALSO (#37): treats a slot whose game WINDOW has been destroyed as dead, even
+# if its process is still alive. A player who quits in-game destroys the window
+# but the JVM may then hang in shutdown (Bug B) — the kill -0 check above would
+# never fire, leaving a black screen. Window-gone → SLOT_DIED → teardown_instance
+# force-kills the hung process. Only acts on a CONFIRMED-absent window (debounced),
+# and skips when it can't tell (no wid yet / dex unavailable) so it never kills a
+# launching or unverifiable instance.
+#
 # Public API:
 #   start_watchdog()  — blocks; polls state file, writes SLOT_DIED to FIFO
 #
@@ -19,9 +27,31 @@ set -euo pipefail
 
 readonly WATCHDOG_DEFAULT_POLL_INTERVAL_S=2
 readonly WATCHDOG_MAX_SLOT=4
+# Consecutive polls a slot's window must be CONFIRMED absent before declaring the
+# player quit (debounce against a transient/partial window-tree query). ~2 polls = ~4s.
+readonly WATCHDOG_WINDOW_GONE_TICKS="${WATCHDOG_WINDOW_GONE_TICKS:-2}"
 
 # Dedup cache: key=slot, value=1 if SLOT_DIED already emitted
 declare -A _WATCHDOG_REPORTED
+# Window-gone debounce: key=slot, value=consecutive polls the window has been absent.
+declare -A _WATCHDOG_WINDOW_GONE_COUNT
+
+# _watchdog_window_present <wid>
+# Is window <wid> still in the live window tree?
+#   0 = present · 1 = CONFIRMED absent (window destroyed) · 2 = can't tell (skip, don't kill)
+# Uses dex_list_windows (a full recursive XQueryTree walk — sees override-redirect windows
+# too). Returns 2 (not 1) whenever the check itself is unavailable/empty, so an X hiccup or
+# a missing dex/DISPLAY never escalates to a teardown.
+_watchdog_window_present() {
+    local wid="$1"
+    [[ -z "$wid" || "$wid" == "null" ]] && return 2
+    type dex_list_windows >/dev/null 2>&1 || return 2
+    local listing
+    listing=$(dex_list_windows 2>/dev/null) || return 2
+    [[ -z "$listing" ]] && return 2   # empty enumeration = query problem, not "gone"
+    awk '{print $1}' <<<"$listing" | grep -qx -- "$wid" && return 0
+    return 1
+}
 
 start_watchdog() {
     local poll_interval="${WATCHDOG_POLL_INTERVAL_S:-$WATCHDOG_DEFAULT_POLL_INTERVAL_S}"
@@ -76,6 +106,30 @@ start_watchdog() {
                     reason="Java PID $java_pid"
                 fi
 
+                # Window-gone (#37): if the process still looks alive, check whether the
+                # game window was destroyed (player quit, even if the JVM is now hung).
+                # Debounced; skips while wid is null (mid-spawn) or unverifiable.
+                if ! $dead; then
+                    local wid
+                    wid=$(jq -r ".slots[\"$slot\"].wid // empty" "$state_file" 2>/dev/null || true)
+                    if [[ -n "$wid" ]]; then
+                        local wp=0
+                        _watchdog_window_present "$wid" || wp=$?
+                        if (( wp == 0 )); then
+                            _WATCHDOG_WINDOW_GONE_COUNT[$slot]=0
+                        elif (( wp == 1 )); then
+                            local gc=$(( ${_WATCHDOG_WINDOW_GONE_COUNT[$slot]:-0} + 1 ))
+                            _WATCHDOG_WINDOW_GONE_COUNT[$slot]=$gc
+                            echo "[watchdog] Slot $slot window $wid absent (${gc}/${WATCHDOG_WINDOW_GONE_TICKS})" >&2
+                            if (( gc >= WATCHDOG_WINDOW_GONE_TICKS )); then
+                                dead=true
+                                reason="window $wid gone (player quit)"
+                            fi
+                        fi
+                        # wp == 2: can't tell — leave the counter alone, do not escalate.
+                    fi
+                fi
+
                 if $dead && [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
                     echo "[watchdog] Slot $slot $reason gone → SLOT_DIED" >&2
                     # H6: tolerate a broken pipe (orchestrator closed the read end) —
@@ -89,6 +143,7 @@ start_watchdog() {
                     echo "[watchdog] Slot $slot reset (active=false), clearing dedup cache" >&2
                     unset '_WATCHDOG_REPORTED[$slot]'
                 fi
+                [[ -n "${_WATCHDOG_WINDOW_GONE_COUNT[$slot]:-}" ]] && unset '_WATCHDOG_WINDOW_GONE_COUNT[$slot]'
             fi
         done
     done

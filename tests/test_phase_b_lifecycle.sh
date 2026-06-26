@@ -333,19 +333,24 @@ test_docked_two_players() {
     count_2=$(get_active_slots 2>/dev/null | wc -w)
     _info "Active slots after P2: $(get_active_slots 2>/dev/null)"
 
-    # P2 disconnects → slot 2 teardown + reflow.
-    # NOTE: the REAL controller_monitor emits the device's EVENT NODE
-    # ("CONTROLLER_REMOVE /dev/input/eventX"); the orchestrator resolves that back to a
-    # slot via _find_slot_by_event_node. We inject a bare slot number here because every
-    # fake controller in this harness shares event_node=/dev/null (bwrap needs a bindable
-    # path), so node-form removal would be ambiguous. The handler accepts BOTH forms —
-    # the node→slot path is the production one and was the cause of disconnects being
-    # ignored before the fix (a remove-path twin of the C1 add-path bug).
+    # #37: a controller DISCONNECT must NOT tear the instance down — it's a dead
+    # battery / idle-off, not "the player is done" (and tearing down a LAN host kills
+    # the world for everyone). Verify the slot SURVIVES a disconnect first.
     _inject "CONTROLLER_REMOVE 2"
-    if _wait_for_slot_inactive 2 30 "Test 2"; then
-        _pass "Test 2.3 — Slot 2 torn down on disconnect"
+    sleep 1   # let the orchestrator process the (now no-op) disconnect
+    if slot_is_active 2 2>/dev/null; then
+        _pass "Test 2.3a — Slot 2 PRESERVED on controller disconnect (#37)"
     else
-        _fail "Test 2.3 — Slot 2 still active after disconnect"
+        _fail "Test 2.3a — Slot 2 torn down on disconnect (should be preserved)"
+    fi
+
+    # The player LEAVING is detected from the game window being destroyed → watchdog
+    # SLOT_DIED. That (not the disconnect) is what tears the slot down + reflows.
+    _inject "SLOT_DIED 2"
+    if _wait_for_slot_inactive 2 30 "Test 2"; then
+        _pass "Test 2.3b — Slot 2 torn down on quit (window-gone → SLOT_DIED)"
+    else
+        _fail "Test 2.3b — Slot 2 still active after quit"
     fi
 
     # Verify slot 1 still alive
@@ -384,7 +389,7 @@ test_docked_three_players() {
     _info "Active slots: $(get_active_slots 2>/dev/null)"
 
     # P3 disconnects
-    _inject "CONTROLLER_REMOVE 3"
+    _inject "SLOT_DIED 3"
     if _wait_for_slot_inactive 3 30 "Test 3"; then
         _pass "Test 3.2 — Slot 3 torn down"
     else
@@ -399,7 +404,7 @@ test_docked_three_players() {
     fi
 
     # P1 disconnects
-    _inject "CONTROLLER_REMOVE 1"
+    _inject "SLOT_DIED 1"
     if _wait_for_slot_inactive 1 30 "Test 3"; then
         _pass "Test 3.4 — Slot 1 torn down"
     else
@@ -580,7 +585,7 @@ test_full_lifecycle() {
     fi
 
     # P4 quits voluntarily
-    _inject "CONTROLLER_REMOVE 4"
+    _inject "SLOT_DIED 4"
     if _wait_for_slot_inactive 4 30 "Test 7"; then
         _pass "Test 7.5 — Slot 4 torn down on quit"
     else
@@ -596,9 +601,9 @@ test_full_lifecycle() {
     fi
 
     # Clean up — wait for teardowns so the next test starts clean
-    _inject "CONTROLLER_REMOVE 1"
+    _inject "SLOT_DIED 1"
     _wait_for_slot_inactive 1 30 "Test 7 cleanup" || true
-    _inject "CONTROLLER_REMOVE 3"
+    _inject "SLOT_DIED 3"
     _wait_for_slot_inactive 3 30 "Test 7 cleanup" || true
     return 0
 }

@@ -303,11 +303,17 @@ _handle_msg() {
             ;;
 
         CONTROLLER_REMOVE)
-            # Format-aware: the real controller_monitor emits the removed device's
-            # EVENT NODE ("CONTROLLER_REMOVE /dev/input/eventX"); the test harness (and
-            # manual injection) may pass a bare slot number. Resolve both — passing the
-            # event node straight through as a slot was why disconnects were silently
-            # ignored and instances never tore down (no reflow → survivors didn't resize).
+            # #37: a controller disconnect (dead battery / idle power-off) is NOT "the
+            # player is done." Tearing the instance down here would kill a player
+            # mid-session and, if they host the LAN world, end it for everyone. So we
+            # PRESERVE the instance and do NOT reflow. Player-leave is instead detected
+            # from the game WINDOW being destroyed (watchdog window-gone → SLOT_DIED).
+            # bwrap mounts are fixed at launch, so a controller returning as a new node
+            # can't be live-rebound in v1 — but the instance/world survives the dropout.
+            #
+            # Format-aware (kept for the log): controller_monitor emits the removed
+            # device's EVENT NODE ("CONTROLLER_REMOVE /dev/input/eventX"); the test
+            # harness may pass a bare slot number. Resolve both to name the slot.
             local slot=""
             if [[ "$msg_arg" =~ ^[1-9][0-9]*$ ]]; then
                 slot="$msg_arg"                                   # explicit slot number
@@ -318,9 +324,7 @@ _handle_msg() {
                 echo "[orchestrator] CONTROLLER_REMOVE: no active slot for '$msg_arg' — ignoring" >&2
                 return 0
             fi
-            echo "[orchestrator] CONTROLLER_REMOVE → slot $slot (tearing down)" >&2
-            teardown_instance "$slot" 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
-            _reflow_layout || echo "[orchestrator] WARNING: post-CONTROLLER_REMOVE reflow failed (slot $slot)" >&2
+            echo "[orchestrator] CONTROLLER_REMOVE → slot $slot controller disconnected — instance PRESERVED (no teardown)" >&2
             ;;
 
         SLOT_DIED)

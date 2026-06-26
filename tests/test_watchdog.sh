@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_watchdog.sh
 # =============================================================================
 
-readonly TEST_TOTAL=7
+readonly TEST_TOTAL=10
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -354,6 +354,104 @@ JSON
 }
 
 # =============================================================================
+# T5.8 — window GONE while process alive → SLOT_DIED (#37: player quit, JVM may hang)
+# =============================================================================
+test_t5_8() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local state_file="$tmpdir/state.json" fifo="$tmpdir/fifo"
+    mkfifo "$fifo"; exec 9<>"$fifo"
+
+    # Process is ALIVE ($$ — so the pid check can't fire), but the slot's window
+    # (wid 12345) is NOT in the window tree → window-gone must drive SLOT_DIED.
+    dex_list_windows() { echo "999  root"; echo "111  plasmashell"; }
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":$$,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$$,"wid":12345},"2":{"active":false},"3":{"active":false},"4":{"active":false}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 start_watchdog &
+    local wd_pid=$!
+
+    local line
+    if read -r -t 3 line < "$fifo"; then
+        if [[ "$line" == "SLOT_DIED 1" ]]; then
+            _pass "T5.8 — window gone (alive process) → SLOT_DIED 1"
+        else
+            _fail "T5.8" "expected 'SLOT_DIED 1', got '$line'"
+        fi
+    else
+        _fail "T5.8" "timed out — window-gone did not emit SLOT_DIED"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true; wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true; rm -f "$fifo"; unset -f dex_list_windows 2>/dev/null || true
+}
+
+# =============================================================================
+# T5.9 — window PRESENT (alive process) → no SLOT_DIED
+# =============================================================================
+test_t5_9() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local state_file="$tmpdir/state.json" fifo="$tmpdir/fifo"
+    mkfifo "$fifo"; exec 9<>"$fifo"
+
+    # wid 12345 IS in the window tree → must NOT emit (even if the caption changed).
+    dex_list_windows() { echo "12345  Minecraft* 26.1.2"; echo "999  root"; }
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":$$,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$$,"wid":12345},"2":{"active":false},"3":{"active":false},"4":{"active":false}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 start_watchdog &
+    local wd_pid=$!
+
+    sleep 0.6
+    local line
+    if read -r -t 0.3 line < "$fifo"; then
+        _fail "T5.9" "unexpected message while window present: '$line'"
+    else
+        _pass "T5.9 — window present → no SLOT_DIED"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true; wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true; rm -f "$fifo"; unset -f dex_list_windows 2>/dev/null || true
+}
+
+# =============================================================================
+# T5.10 — wid null (mid-spawn) → window check skipped, no SLOT_DIED
+# =============================================================================
+test_t5_10() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local state_file="$tmpdir/state.json" fifo="$tmpdir/fifo"
+    mkfifo "$fifo"; exec 9<>"$fifo"
+
+    # dex would report the window absent, but wid is null (still spawning) → must SKIP
+    # the window check entirely and NOT kill the launching instance.
+    dex_list_windows() { echo "999  root"; }
+
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":$$,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":$$,"wid":null},"2":{"active":false},"3":{"active":false},"4":{"active":false}}}
+JSON
+
+    SPLITSCREEN_STATE="$state_file" SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 start_watchdog &
+    local wd_pid=$!
+
+    sleep 0.6
+    local line
+    if read -r -t 0.3 line < "$fifo"; then
+        _fail "T5.10" "killed a mid-spawn instance (wid null): '$line'"
+    else
+        _pass "T5.10 — wid null (mid-spawn) → window check skipped, no SLOT_DIED"
+    fi
+
+    kill "$wd_pid" 2>/dev/null || true; wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true; rm -f "$fifo"; unset -f dex_list_windows 2>/dev/null || true
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== watchdog test suite ==="
@@ -365,6 +463,9 @@ test_t5_4
 test_t5_5
 test_t5_6
 test_t5_7
+test_t5_8
+test_t5_9
+test_t5_10
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
