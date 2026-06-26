@@ -280,7 +280,7 @@ check_curseforge_mod() {
     local cf_api_key=""
     
     # Try to use a simple decryption method for the token
-    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local tmp_token_file
     
     # Create temporary file for encrypted token download with timeout
@@ -684,7 +684,7 @@ resolve_curseforge_dependencies() {
     local mod_name="$2"
     
     # Download and decrypt CurseForge API token
-    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local tmp_token_file
     tmp_token_file=$(mktemp)
     if [[ -z "$tmp_token_file" ]]; then
@@ -849,7 +849,7 @@ resolve_curseforge_dependencies_api() {
     local dependencies=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -1038,7 +1038,7 @@ fetch_and_add_external_mod() {
             local download_url=""
             
             # Download encrypted CurseForge API token from GitHub repository
-            local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+            local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
             local encrypted_token_file=$(mktemp)
             local http_code
             
@@ -1138,7 +1138,7 @@ get_curseforge_download_url() {
     local download_url=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -1259,7 +1259,7 @@ get_curseforge_download_url() {
 # get_curseforge_api_token: Download and decrypt CurseForge API token
 # Returns: token string on stdout, or empty on failure
 get_curseforge_api_token() {
-    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file
     encrypted_token_file=$(mktemp)
     local http_code=""

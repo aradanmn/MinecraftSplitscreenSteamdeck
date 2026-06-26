@@ -92,7 +92,7 @@ main() {
     # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
     # These accounts enable splitscreen without requiring multiple Microsoft accounts
     # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
-    if ! wget -O accounts.json "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/accounts.json"; then
+    if ! wget -O accounts.json "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/accounts.json"; then
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
         if [[ ! -f "accounts.json" ]]; then

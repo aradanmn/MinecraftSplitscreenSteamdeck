@@ -208,7 +208,7 @@ check_mod_version_compatibility() {
     elif [[ "$platform" == "curseforge" ]]; then
         # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
         # First get the encrypted API token
-        local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/token.enc"
+        local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
         local encrypted_token_file=$(mktemp)
         
         if command -v curl >/dev/null 2>&1; then
