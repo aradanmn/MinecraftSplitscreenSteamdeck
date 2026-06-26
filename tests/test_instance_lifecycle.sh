@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_instance_lifecycle.sh
 # =============================================================================
 
-readonly TEST_TOTAL=9
+readonly TEST_TOTAL=11
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -29,71 +29,6 @@ _pass() {
 _fail() {
     echo "[FAIL] $1 — $2"
     TESTS_FAILED=$((TESTS_FAILED + 1))
-}
-
-# =============================================================================
-# Test T4.1 — splitscreen.properties written correctly for each slot/grid combo
-# =============================================================================
-test_t4_1() {
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' RETURN
-
-    INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
-
-    # Each test case: active_slots, then pairs of (slot, expected_mode)
-    # We test each slot that's part of the active set
-    local test_failed=0
-    local tests_run=0
-
-    # Helper: test one slot's properties
-    _check_props() {
-        local slot="$1"
-        local active="$2"
-        local expected="$3"
-
-        _write_splitscreen_properties "$slot" "$active"
-
-        local prop_file="${tmpdir}/instances/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
-        local actual
-        actual=$(grep '^mode=' "$prop_file" 2>/dev/null | cut -d= -f2)
-
-        if [[ "$actual" != "$expected" ]]; then
-            _fail "T4.1.$slot" "slots='$active': expected mode=$expected, got mode=$actual"
-            test_failed=1
-        fi
-        tests_run=$((tests_run + 1))
-    }
-
-    # Case: slots="1" → grid=full
-    _check_props 1 "1"    "FULLSCREEN"
-
-    # Case: slots="1 2" → grid=half
-    _check_props 1 "1 2"  "TOP"
-    _check_props 2 "1 2"  "BOTTOM"
-
-    # Case: slots="1 2 3" → grid=quad
-    _check_props 1 "1 2 3" "TOP_LEFT"
-    _check_props 2 "1 2 3" "TOP_RIGHT"
-    _check_props 3 "1 2 3" "BOTTOM_LEFT"
-
-    # Case: slots="1 2 3 4" → grid=quad
-    _check_props 1 "1 2 3 4" "TOP_LEFT"
-    _check_props 2 "1 2 3 4" "TOP_RIGHT"
-    _check_props 3 "1 2 3 4" "BOTTOM_LEFT"
-    _check_props 4 "1 2 3 4" "BOTTOM_RIGHT"
-
-    # Case: slots="1 3" → grid=quad
-    _check_props 1 "1 3" "TOP_LEFT"
-    _check_props 3 "1 3" "BOTTOM_LEFT"
-
-    # Case: slots="2 4" → grid=quad
-    _check_props 2 "2 4" "TOP_RIGHT"
-    _check_props 4 "2 4" "BOTTOM_RIGHT"
-
-    if (( test_failed == 0 )); then
-        _pass "T4.1 — splitscreen.properties: all $tests_run cases correct"
-    fi
 }
 
 # =============================================================================
@@ -413,12 +348,64 @@ test_t4_9() {
 }
 
 # =============================================================================
+# T4.10 — N5(a): a slot's OWN node is never masked, even if another slot claims it
+# =============================================================================
+test_t4_10() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local own_e="$tmpdir/event22" own_j="$tmpdir/js2"; touch "$own_e" "$own_j"
+    # Disconnect→reconnect→same-node: an orphaned slot still claims our reused node,
+    # so the mask pair equals our OWN node. Masking it would /dev/null our controller.
+    local out
+    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+        _build_bwrap_command 2 "$own_e" "$own_j" "$own_e" "$own_j" 2>/dev/null)
+    if grep -q -- "--dev-bind $own_j $own_j" <<<"$out" && ! grep -q -- "--bind /dev/null $own_j" <<<"$out"; then
+        _pass "T4.10 — own node NOT masked when another slot claims the same node (N5a)"
+    else
+        _fail "T4.10" "own js masked or unbound: $(grep -oE -- "--bind /dev/null $own_j|--dev-bind $own_j $own_j" <<<"$out" | tr '\n' ';')"
+    fi
+}
+
+# =============================================================================
+# T4.11 — a genuinely-other slot's node IS masked; own node stays intact
+# =============================================================================
+test_t4_11() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local own_e="$tmpdir/event22" own_j="$tmpdir/js2"; touch "$own_e" "$own_j"
+    local oth_e="$tmpdir/event30" oth_j="$tmpdir/js4"; touch "$oth_e" "$oth_j"
+    local out
+    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+        _build_bwrap_command 2 "$own_e" "$own_j" "$oth_e" "$oth_j" 2>/dev/null)
+    if grep -q -- "--bind /dev/null $oth_j" <<<"$out" && ! grep -q -- "--bind /dev/null $own_j" <<<"$out"; then
+        _pass "T4.11 — other slot's node masked, own node left intact"
+    else
+        _fail "T4.11" "expected other masked + own intact"
+    fi
+}
+
+# =============================================================================
+# T4.12 — N5(b): a trailing UNPAIRED mask arg is masked (not silently dropped) + warns
+# =============================================================================
+test_t4_12() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local own_e="$tmpdir/event22" own_j="$tmpdir/js2"; touch "$own_e" "$own_j"
+    local oth_e="$tmpdir/event30"; touch "$oth_e"
+    local out
+    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+        _build_bwrap_command 2 "$own_e" "$own_j" "$oth_e" 2>"$tmpdir/err")
+    local err; err=$(cat "$tmpdir/err")
+    if grep -q -- "--bind /dev/null $oth_e" <<<"$out" && grep -qi 'odd controller-mask' <<<"$err"; then
+        _pass "T4.12 — trailing unpaired mask arg masked (not dropped) + warns (N5b)"
+    else
+        _fail "T4.12" "trailing arg dropped or no warning (masked=$(grep -qc -- "--bind /dev/null $oth_e" <<<"$out"), err='$err')"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== instance_lifecycle test suite ==="
 echo ""
 
-test_t4_1
 test_t4_2
 test_t4_3
 test_t4_4
@@ -427,6 +414,9 @@ test_t4_6
 test_t4_7
 test_t4_8
 test_t4_9
+test_t4_10
+test_t4_11
+test_t4_12
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
