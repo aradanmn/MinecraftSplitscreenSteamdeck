@@ -32,6 +32,12 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 - ➖ **The Steam Deck's built-in controls** do **not** become a player when docked. Multiplayer needs external pads; this is by design so the Deck's own sticks don't grab a slot.
 - ❌ **The Valve Steam Controller is not supported as a player** — because of how Steam routes it, the game can't use it as a regular gamepad here. Use a PS/Xbox/8BitDo-style pad instead.
 
+### If a controller disconnects mid-game (dead battery, idle power-off)
+
+- That player's game **keeps running** — a dropped controller never tears your session down, so nobody loses the world.
+- To get back in, **reconnect the controller**; that player's screen relaunches and rejoins.
+- ⚠️ **If that player is *hosting* a LAN world** (rather than everyone joining a server), reconnecting relaunches their game, which **ends the LAN world for everyone**. So **whoever hosts a LAN world should use a wired controller** (or one that won't sleep/die mid-session). Players connecting to a Minecraft server are unaffected — they just rejoin. *(Seamless reconnect that keeps a host's world alive is planned for a later version.)*
+
 ---
 
 ## Will it work on my device?
