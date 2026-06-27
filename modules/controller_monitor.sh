@@ -4,9 +4,25 @@ set -euo pipefail
 # =============================================================================
 # CONTROLLER MONITOR MODULE
 # =============================================================================
-# Enumerates Steam virtual gamepad devices (28de:11ff) and monitors for
-# controller add/remove events via udevadm. Emits structured messages
-# to the named pipe at $SPLITSCREEN_FIFO.
+# Enumerates gamepad devices and monitors for controller add/remove events via
+# udevadm. Emits structured messages to the named pipe at $SPLITSCREEN_FIFO.
+#
+# Docked enumeration has TWO selectable sources (gated by CONTROLLER_MONITOR_RAW_BINDING):
+#   - flag UNSET/0 (DEFAULT): legacy _map_external_player_virtuals — maps each external
+#     pad to the Steam virtual gamepad (28de:11ff) Steam minted for it via inputN
+#     creation order.
+#   - flag == 1: _list_raw_external_pads — emits each REAL external pad's OWN raw js node
+#     (js-gated, gamepad+vendor gated, shared-parent deduped, ordered by (inputN,eventN);
+#     the built-in / Steam 28de and the puck are structurally excluded — they expose no
+#     raw js gamepad node).
+#
+# DEFAULT-OFF CAVEAT: with the flag unset the docked path is byte-for-byte the legacy
+# behavior, so the §3b built-in-leak (a pad can claim the built-in's 28de virtual) is
+# LIVE BY DEFAULT. The raw path is dark-launched and is NOT "the fix" until flipped.
+# FLIP CRITERION (commit the default to 1 only when BOTH hold): an in-sandbox probe shows
+# Controlify's SDL enumerates AND reads the raw jsN with Steam Input ON, AND a user
+# confirms in-game response on >=2 pads. If the probe fails: PLAN-B is per-app Steam Input
+# OFF, then passive event-correlation.
 #
 # Public API:
 #   list_eligible_controllers(mode)     — stdout: "event_node js_node vendor product" lines
@@ -17,6 +33,8 @@ set -euo pipefail
 #   PROC_INPUT_DEVICES              — override /proc/bus/input/devices path
 #   INPUTPLUMBER_DBUS_AVAILABLE     — set to "0" to force enumeration fallback
 #   CONTROLLER_MONITOR_UDEVADM_CMD  — override udevadm command
+#   CONTROLLER_MONITOR_RAW_BINDING  — "1" = docked uses raw external js nodes
+#                                     (default OFF/unset = legacy virtual mapper)
 # =============================================================================
 
 # --- Module-level constants ---
@@ -465,11 +483,230 @@ _map_external_player_virtuals() {
     done
 }
 
+# _has_gamepad_buttons: inclusive bit-test of a `B: KEY=` bitmap (passed WHOLE as $1).
+# ACCEPT (return 0) if BTN_SOUTH (0x130) OR BTN_JOYSTICK (0x120) is set, OR if the bitmap
+# is empty / has fewer than 5 whitespace-delimited words (FAIL-OPEN — never false-negative
+# a real pad). REJECT (return 1) only when the bitmap parses AND neither bit is set.
+#
+# The kernel omits leading-zero most-significant words, so we count words from the END:
+# word[-1]=bits 0-63, word[-2]=64-127, word[-3]=128-191, word[-4]=192-255, word[-5]=bits
+# 256-319 — where both BTN_GAMEPAD/BTN_SOUTH (0x130=304) and BTN_JOYSTICK (0x120=288) live.
+# Within that 5th-from-end word BTN_SOUTH is bit 48 (304-256) and BTN_JOYSTICK is bit 32
+# (288-256).
+#
+# ASSUMES 64-bit words (SteamOS is x86-64: /proc/bus/input/devices prints `unsigned long`
+# words = 64-bit on amd64). Uses the SIGN-SAFE mask form `(word & (1<<N))`, NOT a
+# right-shift — a right-shift would arithmetic-shift-sign-extend a 64-bit word whose bit
+# 63 is set and corrupt the test.
+_has_gamepad_buttons() {
+    local keybits="$1"
+    # FAIL-OPEN on an empty/whitespace-only bitmap.
+    [[ -z "${keybits// /}" ]] && return 0
+    local -a words=($keybits)
+    local n=${#words[@]}
+    # FAIL-OPEN when the BTN_ range word was never emitted (fewer than 5 words).
+    (( n < 5 )) && return 0
+    local word="0x${words[$((n - 5))]}"
+    # mask form: 0x<hex> is parsed as a 64-bit intmax_t; bit 63 set → negative, but `&`
+    # with a positive mask stays correct (no sign-extension as a shift would have).
+    if (( (word & (1 << 48)) != 0 )); then return 0; fi   # BTN_SOUTH  0x130
+    if (( (word & (1 << 32)) != 0 )); then return 0; fi   # BTN_JOYSTICK 0x120
+    echo "[controller_monitor]   reject: KEY word '${words[$((n - 5))]}' has neither BTN_SOUTH nor BTN_JOYSTICK" >&2
+    return 1
+}
+
+# _list_raw_external_pads: NEW self-contained docked enumerator (selected by
+# list_eligible_controllers when CONTROLLER_MONITOR_RAW_BINDING==1). Emits each REAL
+# external pad's OWN raw nodes — "<eventN> <jsN> <vendor> <product>" — one per line.
+#
+# It does its OWN single-pass /proc parse (MIRRORS the block structure of
+# _parse_all_gamepad_devices) and does NOT touch that shared 6-field parser, so the
+# multi-word `B: KEY=` bitmap never crosses a `read` boundary in the shared contract.
+#
+# Per-block capture, then the 10-step enumeration algorithm:
+#   1) JS-GATE: require a jsN handler (drops DS4/DualSense touchpad+motion event-only
+#      nodes and the lizard-mode built-in/puck, which expose no js); extract eventN too.
+#   2) GAMEPAD-CAPABILITY GATE (inclusive, via _has_gamepad_buttons): BTN_SOUTH OR
+#      BTN_JOYSTICK OR unparseable bitmap → accept.
+#   3) VENDOR GATE: drop vendor == CONTROLLER_MONITOR_STEAM_VENDOR (28de) — both 11ff
+#      virtuals AND any 1205 that bears a js. All other vendors kept (do NOT hardcode 054c).
+#   4) inputN parsed from the sysfs tail; skip rows missing inputN/eventN/jsN.
+#   5) collect internal records (sysfs+phys kept ONLY for in-pass dedup; never emitted).
+#   6) SHARED-PARENT DEDUP: parent key = sysfs with a trailing /input/inputN (or bare
+#      /inputN) stripped, phys fallback when sysfs empty; keep the LOWEST jsN per key
+#      (collapses an 8BitDo dual-js under one uhid). NOTE: a BT uhid key is per-CONNECTION
+#      (not durable across reconnect — in-pass only); it does NOT collapse one pad on two
+#      USB interfaces nor USB+BT simultaneously (two parents → two pads).
+#   7) SORT `sort -n -k1,1 -k2,2` (inputN, eventN tiebreaker) — a TOTAL deterministic
+#      order. Two guarantees: (i) deterministic ordering for unchanged sets (load-bearing
+#      for prev_nodes diffing and the acquire poll); (ii) cold-start creation order for
+#      initial slot assignment (cosmetic, NOT preserved across reconnect — a reconnected
+#      pad gets a higher inputN). NO 'stable across reconnect' claim. Identity NEVER keys
+#      on uniq/MAC (shared-MAC DS4 constraint); the orchestrator dedups by event_node path.
+#   8) DUAL-TRANSPORT GUARD: if 2+ survivors share the SAME vendor:product, emit ONE loud
+#      >&2 warning (possible same pad on USB+BT OR two identical pads). Do NOT auto-collapse
+#      (VID:PID dedup would wrongly merge two identical same-MAC DS4s).
+#   9) CAP at CONTROLLER_MONITOR_MAX_PLAYERS AFTER the sort.
+#  10) EMIT "<eventN> <jsN> <vendor> <product>" — the pad's OWN raw nodes (the
+#      list_eligible_controllers docked branch prefixes /dev/input/event and /dev/input/js,
+#      preserving the 4-field public contract). keybits/sysfs/phys are NEVER emitted.
+_list_raw_external_pads() {
+    local proc_path
+    proc_path=$(_get_proc_input_path)
+
+    if [[ ! -f "$proc_path" ]]; then
+        echo "[controller_monitor] ERROR: $proc_path not found" >&2
+        return 1
+    fi
+
+    local -a records=()   # surviving internal rows: "inputN eventN jsN vendor product sysfs phys"
+
+    # _consider: apply per-block gates (steps 1-5) to the just-parsed block; on survival
+    # append an internal record. Reads the block-capture locals (handlers, vendor, …) via
+    # bash dynamic scope and appends to the caller's `records` array.
+    _consider() {
+        # step 1: JS-GATE — need a jsN handler; grab the first event*/js* tokens.
+        local _h _jsN="" _eventN=""
+        for _h in $handlers; do
+            case "$_h" in
+                js*)    [[ -z "$_jsN" ]]    && _jsN="${_h#js}" ;;
+                event*) [[ -z "$_eventN" ]] && _eventN="${_h#event}" ;;
+            esac
+        done
+        [[ -z "$_jsN" ]] && return 0   # no js → drop (touchpad/motion/lizard puck/built-in)
+        # step 2: GAMEPAD-CAPABILITY GATE (inclusive, fail-open).
+        if ! _has_gamepad_buttons "$keybits"; then
+            echo "[controller_monitor]   raw: drop event${_eventN} js${_jsN} [${vendor}:${product}] — no gamepad buttons" >&2
+            return 0
+        fi
+        # step 3: VENDOR GATE — drop the Steam vendor (28de:11ff virtuals AND 1205-with-js).
+        if [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]]; then
+            echo "[controller_monitor]   raw: drop event${_eventN} js${_jsN} [${vendor}:${product}] — Steam vendor (built-in/virtual)" >&2
+            return 0
+        fi
+        # step 4: inputN from the sysfs tail (mirrors _map_external_player_virtuals).
+        local _inputn=""
+        [[ "$sysfs" =~ input([0-9]+)$ ]] && _inputn="${BASH_REMATCH[1]}"
+        [[ -z "$_inputn" || -z "$_eventN" || -z "$_jsN" ]] && return 0
+        # step 5: collect (sysfs+phys retained for dedup ONLY).
+        records+=("$_inputn $_eventN $_jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}")
+    }
+
+    local in_block=0
+    local vendor="" product=""
+    local handlers="" sysfs="" phys="" keybits=""
+    local line
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if (( in_block == 1 )); then
+                _consider
+            fi
+            in_block=0
+            vendor=""; product=""; handlers=""; sysfs=""; phys=""; keybits=""
+            continue
+        fi
+
+        in_block=1
+
+        case "$line" in
+            I:*)
+                if [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]]; then
+                    vendor="${BASH_REMATCH[1],,}"
+                fi
+                if [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]]; then
+                    product="${BASH_REMATCH[1],,}"
+                fi
+                ;;
+            H:*)
+                handlers="${line#H: Handlers=}"
+                ;;
+            S:*)
+                sysfs="${line#S: Sysfs=}"
+                ;;
+            P:*)
+                phys="${line#P: Phys=}"
+                ;;
+            B:*)
+                # Only the KEY bitmap matters; ignore ABS=/REL=/MSC= etc.
+                [[ "$line" == "B: KEY="* ]] && keybits="${line#B: KEY=}"
+                ;;
+        esac
+    done < "$proc_path"
+
+    # Last block (file may not end with a blank line).
+    if (( in_block == 1 )); then
+        _consider
+    fi
+    unset -f _consider
+
+    # step 6: SHARED-PARENT DEDUP — keep the lowest jsN per parent device.
+    local -A _best_js=()    # parent key → lowest jsN seen
+    local -A _best_row=()   # parent key → emit row "inputN eventN jsN vendor product"
+    local _rec
+    for _rec in "${records[@]}"; do
+        local r_input r_ev r_js r_vn r_pr r_sysfs r_phys
+        read -r r_input r_ev r_js r_vn r_pr r_sysfs r_phys <<< "$_rec"
+        local _key="$r_sysfs"
+        if [[ -n "$_key" ]]; then
+            # strip a trailing /input/inputN (or bare /inputN) → the device-node parent path
+            _key=$(sed -E 's#/input/input[0-9]+$##; s#/input[0-9]+$##' <<< "$_key")
+        else
+            _key="$r_phys"
+        fi
+        [[ -z "$_key" ]] && _key="input${r_input}"   # last-resort unique key
+        local _prev_js="${_best_js[$_key]:-}"
+        if [[ -z "$_prev_js" ]] || (( r_js < _prev_js )); then
+            _best_js[$_key]="$r_js"
+            _best_row[$_key]="$r_input $r_ev $r_js $r_vn $r_pr"
+        fi
+    done
+
+    # step 7: SORT survivors by (inputN, eventN) — total deterministic order.
+    local -a _survivors=()
+    local _k
+    for _k in "${!_best_row[@]}"; do
+        _survivors+=("${_best_row[$_k]}")
+    done
+    local -a _sorted=()
+    (( ${#_survivors[@]} )) && mapfile -t _sorted < <(printf '%s\n' "${_survivors[@]}" | sort -n -k1,1 -k2,2)
+
+    # step 8: DUAL-TRANSPORT GUARD — warn (do NOT collapse) on shared VID:PID.
+    local -A _vidpid_count=()
+    local _row s_input s_ev s_js s_vn s_pr
+    for _row in "${_sorted[@]}"; do
+        read -r s_input s_ev s_js s_vn s_pr <<< "$_row"
+        _vidpid_count["$s_vn:$s_pr"]=$(( ${_vidpid_count["$s_vn:$s_pr"]:-0} + 1 ))
+    done
+    local _vp
+    for _vp in "${!_vidpid_count[@]}"; do
+        if (( ${_vidpid_count[$_vp]} >= 2 )); then
+            echo "[controller_monitor] WARNING: ${_vidpid_count[$_vp]} pads share VID:PID ${_vp} — possible SAME pad on USB+BT, OR two identical pads. Spawning BOTH; if a ghost player appears, disconnect the idle transport." >&2
+        fi
+    done
+
+    # diagnostics mirroring _map_external_player_virtuals' >&2 style.
+    echo "[controller_monitor] raw enumeration: ${#_sorted[@]} external raw pad(s) after js+gamepad+vendor gate and shared-parent dedup" >&2
+
+    # steps 9 + 10: cap at MAX_PLAYERS, then emit "<eventN> <jsN> <vendor> <product>".
+    local _count=0 o_input o_ev o_js o_vn o_pr
+    for _row in "${_sorted[@]}"; do
+        (( _count >= CONTROLLER_MONITOR_MAX_PLAYERS )) && break
+        read -r o_input o_ev o_js o_vn o_pr <<< "$_row"
+        echo "[controller_monitor]   raw pad: input${o_input} [${o_vn}:${o_pr}] event${o_ev} js${o_js}" >&2
+        echo "${o_ev} ${o_js} ${o_vn} ${o_pr}"
+        _count=$((_count + 1))
+    done
+}
+
 # Write current eligible device list to stdout.
 # Each line: "<event_node> <js_node> <physical_vendor> <physical_product>"
 # $1 = mode ("handheld" or "docked")
-# In docked mode: external player pads mapped to their Steam virtual (creation-order
-# positive ID — see _map_external_player_virtuals); built-in + phantoms excluded; max 4.
+# In docked mode the SOURCE is flag-gated by CONTROLLER_MONITOR_RAW_BINDING:
+#   - unset/0 (DEFAULT): _map_external_player_virtuals — external pads mapped to their
+#     Steam virtual by inputN creation order (built-in + phantoms excluded; max 4).
+#   - == 1: _list_raw_external_pads — each external pad's OWN raw js node (js-gated,
+#     gamepad+vendor gated, deduped, ordered by (inputN,eventN); built-in/28de excluded).
+# Either source emits the IDENTICAL 4-field contract; only the source differs.
 # In handheld mode: exactly one line — the first gamepad-capable device (any VID:PID).
 list_eligible_controllers() {
     local mode="${1:-}"
@@ -495,15 +732,25 @@ list_eligible_controllers() {
         return 0
     fi
 
-    # Docked mode: map external player pads → their Steam virtual gamepad by inputN
-    # creation order (positive ID). Built-in (no jsN) and startup-pool phantoms are
-    # never claimed, so they can't leak in. See _map_external_player_virtuals.
+    # Docked mode: pick the enumeration SOURCE based on CONTROLLER_MONITOR_RAW_BINDING.
+    #   - flag == 1: _list_raw_external_pads (each pad's OWN raw js node).
+    #   - unset/0 (DEFAULT): _map_external_player_virtuals — external pads mapped to their
+    #     Steam virtual by inputN creation order; built-in (no jsN) + startup-pool phantoms
+    #     are never claimed, so they can't leak in.
+    # Both sources emit the IDENTICAL 4-field internal contract; the formatting below is
+    # unchanged, so the public stdout contract is the same regardless of the flag.
+    local src
+    if [[ "${CONTROLLER_MONITOR_RAW_BINDING:-0}" == "1" ]]; then
+        src=_list_raw_external_pads
+    else
+        src=_map_external_player_virtuals
+    fi
     local _line _ev _js _vn _pr
     while IFS= read -r _line; do
         [[ -z "$_line" ]] && continue
         read -r _ev _js _vn _pr <<< "$_line"
         echo "/dev/input/event${_ev} /dev/input/js${_js} ${_vn} ${_pr}"
-    done < <(_map_external_player_virtuals)
+    done < <("$src")
 }
 
 # Return the event node and js node for the Nth eligible controller (1-based).
