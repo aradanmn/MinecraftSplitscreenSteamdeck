@@ -193,11 +193,20 @@ _build_direct_command() {
         # (DISABLE_UDEV / udev tmpfs / pipe mask): we WANT normal udev + Steam discovery so
         # the built-in is actually found.
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
+        # DRAFT 2026-06-27 (research, UNTESTED): disable the gamescope Vulkan WSI layer — the
+        # GL game never uses it, and in Game Mode its abort()-on-no-dialog path is a suspected
+        # crash source. DISABLE_GAMESCOPE_WSI=1 is the correct off-switch (the layer keys on
+        # the var's PRESENCE; ENABLE_GAMESCOPE_WSI=0 does NOT disable it). RADV_SYS_MEM_LIMIT
+        # caps RADV's claim on the 16GB unified APU RAM, leaving headroom for JVM heaps.
+        # (Mainly matters for docked 4-instance; harmless for a single handheld instance.)
+        DISABLE_GAMESCOPE_WSI=1
+        RADV_SYS_MEM_LIMIT=50
     )
     [[ -n "$_xauth" ]] && _env+=("XAUTHORITY=$_xauth")
 
     local -a cmd=(
         env
+        -u ENABLE_GAMESCOPE_WSI
         "${_env[@]}"
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
@@ -364,6 +373,13 @@ _build_bwrap_command() {
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
+        # DRAFT 2026-06-27 (research, UNTESTED): gamescope WSI layer off (the GL game doesn't
+        # use it; its abort()-on-no-dialog path is a suspected 4-instance crash source —
+        # DISABLE_GAMESCOPE_WSI=1 is the correct switch, NOT ENABLE=0) + cap RADV's claim on
+        # the 16GB unified APU RAM (the 4-instance reset is JVM-heap memory pressure, not
+        # swapchain memory). See docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
+        DISABLE_GAMESCOPE_WSI=1
+        RADV_SYS_MEM_LIMIT=50
     )
     # SDL_JOYSTICK_DISABLE_UDEV=1 — THE key strict-isolation hint, but set ONLY in
     # strict/docked mode. SDL does NOT detect a plain bwrap sandbox as a container, so by
@@ -384,6 +400,7 @@ _build_bwrap_command() {
     cmd+=(
         --
         env
+        -u ENABLE_GAMESCOPE_WSI
         "${_env_vars[@]}"
         "${launcher_exec}"
         -l "latestUpdate-${slot}"
