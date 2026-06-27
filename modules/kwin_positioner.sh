@@ -129,6 +129,17 @@ kwin_place_windows() {
             var g = Object.assign({}, w.frameGeometry);
             g.x = tgt.x; g.y = tgt.y; g.width = tgt.w; g.height = tgt.h;
             w.frameGeometry = g;
+            // Force a RE-COMPOSITE of a possibly-occluded window. When a later player's
+            // window spawns at 0,0 ON TOP of an earlier one, KWin stops painting the covered
+            // window (occlusion culling) and it goes BLACK; setting frameGeometry alone moves
+            // it but does NOT make KWin repaint the surface, so the black half persists even
+            // after the re-tile separates them. Raising the window forces KWin to re-composite
+            // it. Tiled windows don't overlap, so raising each in turn is layout-harmless. Try
+            // the KWin-version-safe forms; a no-op is fine (then we escalate to a remap kick).
+            try {
+                if (typeof workspace.raiseWindow === "function") workspace.raiseWindow(w);
+                else if (typeof w.raise === "function") w.raise();
+            } catch (e) {}
             placed++;
             report.push("placed pid=" + tgt.pid + " -> " + tgt.x + "," + tgt.y +
                         " " + tgt.w + "x" + tgt.h + " [" + w.caption + "]");
