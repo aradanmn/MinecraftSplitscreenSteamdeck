@@ -633,6 +633,11 @@ docked_flow() {
 # =============================================================================
 main() {
     echo "[orchestrator] main() starting — PID=$$" >&2
+    # NOTE (H4): the cleanup trap is installed by the LAUNCHER (launchProdFromPlasma in
+    # minecraftSplitscreen.sh), NOT here — main() runs in the launcher's shell, so setting a
+    # trap here would CLOBBER the launcher's essential EXIT trap (_restore_session_env +
+    # _end_nested_session). The launcher's trap now also calls cleanup() (instance teardown)
+    # and fires on INT/TERM/HUP. cleanup() is re-entrancy-guarded.
 
     # ── Ensure FIFO exists
     local fifo="${SPLITSCREEN_FIFO:-}"
@@ -694,6 +699,11 @@ main() {
 # cleanup — Teardown everything and kill background processes
 # =============================================================================
 cleanup() {
+    # H4 (UNTESTED 2026-06-27): re-entrancy guard. cleanup() now runs from BOTH the
+    # end-of-flow path AND the EXIT/signal trap (see main()); without this guard it would
+    # double-run — killing already-dead PIDs and tearing down twice.
+    [[ -n "${_CLEANUP_DONE:-}" ]] && return 0
+    _CLEANUP_DONE=1
     echo "[orchestrator] cleanup() starting" >&2
 
     # ── Kill watchdog
