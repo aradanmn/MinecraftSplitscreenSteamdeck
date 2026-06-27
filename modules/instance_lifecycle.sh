@@ -163,6 +163,49 @@ _vendor_of_js_node() {
     return 0
 }
 
+# _build_direct_command: HANDHELD launch — NO bwrap, full system access. Handheld is one
+# player on the Deck's built-in controls; there is NOTHING to isolate, and the sandbox
+# actively BREAKS the built-in: `--dev /dev` leaves an empty /dev/input, so the built-in's
+# Steam 28de:11ff virtual has no device node to open and Controlify reports "No controllers
+# found". Launching directly (like a normal Deck Minecraft run) gives full /dev/input access
+# so the built-in works. $1 = slot. Output: a printf '%q'-quoted "env … launcher … -l … -a"
+# command string (same shape spawn_instance expects, just without the bwrap prefix).
+_build_direct_command() {
+    local slot="$1"
+    local launcher_exec
+    launcher_exec=$(_get_launcher_exec)
+
+    # Reach the nested session's XWayland the same way the sandbox path does.
+    local _xauth=""
+    if [[ -n "${XAUTHORITY:-}" && -e "${XAUTHORITY:-}" ]]; then
+        _xauth="$XAUTHORITY"
+    else
+        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
+            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
+    fi
+
+    local -a _env=(
+        APPIMAGE_EXTRACT_AND_RUN=1
+        QT_QPA_PLATFORM=xcb
+        "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
+        # Full controller access — the built-in reaches the game as a Steam 28de:11ff
+        # virtual, so allow Steam virtual gamepads. Deliberately NO isolation hints
+        # (DISABLE_UDEV / udev tmpfs / pipe mask): we WANT normal udev + Steam discovery so
+        # the built-in is actually found.
+        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
+    )
+    [[ -n "$_xauth" ]] && _env+=("XAUTHORITY=$_xauth")
+
+    local -a cmd=(
+        env
+        "${_env[@]}"
+        "${launcher_exec}"
+        -l "latestUpdate-${slot}"
+        -a "P${slot}"
+    )
+    printf '%q ' "${cmd[@]}"
+}
+
 # _build_bwrap_command: Construct a bwrap command string with printf '%q' quoting.
 # $1 = slot, $2 = event_node, $3 = js_node
 # $4+ = pairs of (mask_event, mask_js) for other controllers to mask
@@ -653,9 +696,16 @@ spawn_instance() {
         echo "[spawn_instance] Set window title SplitscreenP${slot} via instance.cfg" >&2
     fi
 
-    # 3. Build the bwrap command string
+    # 3. Build the launch command string.
+    #    HANDHELD (no js bound — single player on the Deck's built-in): launch WITHOUT bwrap,
+    #    full system access. Nothing to isolate (one player), and a sandbox gives the
+    #    built-in's Steam virtual no /dev/input node to open → Controlify finds no controller.
+    #    DOCKED (a real pad's js bound): keep the bwrap sandbox for per-instance isolation.
     local bwrap_command
-    if [[ ${#mask_controllers[@]} -gt 0 ]]; then
+    if [[ -z "$js_node" ]]; then
+        bwrap_command=$(_build_direct_command "$slot")
+        echo "[spawn_instance] Slot $slot: handheld direct launch (no sandbox, full access)" >&2
+    elif [[ ${#mask_controllers[@]} -gt 0 ]]; then
         bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node" "${mask_controllers[@]}")
     else
         bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
