@@ -13,6 +13,14 @@
 #
 # =============================================================================
 
+# Per-instance JVM heap (MiB). Up to four instances run concurrently for 4-player
+# splitscreen, so the TOTAL must fit alongside SteamOS + gamescope + nested KWin on
+# a 16 GB Steam Deck. 4 × 3072 ≈ 12 GiB leaves headroom; the previous 4 × 4096 =
+# 16 GiB would OOM at 3–4 players. Single/two-player sessions are unaffected (3 GiB
+# is ample for vanilla + Sodium). Override via MCSS_MAX_MEM_MB / MCSS_MIN_MEM_MB.
+: "${MCSS_MAX_MEM_MB:=3072}"
+: "${MCSS_MIN_MEM_MB:=512}"
+
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
 # Each instance gets the same mods but separate configurations for splitscreen
@@ -108,8 +116,8 @@ OverrideMemory=true
 OverrideNativeWorkarounds=false
 OverrideWindow=false
 JavaPath=$JAVA_PATH
-MinMemAlloc=512
-MaxMemAlloc=4096
+MinMemAlloc=${MCSS_MIN_MEM_MB}
+MaxMemAlloc=${MCSS_MAX_MEM_MB}
 IntendedVersion=$MC_VERSION
 EOF
 
@@ -182,8 +190,11 @@ EOF
         # INSTANCE VERIFICATION: Ensure the instance directory was created successfully
         # This verification step prevents subsequent operations on non-existent instances
         local target_instance_dir="$TARGET_DIR/instances/$instance_name"
-        local preserve_options_txt=false
-        
+        # H12: do NOT re-declare preserve_options_txt=false here — it would discard the
+        # value handle_instance_update set above (line ~80), so a normal-location update
+        # always lost options.txt. Keep that value; the cross-location branch below may
+        # still force it true.
+
         # For updates, check if we're working with an existing instance in a different location
         if [[ -d "$instances_dir/$instance_name" && "$instances_dir" != "$TARGET_DIR/instances" ]]; then
             target_instance_dir="$instances_dir/$instance_name"
@@ -366,7 +377,7 @@ EOF
                 print_debug "Attempting URL resolution for $mod_name (MC: $MC_VERSION)"
                 
                 # Try exact version match first
-                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                 print_debug "Exact version match result: ${mod_url:-'(empty)'}"
                 
                 # Try major.minor version if exact match failed  
@@ -376,14 +387,14 @@ EOF
                     print_debug "Trying major.minor version: $mc_major_minor"
                     
                     # Try exact major.minor
-                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                     print_debug "Major.minor match result: ${mod_url:-'(empty)'}"
                     
                     # Try wildcard version (e.g., "1.21.x")
                     if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                         local mc_major_minor_x="$mc_major_minor.x"
                         print_debug "Trying wildcard version: $mc_major_minor_x"
-                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                        mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                         print_debug "Wildcard match result: ${mod_url:-'(empty)'}"
                     fi
                     
@@ -396,7 +407,7 @@ EOF
                             local prev_patch=$((mc_patch_version - 1))
                             local mc_prev_version="$mc_major_minor.$prev_patch"
                             print_debug "Trying limited backwards compatibility with: $mc_prev_version"
-                            mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[0].url' 2>/dev/null | head -n1)
+                            mod_url=$(printf "%s" "$resolve_data" | jq -r --arg v "$mc_prev_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                             print_debug "Limited backwards compatibility result: ${mod_url:-'(empty)'}"
                         fi
                     fi
@@ -405,7 +416,7 @@ EOF
                 # If still no URL found, try the latest Fabric version for any compatible release
                 if [[ -z "$mod_url" || "$mod_url" == "null" ]]; then
                     print_debug "Trying latest Fabric version (any compatible release)"
-                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | .files[0].url' 2>/dev/null | head -n1)
+                    mod_url=$(printf "%s" "$resolve_data" | jq -r '.[] | select(.loaders[] == "fabric") | (.files | map(select(.primary)) | .[0].url) // (.files[0].url)' 2>/dev/null | head -n1)
                     print_debug "Latest Fabric match result: ${mod_url:-'(empty)'}"
                 fi
                 
@@ -457,8 +468,11 @@ EOF
         fi
         
         # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
-        # Filename is sanitized (spaces replaced with underscores) for filesystem compatibility
-        local mod_file="$mods_dir/${mod_name// /_}.jar"
+        # N12: sanitize the WHOLE filename to [A-Za-z0-9._-] (not just spaces) so a mod
+        # title containing '/' (or other separators) can't escape mods_dir via `wget -O`.
+        # Identical to the old space→underscore behavior for ordinary names.
+        local safe_name="${mod_name//[^A-Za-z0-9._-]/_}"
+        local mod_file="$mods_dir/${safe_name}.jar"
         if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
             print_success "Success: $mod_name"
         else
@@ -715,10 +729,10 @@ handle_instance_update() {
         fi
 
         if ! grep -q "^MinMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MinMemAlloc=512" >> "$instance_dir/instance.cfg"
+            echo "MinMemAlloc=${MCSS_MIN_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         if ! grep -q "^MaxMemAlloc=" "$instance_dir/instance.cfg"; then
-            echo "MaxMemAlloc=4096" >> "$instance_dir/instance.cfg"
+            echo "MaxMemAlloc=${MCSS_MAX_MEM_MB}" >> "$instance_dir/instance.cfg"
         fi
         print_success "✅ Instance configuration updated"
     fi

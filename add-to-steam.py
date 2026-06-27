@@ -21,12 +21,17 @@ APPNAME  = "Minecraft Splitscreen"  # Name as it will appear in Steam
 # Detect PolyMC paths for splitscreen gameplay.
 def detect_launcher():
     """Detect PolyMC launcher for splitscreen gameplay."""
-    launcher_path = f"{HOME}/.local/share/PolyMC/PolyMC.AppImage"
-    launcher_script = f"{HOME}/.local/share/PolyMC/minecraftSplitscreen.sh"
+    # Check repo path first (development/SSH setup)
+    repo_script = f"{HOME}/MinecraftSplitscreenSteamdeck/minecraftSplitscreen.sh"
+    if os.path.exists(repo_script):
+        return repo_script, f"{HOME}/MinecraftSplitscreenSteamdeck", "PolyMC"
 
+    # Check installer path
+    launcher_script = f"{HOME}/.local/share/PolyMC/minecraftSplitscreen.sh"
     if os.path.exists(launcher_script):
         return launcher_script, f"{HOME}/.local/share/PolyMC", "PolyMC"
 
+    launcher_path = f"{HOME}/.local/share/PolyMC/PolyMC.AppImage"
     if os.path.exists(launcher_path) and os.access(launcher_path, os.X_OK):
         print("❌ Error: PolyMC was found, but minecraftSplitscreen.sh is missing.")
         print("   Re-run the installer to restore the launcher script.")
@@ -101,6 +106,7 @@ def make_entry(index, appid, appname, exe, startdir):
     b += x01 + b'appname' + x00 + appname.encode() + x00  # App name
     b += x01 + b'exe' + x00 + exe.encode() + x00          # Executable
     b += x01 + b'StartDir' + x00 + startdir.encode() + x00  # Working dir
+    b += x01 + b'LaunchOptions' + x00 + b'launchFromPlasma' + x00  # Auto-start nested session
     b += x01 + b'icon' + x00 + config_dir.encode() + b'/grid/' + str(appid).encode() + b'_icon.ico' + x00  # Icon path
     b += x08  # End of entry
     return b

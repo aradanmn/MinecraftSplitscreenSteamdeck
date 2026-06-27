@@ -99,67 +99,102 @@ get_required_java_version() {
     fi
 }
 
-# download_and_run_jdk_installer: Download and execute the automatic JDK installer
-# Downloads the JDK installer from the GitHub repository and runs it automatically
+# download_and_install_jdk: Download and install JDK directly from Eclipse Temurin (Adoptium).
+# Queries the Adoptium API for the latest release of the requested major version,
+# downloads the tarball, verifies its SHA-256 checksum, extracts it to ~/.local/jdk/,
+# and exports JAVA_<version>_HOME so the caller can locate the new binary immediately.
+# No git, no third-party installer scripts.
 # Parameters:
 #   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
-download_and_run_jdk_installer() {
+download_and_install_jdk() {
     local required_version="$1"
+    local install_dir="$HOME/.local/jdk"
+    local arch="x64"
+    local adoptium_api="https://api.adoptium.net/v3/assets/latest/${required_version}/hotspot"
+
+    print_progress "Querying Eclipse Temurin API for JDK $required_version..."
+
+    local api_response
+    api_response=$(curl -fsS "${adoptium_api}?os=linux&architecture=${arch}&image_type=jdk" 2>/dev/null)
+
+    if [[ -z "$api_response" ]]; then
+        print_error "Failed to reach Adoptium API. Check your internet connection."
+        return 1
+    fi
+
+    local download_url
+    download_url=$(echo "$api_response" | jq -r '.[0].binary.package.link // empty' 2>/dev/null)
+    local expected_checksum
+    expected_checksum=$(echo "$api_response" | jq -r '.[0].binary.package.checksum // empty' 2>/dev/null)
+    local release_name
+    release_name=$(echo "$api_response" | jq -r '.[0].release_name // "unknown"' 2>/dev/null)
+
+    if [[ -z "$download_url" ]]; then
+        print_error "Adoptium API returned no download URL for JDK $required_version."
+        return 1
+    fi
+
+    print_info "Downloading Eclipse Temurin $release_name..."
+
     local temp_dir
     temp_dir=$(mktemp -d)
-    local original_dir="$PWD"
-    
-    if [[ -z "$temp_dir" ]]; then
-        print_error "Failed to create temporary directory for JDK installer"
-        return 1
-    fi
-    
-    # Check if git is available
-    if ! command -v git >/dev/null 2>&1; then
-        print_error "Git is required to download the JDK installer but is not installed"
-        print_error "Please install git first: sudo pacman -S git"
+    local tarball="$temp_dir/jdk.tar.gz"
+
+    if ! curl -fL --progress-bar "$download_url" -o "$tarball"; then
+        print_error "Download failed: $download_url"
         rm -rf "$temp_dir"
         return 1
     fi
-    
-    cd "$temp_dir" || {
-        print_error "Failed to enter temporary directory"
-        rm -rf "$temp_dir"
-        return 1
-    }
-    
-    print_progress "Downloading automatic JDK installer..."
-    
-    # Clone the JDK installer repository
-    if ! git clone --quiet https://github.com/FlyingEwok/install-jdk-on-steam-deck.git 2>/dev/null; then
-        print_error "Failed to download JDK installer from GitHub"
-        print_error "Please check your internet connection and try again"
-        cd "$original_dir"
+
+    if [[ -n "$expected_checksum" ]]; then
+        print_progress "Verifying SHA-256 checksum..."
+        local actual_checksum
+        actual_checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
+        if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+            print_error "Checksum mismatch — download may be corrupt. Aborting."
+            print_error "  Expected: $expected_checksum"
+            print_error "  Got:      $actual_checksum"
+            rm -rf "$temp_dir"
+            return 1
+        fi
+        print_success "Checksum verified."
+    fi
+
+    mkdir -p "$install_dir"
+    print_progress "Extracting JDK to $install_dir ..."
+
+    if ! tar -xzf "$tarball" -C "$install_dir"; then
+        print_error "Failed to extract JDK tarball."
         rm -rf "$temp_dir"
         return 1
     fi
-    
-    # Make the install script executable
-    chmod +x install-jdk-on-steam-deck/scripts/install-jdk.sh
-    
-    print_info "Running automatic JDK $required_version installer..."
-    print_info "This will install Java $required_version to ~/.local/jdk/ (no root access required)"
-    
-    # Set environment variable to install specific version automatically
-    export JDK_VERSION="$required_version"
-    
-    # Run the installer in automated mode
-    if ./install-jdk-on-steam-deck/scripts/install-jdk.sh; then
-        print_success "Java $required_version installed successfully!"
-        cd "$original_dir"
-        rm -rf "$temp_dir"
-        return 0
-    else
-        print_error "JDK installer failed"
-        cd "$original_dir"
-        rm -rf "$temp_dir"
+
+    rm -rf "$temp_dir"
+
+    # Locate the extracted JDK directory (Temurin names it jdk-<version>+<build> or jdk8u<n>-...)
+    local jdk_dir
+    jdk_dir=$(find "$install_dir" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)
+
+    if [[ -z "$jdk_dir" || ! -x "$jdk_dir/bin/java" ]]; then
+        print_error "JDK extracted but java binary not found. Expected it under $install_dir."
         return 1
     fi
+
+    # Persist JAVA_<version>_HOME into ~/.profile, deduplicating any previous entry.
+    local java_home_var="JAVA_${required_version}_HOME"
+    if [[ -f ~/.profile ]]; then
+        sed -i "/^export ${java_home_var}=/d" ~/.profile
+    fi
+    echo "export ${java_home_var}=\"${jdk_dir}\"" >> ~/.profile
+    export "${java_home_var}=${jdk_dir}"
+
+    print_success "Eclipse Temurin JDK $required_version installed to: $jdk_dir"
+    return 0
+}
+
+# Keep the old name as a thin alias so any external callers are not broken.
+download_and_run_jdk_installer() {
+    download_and_install_jdk "$@"
 }
 
 # find_java_installation: Find a Java installation of the specified version
@@ -412,12 +447,12 @@ detect_and_install_java() {
     
     # Java not found or wrong version - install automatically
     print_warning "Java $required_java_version not found on system"
-    print_info "Automatically installing Java $required_java_version using Steam Deck JDK installer..."
+    print_info "Automatically installing Eclipse Temurin JDK $required_java_version..."
     print_info "This installation:"
-    print_info "  • Downloads official Oracle/OpenJDK builds with SHA256 verification"
+    print_info "  • Downloads from Eclipse Temurin (Adoptium) with SHA-256 verification"
     print_info "  • Installs to ~/.local/jdk/ (no root access needed)"
     print_info "  • Supports multiple Java versions side-by-side"
-    print_info "  • Sets up proper environment variables automatically"
+    print_info "  • Sets up JAVA_${required_java_version}_HOME in ~/.profile automatically"
     
     # Attempt automatic installation
     if download_and_run_jdk_installer "$required_java_version"; then
@@ -463,9 +498,8 @@ detect_and_install_java() {
                 print_info "  • Download from: https://adoptium.net/temurin/releases/?version=8"
                 ;;
         esac
-        print_info "  • Or run the JDK installer separately:"
-        print_info "    git clone https://github.com/FlyingEwok/install-jdk-on-steam-deck.git"
-        print_info "    JDK_VERSION=$required_java_version ./install-jdk-on-steam-deck/scripts/install-jdk.sh"
+        print_info "  • Or download directly from Eclipse Temurin:"
+        print_info "    https://adoptium.net/temurin/releases/?version=${required_java_version}&os=linux&arch=x64&package=jdk"
         exit 1
     fi
 }

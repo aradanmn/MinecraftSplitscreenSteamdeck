@@ -69,18 +69,19 @@ check_modrinth_mod() {
     local dep_ids=""      # Space-separated list of dependency mod IDs
     
     # STAGE 1: Try exact version match with Fabric loader requirement
-    # Example: Looking for exactly "1.21.3" with "fabric" loader
+    # Legacy example: "1.21.3". New yearly-format example: "26.1.1" or "26.1".
     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
     if [[ -n "$file_url" && "$file_url" != "null" ]]; then
         dep_ids=$(printf "%s" "$version_json" | jq -r --arg v "$MC_VERSION" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .dependencies[]? | select(.dependency_type=="required") | .project_id' 2>/dev/null | tr '\n' ' ')
     fi
     
-    # STAGE 2: Try major.minor version match if exact match failed
-    # Example: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    # STAGE 2: Try major.minor version match if exact match failed.
+    # Legacy: "1.21.3" -> try "1.21", "1.21.x", "1.21.0"
+    # New:    "26.1.1" -> try "26.1", "26.1.x", "26.1.0" (same logic, format-agnostic)
     # BUT ONLY if no specific patch version exists that's higher than what we're looking for
     if [[ -z "$file_url" || "$file_url" == "null" ]]; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # "1.21" from "1.21.3" or "26.1" from "26.1.1"
         
         # Before trying major.minor match, check if this version is higher than existing patch versions
         # This prevents matching 1.21 when looking for 1.21.6 if the highest patch version is only 1.21.5
@@ -279,7 +280,7 @@ check_curseforge_mod() {
     local cf_api_key=""
     
     # Try to use a simple decryption method for the token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local tmp_token_file
     
     # Create temporary file for encrypted token download with timeout
@@ -683,7 +684,7 @@ resolve_curseforge_dependencies() {
     local mod_name="$2"
     
     # Download and decrypt CurseForge API token
-    local cf_token_enc_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local cf_token_enc_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local tmp_token_file
     tmp_token_file=$(mktemp)
     if [[ -z "$tmp_token_file" ]]; then
@@ -805,7 +806,7 @@ resolve_modrinth_dependencies_api() {
     # Use simpler approach: find fabric versions for our Minecraft version
     if command -v jq >/dev/null 2>&1; then
         local mc_major_minor
-        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # Extract "1.21" from "1.21.3"
+        mc_major_minor=$(echo "$MC_VERSION" | grep -oE '^[0-9]+\.[0-9]+')  # "1.21" from "1.21.3" or "26.1" from "26.1.1"
         
         # Simple jq filter to get dependencies from compatible fabric versions with strict matching
         # Use temporary file to avoid command line length limits
@@ -848,7 +849,7 @@ resolve_curseforge_dependencies_api() {
     local dependencies=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -952,21 +953,11 @@ resolve_curseforge_dependencies_api() {
     if [[ -z "$dependencies" ]]; then
         dependencies=$(fallback_dependencies "$mod_id" "curseforge")
     fi
+    # Critical dependency fallbacks (legacy 1.21.1 era — kept for backward compat)
     if [[ -z "$dependencies" ]]; then
-    # Critical dependency fallbacks for 1.21.1
-    if [[ -z "$dependencies" ]]; then
-        case "$mod_id" in
-            "317269")  # Controllable
-                dependencies="634179"  # Framework
-                ;;
-        esac
-    fi
         case "$mod_id" in
             "238222")  # JEI
                 dependencies="306612"  # Fabric API
-                ;;
-            "325471")  # Controllable  
-                dependencies="634179"  # Framework
                 ;;
         esac
     fi
@@ -1047,7 +1038,7 @@ fetch_and_add_external_mod() {
             local download_url=""
             
             # Download encrypted CurseForge API token from GitHub repository
-            local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+            local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
             local encrypted_token_file=$(mktemp)
             local http_code
             
@@ -1097,8 +1088,8 @@ fetch_and_add_external_mod() {
             # Fallback for known mods if API fails
             if [[ -z "$mod_title" ]]; then
                 case "$ext_mod_id" in
-                    "317269")  # Controllable
-                        mod_title="Controllable (Fabric)"
+                    "DOUdJVEm")  # Controlify
+                        mod_title="Controlify"
                         mod_description="Adds controller support to Minecraft"
                         ;;
                     "306612")  # Fabric API
@@ -1147,7 +1138,7 @@ get_curseforge_download_url() {
     local download_url=""
     
     # Download encrypted CurseForge API token from GitHub repository
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file=$(mktemp)
     local http_code
     
@@ -1268,7 +1259,7 @@ get_curseforge_download_url() {
 # get_curseforge_api_token: Download and decrypt CurseForge API token
 # Returns: token string on stdout, or empty on failure
 get_curseforge_api_token() {
-    local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+    local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
     local encrypted_token_file
     encrypted_token_file=$(mktemp)
     local http_code=""
@@ -1871,7 +1862,7 @@ select_user_mods() {
     
     # Build list of user-selectable mods by filtering out framework and required mods
     # Framework mods (Fabric API, etc.) are installed automatically as dependencies
-    # Required mods (Controllable, Splitscreen Support) are always installed
+    # Required mods (Controlify) are always installed
     local user_mod_indexes=()    # Indexes of mods user can choose from
     local install_all_mods=false # Flag for "install all" option
     
@@ -1902,7 +1893,7 @@ select_user_mods() {
     echo ""
     echo "Enter the numbers of the mods you want to install (e.g., '1 3 5' or '1-5'):"
     echo "  0 = Install all available mods (default)"
-    echo "  -1 = Install only required mods (Controllable and Splitscreen Support)"
+    echo "  -1 = Install only required mods (Controlify)"
     echo ""
     
     local mod_selection
@@ -2001,8 +1992,12 @@ select_user_mods() {
         return 0
     fi
 
-    # Automatically resolve all dependencies using Modrinth/CurseForge APIs
-    # This replaces the manual dependency handling with full API-based resolution
+    # Pass 1: resolve intra-list dependencies declared in mods.conf (fast, no API calls).
+    # e.g. "Reese's Sodium Options" → auto-adds "Sodium" and "Sodium Options API".
+    resolve_conf_dependencies
+
+    # Pass 2: resolve any remaining dependencies via Modrinth/CurseForge APIs
+    # (catches transitive deps of newly added mods and custom mods not in mods.conf).
     resolve_all_dependencies
 
     local final_count=0
@@ -2012,25 +2007,58 @@ select_user_mods() {
     print_success "Final mod list prepared: $final_count mods selected"
 }
 
+# resolve_conf_dependencies: BFS over MOD_DEPS_BY_NAME (loaded from mods.conf).
+# For every mod currently in FINAL_MOD_INDEXES, look up its declared deps and
+# auto-add any that aren't already included. Repeats until stable (handles chains
+# like Reese's Sodium Options → Sodium Options API → Sodium in two passes).
+# Called before resolve_all_dependencies() so the API pass doesn't need to re-do
+# what mods.conf already expressed.
+resolve_conf_dependencies() {
+    # Nothing declared — skip quietly.
+    if [[ ${#MOD_DEPS_BY_NAME[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    # Build a fast lookup: index → already included
+    local -A already_indexed=()
+    for idx in "${FINAL_MOD_INDEXES[@]}"; do
+        already_indexed["$idx"]=1
+    done
+
+    local changed=true
+    while [[ "$changed" == true ]]; do
+        changed=false
+        local -a snapshot=("${FINAL_MOD_INDEXES[@]}")
+        for idx in "${snapshot[@]}"; do
+            local mod_name="${SUPPORTED_MODS[$idx]:-}"
+            [[ -z "$mod_name" ]] && continue
+            local dep_names="${MOD_DEPS_BY_NAME[$mod_name]:-}"
+            [[ -z "$dep_names" ]] && continue
+
+            IFS=',' read -ra deps <<< "$dep_names"
+            for dep_name in "${deps[@]}"; do
+                dep_name="${dep_name#"${dep_name%%[![:space:]]*}"}"
+                dep_name="${dep_name%"${dep_name##*[![:space:]]}"}"
+                [[ -z "$dep_name" ]] && continue
+
+                for j in "${!SUPPORTED_MODS[@]}"; do
+                    if [[ "${SUPPORTED_MODS[$j]}" == "$dep_name" ]] \
+                       && [[ -z "${already_indexed[$j]:-}" ]]; then
+                        FINAL_MOD_INDEXES+=("$j")
+                        already_indexed["$j"]=1
+                        print_info "Auto-adding '${dep_name}' (required by '${mod_name}')"
+                        changed=true
+                    fi
+                done
+            done
+        done
+    done
+}
+
 # add_mod_dependencies: Add dependencies for a specific mod
 add_mod_dependencies() {
     local mod_idx="$1"
     local -n added_ref="$2"
-    
-    # Handle special case for Controllable (needs Framework)
-    if [[ "${SUPPORTED_MODS[$mod_idx]}" == "Controllable (Fabric)"* ]]; then
-        for j in "${!MODS[@]}"; do
-            IFS='|' read -r MOD_NAME MOD_TYPE MOD_ID <<< "${MODS[$j]}"
-            if [[ "$MOD_NAME" == "Framework (Fabric)"* ]]; then
-                for k in "${!MOD_IDS[@]}"; do
-                    if [[ "${MOD_IDS[$k]}" == "$MOD_ID" ]] && [[ -z "${added_ref[$k]:-}" ]]; then
-                        FINAL_MOD_INDEXES+=("$k")
-                        added_ref[$k]=1
-                    fi
-                done
-            fi
-        done
-    fi
     
     # Add Modrinth dependencies
     local dep_string="${MOD_DEPENDENCIES[$mod_idx]}"

@@ -6,7 +6,8 @@
 # Intelligent version selection based on required mod compatibility
 
 # get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for Controllable and Splitscreen Support to find compatible versions
+# Queries APIs for Controlify to find compatible versions (splitscreen tiling is done
+# by KWin, not a mod, as of 2026-06-23 — Splitscreen Support is no longer installed)
 # Returns: Array of supported Minecraft versions in descending order (newest first)
 get_supported_minecraft_versions() {
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
@@ -27,9 +28,11 @@ get_supported_minecraft_versions() {
         print_error "Please check your internet connection and try again" >&2
         return 1
     else
-        # Convert to array and limit to recent versions (last 15 releases for testing)
+        # Take the 20 most-recent release versions. Mojang returns newest-first.
+        # 20 covers the current year's releases (26.0, 26.1, 26.1.1 …) plus several
+        # prior-year versions so older mod support is still visible.
         readarray -t all_versions <<< "$mojang_versions"
-        all_versions=("${all_versions[@]:0:15}")
+        all_versions=("${all_versions[@]:0:20}")
     fi
     
     print_info "Checking compatibility for required splitscreen mods..." >&2
@@ -45,19 +48,17 @@ get_supported_minecraft_versions() {
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
         
-        local controllable_compatible=false
-        local splitscreen_compatible=false
-        
-        # Check Controllable (CurseForge mod 317269)
-        if check_mod_version_compatibility "317269" "curseforge" "$mc_version"; then
-            controllable_compatible=true
+        local controlify_compatible=false
+
+        # Check Controlify (Modrinth mod DOUdJVEm)
+        if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
+            controlify_compatible=true
         fi
-        
-        # Check Splitscreen Support (Modrinth mod yJgqfSDR)  
-        if check_mod_version_compatibility "yJgqfSDR" "modrinth" "$mc_version"; then
-            splitscreen_compatible=true
-        fi
-        
+
+        # NOTE: the Splitscreen Support mod (yJgqfSDR) is no longer required — window
+        # tiling is done by KWin, not the mod (removed 2026-06-23). So MC versions no
+        # longer need to be Splitscreen-Support-compatible; only Controlify is required.
+
         local extra_mod_compatible=true
         if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
             if ! check_mod_version_compatibility "$extra_mod_id" "$extra_mod_platform" "$mc_version" "true"; then
@@ -67,7 +68,7 @@ get_supported_minecraft_versions() {
 
         # Only include versions where core required mods are available,
         # and custom required mod too when specified.
-        if [[ "$controllable_compatible" == true && "$splitscreen_compatible" == true && "$extra_mod_compatible" == true ]]; then
+        if [[ "$controlify_compatible" == true && "$extra_mod_compatible" == true ]]; then
             supported_versions+=("$mc_version")
             if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
                 print_success "    ✅ $mc_version - Core mods + $extra_mod_name compatible" >&2
@@ -102,8 +103,10 @@ get_supported_minecraft_versions() {
 # This is a lightweight version check that doesn't add mods to arrays
 # Parameters:
 #   $1 - mod_id: Mod ID (Modrinth project ID or CurseForge project ID)
-#   $2 - platform: "modrinth" or "curseforge"  
-#   $3 - mc_version: Minecraft version to check (e.g. "1.21.3")
+#   $2 - platform: "modrinth" or "curseforge"
+#   $3 - mc_version: Minecraft version to check.
+#        Supports both legacy format (e.g. "1.21.3") and the new yearly format
+#        introduced in 2026 (e.g. "26.0", "26.1", "26.1.1" = year.release[.patch]).
 # Returns: 0 if compatible, 1 if not compatible
 check_mod_version_compatibility() {
     local mod_id="$1"
@@ -179,16 +182,17 @@ check_mod_version_compatibility() {
             
             # Only proceed with fallback if allowed
             if [[ $allow_fallback == true ]]; then
-                # Try exact major.minor (e.g., "1.21")
+                # Try exact major.minor (e.g., "1.21" or "26.1")
                 file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
                 
-                # Try wildcard version format (e.g., "1.21.x") 
+                # Try wildcard version format (e.g., "1.21.x" or "26.1.x")
                 if [[ -z "$file_url" || "$file_url" == "null" ]]; then
                     local mc_major_minor_x="$mc_major_minor.x"
                     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
                 fi
                 
-                # Try zero-padded version format (e.g., "1.21.0")
+                # Try zero-padded patch (e.g., "1.21.0" or "26.1.0"); harmless no-op for
+                # the new yearly scheme where base releases have no patch component.
                 if [[ -z "$file_url" || "$file_url" == "null" ]]; then
                     local mc_major_minor_0="$mc_major_minor.0"
                     file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
@@ -204,7 +208,7 @@ check_mod_version_compatibility() {
     elif [[ "$platform" == "curseforge" ]]; then
         # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
         # First get the encrypted API token
-        local token_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/token.enc"
+        local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
         local encrypted_token_file=$(mktemp)
         
         if command -v curl >/dev/null 2>&1; then
@@ -299,11 +303,8 @@ fallback_dependencies() {
         "modrinth:P7dR8mSH")  # Fabric API
             echo ""
             ;;
-        "modrinth:yJgqfSDR")  # Splitscreen Support
-            echo "P7dR8mSH" # Fabric API
-            ;;
-        "curseforge:317269")  # Controllable
-            echo "634179"  # Framework
+        "modrinth:DOUdJVEm")  # Controlify
+            echo "P7dR8mSH"  # Fabric API
             ;;
         *)
             echo ""
@@ -312,7 +313,7 @@ fallback_dependencies() {
 }
 
 # get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support both Controllable and Splitscreen Support mods
+# Only offers versions that support Controlify (window tiling is done by KWin, not a mod)
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
     
@@ -349,9 +350,8 @@ get_minecraft_version() {
         fi
     done
     
-    echo "These versions have been verified to support both essential splitscreen mods:"
-    echo "  ✅ Controllable (controller support)"  
-    echo "  ✅ Splitscreen Support (split-screen functionality)"
+    echo "These versions have been verified to support the required mod:"
+    echo "  ✅ Controlify (controller support)"
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
         echo "  ✅ ${EXTRA_REQUIRED_MOD_NAME:-Requested custom mod}"
     fi
