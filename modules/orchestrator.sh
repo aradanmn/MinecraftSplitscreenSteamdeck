@@ -428,21 +428,15 @@ handheld_flow() {
     # ── Write state: handheld mode
     _set_mode "handheld"
 
-    # ── Start controller monitor (handheld mode — Deck built-ins only)
-    # In handheld mode, controllers attached to the Deck itself are the
-    # built-in gamepad. The monitor watches for the single Steam virtual gamepad.
-    # ── Controller isolation note ──────────────────────────────────────
-    # feat/controlify-isolation: In handheld mode, the Deck's built-in
-    # controller should NOT be masked in bwrap — it's the ONLY controller
-    # available and must reach slot 1 normally. Controller isolation in
-    # handheld mode just means ensuring external controllers that happen
-    # to be connected don't interfere (they'd be ignored at the SDL level).
-    # ────────────────────────────────────────────────────────────────────
-    if type start_controller_monitor >/dev/null 2>&1; then
-        start_controller_monitor handheld &
-        _CONTROLLER_MONITOR_PID=$!
-        echo "[orchestrator] Controller monitor PID: $_CONTROLLER_MONITOR_PID" >&2
-    fi
+    # ── NO controller monitor in handheld mode (deliberate).
+    # Handheld is a single FIXED player on the Deck's built-in controls, which reach the
+    # game as the built-in's own Steam 28de:11ff virtual. If we ran the hotplug monitor it
+    # would detect that very virtual and emit CONTROLLER_ADD → _handle_msg spawns a DUPLICATE
+    # slot 2 (two windows for one player — the handheld bug). One screen ⇒ one player, so
+    # there is no controller hotplug to service; dock→handheld/handheld→dock transitions are
+    # handled by watch_display_mode below. _CONTROLLER_MONITOR_PID stays empty so cleanup()
+    # skips it. (External pads connected while undocked are simply ignored — no second seat.)
+    _CONTROLLER_MONITOR_PID=""
 
     # ── Start dock detection (watch for docked→handheld transitions)
     if type watch_display_mode >/dev/null 2>&1; then
