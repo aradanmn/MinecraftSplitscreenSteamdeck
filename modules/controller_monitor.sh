@@ -8,21 +8,20 @@ set -euo pipefail
 # udevadm. Emits structured messages to the named pipe at $SPLITSCREEN_FIFO.
 #
 # Docked enumeration has TWO selectable sources (gated by CONTROLLER_MONITOR_RAW_BINDING):
-#   - flag UNSET/0 (DEFAULT): legacy _map_external_player_virtuals — maps each external
-#     pad to the Steam virtual gamepad (28de:11ff) Steam minted for it via inputN
-#     creation order.
-#   - flag == 1: _list_raw_external_pads — emits each REAL external pad's OWN raw js node
-#     (js-gated, gamepad+vendor gated, shared-parent deduped, ordered by (inputN,eventN);
-#     the built-in / Steam 28de and the puck are structurally excluded — they expose no
-#     raw js gamepad node).
+#   - flag == 1 (DEFAULT): _list_raw_external_pads — emits each REAL external pad's OWN raw
+#     js node (js-gated, gamepad+vendor gated, shared-parent deduped, ordered by
+#     (inputN,eventN); the built-in / Steam 28de and the puck are STRUCTURALLY EXCLUDED —
+#     they expose no raw js gamepad node, so they can never be claimed by a player).
+#   - flag == 0 (fallback): legacy _map_external_player_virtuals — maps each external pad to
+#     the Steam virtual gamepad (28de:11ff) via inputN creation order. UNRELIABLE: Steam
+#     pre-creates a virtual POOL whose inputN order doesn't track physical connection order,
+#     so a pad can claim the WRONG virtual (incl. the built-in's) — the §3b leak. Kept only
+#     as an escape hatch (CONTROLLER_MONITOR_RAW_BINDING=0).
 #
-# DEFAULT-OFF CAVEAT: with the flag unset the docked path is byte-for-byte the legacy
-# behavior, so the §3b built-in-leak (a pad can claim the built-in's 28de virtual) is
-# LIVE BY DEFAULT. The raw path is dark-launched and is NOT "the fix" until flipped.
-# FLIP CRITERION (commit the default to 1 only when BOTH hold): an in-sandbox probe shows
-# Controlify's SDL enumerates AND reads the raw jsN with Steam Input ON, AND a user
-# confirms in-game response on >=2 pads. If the probe fails: PLAN-B is per-app Steam Input
-# OFF, then passive event-correlation.
+# VALIDATED 2026-06-26 on a Deck: 4 DS4s (3x 09cc + 1x 05c4), incremental 1->4 add, each
+# pad bound to its own distinct raw js, built-in + Steam Controller dead in all instances,
+# input alive through the raw js with Steam Input ON, identity honest ("Wireless Controller").
+# Raw is now the DEFAULT. See docs/RAW-CONTROLLER-BIND-PLAN.md and [[controller-isolation-sdl-udev-leak]].
 #
 # Public API:
 #   list_eligible_controllers(mode)     — stdout: "event_node js_node vendor product" lines
@@ -33,8 +32,8 @@ set -euo pipefail
 #   PROC_INPUT_DEVICES              — override /proc/bus/input/devices path
 #   INPUTPLUMBER_DBUS_AVAILABLE     — set to "0" to force enumeration fallback
 #   CONTROLLER_MONITOR_UDEVADM_CMD  — override udevadm command
-#   CONTROLLER_MONITOR_RAW_BINDING  — "1" = docked uses raw external js nodes
-#                                     (default OFF/unset = legacy virtual mapper)
+#   CONTROLLER_MONITOR_RAW_BINDING  — "1"/unset (DEFAULT) = docked uses raw external js
+#                                     nodes; "0" = legacy virtual mapper (escape hatch)
 # =============================================================================
 
 # --- Module-level constants ---
@@ -740,7 +739,7 @@ list_eligible_controllers() {
     # Both sources emit the IDENTICAL 4-field internal contract; the formatting below is
     # unchanged, so the public stdout contract is the same regardless of the flag.
     local src
-    if [[ "${CONTROLLER_MONITOR_RAW_BINDING:-0}" == "1" ]]; then
+    if [[ "${CONTROLLER_MONITOR_RAW_BINDING:-1}" == "1" ]]; then
         src=_list_raw_external_pads
     else
         src=_map_external_player_virtuals
