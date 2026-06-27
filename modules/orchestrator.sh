@@ -239,6 +239,14 @@ _handle_msg() {
             # 4-field message (audit C1). The test harness injected only 2 fields so it
             # never caught this. read -r splits all fields cleanly; trailing vendor/
             # product are captured (unused for now) instead of leaking into js_node.
+            # Under CONTROLLER_MONITOR_RAW_BINDING, event_node/js_node are the pad's RAW
+            # nodes: spawn_instance binds the jsN into the sandbox and records the eventN
+            # as slot identity only (for CONTROLLER_REMOVE matching) — the eventN is NOT
+            # bound. The docked producer is js-gated, so it ALWAYS emits BOTH event and js
+            # (never a js-less line), which makes the event==js sentinel below and
+            # spawn_instance's js-empty branch docked-UNREACHABLE under the flag. We keep
+            # them for the handheld/legacy paths and do NOT thread a vendor arg (that would
+            # collide with the variadic mask-pair tail).
             local event_node="" js_node="" phys_vendor="" phys_product=""
             if [[ -n "$msg_arg" ]]; then
                 read -r event_node js_node phys_vendor phys_product <<< "$msg_arg"
@@ -310,6 +318,16 @@ _handle_msg() {
             # from the game WINDOW being destroyed (watchdog window-gone → SLOT_DIED).
             # bwrap mounts are fixed at launch, so a controller returning as a new node
             # can't be live-rebound in v1 — but the instance/world survives the dropout.
+            #
+            # HONEST DISCLOSURE (pre-existing defect, UNCHANGED here, OUT OF SCOPE): this
+            # deliberate no-op means a reused-eventN fast-flap, or a jsN that vanishes with
+            # NO udev remove (driver crash / USB autosuspend), leaves a STILL-ALIVE zombie
+            # slot that neither _reap_dead_slots (the bwrap leader is still up) nor
+            # window-death ever reaps — leaking 1 of 4 slots. This is IDENTICAL under the
+            # old virtual path and under raw binding; it is NOT claimed fixed. Tracked
+            # follow-up for the real fix: on a detected replacement, RELAUNCH the SAME slot
+            # (teardown_instance then respawn with the new node), since v1 bwrap mounts
+            # cannot be live-rebound.
             #
             # Format-aware (kept for the log): controller_monitor emits the removed
             # device's EVENT NODE ("CONTROLLER_REMOVE /dev/input/eventX"); the test
@@ -496,12 +514,14 @@ docked_flow() {
     # If controllers are already plugged in when flow starts, they'll
     # be picked up by the controller_monitor's initial scan → CONTROLLER_ADD.
     # ── Controller isolation note ──────────────────────────────────────
-    # feat/controlify-isolation: In docked mode, the Deck's built-in
-    # controller should be MASKED in ALL sandboxes via --bind /dev/null
-    # (it maps to a known event node identified by
-    # _identify_internal_virtual_index()). External controllers are assigned
-    # one-per-slot. The masking logic in _build_bwrap_command needs to
-    # know about the built-in's event node to exclude it.
+    # The built-in is excluded by ENUMERATION, not by masking: it exposes no raw js
+    # gamepad node, so under raw binding (_list_raw_external_pads) it is structurally
+    # unselectable, and under the legacy virtual mapper its 28de virtual is never claimed.
+    # External controllers are assigned one-per-slot. (The old comment here referenced
+    # _identify_internal_virtual_index() + per-sandbox --bind /dev/null masking of the
+    # built-in; that function is now DEAD and slated for the deferred cleanup commit, and
+    # the cross-slot mask is inert under --dev /dev + js-only binding — see
+    # _build_bwrap_command.)
     # ────────────────────────────────────────────────────────────────────
 
     # ── Startup controller acquisition (the START bookend).

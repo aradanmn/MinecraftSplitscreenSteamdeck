@@ -116,6 +116,53 @@ _atomic_write() {
 # consumed .minecraft/config/splitscreen.properties is no longer installed; KWin does the
 # window tiling. See [[windowing-solution-confirmed]].)
 
+# _vendor_of_js_node: Given $1 = a /dev/input/jsN path, echo the lowercased Vendor of the
+# /proc/bus/input/devices block whose `H: Handlers=` field contains that EXACT jsN token.
+# Token equality (split on whitespace, compare ==), NEVER substring — so js1 does NOT match
+# js10/js11; otherwise a wrong-but-parseable 28de match could flip the per-slot ALLOW.
+# Echoes the 4-hex vendor (lowercased) or empty (no match / unparseable).
+_vendor_of_js_node() {
+    local js_path="${1:-}"
+    [[ -z "$js_path" ]] && return 0
+    local want
+    want=$(basename "$js_path")            # e.g. "js1"
+    [[ -z "$want" ]] && return 0
+
+    local proc_path="${PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
+    [[ -f "$proc_path" ]] || return 0
+
+    local in_block=0 vendor="" handlers="" line _h
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if (( in_block == 1 )); then
+                for _h in $handlers; do
+                    if [[ "$_h" == "$want" ]]; then
+                        echo "$vendor"
+                        return 0
+                    fi
+                done
+            fi
+            in_block=0; vendor=""; handlers=""
+            continue
+        fi
+        in_block=1
+        case "$line" in
+            I:*) [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] && vendor="${BASH_REMATCH[1],,}" ;;
+            H:*) handlers="${line#H: Handlers=}" ;;
+        esac
+    done < "$proc_path"
+    # Last block (file may not end with a blank line).
+    if (( in_block == 1 )); then
+        for _h in $handlers; do
+            if [[ "$_h" == "$want" ]]; then
+                echo "$vendor"
+                return 0
+            fi
+        done
+    fi
+    return 0
+}
+
 # _build_bwrap_command: Construct a bwrap command string with printf '%q' quoting.
 # $1 = slot, $2 = event_node, $3 = js_node
 # $4+ = pairs of (mask_event, mask_js) for other controllers to mask
@@ -153,10 +200,19 @@ _build_bwrap_command() {
     # it can ONLY see the single /dev/input/jsN we bind into this namespace.
     [[ -e "$HOME/.steam/steam.pipe" ]] && cmd+=(--bind /dev/null "$HOME/.steam/steam.pipe")
 
-    # event_node is optional — for a controller-less single instance (empty/missing)
-    # skip the bind rather than handing bwrap an invalid empty source path (which
-    # aborts the whole sandbox launch).
-    if [[ -n "$event_node" && -e "$event_node" ]]; then
+    local _raw="${CONTROLLER_MONITOR_RAW_BINDING:-0}"
+    local _js_bound=0
+
+    # event_node bind: under RAW binding WITH a real js_node we bind js-ONLY and SKIP the
+    # eventN. Steam Input's EVIOCGRAB lives on the evdev eventN, NOT on the separate legacy
+    # jsN char device (jsN is multiply-openable and has no grab ioctl), so never placing the
+    # eventN in this namespace means a grabbed/dead evdev can't be surfaced to Controlify's
+    # SDL. When the flag is OFF (legacy virtual path) OR this is the handheld/controller-less
+    # case (empty js_node), bind the eventN exactly as before. event_node is otherwise
+    # optional — skip an empty/missing source rather than aborting the whole sandbox launch.
+    if [[ "$_raw" == "1" && -n "$js_node" ]]; then
+        : # raw js-only mode — intentionally do NOT --dev-bind the eventN
+    elif [[ -n "$event_node" && -e "$event_node" ]]; then
         cmd+=(--dev-bind "${event_node}" "${event_node}")
     fi
 
@@ -165,10 +221,33 @@ _build_bwrap_command() {
         cmd+=(--dev-bind "${js_node}" "${js_node}")
         # Set SDL_JOYSTICK_DEVICE to the assigned joystick only
         cmd+=(--setenv "SDL_JOYSTICK_DEVICE" "${js_node}")
+        _js_bound=1
+    fi
+
+    # SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD is per-slot + mode-independent (see the
+    # env block below). DEFENSIVE-ONLY under js-only raw binding — no 28de node is ever in a
+    # raw namespace, so correctness rests on js-only binding + SDL_JOYSTICK_DISABLE_UDEV, not
+    # this hint. Rule: a real raw pad bound (vendor parsed != 28de, OR vendor empty/
+    # unparseable) → 0 (don't let SDL fall back to a Steam virtual); the 28de virtual itself
+    # OR no js bound (handheld slot 1) → 1.
+    local _allow=1
+    if (( _js_bound == 1 )); then
+        local _js_vendor
+        _js_vendor=$(_vendor_of_js_node "$js_node")
+        if [[ "$_js_vendor" == "${CONTROLLER_MONITOR_STEAM_VENDOR:-28de}" ]]; then
+            _allow=1
+        else
+            _allow=0
+        fi
     fi
 
     # Mask other controllers so this sandbox can't see another player's pad.
     # Use if-statements, not &&, to avoid set -e treating "file not found" as fatal.
+    # INERT under --dev /dev + js-only binding: the fresh devtmpfs at /dev holds NO input
+    #   nodes except the single jsN we bind in, so the masked targets simply do not exist
+    #   and the -e guard below skips them. The REAL isolation is --dev /dev +
+    #   SDL_JOYSTICK_DISABLE_UDEV (proven by the live in-sandbox `ls /dev/input` test), not
+    #   this masking. KEPT for revert-safety and for the legacy (flag-OFF) path.
     # N5 (a): NEVER mask THIS slot's own node. If another (e.g. orphaned) slot still
     #   claims the same reused node, masking it would --bind /dev/null over our own
     #   --dev-bind (last bind wins) and leave us with no controller. Confirmed live
@@ -187,13 +266,21 @@ _build_bwrap_command() {
     fi
 
     # SDL env vars — explicitly override Steam's inherited environment:
-    #   SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1:
-    #     Lets SDL3 see 28de:11ff Steam virtual Xbox pads (the only device in this sandbox).
-    #     Steam sets this=1 by default; we set it explicitly to ensure it's not overridden.
+    #   SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=${_allow}:
+    #     Per-slot and mode-INDEPENDENT (computed above from the bound jsN's vendor).
+    #     DEFENSIVE-ONLY under raw js-only binding: EVIOCGRAB is on the evdev eventN, NOT the
+    #     legacy jsN, so under raw mode we bind js-ONLY and never place an eventN (nor any
+    #     28de node) in this namespace — SDL therefore cannot see a Steam virtual at all and
+    #     this hint is moot. It is set =1 only when the bound device IS the 28de virtual
+    #     (legacy path) or when no js is bound (handheld slot 1, which depends on Steam
+    #     minting the built-in's virtual); =0 when a real raw pad is bound so SDL won't
+    #     prefer a phantom Steam virtual. Correctness rests on js-only binding +
+    #     SDL_JOYSTICK_DISABLE_UDEV, not on this hint.
     #   SDL_GAMECONTROLLER_IGNORE_DEVICES= (empty):
-    #     Clears Steam's DS4 VID/PID exclusion list, so SDL can use evdev directly
-    #     If the Steam IPC socket isn't available. Not strictly needed for 28de:11ff
-    #     pads, but harmless and defensive against future Steam changes.
+    #     Left empty (do NOT add 0x28de/0x11ff): under js-only raw binding no 28de node is
+    #     ever in the namespace, the 0xVVVV/0xPPPP format is unverified against Controlify's
+    #     SDL, and js-only binding already removes the contention. Clearing Steam's inherited
+    #     exclusion list keeps SDL free to use the one bound jsN via the classic path.
     #   SDL_JOYSTICK_HIDAPI=0:
     #     Disables HIDAPI backend (no /dev/hidraw* nodes in this sandbox).
     #     SDL3 falls back to pure evdev where our bound event/js nodes live.
@@ -222,7 +309,7 @@ _build_bwrap_command() {
         APPIMAGE_EXTRACT_AND_RUN=1
         QT_QPA_PLATFORM=xcb
         "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
-        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
+        SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=${_allow}
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
