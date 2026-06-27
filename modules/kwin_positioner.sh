@@ -129,16 +129,20 @@ kwin_place_windows() {
             var g = Object.assign({}, w.frameGeometry);
             g.x = tgt.x; g.y = tgt.y; g.width = tgt.w; g.height = tgt.h;
             w.frameGeometry = g;
-            // Force a RE-COMPOSITE of a possibly-occluded window. When a later player's
-            // window spawns at 0,0 ON TOP of an earlier one, KWin stops painting the covered
-            // window (occlusion culling) and it goes BLACK; setting frameGeometry alone moves
-            // it but does NOT make KWin repaint the surface, so the black half persists even
-            // after the re-tile separates them. Raising the window forces KWin to re-composite
-            // it. Tiled windows don't overlap, so raising each in turn is layout-harmless. Try
-            // the KWin-version-safe forms; a no-op is fine (then we escalate to a remap kick).
+            // Force a REPAINT of a possibly-occluded (black) tile. Research 2026-06-27: when a
+            // window is fully occluded, KWin (Wayland) withholds wl_surface.frame callbacks
+            // and the client stops painting; on uncover it can keep a stale/black buffer. A
+            // position-only frameGeometry change is a repaint NO-OP (matches what we saw); a
+            // RESIZE forces XWayland to recreate its buffer; a raise is racy (helped at 3
+            // windows, not 4). So nudge the SIZE by 1px and back to force a reconfigure. The
+            // REAL fix is the forced-centered map rule (no tile ever fully occluded) — this is
+            // the fallback. (UNTESTED — Deck unavailable. If still black, escalate to a
+            // minimize toggle: w.minimized = true; w.minimized = false;)
             try {
+                var gj = Object.assign({}, g); gj.width = tgt.w + 1;
+                w.frameGeometry = gj;
+                w.frameGeometry = g;
                 if (typeof workspace.raiseWindow === "function") workspace.raiseWindow(w);
-                else if (typeof w.raise === "function") w.raise();
             } catch (e) {}
             placed++;
             report.push("placed pid=" + tgt.pid + " -> " + tgt.x + "," + tgt.y +
