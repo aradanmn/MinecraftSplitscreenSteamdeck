@@ -636,6 +636,27 @@ launchFromPlasma() {
     echo "[launchFromPlasma] start (production)" >> "$LOG"
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
+    # STARTUP GUARD (2026-06-27): reap any LEFTOVER nested session + MC instances BEFORE
+    # starting a new one. A prior gamescope reset or failed launch can orphan a
+    # startplasma-wayland nested session (plus its kwin/instances); without this, a relaunch
+    # STACKS a second nested session on top — the two fight over the same state/FIFO,
+    # re-trigger the Steam UI (the "gamescope restarting" chime), and pile up orphan JVMs.
+    # We are in the OUTER gamescope/Steam context here (before exec), so this only kills the
+    # leftover nested tree — never gamescope-session or steamwebhelper.
+    if pgrep -f startplasma-wayland >/dev/null 2>&1 || pgrep -f latestUpdate >/dev/null 2>&1; then
+        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch" >> "$LOG"
+        local _g
+        for _g in 1 2 3; do
+            pkill -9 -f 'latestUpdate'; pkill -9 -f 'bwrap.*PolyMC'; pkill -9 -f 'PolyMC'
+            pkill -9 -f 'startplasma-wayland'; pkill -9 -f 'kwin_wayland'
+            pkill -9 -f 'plasma_session'; pkill -9 -f 'baloo_file'
+            sleep 1
+            pgrep -f startplasma-wayland >/dev/null 2>&1 || break
+        done
+        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(pgrep -fc startplasma-wayland) jvm=$(pgrep -fc latestUpdate))" >> "$LOG"
+    fi
+
     local RES W H
     RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
     [[ -z "$RES" ]] && RES="1280x800"
