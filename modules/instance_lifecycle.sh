@@ -200,7 +200,7 @@ _build_bwrap_command() {
     # it can ONLY see the single /dev/input/jsN we bind into this namespace.
     [[ -e "$HOME/.steam/steam.pipe" ]] && cmd+=(--bind /dev/null "$HOME/.steam/steam.pipe")
 
-    local _raw="${CONTROLLER_MONITOR_RAW_BINDING:-0}"
+    local _raw="${CONTROLLER_MONITOR_RAW_BINDING:-1}"
     local _js_bound=0
 
     # event_node bind: under RAW binding WITH a real js_node we bind js-ONLY and SKIP the

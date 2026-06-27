@@ -85,10 +85,10 @@ Actively developed. What works on the Deck today:
 
 - ✅ Launching from the Steam shortcut into the splitscreen environment.
 - ✅ Window tiling for 1–4 players (full / half / quad) that re-flows as players join and leave.
+- ✅ Per-player controller assignment — each external pad maps to its own player and only that player; the Deck's built-in controls and the Steam Controller are excluded by design. Validated 1→4 players on real hardware.
 
 Still being finalized:
 
-- 🚧 Per-player controller assignment (making sure each external pad maps cleanly to its own player).
 - 🚧 Clean exit back to the Steam library when everyone quits.
 
 If you hit a rough edge, it's likely something already being worked on.
