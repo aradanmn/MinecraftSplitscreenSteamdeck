@@ -206,12 +206,26 @@ _position_slot() {
     local slot="$1" x="$2" y="$3" w="$4" h="$5"
     local pid wid
     pid=$(_get_pid_from_state "$slot")
+    wid=$(_get_wid_from_state "$slot")
+
+    # PATH-CAPTURE (2026-06-27): which positioning path does each slot take, and why?
+    # The two paths differ in REPAINT behavior — the managed frameGeometry path does NOT
+    # force a repaint (an occluded/black tile stays black), while the override_redirect
+    # cycle does (unmap→remap). Whether a slot blacks out depends on which path it took,
+    # which is gated by kwin_positioner_available AT THIS INSTANT (a D-Bus probe — a race).
+    # Probe it ONCE here so the logged decision and the actual decision can never disagree.
+    local _have_kwin=0
     if [[ -n "$pid" ]] && type kwin_place_windows >/dev/null 2>&1 && kwin_positioner_available; then
+        _have_kwin=1
+    fi
+    local _path; (( _have_kwin )) && _path="MANAGED-frameGeometry(no-repaint)" || _path="OVERRIDE-REDIRECT(repaints)"
+    echo "[window_manager] PATH-CAPTURE slot=$slot pid=${pid:-none} wid=${wid:-none} kwin_positioner=$( (( _have_kwin )) && echo up || echo down ) → ${_path} target=${w}x${h}+${x}+${y}" >&2
+
+    if (( _have_kwin )); then
         kwin_place_windows "$pid $x $y $w $h"
         echo "[window_manager] KWin-positioned slot $slot (pid $pid) → ${w}x${h}+${x}+${y} (managed, frameGeometry)" >&2
         return 0
     fi
-    wid=$(_get_wid_from_state "$slot")
     if [[ -n "$wid" ]]; then
         echo "[window_manager] (fallback override_redirect) slot $slot wid $wid → ${w}x${h}+${x}+${y}" >&2
         _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
