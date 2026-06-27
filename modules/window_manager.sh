@@ -208,30 +208,27 @@ _position_slot() {
     pid=$(_get_pid_from_state "$slot")
     wid=$(_get_wid_from_state "$slot")
 
-    # PATH-CAPTURE (2026-06-27): which positioning path does each slot take, and why?
-    # The two paths differ in REPAINT behavior — the managed frameGeometry path does NOT
-    # force a repaint (an occluded/black tile stays black), while the override_redirect
-    # cycle does (unmap→remap). Whether a slot blacks out depends on which path it took,
-    # which is gated by kwin_positioner_available AT THIS INSTANT (a D-Bus probe — a race).
-    # Probe it ONCE here so the logged decision and the actual decision can never disagree.
-    local _have_kwin=0
-    if [[ -n "$pid" ]] && type kwin_place_windows >/dev/null 2>&1 && kwin_positioner_available; then
-        _have_kwin=1
+    # PATH A (2026-06-27): the override_redirect cycle is now the PRIMARY positioning path.
+    # It does a real unmap→remap, which FORCES the client to repaint — the managed
+    # frameGeometry path does NOT, so an occluded tile stayed black (proven via PATH-CAPTURE:
+    # both tiles MANAGED, the occluded one black; raise/resize-jiggle/minimize-toggle all
+    # failed). This is the mechanism that originally fixed "windows disappear when a second
+    # player joins"; the 2026-06-22 switch to managed frameGeometry re-introduced the
+    # black-out. Use override_redirect CONSISTENTLY (every placement) so we never mix managed
+    # and override on the same window — that mixing is the code-review's H2 one-way-unmanage
+    # concern. Managed (frameGeometry) is kept ONLY as a fallback when no WID is known.
+    if [[ -n "$wid" ]] && type dex_move_resize_remap >/dev/null 2>&1; then
+        echo "[window_manager] PATH-CAPTURE slot=$slot pid=${pid:-none} wid=$wid → OVERRIDE-REDIRECT(repaints,PRIMARY) target=${w}x${h}+${x}+${y}" >&2
+        _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
+        return $?
     fi
-    local _path; (( _have_kwin )) && _path="MANAGED-frameGeometry(no-repaint)" || _path="OVERRIDE-REDIRECT(repaints)"
-    echo "[window_manager] PATH-CAPTURE slot=$slot pid=${pid:-none} wid=${wid:-none} kwin_positioner=$( (( _have_kwin )) && echo up || echo down ) → ${_path} target=${w}x${h}+${x}+${y}" >&2
-
-    if (( _have_kwin )); then
+    if [[ -n "$pid" ]] && type kwin_place_windows >/dev/null 2>&1 && kwin_positioner_available; then
+        echo "[window_manager] PATH-CAPTURE slot=$slot pid=$pid wid=none → MANAGED-frameGeometry(FALLBACK,no-repaint) target=${w}x${h}+${x}+${y}" >&2
         kwin_place_windows "$pid $x $y $w $h"
         echo "[window_manager] KWin-positioned slot $slot (pid $pid) → ${w}x${h}+${x}+${y} (managed, frameGeometry)" >&2
         return 0
     fi
-    if [[ -n "$wid" ]]; then
-        echo "[window_manager] (fallback override_redirect) slot $slot wid $wid → ${w}x${h}+${x}+${y}" >&2
-        _apply_override_redirect_cycle "$wid" "$x" "$y" "$w" "$h"
-        return $?
-    fi
-    echo "[window_manager] slot $slot: no pid or wid available to position" >&2
+    echo "[window_manager] slot $slot: no wid or pid available to position" >&2
     return 1
 }
 
