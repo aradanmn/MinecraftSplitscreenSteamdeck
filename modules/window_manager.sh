@@ -333,46 +333,60 @@ apply_layout() {
         done
     fi
 
-    # Map each active slot to a CELL by its ORDER among the active slots (1st active →
-    # cell 1, 2nd → cell 2, …). grid_mode is by COUNT and compute_slot_geometry maps a
-    # cell index → rectangle, so active slots fill the grid top-to-bottom / left-to-right
-    # regardless of WHICH slot numbers are active. This makes scale-down collapse
-    # correctly — 2 players → two halves, 1 player → fullscreen, no empty corners — and
-    # removes the old "full mode only repositions slot 1" bug (a lone survivor in slot 4
-    # would never go fullscreen).
+    # Cell assignment (2026-06-27, user request — stable quadrants):
+    #   QUAD (3-4 players): cell = SLOT NUMBER → each player pinned to a FIXED quadrant
+    #     (P1=UL, P2=UR, P3=LL, P4=LR). A join/leave in quad mode never reshuffles the
+    #     others — P4 joining only fills LR; P3 leaving only empties LL.
+    #   HALF/FULL (1-2 players): cell = ORDER among active slots → a scale-down collapses
+    #     cleanly (2 survivors → top/bottom halves, 1 → fullscreen) regardless of WHICH
+    #     slot numbers remain (compute_slot_geometry's half mode only defines cells 1-2).
+    # compute_slot_geometry maps a cell index → rectangle (quad cell1=UL..cell4=LR).
     local -a active_array=($active_slots)
-    local slot cell geometry x y w h wid
+    local slot cell geometry x y w h wid order=0
+    local _gd="${MCSS_GEOM_DIR:-/tmp/mcss-geom}"
+    local -a _positioned=()
 
-    cell=0
     for slot in "${active_array[@]}"; do
         [[ "$slot" =~ ^[1-4]$ ]] || continue
-        cell=$((cell+1))
+        order=$((order+1))
+        if [[ "$grid_mode" == "quad" ]]; then cell="$slot"; else cell="$order"; fi
         geometry=$(compute_slot_geometry "$cell" "$grid_mode" "$screen_w" "$screen_h")
         read -r x y w h <<< "$geometry"
-        # Position via KWin scripting (window stays KWin-managed; no override_redirect).
-        # KWin holds the geometry, so we set it once per reflow; _position_slot falls back
-        # to the legacy OR cycle only if KWin scripting is unreachable.
+        wid=$(_get_wid_from_state "$slot")
+
+        # Skip a window already at its target (same WID + same geom): re-running the
+        # override_redirect cycle on an unchanged window would needlessly unmap/remap it
+        # (a visible flicker) — the user's "don't move the windows in quad mode". WID-keyed
+        # so a NEW instance reusing this slot (different WID) is still positioned; per-slot
+        # file so it survives the orchestrator's subshells. Disable via MCSS_SKIP_UNCHANGED=0.
+        local _gf="$_gd/slot${slot}"
+        local _sig="${wid:-nowid} $x $y $w $h $grid_mode"
+        if [[ "${MCSS_SKIP_UNCHANGED:-1}" == "1" && -n "$wid" && "$(cat "$_gf" 2>/dev/null)" == "$_sig" ]]; then
+            echo "[window_manager] slot $slot already at ${w}x${h}+${x}+${y} ($grid_mode) — skip reposition (no flicker)" >&2
+            continue
+        fi
+
         echo "[window_manager] Repositioning slot $slot → cell $cell ${w}x${h}+${x}+${y} ($grid_mode)" >&2
         _position_slot "$slot" "$x" "$y" "$w" "$h"
+        mkdir -p "$_gd" 2>/dev/null; printf '%s' "$_sig" > "$_gf" 2>/dev/null
         echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode cell $cell) [kwin frameGeometry]" >&2
-        wid=$(_get_wid_from_state "$slot"); [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
+        [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
+        _positioned+=("$slot:$x:$y:$w:$h")
     done
 
-    # Settle + single re-assert (the "let it settle, then position" fix). A freshly-mapped
-    # Minecraft/XWayland window is still finishing setup when first positioned, so KWin can
-    # drop the geometry; one re-assert after a short settle makes it hold (KWin keeps
-    # managed-window geometry, so no continuous loop). Skip in full mode (single window).
-    if [[ "${MCSS_REASSERT:-1}" == "1" && "$grid_mode" != "full" && -n "${active_slots// }" ]]; then
+    # Settle + single re-assert (the "let it settle, then position" fix) — ONLY for slots
+    # actually (re)positioned this round. A freshly-mapped Minecraft/XWayland window is still
+    # finishing setup when first positioned, so KWin can drop the geometry; one re-assert
+    # after a short settle makes it hold. Skipped/unchanged tiles are already settled and
+    # must NOT be re-cycled (that would re-introduce the flicker we just avoided).
+    if [[ "${MCSS_REASSERT:-1}" == "1" && "$grid_mode" != "full" && ${#_positioned[@]} -gt 0 ]]; then
         sleep "${MCSS_REASSERT_DELAY_S:-1.2}"
-        cell=0
-        for slot in "${active_array[@]}"; do
-            [[ "$slot" =~ ^[1-4]$ ]] || continue
-            cell=$((cell+1))
-            geometry=$(compute_slot_geometry "$cell" "$grid_mode" "$screen_w" "$screen_h")
-            read -r x y w h <<< "$geometry"
+        local _p
+        for _p in "${_positioned[@]}"; do
+            IFS=: read -r slot x y w h <<< "$_p"
             _position_slot "$slot" "$x" "$y" "$w" "$h"
         done
-        echo "[window_manager] re-asserted layout for active slots: $active_slots" >&2
+        echo "[window_manager] re-asserted ${#_positioned[@]} (re)positioned slot(s)" >&2
     fi
 }
 

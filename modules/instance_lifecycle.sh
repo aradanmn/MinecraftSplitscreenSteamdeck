@@ -880,6 +880,9 @@ teardown_instance() {
 
     # 4. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
     update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null, \"wid\": null}"
+    # Clear apply_layout's per-slot geom cache so a fresh instance reusing this slot is
+    # always repositioned (belt-and-suspenders; the cache is also WID-keyed). See apply_layout.
+    rm -f "${MCSS_GEOM_DIR:-/tmp/mcss-geom}/slot${slot}" 2>/dev/null || true
 
     # Layout reflow is the caller's responsibility (e.g. SLOT_DIED handler calls
     # _reflow_layout after teardown_instance returns). Calling sync_apply_layout
