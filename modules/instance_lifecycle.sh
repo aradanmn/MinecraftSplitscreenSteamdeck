@@ -142,7 +142,16 @@ _build_bwrap_command() {
         --dev-bind /home /home
         --dev-bind /run /run
         --dev-bind /dev/dri /dev/dri
+        --tmpfs /run/udev
     )
+    # HARDENED CONTROLLER ISOLATION (2026-06-26, validated live on Deck w/ 4 DS4s):
+    # SDL/Controlify enumerate controllers via udev (/run/udev) + the Steam IPC pipe +
+    # sysfs — NOT just /dev/input — so bind-isolating /dev/input alone LEAKS every
+    # controller into the sandbox (proven: bind 1 pad, /sys/class/input still listed all
+    # 9). Blank the udev DB (--tmpfs /run/udev above) and mask the Steam pipe; together with
+    # SDL_JOYSTICK_DISABLE_UDEV=1 (env below) this forces SDL onto its scandir-only path so
+    # it can ONLY see the single /dev/input/jsN we bind into this namespace.
+    [[ -e "$HOME/.steam/steam.pipe" ]] && cmd+=(--bind /dev/null "$HOME/.steam/steam.pipe")
 
     # event_node is optional — for a controller-less single instance (empty/missing)
     # skip the bind rather than handing bwrap an invalid empty source path (which
@@ -217,6 +226,14 @@ _build_bwrap_command() {
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
+        # SDL_JOYSTICK_DISABLE_UDEV=1 — THE key isolation hint. SDL does NOT detect a plain
+        # bwrap sandbox as a container, so by default it stays on libudev enumeration and
+        # reads every device from the (reachable) udev DB, bypassing our /dev/input bind.
+        # This hint is checked BEFORE that sandbox check and forces the scandir("/dev/input")
+        # fallback, so SDL only sees nodes present in this mount namespace (the one bound
+        # pad). NOTE: SDL_LINUX_JOYSTICK_CLASSIC does NOT do this — it only filters js vs
+        # event node names. Root-caused via deep-research + live Deck testing 2026-06-26.
+        SDL_JOYSTICK_DISABLE_UDEV=1
     )
     if [[ -n "$_xauth" ]]; then
         _env_vars+=("XAUTHORITY=$_xauth")
