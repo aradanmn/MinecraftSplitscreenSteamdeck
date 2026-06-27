@@ -4,7 +4,7 @@ Play Minecraft **splitscreen with up to 4 people on one screen** — each player
 
 It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone a controller, the screen splits between you, and you all play together on one device. No second computer needed.
 
-> ⚠️ **Early / personal-use project.** This is under active development and is **not a public release**. It's intended for personal use by people who **already own Minecraft** (see [Requirements](#requirements)). The Steam Deck is the only supported device today.
+> ℹ️ **Personal-use project (v1).** For people who **already own Minecraft** (see [Requirements](#requirements)). The Steam Deck is the supported device; other Linux + KDE devices are experimental.
 
 ---
 
@@ -50,13 +50,7 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 
 ## How to install
 
-> ⚠️ **Not installable yet — pre-release. Don't run the command below.**
-> This build has **not** been published to the install URL. The `main`-branch URL below
-> currently serves an **older, different version** of the project, so running it today
-> installs the *wrong* thing. The real install goes live once this branch is promoted to
-> `main`. *(For maintainer testing from this branch, see `docs/INSTALL-READINESS.md`.)*
-
-Once released, on the Steam Deck you'll switch to **Desktop Mode**, open **Konsole** (the terminal), and run:
+On the Steam Deck, switch to **Desktop Mode**, open **Konsole** (the terminal), and run:
 
 ```sh
 wget https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/main/install-minecraft-splitscreen.sh
@@ -81,17 +75,18 @@ The installer downloads Minecraft and the splitscreen pieces and adds a **"Minec
 
 ## Current status
 
-Actively developed. What works on the Deck today:
+v1. What works on the Deck, validated on real hardware:
 
 - ✅ Launching from the Steam shortcut into the splitscreen environment.
-- ✅ Window tiling for 1–4 players (full / half / quad) that re-flows as players join and leave.
-- ✅ Per-player controller assignment — each external pad maps to its own player and only that player; the Deck's built-in controls and the Steam Controller are excluded by design. Validated 1→4 players on real hardware.
+- ✅ Window tiling for 1–4 players (full / half / quad) that re-flows as players join and leave — confirmed scaling 1→4.
+- ✅ Per-player controller assignment — each external pad maps to its own player and only that player; the Deck's built-in controls and the Steam Controller are excluded by design. Confirmed with 4 controllers.
+- ✅ Single-player handheld (undocked) mode.
 
-Still being finalized:
+Known limitations:
 
-- 🚧 Clean exit back to the Steam library when everyone quits.
+- 🚧 On exit, you may need to pick **Abort Game** to get back to the Steam library. The session itself tears down cleanly — this is gamescope's game-end overlay not always clearing on its own.
 
-If you hit a rough edge, it's likely something already being worked on.
+If you hit a rough edge, check back — fixes land in point releases.
 
 ---
 
