@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore external display after suspend/resume
+
+# Oneshot worker, triggered on-demand by the system-sleep hook
+# /etc/systemd/system-sleep/deck-display-resume.sh. It is intentionally NOT
+# WantedBy any target and NOT enabled — the hook starts it with --no-block on
+# every resume. (The previous version was a persistent journalctl -f tail with
+# Restart=always; that could be frozen across suspend and never see the resume.)
+
+[Service]
+Type=oneshot
+ExecStart=/home/deck/.local/bin/resume-display-restore.sh

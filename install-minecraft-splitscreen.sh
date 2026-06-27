@@ -68,11 +68,17 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
-# GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/modules"
+# Repo ref (branch/tag/commit) to install FROM. Defaults to 'main'; override to test a
+# branch WITHOUT promoting it — e.g.:
+#   REPO_REF=feat/gamescope-windowing ./install-minecraft-splitscreen.sh
+# Exported so every sourced module's download URL uses the same ref.
+export REPO_REF="${REPO_REF:-main}"
 
-# List of required module files
-readonly MODULE_FILES=(
+# GitHub repository information (modify these URLs to match your actual repository)
+readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}/modules"
+
+# Installer modules — sourced during installation to run the setup workflow.
+readonly INSTALLER_MODULE_FILES=(
     "utilities.sh"
     "java_management.sh"
     "launcher_setup.sh"
@@ -84,6 +90,23 @@ readonly MODULE_FILES=(
     "desktop_launcher.sh"
     "main_workflow.sh"
 )
+
+# Runtime orchestrator modules — deployed to TARGET_DIR/modules/ so the launcher
+# can source them at play time. NOT sourced by the installer.
+readonly RUNTIME_MODULE_FILES=(
+    "preflight.sh"
+    "dock_detection.sh"
+    "controller_monitor.sh"
+    "kwin_positioner.sh"
+    "window_manager.sh"
+    "instance_lifecycle.sh"
+    "watchdog.sh"
+    "orchestrator.sh"
+    "dex.sh"
+)
+
+# Combined list used by download_modules and the presence check below.
+readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
 
 # Function to download modules if they don't exist
 download_modules() {
@@ -165,7 +188,7 @@ download_modules() {
         echo "    mkdir -p '$SCRIPT_DIR/modules'"
         echo "    # Then copy all .sh module files to that directory"
         echo ""
-        echo "🌐 Or check if the repository exists at: https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck"
+        echo "🌐 Or check if the repository exists at: https://github.com/aradanmn/MinecraftSplitscreenSteamdeck"
         exit 1
     fi
     
@@ -198,9 +221,14 @@ for module in "${MODULE_FILES[@]}"; do
     fi
 done
 
-# Source all module files to load their functions
-# Load modules in dependency order
+# Source installer modules to load their functions (dependency order).
+# Runtime orchestrator modules (dock_detection, controller_monitor, etc.) are
+# deployed to TARGET_DIR/modules/ by install_runtime_modules() — not sourced here.
 source "$MODULES_DIR/utilities.sh"
+# preflight.sh is a runtime module, but we source it at INSTALL time too so the dependency
+# hard-stop (_preflight_deps install) actually runs before we download/install anything
+# (G1: it was previously never sourced, so the install-time check silently no-op'd).
+source "$MODULES_DIR/preflight.sh"
 source "$MODULES_DIR/java_management.sh"
 source "$MODULES_DIR/launcher_setup.sh"
 source "$MODULES_DIR/version_management.sh"
@@ -224,28 +252,83 @@ MC_VERSION=""
 FABRIC_VERSION=""
 LWJGL_VERSION=""
 
-# Mod configuration arrays
-declare -a REQUIRED_SPLITSCREEN_MODS=("Controllable (Fabric)" "Splitscreen Support")
-declare -a REQUIRED_SPLITSCREEN_IDS=("317269" "yJgqfSDR")
+# Mod configuration arrays — populated by load_mods_config() below.
+declare -a REQUIRED_SPLITSCREEN_MODS=()
+declare -a REQUIRED_SPLITSCREEN_IDS=()
+declare -a MODS=()
+# Dependency map: mod name → comma-separated names of mods it requires.
+# Used by resolve_conf_dependencies() in mod_management.sh.
+declare -A MOD_DEPS_BY_NAME=()
 
-# Master list of all available mods with their metadata
-# Format: "Mod Name|platform|mod_id"
-declare -a MODS=(
-    "Better Name Visibility|modrinth|pSfNeCCY"
-    "Controllable (Fabric)|curseforge|317269"
-    "Full Brightness Toggle|modrinth|aEK1KhsC"
-    "In-Game Account Switcher|modrinth|cudtvDnd"
-    "Just Zoom|modrinth|iAiqcykM"
-    "Mod Menu|modrinth|mOgUt4GM"
-    "Old Combat Mod|modrinth|dZ1APLkO"
-    "Reese's Sodium Options|modrinth|Bh37bMuy"
-    "Sodium|modrinth|AANobbMI"
-    "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-    "Sodium Extra|modrinth|PtjYWJkn"
-    "Sodium Extras|modrinth|vqqx0QiE"
-    "Sodium Options API|modrinth|Es5v4eyq"
-    "Splitscreen Support|modrinth|yJgqfSDR"
-)
+# load_mods_config: Populate MODS, REQUIRED_SPLITSCREEN_MODS, and
+# REQUIRED_SPLITSCREEN_IDS from mods.conf (next to this script).
+# Falls back to built-in defaults if the file is missing.
+load_mods_config() {
+    local conf="${SCRIPT_DIR}/mods.conf"
+
+    if [[ ! -f "$conf" ]]; then
+        echo "[mods] mods.conf not found at ${conf} — using built-in defaults" >&2
+        # NOTE: the "Splitscreen Support" mod (yJgqfSDR) is NO LONGER installed — window
+        # tiling is done by KWin, not the mod (2026-06-23). Only Controlify is required.
+        REQUIRED_SPLITSCREEN_MODS=("Controlify")
+        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm")
+        MODS=(
+            "Controlify|modrinth|DOUdJVEm"
+            "Sodium|modrinth|AANobbMI"
+            "Sodium Options API|modrinth|Es5v4eyq"
+            "Reese's Sodium Options|modrinth|Bh37bMuy"
+            "Sodium Extra|modrinth|PtjYWJkn"
+            "Sodium Extras|modrinth|vqqx0QiE"
+            "Sodium Dynamic Lights|modrinth|PxQSWIcD"
+            "Better Name Visibility|modrinth|pSfNeCCY"
+            "Full Brightness Toggle|modrinth|aEK1KhsC"
+            "In-Game Account Switcher|modrinth|cudtvDnd"
+            "Just Zoom|modrinth|iAiqcykM"
+            "Mod Menu|modrinth|mOgUt4GM"
+            "Old Combat Mod|modrinth|dZ1APLkO"
+        )
+        MOD_DEPS_BY_NAME=(
+            ["Sodium Options API"]="Sodium"
+            ["Reese's Sodium Options"]="Sodium,Sodium Options API"
+            ["Sodium Extra"]="Sodium"
+            ["Sodium Extras"]="Sodium"
+            ["Sodium Dynamic Lights"]="Sodium"
+        )
+        return 0
+    fi
+
+    echo "[mods] Loading mod list from ${conf}" >&2
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip inline comments, then leading/trailing whitespace
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+
+        local type name platform id deps
+        IFS='|' read -r type name platform id deps <<< "$line"
+        # Trim whitespace from each field
+        type="${type// /}"
+        name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        platform="${platform// /}"; id="${id// /}"
+        deps="${deps#"${deps%%[![:space:]]*}"}"; deps="${deps%"${deps##*[![:space:]]}"}"
+
+        MODS+=("${name}|${platform}|${id}")
+
+        if [[ "$type" == "required" ]]; then
+            REQUIRED_SPLITSCREEN_MODS+=("$name")
+            REQUIRED_SPLITSCREEN_IDS+=("$id")
+        fi
+
+        if [[ -n "$deps" ]]; then
+            MOD_DEPS_BY_NAME["$name"]="$deps"
+        fi
+    done < "$conf"
+
+    echo "[mods] Loaded ${#MODS[@]} mods (${#REQUIRED_SPLITSCREEN_MODS[@]} required, ${#MOD_DEPS_BY_NAME[@]} with declared deps)" >&2
+}
+
+load_mods_config
 
 # Runtime mod tracking arrays (populated during execution)
 declare -a SUPPORTED_MODS=()

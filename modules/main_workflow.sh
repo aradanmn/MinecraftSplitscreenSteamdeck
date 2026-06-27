@@ -62,7 +62,16 @@ main() {
     # =============================================================================
     # CORE SYSTEM REQUIREMENTS VALIDATION
     # =============================================================================
-    
+
+    # HARD STOP before downloading anything if the KDE/Plasma/KWin stack (or other
+    # critical deps) is missing — the splitscreen windowing requires it (item G).
+    # HARD STOP before downloading/installing anything if a required program or the
+    # KDE/Plasma/KWin stack is missing. preflight.sh is now sourced by the installer entry,
+    # so this always runs. On read-only SteamOS we CANNOT install system packages, so we
+    # fail fast with a clear, distro-aware message (preflight prints the hint) instead of
+    # trying to sudo/pacman anything. (bwrap is part of preflight's required set.)
+    _preflight_deps install || exit 1
+
     download_prism_launcher        # Download PolyMC AppImage for splitscreen launcher usage
     
     # =============================================================================
@@ -85,7 +94,7 @@ main() {
     # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
     # These accounts enable splitscreen without requiring multiple Microsoft accounts
     # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
-    if ! wget -O accounts.json "https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/accounts.json"; then
+    if ! wget -O accounts.json "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/accounts.json"; then
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
         if [[ ! -f "accounts.json" ]]; then
@@ -110,7 +119,11 @@ main() {
     
     
     create_instances             # Create 4 splitscreen instances using manual configuration
-    setup_splitscreen_launcher_script   # Install minecraftSplitscreen.sh into launcher directory
+    # The launcher + runtime modules ARE the product — if they don't land, the install has
+    # FAILED; stop here instead of printing "success" downstream. (A from-main install 404s
+    # here until the branch is promoted; use REPO_REF=<branch> to install from a branch.)
+    setup_splitscreen_launcher_script || { print_error "❌ Failed to install the splitscreen launcher (minecraftSplitscreen.sh) — aborting."; exit 1; }
+    install_runtime_modules || { print_error "❌ Failed to install the runtime modules — aborting; the launcher cannot run without them."; exit 1; }
     
     # =============================================================================
     # SYSTEM INTEGRATION PHASE: Optional platform integration
@@ -166,6 +179,6 @@ main() {
 
     echo ""
     echo "For troubleshooting or updates, visit:"
-    echo "https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck"
+    echo "https://github.com/aradanmn/MinecraftSplitscreenSteamdeck"
     echo "=========================================="
 }

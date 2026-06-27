@@ -1,606 +1,1199 @@
 #!/bin/bash
-
-set +e  # Allow script to continue on errors for robustness
-
-# =============================
-# Minecraft Splitscreen Launcher for Steam Deck & Linux
-# =============================
-# This script launches 1–4 Minecraft instances in splitscreen mode.
-# On Steam Deck Game Mode, it launches a nested KDE Plasma session for clean splitscreen.
-# On desktop mode, it launches Minecraft instances directly.
-# Handles controller detection, per-instance mod config, KDE panel hiding/restoring, and reliable autostart in a nested session.
+# minecraftSplitscreen.sh — Phase A prototype: static Minecraft instance test
 #
-# HOW IT WORKS:
-# 1. If in Steam Deck Game Mode, launches a nested Plasma Wayland session (if not already inside).
-# 2. Sets up an autostart .desktop file to re-invoke itself inside the nested session.
-# 3. Detects how many controllers are connected (1–4, with Steam Input quirks handled).
-# 4. For each player, writes the correct splitscreen mod config and launches a Minecraft instance.
-# 5. Hides KDE panels for a clean splitscreen experience (by killing plasmashell), then restores them.
-# 6. Logs out of the nested session when done.
+# Launches actual PolyMC/PrismLauncher instances inside a nested KWin session
+# with per-slot bwrap controller isolation.  Waits for all instances to reach
+# the Minecraft main menu ("Sound engine started" in the log), runs for
+# TEST_ACTIVE_S seconds, then auto-quits.  No operator interaction required.
 #
-# NOTE: This script is robust and heavily commented for clarity and future maintainers!
-# The main script file should be named minecraftSplitscreen.sh for clarity and version-agnostic usage.
+# Overridable env vars:
+#   N_SLOTS          — number of player slots (default 4)
+#   TEST_ACTIVE_S    — active run duration in seconds (default 600)
+#   LOAD_TIMEOUT_S   — max seconds to wait for all instances to load (default 180)
+#   INSTANCES_DIR    — override auto-detected launcher instances directory
+#   LAUNCHER_EXEC    — override auto-detected launcher command
+#
+# This script IS the production launcher: the installer deploys it as-is
+# (setup_splitscreen_launcher_script) and it auto-detects launcher config at runtime.
+# runStaticTest() is a prototype-only static path; the orchestrator/test paths are
+# the real ones. (The old launcher_script_generator.sh template was retired — the
+# launcher is deployed + version-stamped, not generated.)
 
-# Set a temporary directory for intermediate files (used for wrappers, etc)
-export target=/tmp
-LAUNCH_DEBUG_LOG="$HOME/.local/share/PolyMC/splitscreen-launch-debug.log"
+# ── Build provenance ─────────────────────────────────────────────────────────
+# Stamped by the installer at deploy time (setup_splitscreen_launcher_script does
+# a sed substitution on the placeholders below).  Run un-stamped (e.g. straight
+# from the repo during testing) the placeholders remain and we fall back to
+# dev/unknown.  `--version`/`-v` prints and exits before any logging/side effects.
+MCSS_VERSION="__MCSS_VERSION__"
+MCSS_COMMIT="__MCSS_COMMIT__"
+MCSS_BUILD_DATE="__MCSS_BUILD_DATE__"
+[[ "$MCSS_VERSION"    == __MCSS_* ]] && MCSS_VERSION="dev"
+[[ "$MCSS_COMMIT"     == __MCSS_* ]] && MCSS_COMMIT="unknown"
+[[ "$MCSS_BUILD_DATE" == __MCSS_* ]] && MCSS_BUILD_DATE="unknown"
+if [[ "${1:-}" == "--version" || "${1:-}" == "-v" ]]; then
+    echo "minecraftSplitscreen ${MCSS_VERSION} (commit ${MCSS_COMMIT}, built ${MCSS_BUILD_DATE})"
+    exit 0
+fi
 
-# =============================
-# Function: detectLauncher
-# =============================
-# Detects PolyMC launcher for splitscreen gameplay.
-# Returns launcher paths and executable info.
-detectLauncher() {
-    # Check if PolyMC is available.
-    if [ -f "$HOME/.local/share/PolyMC/PolyMC.AppImage" ] && [ -x "$HOME/.local/share/PolyMC/PolyMC.AppImage" ]; then
-        export LAUNCHER_DIR="$HOME/.local/share/PolyMC"
-        export LAUNCHER_EXEC="$HOME/.local/share/PolyMC/PolyMC.AppImage"
-        export LAUNCHER_NAME="PolyMC"
-        return 0
+# Per-run timestamped debug log. The script re-execs itself across the
+# gamescope→KDE boundary (nestedPlasma/testPlasma write an autostart that
+# re-invokes us); those autostart Exec lines pass SPLITSCREEN_DEBUG_LOG so both
+# halves of one run append to the SAME file. Only the first invocation (env var
+# unset) mints a new timestamp. A stable -latest symlink makes tailing easy.
+LOG="${SPLITSCREEN_DEBUG_LOG:-/tmp/splitscreen-debug-$(date +%Y%m%d-%H%M%S).log}"
+export SPLITSCREEN_DEBUG_LOG="$LOG"
+ln -sfn "$LOG" /tmp/splitscreen-debug-latest.log 2>/dev/null || true
+exec 2>>"$LOG"
+set -x
+
+echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
+
+# Source runtime orchestrator modules
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+for _mod in preflight.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+    _mod_path="$SCRIPT_DIR/modules/$_mod"
+    if [[ -f "$_mod_path" ]]; then
+        source "$_mod_path"
     fi
-    
-    echo "[Error] PolyMC not found at $HOME/.local/share/PolyMC/" >&2
-    echo "[Error] Please run the Minecraft Splitscreen installer to set up PolyMC" >&2
+done
+
+N_SLOTS="${N_SLOTS:-4}"
+TEST_ACTIVE_S="${TEST_ACTIVE_S:-600}"
+LOAD_TIMEOUT_S="${LOAD_TIMEOUT_S:-180}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launcher auto-detection  (prototype only — generator bakes these in via sed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_detect_instances_dir() {
+    local candidates=(
+        "$HOME/.local/share/PolyMC/instances"
+        "$HOME/.var/app/org.fn2006.PolyMC/data/PolyMC/instances"
+        "$HOME/.local/share/PrismLauncher/instances"
+        "$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
+    )
+    for dir in "${candidates[@]}"; do
+        [[ -d "$dir" ]] && { echo "$dir"; return 0; }
+    done
     return 1
 }
 
-# Detect and set launcher variables at startup
-if ! detectLauncher; then
-    echo "[Error] Cannot continue without a compatible Minecraft launcher" >&2
-    exit 1
-fi
+_detect_launcher_exec() {
+    # AppImage bundled alongside the PolyMC data directory
+    local appimage="$HOME/.local/share/PolyMC/PolyMC.AppImage"
+    [[ -x "$appimage" ]] && { echo "$appimage"; return 0; }
 
-echo "[Info] Using $LAUNCHER_NAME for splitscreen gameplay"
-
-# =============================
-# Function: selfUpdate
-# =============================
-# Checks if this script is the latest version from GitHub. If not, downloads and replaces itself.
-selfUpdate() {
-    local repo_url="https://raw.githubusercontent.com/FlyingEwok/MinecraftSplitscreenSteamdeck/main/minecraftSplitscreen.sh"
-    local tmpfile
-    tmpfile=$(mktemp)
-    local script_path
-    script_path="$(readlink -f "$0")"
-    # Download the latest version
-    if ! curl -fsSL "$repo_url" -o "$tmpfile"; then
-        echo "[Self-Update] Failed to check for updates." >&2
-        rm -f "$tmpfile"
-        return
+    if flatpak list 2>/dev/null | grep -q "org.fn2006.PolyMC"; then
+        echo "flatpak run org.fn2006.PolyMC"; return 0
     fi
-    # Compare files byte-for-byte
-    if ! cmp -s "$tmpfile" "$script_path"; then
-        # --- Terminal Detection and Relaunch Logic ---
-        # If not running in an interactive shell (no $PS1), not launched by a terminal program, and not attached to a tty,
-        # then we are likely running from a GUI (e.g., .desktop launcher) and cannot prompt the user for input.
-        if [ -z "$PS1" ] && [ -z "$TERM_PROGRAM" ] && ! tty -s; then
-            # Non-interactive launch (desktop shortcut/autostart/Game Mode path):
-            # do not block or abort gameplay flow for an update prompt.
-            echo "[Self-Update] Update available. Skipping prompt in non-interactive mode."
-            rm -f "$tmpfile"
-            return
-        fi
-        # --- Interactive Update Prompt ---
-        # If we are running in a terminal, prompt the user for update confirmation.
-        echo "[Self-Update] A new version is available. Update now? [y/N]"
-        read -r answer
-        if [[ "$answer" =~ ^[Yy]$ ]]; then
-            echo "[Self-Update] Updating..."
-            cp "$tmpfile" "$script_path"
-            chmod +x "$script_path"
-            rm -f "$tmpfile"
-            echo "[Self-Update] Update complete. Restarting..."
-            exec "$script_path" "$@"
-        else
-            echo "[Self-Update] Update skipped by user."
-            rm -f "$tmpfile"
-        fi
-    else
-        rm -f "$tmpfile"
-        echo "[Self-Update] Already up to date."
+    if flatpak list 2>/dev/null | grep -q "org.prismlauncher.PrismLauncher"; then
+        echo "flatpak run org.prismlauncher.PrismLauncher"; return 0
     fi
+    command -v polymc        >/dev/null 2>&1 && { echo "polymc"; return 0; }
+    command -v prismlauncher >/dev/null 2>&1 && { echo "prismlauncher"; return 0; }
+    return 1
 }
 
-# Call selfUpdate at the very start of the script, except in the nested
-# autostart handoff path where we want deterministic immediate launch.
-if [ "${1:-}" != "launchFromPlasma" ]; then
-    selfUpdate
-fi
+INSTANCES_DIR="${INSTANCES_DIR:-$(_detect_instances_dir)}"
+LAUNCHER_EXEC="${LAUNCHER_EXEC:-$(_detect_launcher_exec)}"
 
-# =============================
-# Function: nestedPlasma
-# =============================
-# Launches a nested KDE Plasma Wayland session and sets up Minecraft autostart.
-# Needed so Minecraft can run in a clean, isolated desktop environment (avoiding SteamOS overlays, etc).
-# The autostart .desktop file ensures Minecraft launches automatically inside the nested session.
-nestedPlasma() {
-    # Unset variables that may interfere with launching a nested session
-    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH
-    # Get current screen resolution (e.g., 1280x800)
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}')
-    [ -z "$RES" ] && RES="1280x800"
-    # Create a wrapper for kwin_wayland with the correct resolution
-    cat <<EOF > $target/kwin_wayland_wrapper
-#!/bin/bash
-/usr/bin/kwin_wayland_wrapper --width ${RES%x*} --height ${RES#*x} --no-lockscreen \$@
-EOF
-    chmod +x $target/kwin_wayland_wrapper
-    export PATH=$target:$PATH
-    # Write an autostart .desktop file that will re-invoke this script with a special argument
-    SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
-    cat <<EOF > ~/.config/autostart/minecraft-launch.desktop
-[Desktop Entry]
-Name=Minecraft Split Launch
-Exec=$SCRIPT_PATH launchFromPlasma
-Type=Application
-X-KDE-AutostartScript=true
-EOF
-    # Start nested Plasma session (never returns)
-    exec dbus-run-session startplasma-wayland
-}
-
-# =============================
-# Function: launchGame
-# =============================
-# Launches a single Minecraft instance using the detected launcher, with KDE inhibition to prevent
-# the system from sleeping, activating the screensaver, or changing color profiles.
-# Arguments:
-#   $1 = Launcher instance name (e.g., latestUpdate-1)
-#   $2 = Player name (e.g., P1)
-launchGame() {
-    local instance_name="$1"
-    local account_name="$2"
-    local joystick_device="${3:-}"
-
-    echo "[Info] Launching $LAUNCHER_NAME instance '$instance_name' with account '$account_name'..."
-    if [ -n "$joystick_device" ]; then
-        echo "[Info]   -> Restricting instance input to joystick device: $joystick_device"
-    fi
-
-    local -a launch_cmd
-    launch_cmd=("$LAUNCHER_EXEC" -l "$instance_name" -a "$account_name")
-
-    # SDL hint used by Controllable's bundled SDL backend. This constrains each process
-    # to a single joystick path to reduce cross-instance controller collisions.
-    local -a launch_env
-    launch_env=(env)
-    if [ -n "$joystick_device" ]; then
-        launch_env+=("SDL_JOYSTICK_DEVICE=$joystick_device")
-    fi
-    # Steam can inject a very large SDL_GAMECONTROLLER_IGNORE_DEVICES blacklist that may
-    # include perfectly valid controllers. Clear it for launched instances.
-    launch_env+=("SDL_GAMECONTROLLER_IGNORE_DEVICES=")
-    # Prefer physical controllers over Steam virtual pads in Controllable.
-    # Use Steam virtual pads directly — SDL3 needs ALLOW_STEAM_VIRTUAL=1 for
-    # 28de:11ff devices (the Steam virtual Xbox pads). Setting =0 blocks them
-    # entirely and breaks controller detection inside bwrap sandboxes.
-    launch_env+=("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1")
-    # Force SDL to use Linux joystick devices instead of HIDAPI so SDL_JOYSTICK_DEVICE
-    # pinning is applied per instance.
-    launch_env+=("SDL_JOYSTICK_HIDAPI=0")
-    # SDL expects SDL_LINUX_JOYSTICK_CLASSIC (not SDL_JOYSTICK_LINUX_CLASSIC).
-    # This is required so SDL_JOYSTICK_DEVICE pinning is honored on Linux.
-    launch_env+=("SDL_LINUX_JOYSTICK_CLASSIC=1")
-
-    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
-    {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching $instance_name ($account_name)"
-        echo "  SDL_JOYSTICK_DEVICE=${joystick_device:-<unset>}"
-        echo "  SDL_GAMECONTROLLER_IGNORE_DEVICES=<cleared>"
-        echo "  SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1"
-        echo "  SDL_JOYSTICK_HIDAPI=0"
-        echo "  SDL_LINUX_JOYSTICK_CLASSIC=1"
-        echo "  XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>}"
-        echo "  XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-<unset>}"
-    } >> "$LAUNCH_DEBUG_LOG"
-
-    # Only use kde-inhibit inside KDE/Plasma sessions.
-    # On GNOME and other desktops it can exist but fail over DBus.
-    if command -v kde-inhibit >/dev/null 2>&1 && \
-       [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|PLASMA ]] ; then
-        (
-            kde-inhibit --power --screenSaver --colorCorrect --notifications \
-                "${launch_env[@]}" "${launch_cmd[@]}" || \
-                "${launch_env[@]}" "${launch_cmd[@]}"
-        ) >/dev/null 2>&1 &
-    else
-        # On GNOME/other desktops, launch directly to avoid DBus inhibit edge cases.
-        "${launch_env[@]}" "${launch_cmd[@]}" &
-    fi
-    # Wait for this specific instance's Java process to appear so the next
-    # player's pre-launch frontend prune won't kill this launch too early.
-    local launch_started=0
-    local _i
-    for _i in $(seq 1 120); do
-        if pgrep -af "instances/${instance_name}/natives" >/dev/null 2>&1; then
-            launch_started=1
-            break
-        fi
-        sleep 0.5
-    done
-    if [ "$launch_started" -eq 0 ]; then
-        {
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Java process for ${instance_name} not detected within 60s"
-        } >> "$LAUNCH_DEBUG_LOG"
-    fi
-}
-
-# Kill PolyMC frontend wrapper processes without touching running Java game processes.
-pruneLauncherFrontends() {
-    local reason="${1:-manual}"
-    local launcher_pids=""
-    local left_after=""
-
-    launcher_pids="$(pgrep -f 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true)"
-    if [ -n "$launcher_pids" ]; then
-        {
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Prune launcher frontends (${reason})"
-            pgrep -af 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true
-        } >> "$LAUNCH_DEBUG_LOG"
-        kill $launcher_pids 2>/dev/null || true
-        sleep 1
-        left_after="$(pgrep -f 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || true)"
-        if [ -n "$left_after" ]; then
-            kill -9 $left_after 2>/dev/null || true
-            sleep 0.5
-        fi
-    fi
-
-    {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Frontends after prune (${reason})"
-        pgrep -af 'AppRun\.wrapped|PolyMC\.AppImage|kde-inhibit.*PolyMC' 2>/dev/null || echo "  <none>"
-    } >> "$LAUNCH_DEBUG_LOG"
-}
-
-# =============================
-# Function: getControllerDevices
-# =============================
-# Builds an ordered list of joystick devices to map to players. When Steam is running
-# and duplicate joystick nodes appear, we pick every second entry to align with the
-# existing controller count halving behavior.
-getControllerDevices() {
-    local -a js_devices
-    local -a external_devices
-    local -a deck_devices
-    local -a steam_virtual_devices
-    local js
-    local vendor
-    local product
-    local base
-    local id_dir
-
-    mapfile -t js_devices < <(ls /dev/input/js* 2>/dev/null | sort -V)
-
-    for js in "${js_devices[@]}"; do
-        base="$(basename "$js")"
-        id_dir="/sys/class/input/$base/device/id"
-        vendor="$(cat "$id_dir/vendor" 2>/dev/null || true)"
-        product="$(cat "$id_dir/product" 2>/dev/null || true)"
-        # Steam virtual pads are 28de:11ff and often appear in duplicate.
-        if [ "$vendor" = "28de" ] && [ "$product" = "11ff" ]; then
-            steam_virtual_devices+=("$js")
-        # On Steam Deck, vendor 28de (non-11ff) is Deck/Valve-origin input.
-        elif [ "$vendor" = "28de" ]; then
-            deck_devices+=("$js")
-        # Prefer third-party external controllers whenever present.
-        else
-            external_devices+=("$js")
-        fi
-    done
-
-    if [ "${#external_devices[@]}" -gt 0 ]; then
-        printf '%s\n' "${external_devices[@]}"
-    elif [ "${#deck_devices[@]}" -gt 0 ]; then
-        printf '%s\n' "${deck_devices[@]}"
-    elif [ "${#steam_virtual_devices[@]}" -gt 0 ]; then
-        # Only expose one virtual pad node to avoid duplicate assignment.
-        printf '%s\n' "${steam_virtual_devices[0]}"
-    else
-        printf '%s\n' "${js_devices[@]}"
-    fi
-}
-
-# Upsert a key/value in a PolyMC instance.cfg file.
-setInstanceCfgValue() {
-    local cfg_path="$1"
-    local key="$2"
-    local value="$3"
-    local tmp_file
-
-    [ -f "$cfg_path" ] || return 1
-
-    if grep -q "^${key}=" "$cfg_path"; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "$cfg_path"
-    else
-        printf '%s=%s\n' "$key" "$value" >> "$cfg_path"
-    fi
-
-    # Verify write; if it did not stick, use a full-file rewrite fallback.
-    if grep -Fqx "${key}=${value}" "$cfg_path"; then
-        return 0
-    fi
-
-    tmp_file="$(mktemp)"
-    awk -F= -v k="$key" -v v="$value" '
-        BEGIN { updated=0 }
-        $1 == k { print k "=" v; updated=1; next }
-        { print }
-        END { if (!updated) print k "=" v }
-    ' "$cfg_path" > "$tmp_file"
-    mv "$tmp_file" "$cfg_path"
-
-    grep -Fqx "${key}=${value}" "$cfg_path"
-}
-
-# Configure per-instance wrapper command so controller pinning is applied at the
-# actual game process level (instead of only the launcher process environment).
-configureInstanceControllerWrapper() {
-    local instance_name="$1"
-    local joystick_device="${2:-}"
-    local cfg_path="$LAUNCHER_DIR/instances/${instance_name}/instance.cfg"
-    local wrapper_cmd=""
-
-    [ -f "$cfg_path" ] || return 0
-
-    if [ -n "$joystick_device" ]; then
-        wrapper_cmd="env SDL_JOYSTICK_DEVICE=${joystick_device} SDL_GAMECONTROLLER_IGNORE_DEVICES= SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 SDL_JOYSTICK_HIDAPI=0 SDL_LINUX_JOYSTICK_CLASSIC=1"
-        setInstanceCfgValue "$cfg_path" "OverrideCommands" "true"
-        setInstanceCfgValue "$cfg_path" "WrapperCommand" "$wrapper_cmd"
-    else
-        # No pinning target for this instance; clear wrapper override.
-        setInstanceCfgValue "$cfg_path" "OverrideCommands" "false"
-        setInstanceCfgValue "$cfg_path" "WrapperCommand" ""
-    fi
-
-    # Log what ended up in the config so we can diagnose any launcher-side override.
-    mkdir -p "$(dirname "$LAUNCH_DEBUG_LOG")"
-    {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Wrapper config for ${instance_name}"
-        echo "  $(grep -m1 '^OverrideCommands=' "$cfg_path" || echo 'OverrideCommands=<missing>')"
-        echo "  $(grep -m1 '^WrapperCommand=' "$cfg_path" || echo 'WrapperCommand=<missing>')"
-    } >> "$LAUNCH_DEBUG_LOG"
-}
-
-# Controllable persists manually selected controllers per instance. If this file
-# is stale (e.g., both instances saved as Steam Deck), it can override launch-time
-# device filtering and cause every instance to grab the same controller.
-clearControllableSelection() {
-    local instance_name="$1"
-    local selected_file="$LAUNCHER_DIR/instances/${instance_name}/.minecraft/config/controllable/selected_controllers.json"
-    rm -f "$selected_file"
-}
-
-# =============================
-# Function: hidePanels
-# =============================
-# Kills all plasmashell processes to remove KDE panels and widgets. This is a brute-force workaround
-# that works even in nested Plasma Wayland sessions, where scripting APIs may not work.
-hidePanels() {
-    if command -v plasmashell >/dev/null 2>&1; then
-        pkill plasmashell
-        sleep 1
-        if pgrep -u "$USER" plasmashell >/dev/null; then
-            killall plasmashell
-            sleep 1
-        fi
-        if pgrep -u "$USER" plasmashell >/dev/null; then
-            pkill -9 plasmashell
-            sleep 1
-        fi
-    else
-        echo "[Info] plasmashell not found. Skipping KDE panel hiding."
-    fi
-}
-
-# =============================
-# Function: restorePanels
-# =============================
-# Restarts plasmashell to restore all KDE panels and widgets after gameplay.
-restorePanels() {
-    if command -v plasmashell >/dev/null 2>&1; then
-        nohup plasmashell >/dev/null 2>&1 &
-        sleep 2
-    else
-        echo "[Info] plasmashell not found. Skipping KDE panel restore."
-    fi
-}
-
-# =============================
-# Function: getControllerCount
-# =============================
-# Detects the number of controllers (1–4) by counting /dev/input/js* devices.
-# Steam Input (when Steam is running) creates duplicate devices, so we halve the count (rounding up).
-# Ensures at least 1 and at most 4 controllers are reported.
-# Logic:
-#   - Counts all /dev/input/js* devices (joysticks/gamepads recognized by the system)
-#   - Checks if the main Steam client is running (native or Flatpak)
-#   - Only halves the count if the main Steam client is running (not just helpers)
-#   - Returns a value between 1 and 4 (inclusive)
-getControllerCount() {
-    local count
-    local steam_running=0
-    # Count all joystick/gamepad devices
-    count=$(ls /dev/input/js* 2>/dev/null | wc -l)
-    # Only halve if the main Steam client is running (native or Flatpak)
-    #   - pgrep -x steam: native Steam client
-    #   - pgrep -f '^/app/bin/steam$': Flatpak Steam binary
-    #   - pgrep -f 'flatpak run com.valvesoftware.Steam': Flatpak Steam launcher
-    if pgrep -x steam >/dev/null \
-        || pgrep -f '^/app/bin/steam$' >/dev/null \
-        || pgrep -f 'flatpak run com.valvesoftware.Steam' >/dev/null; then
-        steam_running=1
-    fi
-    # If Steam is running, halve the count (rounding up) to account for Steam Input duplicates
-    if [ "$steam_running" -eq 1 ]; then
-        count=$(( (count + 1) / 2 ))
-    fi
-    # Clamp the count between 1 and 4
-    [ "$count" -gt 4 ] && count=4
-    [ "$count" -lt 1 ] && count=1
-    # Output the detected controller count
-    echo "$count"
-}
-
-# =============================
-# Function: setSplitscreenModeForPlayer
-# =============================
-# Writes the splitscreen.properties config for the splitscreen mod for each player instance.
-# This tells the mod which part of the screen each instance should use.
-# Arguments:
-#   $1 = Player number (1–4)
-#   $2 = Total number of controllers/players
-setSplitscreenModeForPlayer() {
-    local player=$1
-    local numberOfControllers=$2
-    local config_path="$LAUNCHER_DIR/instances/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
-    mkdir -p "$(dirname $config_path)"
-    local mode="FULLSCREEN"
-    # Decide the splitscreen mode for this player based on total controllers
-    case "$numberOfControllers" in
-        1)
-            mode="FULLSCREEN" # Single player: use whole screen
-            ;;
-        2)
-            if [ "$player" = 1 ]; then mode="TOP"; else mode="BOTTOM"; fi # 2 players: split top/bottom
-            ;;
-        3)
-            if [ "$player" = 1 ]; then mode="TOP";
-            elif [ "$player" = 2 ]; then mode="BOTTOM_LEFT";
-            else mode="BOTTOM_RIGHT"; fi # 3 players: 1 top, 2 bottom corners
-            ;;
-        4)
-            if [ "$player" = 1 ]; then mode="TOP_LEFT";
-            elif [ "$player" = 2 ]; then mode="TOP_RIGHT";
-            elif [ "$player" = 3 ]; then mode="BOTTOM_LEFT";
-            else mode="BOTTOM_RIGHT"; fi # 4 players: 4 corners
-            ;;
+# ─────────────────────────────────────────────────────────────────────────────
+# compute_geometry  slot total W H  →  stdout "x y w h"
+# Layouts: 1p=full, 2p=top/bottom, 3-4p=2×2 quad.
+# ─────────────────────────────────────────────────────────────────────────────
+compute_geometry() {
+    local slot=$1 total=$2 W=$3 H=$4
+    local hw=$(( W / 2 )) hh=$(( H / 2 ))
+    case $total in
+        1) echo "0 0 $W $H" ;;
+        2) [[ $slot -eq 1 ]] && echo "0 0 $W $hh" || echo "0 $hh $W $hh" ;;
+        3|4)
+            case $slot in
+                1) echo "0 0 $hw $hh" ;;
+                2) echo "$hw 0 $hw $hh" ;;
+                3) echo "0 $hh $hw $hh" ;;
+                4) echo "$hw $hh $hw $hh" ;;
+            esac ;;
     esac
-    # Write the config file for the mod
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# setSplitscreenModeForPlayer  slot n_slots
+# Writes splitscreen.properties so the in-game Splitscreen mod knows which
+# screen region to render.  This is the primary layout mechanism.
+# ─────────────────────────────────────────────────────────────────────────────
+setSplitscreenModeForPlayer() {
+    local player=$1 n=$2
+    local config_path="$INSTANCES_DIR/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
+    mkdir -p "$(dirname "$config_path")"
+    local mode="FULLSCREEN"
+    case "$n" in
+        1) mode="FULLSCREEN" ;;
+        2) [[ $player -eq 1 ]] && mode="TOP" || mode="BOTTOM" ;;
+        3)
+            case $player in
+                1) mode="TOP" ;; 2) mode="BOTTOM_LEFT" ;; *) mode="BOTTOM_RIGHT" ;;
+            esac ;;
+        4)
+            case $player in
+                1) mode="TOP_LEFT" ;; 2) mode="TOP_RIGHT" ;;
+                3) mode="BOTTOM_LEFT" ;; *) mode="BOTTOM_RIGHT" ;;
+            esac ;;
+    esac
     echo -e "gap=1\nmode=$mode" > "$config_path"
     sync
     sleep 0.5
 }
 
-# =============================
-# Function: launchGames
-# =============================
-# Hides panels, launches the correct number of Minecraft instances, and restores panels after.
-# Handles all splitscreen logic and per-player config.
-launchGames() {
-    hidePanels # Remove KDE panels for a clean game view
-    local -a controller_devices
-    numberOfControllers=$(getControllerCount) # Detect how many players
-    mapfile -t controller_devices < <(getControllerDevices)
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        numberOfControllers="${#controller_devices[@]}"
-        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
-    fi
+# ─────────────────────────────────────────────────────────────────────────────
+# logMsg  slot level msg...
+# Structured log line → LOG and stderr.  slot=0 for session-level events.
+# Works in both prototype (LOG) and generator (LOG_FILE) contexts.
+# ─────────────────────────────────────────────────────────────────────────────
+declare -A SLOT_PIDS
 
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
-    else
-        echo "[Info] No joystick devices detected for per-instance input pinning"
-    fi
-
-    for player in $(seq 1 $numberOfControllers); do
-        local joystick_device=""
-        if [ "$player" -le "${#controller_devices[@]}" ]; then
-            joystick_device="${controller_devices[$((player-1))]}"
-        fi
-        if [ "$player" -gt 1 ]; then
-            pruneLauncherFrontends "pre-launch latestUpdate-$player"
-        fi
-        clearControllableSelection "latestUpdate-$player"
-        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers" # Write config for this player
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device" # Launch Minecraft instance for this player
-    done
-    wait # Wait for all Minecraft instances to exit
-    restorePanels # Bring back KDE panels
-    sleep 2 # Give time for panels to reappear
+logMsg() {
+    local slot="$1" level="$2"
+    shift 2
+    local ts
+    ts=$(date +%H:%M:%S)
+    local line="[SLOT-${slot} ${level} ${ts}] $*"
+    local _logf="${LOG_FILE:-${LOG:-/tmp/splitscreen-debug.log}}"
+    echo "$line" >> "$_logf" 2>/dev/null
+    echo "$line" >&2
 }
 
-# =============================
-# Function: isSteamDeckGameMode
-# =============================
-# Returns 0 if running on Steam Deck in Game Mode, 1 otherwise.
-isSteamDeckGameMode() {
-    local dmi_file="/sys/class/dmi/id/product_name"
-    local dmi_contents=""
-    if [ -f "$dmi_file" ]; then
-        dmi_contents="$(cat "$dmi_file" 2>/dev/null)"
+# ─────────────────────────────────────────────────────────────────────────────
+# find_controller_pairs  →  stdout "js_dev ev_dev" per physical controller
+# Maps /dev/input/jsN to its sibling eventM via sysfs.
+# Steam virtual pads have no js node and are automatically excluded.
+# ─────────────────────────────────────────────────────────────────────────────
+find_controller_pairs() {
+    for js in /dev/input/js*; do
+        [[ -e "$js" ]] || continue
+        local jsnum="${js##*js}"
+        local evname
+        evname=$(ls /sys/class/input/js${jsnum}/device/ 2>/dev/null | grep '^event' | head -1)
+        [[ -n "$evname" ]] && echo "$js /dev/input/$evname"
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchSlot  slot js_dev ev_dev
+# Launches one PolyMC/PrismLauncher instance inside a bwrap controller sandbox.
+# Records the bwrap PID in SLOT_PIDS[slot].  Returns 1 if bwrap dies immediately.
+# ─────────────────────────────────────────────────────────────────────────────
+launchSlot() {
+    local slot="$1" js_dev="$2" ev_dev="$3"
+    local instance_id="latestUpdate-${slot}"
+
+    logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
+
+    if [[ -z "$LAUNCHER_EXEC" ]]; then
+        logMsg "$slot" ERROR "LAUNCHER_EXEC not set — cannot launch"
+        return 1
     fi
-    if echo "$dmi_contents" | grep -Ei 'Steam Deck|Jupiter' >/dev/null; then
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ]; then
-            return 0
-        fi
-        if pgrep -af 'steam' | grep -q '\-gamepadui'; then
-            return 0
-        fi
+
+    # Per-slot isolated XDG_RUNTIME_DIR so PolyMC's SingleApplication QLocalServer
+    # sockets don't find each other.  Without this, slots 2-4 detect slot 1 running,
+    # route their -l command to it, and exit — only one Minecraft actually launches.
+    # QT_QPA_PLATFORM=xcb forces PolyMC's Qt GUI to X11 so it doesn't need the
+    # Wayland socket (which lives in the now-isolated XDG_RUNTIME_DIR).
+    local slot_runtime="/tmp/polymc-runtime-slot${slot}"
+    mkdir -p "$slot_runtime"
+
+    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
+    # --dev /dev overlays an empty devtmpfs, wiping the device nodes that
+    # --dev-bind / / provided.  Re-bind the GPU (required by Qt xcb / LWJGL),
+    # X11 socket, shared memory, and FUSE back in, matching the known-working
+    # bwrap configuration from commit d5f060c (modules/instance_lifecycle.sh).
+    [[ -d /dev/dri ]]       && bwrap_cmd+=(--dev-bind /dev/dri /dev/dri)
+    [[ -e /dev/fuse ]]      && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
+    [[ -d /dev/shm ]]       && bwrap_cmd+=(--dev-bind /dev/shm /dev/shm)
+    [[ -d /tmp/.X11-unix ]] && bwrap_cmd+=(--dev-bind /tmp/.X11-unix /tmp/.X11-unix)
+    bwrap_cmd+=(
+        --setenv APPIMAGE_EXTRACT_AND_RUN 1
+        --setenv XDG_RUNTIME_DIR "$slot_runtime"
+        --setenv QT_QPA_PLATFORM xcb
+        --setenv DISPLAY "${DISPLAY:-:2}"
+        # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
+        # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
+        # leaving every instance silent. Point PULSE_SERVER at the real host socket
+        # by absolute path so each instance gets audio. The socket is already inside
+        # the sandbox via --dev-bind / /.
+        --setenv PULSE_SERVER "unix:/run/user/$(id -u)/pulse/native"
+    )
+    [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
+    [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
+
+    if command -v kde-inhibit >/dev/null 2>&1; then
+        "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
+            $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
     else
-        # Fallback: If both XDG vars are gamescope and user is deck, assume Steam Deck Game Mode
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "gamescope" ] && [ "$USER" = "deck" ]; then
-            return 0
-        fi
-        # Additional fallback: nested session (gamescope+KDE, user deck)
-        if [ "$XDG_SESSION_DESKTOP" = "gamescope" ] && [ "$XDG_CURRENT_DESKTOP" = "KDE" ] && [ "$USER" = "deck" ]; then
-            return 0
-        fi
+        logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
+        "${bwrap_cmd[@]}" $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
     fi
+
+    local pid=$!
+    SLOT_PIDS[$slot]=$pid
+
+    sleep 2
+    if ! kill -0 "$pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and LAUNCHER_EXEC=$LAUNCHER_EXEC"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "bwrap PID=$pid alive"
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# waitForAllReady  n_slots [timeout_s]
+# Polls each instance's latest.log for "Sound engine started" (main menu).
+# Returns 0 when all n_slots are ready, 1 on timeout.
+# On timeout logs per-slot diagnostics but does NOT kill anything.
+# ─────────────────────────────────────────────────────────────────────────────
+waitForAllReady() {
+    local n_slots="$1" timeout_s="${2:-180}"
+    local marker="Sound engine started"
+    local deadline=$(( $(date +%s) + timeout_s ))
+
+    logMsg 0 INFO "waiting for $n_slots instances — marker='$marker' timeout=${timeout_s}s"
+
+    while [[ $(date +%s) -lt $deadline ]]; do
+        local ready=0
+        for slot in $(seq 1 "$n_slots"); do
+            local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+            if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
+                (( ready++ ))
+            fi
+        done
+        logMsg 0 DEBUG "$ready/$n_slots at main menu"
+        if [[ $ready -ge $n_slots ]]; then
+            logMsg 0 INFO "all $n_slots instances ready"
+            return 0
+        fi
+        sleep 5
+    done
+
+    logMsg 0 ERROR "load timeout after ${timeout_s}s — per-slot status:"
+    for slot in $(seq 1 "$n_slots"); do
+        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        if [[ ! -f "$mc_log" ]]; then
+            logMsg "$slot" ERROR "no log file at $mc_log — instance likely crashed"
+        elif grep -q "$marker" "$mc_log" 2>/dev/null; then
+            logMsg "$slot" INFO "ready (arrived after deadline)"
+        else
+            local last
+            last=$(tail -3 "$mc_log" 2>/dev/null | tr '\n' '|')
+            logMsg "$slot" ERROR "NOT ready — last log: $last"
+        fi
+    done
     return 1
 }
 
-# =============================
-# Always remove the autostart file on script exit to prevent unwanted autostart on boot
-cleanup_autostart() {
-    rm -f "$HOME/.config/autostart/minecraft-launch.desktop"
+# ─────────────────────────────────────────────────────────────────────────────
+# quitSlot  slot bwrap_pid
+# SIGTERM to bwrap and its children, waits up to 30s, then SIGKILLs stragglers.
+# ─────────────────────────────────────────────────────────────────────────────
+quitSlot() {
+    local slot="$1" bwrap_pid="$2"
+
+    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" INFO "PID $bwrap_pid already gone"
+        return 0
+    fi
+
+    logMsg "$slot" INFO "SIGTERM → PID $bwrap_pid and children"
+    kill -TERM "$bwrap_pid" 2>/dev/null || true
+    pkill -TERM -P "$bwrap_pid" 2>/dev/null || true
+
+    local waited=0
+    while [[ $waited -lt 30 ]]; do
+        kill -0 "$bwrap_pid" 2>/dev/null || {
+            logMsg "$slot" INFO "exited gracefully after ${waited}s"
+            return 0
+        }
+        sleep 1
+        (( waited++ ))
+    done
+
+    logMsg "$slot" WARN "still alive after 30s — SIGKILL"
+    kill -KILL "$bwrap_pid" 2>/dev/null || true
+    pkill -KILL -P "$bwrap_pid" 2>/dev/null || true
+    sleep 1
+
+    if kill -0 "$bwrap_pid" 2>/dev/null; then
+        logMsg "$slot" ERROR "survived SIGKILL — manual intervention needed (PID=$bwrap_pid)"
+        return 1
+    fi
+
+    logMsg "$slot" INFO "killed (forced)"
+    return 0
 }
-trap cleanup_autostart EXIT
 
-
-# =============================
-# MAIN LOGIC: Entry Point
-# =============================
-# Universal: Steam Deck Game Mode = nested KDE, else just launch on current desktop
-if isSteamDeckGameMode; then
-    if [ "$1" = launchFromPlasma ]; then
-        # Inside nested Plasma session: launch Minecraft splitscreen and logout when done
-        rm ~/.config/autostart/minecraft-launch.desktop
-        launchGames
-        qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout
-    else
-        # Not yet in nested session: start it
-        nestedPlasma
+# ─────────────────────────────────────────────────────────────────────────────
+# quitAllSlots
+# Quits all SLOT_PIDS entries in parallel, then clears the array.
+# ─────────────────────────────────────────────────────────────────────────────
+quitAllSlots() {
+    if [[ ${#SLOT_PIDS[@]} -eq 0 ]]; then
+        logMsg 0 INFO "quitAllSlots: nothing to quit"
+        return 0
     fi
-else
-    # Not in Game Mode: just launch Minecraft instances directly
-    controller_devices=()
-    numberOfControllers=$(getControllerCount)
-    mapfile -t controller_devices < <(getControllerDevices)
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        numberOfControllers="${#controller_devices[@]}"
-        [ "$numberOfControllers" -gt 4 ] && numberOfControllers=4
-    fi
-
-    if [ "${#controller_devices[@]}" -gt 0 ]; then
-        echo "[Info] Detected joystick devices for assignment: ${controller_devices[*]}"
-    else
-        echo "[Info] No joystick devices detected for per-instance input pinning"
-    fi
-
-    for player in $(seq 1 $numberOfControllers); do
-        joystick_device=""
-        if [ "$player" -le "${#controller_devices[@]}" ]; then
-            joystick_device="${controller_devices[$((player-1))]}"
-        fi
-        if [ "$player" -gt 1 ]; then
-            pruneLauncherFrontends "pre-launch latestUpdate-$player"
-        fi
-        clearControllableSelection "latestUpdate-$player"
-        configureInstanceControllerWrapper "latestUpdate-$player" "$joystick_device"
-        setSplitscreenModeForPlayer "$player" "$numberOfControllers"
-        launchGame "latestUpdate-$player" "P$player" "$joystick_device"
+    logMsg 0 INFO "quitting slots: ${!SLOT_PIDS[*]}"
+    local slot
+    for slot in "${!SLOT_PIDS[@]}"; do
+        quitSlot "$slot" "${SLOT_PIDS[$slot]}" &
     done
     wait
+    unset SLOT_PIDS
+    declare -gA SLOT_PIDS
+    logMsg 0 INFO "all slots quit"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session-env leak guard.
+# nestedPlasma/testPlasma exec `dbus-run-session startplasma-wayland`. KDE startup
+# pushes the NESTED compositor's WAYLAND_DISPLAY (e.g. wayland-1) into the shared
+# systemd --user environment (dbus-update-activation-environment --systemd). But
+# dbus-run-session only isolates the dbus *bus*, not the per-user systemd manager —
+# so that value outlives our session. Afterward the next gamescope/Steam session
+# inherits WAYLAND_DISPLAY pointing at a now-dead socket → gamescope can't start →
+# sddm relaunches forever → both displays stay black.
+# We snapshot the gamescope value BEFORE going nested and restore it on the way out.
+# ─────────────────────────────────────────────────────────────────────────────
+_SESSION_ENV_BAK="/tmp/splitscreen-session-env.bak"
+
+_snapshot_session_env() {
+    : > "$_SESSION_ENV_BAK" 2>/dev/null || true
+    local v cur
+    for v in WAYLAND_DISPLAY DISPLAY; do
+        # systemd --user still holds the gamescope value here (startplasma has not
+        # clobbered it yet); fall back to our own inherited process env.
+        cur=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^${v}=//p" | head -1)
+        [[ -z "$cur" ]] && cur="${!v:-}"
+        if [[ -n "$cur" ]]; then
+            echo "${v}=${cur}" >> "$_SESSION_ENV_BAK"
+        else
+            echo "#UNSET ${v}" >> "$_SESSION_ENV_BAK"
+        fi
+    done
+    echo "[session-env] snapshot: $(tr '\n' ' ' < "$_SESSION_ENV_BAK" 2>/dev/null)" >> "$LOG"
+}
+
+_restore_session_env() {
+    [[ -f "$_SESSION_ENV_BAK" ]] || return 0
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            \#UNSET\ *) systemctl --user unset-environment "${line#\#UNSET }" 2>/dev/null || true ;;
+            *=*)        systemctl --user set-environment "$line" 2>/dev/null || true ;;
+        esac
+    done < "$_SESSION_ENV_BAK"
+    echo "[session-env] restored gamescope WAYLAND_DISPLAY/DISPLAY in systemd --user" >> "$LOG"
+    rm -f "$_SESSION_ENV_BAK" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# nestedPlasma
+# Starts a nested KDE Plasma Wayland session inside gamescope.
+# Writes an autostart .desktop so this script is re-invoked as launchWindowTest
+# once the KDE session is up.
+# ─────────────────────────────────────────────────────────────────────────────
+nestedPlasma() {
+    echo "[nestedPlasma] start" >> "$LOG"
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    echo "[nestedPlasma] W=$W H=$H" >> "$LOG"
+
+    kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
+
+    # KWin wrapper with correct resolution
+    cat > /tmp/kwin_wayland_wrapper <<WEOF
+#!/bin/bash
+/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
+WEOF
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
+
+    # Autostart re-invokes this script once KDE session is running
+    local SCRIPT_PATH
+    SCRIPT_PATH="$(readlink -f "$0")"
+    mkdir -p ~/.config/autostart
+    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+[Desktop Entry]
+Name=Splitscreen Test
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH}
+Type=Application
+X-KDE-AutostartScript=true
+DEOF
+    _snapshot_session_env
+    echo "[nestedPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
+    exec dbus-run-session startplasma-wayland
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# runStaticTest  [n_slots] [test_active_s]
+# PROTOTYPE ONLY — a static launch path kept for reference; not the production flow.
+#
+# Full Phase A orchestration:
+#   detect launchers → write KWin rules → write splitscreen configs →
+#   launch all slots → wait for main menu → active test → auto-quit
+# ─────────────────────────────────────────────────────────────────────────────
+runStaticTest() {
+    local n_slots="${1:-$N_SLOTS}" test_active_s="${2:-$TEST_ACTIVE_S}"
+
+    logMsg 0 INFO "=== PHASE A STATIC TEST === slots=$n_slots active=${test_active_s}s load_timeout=${LOAD_TIMEOUT_S}s"
+    logMsg 0 INFO "INSTANCES_DIR=${INSTANCES_DIR:-<not detected>}"
+    logMsg 0 INFO "LAUNCHER_EXEC=${LAUNCHER_EXEC:-<not detected>}"
+
+    # ── Pre-flight checks
+    if [[ -z "$INSTANCES_DIR" || ! -d "$INSTANCES_DIR" ]]; then
+        logMsg 0 ERROR "INSTANCES_DIR not found: '${INSTANCES_DIR:-empty}'"
+        logMsg 0 ERROR "ensure PolyMC/PrismLauncher is installed, or set INSTANCES_DIR"
+        return 1
+    fi
+    if [[ -z "$LAUNCHER_EXEC" ]]; then
+        logMsg 0 ERROR "no launcher detected — install PolyMC/PrismLauncher or set LAUNCHER_EXEC"
+        return 1
+    fi
+    for slot in $(seq 1 "$n_slots"); do
+        local inst_dir="$INSTANCES_DIR/latestUpdate-${slot}"
+        if [[ ! -d "$inst_dir" ]]; then
+            logMsg "$slot" ERROR "instance dir missing: $inst_dir — run the installer first"
+            return 1
+        fi
+        logMsg "$slot" INFO "instance dir OK: $inst_dir"
+    done
+
+    # ── Screen size
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    logMsg 0 INFO "screen: ${W}x${H}"
+
+    # ── Detect controller pairs
+    local -a js_devs ev_devs
+    local idx=0
+    while IFS=' ' read -r js ev; do
+        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; (( idx++ ))
+    done < <(find_controller_pairs)
+    logMsg 0 INFO "detected ${#js_devs[@]} controller pair(s)"
+
+    # ── KWin placement rules.
+    # Per-slot title-matched position/size rules (fallback positioning) PLUS a forced
+    # CENTERED map-time rule.
+    #
+    # DRAFT 2026-06-27 — research-based, NOT yet tested on a Deck. The centered rule is the
+    # structural fix for the "black half" bug: a newly-mapped Minecraft window otherwise
+    # appears at 0,0 and FULLY covers an already-tiled window; KWin withholds Wayland frame
+    # callbacks from a 100%-occluded surface, so the covered tile goes black and doesn't
+    # repaint when uncovered. A centered default-size window overlaps only the middle and
+    # never fully covers any tile, so nothing gets culled. Enum values from KWin master src:
+    # placement=5 = Centered (KWin6; was 6 on Plasma5 when Cascade=5 existed — do NOT use 6),
+    # placementrule=2 = Force, wmclassmatch=2 = Substring.
+    # BEFORE TRUSTING THIS: verify the real class on the Deck — `xprop WM_CLASS` on a live
+    # splitscreen window. LWJGL3/GLFW usually reports "Minecraft" (substring "minecraft"
+    # matches), but a PolyMC/Prism Java window can report "java"/"net-minecraft-…"; if so set
+    # wmclass=java (or wmclassmatch=3 regex). Revert this block if positioning regresses.
+    {
+        echo "[General]"; echo "count=$(( n_slots + 1 ))"
+        for _s in $(seq 1 "$n_slots"); do
+            read _x _y _w _h < <(compute_geometry "$_s" "$n_slots" "$W" "$H")
+            printf '\n[%s]\nDescription=SplitscreenP%s\ntitle=SplitscreenP%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
+                "$_s" "$_s" "$_s" "$_x" "$_y" "$_w" "$_h"
+        done
+        # [N+1] forced centered placement at map time (DRAFT — see note above).
+        printf '\n[%s]\nDescription=Center Minecraft windows on map (splitscreen)\nwmclass=minecraft\nwmclassmatch=2\nwmclasscomplete=false\nplacement=5\nplacementrule=2\n' \
+            "$(( n_slots + 1 ))"
+    } > ~/.config/kwinrulesrc
+    logMsg 0 INFO "kwinrulesrc written for $n_slots slots"
+
+    # ── Clear stale Minecraft logs so waitForAllReady doesn't match previous-run entries
+    for slot in $(seq 1 "$n_slots"); do
+        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        [[ -f "$mc_log" ]] && > "$mc_log" && logMsg "$slot" INFO "cleared stale latest.log"
+    done
+
+    # ── Splitscreen mod config + launch each slot
+    local launch_ok=true
+    for slot in $(seq 1 "$n_slots"); do
+        setSplitscreenModeForPlayer "$slot" "$n_slots"
+        logMsg "$slot" INFO "splitscreen.properties written"
+
+        local js_dev="${js_devs[$((slot-1))]:-}"
+        local ev_dev="${ev_devs[$((slot-1))]:-}"
+        if ! launchSlot "$slot" "$js_dev" "$ev_dev"; then
+            logMsg "$slot" ERROR "launch failed — aborting test"
+            launch_ok=false; break
+        fi
+        sleep 2
+    done
+
+    if [[ "$launch_ok" != true ]]; then
+        logMsg 0 ERROR "launch aborted — cleaning up"
+        quitAllSlots; return 1
+    fi
+
+    # ── Wait for all instances to reach main menu
+    if ! waitForAllReady "$n_slots" "$LOAD_TIMEOUT_S"; then
+        logMsg 0 ERROR "load failed — instances left running for SSH inspection"
+        logMsg 0 INFO "inspect: $INSTANCES_DIR/latestUpdate-N/.minecraft/logs/latest.log"
+        logMsg 0 INFO "waiting 5min grace period before force-quit"
+        sleep 300
+        quitAllSlots; return 1
+    fi
+
+    # ── Active test run
+    logMsg 0 INFO "=== ACTIVE TEST START === running ${test_active_s}s"
+    sleep "$test_active_s"
+
+    # ── Auto-quit
+    logMsg 0 INFO "=== ACTIVE TEST COMPLETE === quitting all slots"
+    quitAllSlots
+    logMsg 0 INFO "=== PHASE A TEST PASS ==="
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchWindowTest
+# Entry point when running inside the nested KDE session.
+# Calls runStaticTest then tears down the KWin session.
+# ─────────────────────────────────────────────────────────────────────────────
+launchWindowTest() {
+    echo "[launchWindowTest] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    pkill plasmashell 2>/dev/null || true
+    sleep 0.5
+
+    runStaticTest "$N_SLOTS" "$TEST_ACTIVE_S"
+    local result=$?
+
+    pkill -TERM kwin_wayland 2>/dev/null || true
+    sleep 2
+    pkill -KILL kwin_wayland 2>/dev/null || true
+    return $result
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# testPlasma
+# Starts nested KDE session for Phase B automated lifecycle test.
+# Writes autostart .desktop that calls launchTestFromPlasma instead of main().
+# ─────────────────────────────────────────────────────────────────────────────
+testPlasma() {
+    echo "[testPlasma] start" >> "$LOG"
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    echo "[testPlasma] W=$W H=$H" >> "$LOG"
+
+    # KWin wrapper with correct resolution
+    cat > /tmp/kwin_wayland_wrapper <<WEOF
+#!/bin/bash
+/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
+WEOF
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
+
+    # Autostart calls launchTestFromPlasma
+    local SCRIPT_PATH
+    SCRIPT_PATH="$(readlink -f "$0")"
+    mkdir -p ~/.config/autostart
+    # Propagate the chosen test number + observation delay into the nested session
+    # (the autostart re-invocation is a fresh process — env does not carry over).
+    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+[Desktop Entry]
+Name=Splitscreen Test
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
+Type=Application
+X-KDE-AutostartScript=true
+DEOF
+    _snapshot_session_env
+    echo "[testPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
+    exec dbus-run-session startplasma-wayland
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchFromPlasma — PRODUCTION outer entry (this is the LaunchOptions the Steam
+# shortcut runs). Starts the nested KDE/Plasma session exactly like testPlasma, but
+# the autostart runs the PRODUCTION inner handler (prodFromPlasma → the real
+# orchestrator) instead of the test harness. A1 (2026-06-23): without this case the
+# Steam shortcut fell through to a bare main() with NO nested compositor / no tiling,
+# so a real user got no splitscreen — the working windowing lived only in `test`.
+# NOTE: kept parallel to testPlasma (not refactored into a shared helper) to avoid
+# regressing the validated test path; DRY in a later cleanup.
+# ─────────────────────────────────────────────────────────────────────────────
+launchFromPlasma() {
+    echo "[launchFromPlasma] start (production)" >> "$LOG"
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+
+    # STARTUP GUARD (2026-06-27): reap any LEFTOVER nested session + MC instances BEFORE
+    # starting a new one. A prior gamescope reset or failed launch can orphan a
+    # startplasma-wayland nested session (plus its kwin/instances); without this, a relaunch
+    # STACKS a second nested session on top — the two fight over the same state/FIFO,
+    # re-trigger the Steam UI (the "gamescope restarting" chime), and pile up orphan JVMs.
+    # We are in the OUTER gamescope/Steam context here (before exec), so this only kills the
+    # leftover nested tree — never gamescope-session or steamwebhelper.
+    if pgrep -f startplasma-wayland >/dev/null 2>&1 || pgrep -f latestUpdate >/dev/null 2>&1; then
+        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch" >> "$LOG"
+        local _g
+        for _g in 1 2 3; do
+            pkill -9 -f 'latestUpdate'; pkill -9 -f 'bwrap.*PolyMC'; pkill -9 -f 'PolyMC'
+            pkill -9 -f 'startplasma-wayland'; pkill -9 -f 'kwin_wayland'
+            pkill -9 -f 'plasma_session'; pkill -9 -f 'baloo_file'
+            sleep 1
+            pgrep -f startplasma-wayland >/dev/null 2>&1 || break
+        done
+        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(pgrep -fc startplasma-wayland) jvm=$(pgrep -fc latestUpdate))" >> "$LOG"
+    fi
+
+    local RES W H
+    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
+    [[ -z "$RES" ]] && RES="1280x800"
+    W="${RES%x*}"; H="${RES#*x}"
+    echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
+
+    cat > /tmp/kwin_wayland_wrapper <<WEOF
+#!/bin/bash
+/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
+WEOF
+    chmod +x /tmp/kwin_wayland_wrapper
+    export PATH=/tmp:$PATH
+
+    local SCRIPT_PATH
+    SCRIPT_PATH="$(readlink -f "$0")"
+    mkdir -p ~/.config/autostart
+    cat > ~/.config/autostart/splitscreen-prod.desktop <<DEOF
+[Desktop Entry]
+Name=Splitscreen
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} prodFromPlasma
+Type=Application
+X-KDE-AutostartScript=true
+DEOF
+    _snapshot_session_env
+    echo "[launchFromPlasma] autostart written (→ prodFromPlasma), exec startplasma-wayland" >> "$LOG"
+    exec dbus-run-session startplasma-wayland
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchProdFromPlasma — PRODUCTION inner handler (runs inside the nested Plasma
+# session, from launchFromPlasma's autostart). Same nested-session scaffolding as
+# launchTestFromPlasma (strip the panel for full real estate, clean full-session
+# teardown on exit) but runs the REAL orchestrator main() — the FIFO event loop +
+# controller monitor + spawn slot 1 + reflow — instead of the test harness.
+# ─────────────────────────────────────────────────────────────────────────────
+launchProdFromPlasma() {
+    echo "[launchProdFromPlasma] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-prod.desktop ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+
+    # Strip the Plasma panel (black backdrop, full tiling area); respawn-killer loop.
+    pkill -x plasmashell 2>/dev/null || true
+    ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
+    _PANEL_KILLER_PID=$!
+
+    # On exit/signal: tear down instances, restore leaked session env, stop the panel killer,
+    # reap the WHOLE nested session (so Steam/gamescope return to the library).
+    # H4 (UNTESTED 2026-06-27): added `cleanup` (orchestrator instance teardown — it was NOT
+    # in this trap, so a SIGTERM/compositor-reset orphaned every bwrap→PolyMC→java tree, the
+    # "5 leftover" leak) and the INT/TERM/HUP signals (a bare EXIT trap does NOT fire on
+    # TERM/INT). cleanup() is re-entrancy-guarded; teardown runs before _end_nested_session.
+    trap 'declare -f cleanup >/dev/null 2>&1 && cleanup; _restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT INT TERM HUP
+
+    if ! declare -f main >/dev/null 2>&1; then
+        echo "[launchProdFromPlasma] ERROR: orchestrator main() not available — modules not sourced?" >> "$LOG"
+        return 1
+    fi
+
+    # Initialise the FIFO + state file. main() ensures the FIFO but NOT the state file;
+    # the test path does this in _run_phase_b_session. Without SPLITSCREEN_STATE the
+    # watchdog/spawn fail ("SPLITSCREEN_STATE is not set") so nothing launches → gamescope
+    # shows only the spinner. (2026-06-23)
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
+    # Run the real orchestrator. It blocks until the session ends (P1/Deck instance
+    # exits). Output to the log directly (NO pipe — a pipe's write-end would be inherited
+    # by bwrap descendants and stall the orchestrator's FIFO reads).
+    main >> "$LOG" 2>&1 || true
+
+    # Final teardown.
+    if declare -f teardown_all_instances >/dev/null 2>&1; then
+        teardown_all_instances 2>/dev/null || true
+    fi
+    kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
+    trap - EXIT
+    _restore_session_env
+    qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null \
+        || qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null || true
+    sleep 1
+    _end_nested_session
+    echo "[launchProdFromPlasma] complete" >> "$LOG"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _end_nested_session: tear down the WHOLE nested Plasma session so Steam's reaper
+# releases and gamescope returns to the library. Two gotchas (both confirmed 2026-06-23):
+#   1. kwin_wayland_wrapper RESPAWNS kwin_wayland — kill the wrapper first or kwin comes back.
+#   2. Plasma session services (baloo_file, kded, kglobalacceld, kactivitymanagerd, …)
+#      survive a compositor-only teardown, get adopted by Steam's subreaper, and keep the
+#      "game" alive forever (Abort-Game overlay) — the reaper waits on the whole descendant
+#      tree. So reap them too. TERM pass, then KILL pass.
+_end_nested_session() {
+    local sig svc
+    for sig in TERM KILL; do
+        pkill -"$sig" -f kwin_wayland_wrapper 2>/dev/null || true
+        pkill -"$sig" -x kwin_wayland 2>/dev/null || true
+        for svc in startplasma-wayland plasma_session baloo_file kded6 \
+                   kglobalacceld kactivitymanagerd kscreen_backend_launcher \
+                   xdg-desktop-portal-kde; do
+            pkill -"$sig" -f "$svc" 2>/dev/null || true
+        done
+        [ "$sig" = TERM ] && sleep 1
+    done
+}
+
+# (Decoration is handled by kwin_set_noborder <pid> in spawn_instance — set ONCE when the
+# window appears. The earlier at-map "No titlebar and frame" window rule was removed
+# 2026-06-23: it missed because Minecraft sets its caption/WM_CLASS only AFTER mapping, so
+# the rule had nothing to match at evaluation time, and it clobbered ~/.config/kwinrulesrc.)
+
+# launchTestFromPlasma
+# Called from KDE autostart inside the nested test session.
+# Starts docked_flow in background, runs the Phase B lifecycle test
+# script against the FIFO, then tears down.
+# ─────────────────────────────────────────────────────────────────────────────
+launchTestFromPlasma() {
+    echo "[launchTestFromPlasma] start" >> "$LOG"
+    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+
+    # Strip the Plasma panel for full-screen real estate.  plasma-session can
+    # respawn plasmashell, so keep a background killer running for the whole
+    # session (reaped on exit).  Killing plasmashell also clears the desktop
+    # wallpaper → black backdrop behind the splitscreen tiles, which is what we
+    # want (this is the "nested Plasma, no panel" path; bare nested KWin is a
+    # future option — see TODO "Research — bare nested KWin on SteamOS 3.8").
+    pkill -x plasmashell 2>/dev/null || true
+    ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
+    _PANEL_KILLER_PID=$!
+
+
+    # Tear down the nested KWin session, stop the panel killer, and restore the
+    # leaked session env on exit — prevents a permanent black screen / sddm restart
+    # loop if the test hangs, crashes, or is interrupted.
+    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT
+
+    if ! declare -f docked_flow >/dev/null 2>&1; then
+        echo "[launchTestFromPlasma] ERROR: docked_flow not available" >> "$LOG"
+        return 1
+    fi
+
+    # Run the Phase B session via the shared runner (FIFO-safe orchestrator restart
+    # loop, full process-tree teardown, observation delay).  Default a viewing delay
+    # for this interactive Game-Mode path.  _run_phase_b_session initialises the
+    # FIFO + state file itself.
+    export SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
+    if [[ "${TEST_NUMBER:-}" == "8" ]]; then
+        echo "[launchTestFromPlasma] TEST 8 — single-instance position sweep" >> "$LOG"
+        _run_position_sweep_session
+    else
+        _run_phase_b_session
+    fi
+
+    # Final instance cleanup, then tear down KWin explicitly (cleaner log ordering).
+    if declare -f teardown_all_instances >/dev/null 2>&1; then
+        teardown_all_instances 2>/dev/null || true
+    fi
+    kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null || true
+    trap - EXIT
+    _restore_session_env
+
+    # Graceful Plasma logout first (lets session services stop cleanly), then FORCE-reap
+    # the WHOLE nested session — compositor, wrapper, AND the Plasma helpers (baloo_file,
+    # kded, …) that otherwise survive, get adopted by Steam's subreaper, and keep the
+    # "game" alive (gamescope Abort-Game overlay). 2026-06-23: baloo_file adopted by the
+    # reaper was confirmed to be why the game wouldn't exit on its own.
+    qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null \
+        || qdbus6 org.kde.Shutdown /Shutdown org.kde.Shutdown.logout 2>/dev/null || true
+    sleep 1
+    _end_nested_session
+    echo "[launchTestFromPlasma] complete" >> "$LOG"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _kill_tree: recursively SIG a process and all of its descendants.
+# pkill -P reaps only DIRECT children; docked_flow spawns grandchildren (subshells,
+# spawn_instance, monitors) that otherwise orphan to init.  $1 = pid, $2 = signal.
+# ─────────────────────────────────────────────────────────────────────────────
+_kill_tree() {
+    local pid="$1" sig="${2:-TERM}" child
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+        _kill_tree "$child" "$sig"
+    done
+    kill "-${sig}" "$pid" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _run_phase_b_session: Shared Phase B lifecycle-test runner.
+# Assumes the display environment (DISPLAY / XAUTHORITY / WAYLAND_DISPLAY) is
+# already set by the caller and that the orchestrator modules (docked_flow, …)
+# are sourced.  Starts the orchestrator restart-loop in-process (so docked_flow
+# stays in scope), runs the lifecycle harness against the FIFO, then tears down
+# the whole orchestrator process tree.  Publishes the loop PID in the global
+# _PHASE_B_ORCH_PID so an outer EXIT trap can also reap it.
+# ─────────────────────────────────────────────────────────────────────────────
+_run_phase_b_session() {
+    if ! declare -f docked_flow >/dev/null 2>&1; then
+        echo "[run_phase_b] docked_flow not available — modules not loaded?" >> "$LOG"
+        return 1
+    fi
+
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
+    _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
+    _orch_loop &
+    _PHASE_B_ORCH_PID=$!
+    echo "[run_phase_b] orchestrator loop PID=$_PHASE_B_ORCH_PID (DISPLAY=$DISPLAY)" >> "$LOG"
+    sleep 2
+
+    SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+    local test_script="$SCRIPT_DIR/tests/test_phase_b_lifecycle.sh"
+    if [[ -f "$test_script" ]]; then
+        timeout 7200 bash "$test_script" "${TEST_NUMBER:-all}" || true
+    else
+        echo "[run_phase_b] test script not found at $test_script" >> "$LOG"
+    fi
+
+    _kill_tree "$_PHASE_B_ORCH_PID" TERM
+    sleep 1
+    _kill_tree "$_PHASE_B_ORCH_PID" KILL
+    rm -f "$fifo" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _run_position_sweep_session  (TEST 8 — single-instance position sweep)
+# Spawn ONE instance (slot 1) and move it through every layout position in turn —
+# full, top half, bottom half, and all four quad cells — pausing at each so the
+# user can SEE whether the window actually moves on screen. Logs the geometry
+# immediately after each move AND again after the observation delay, so a revert
+# (e.g. the Splitscreen mod re-asserting its own position every frame) shows up in
+# the log even between captures.
+#
+# Purpose: isolate window POSITIONING from all the multi-instance confounders
+# (reflows, slot-1-vs-others, focus/restack). If a single window won't move or
+# won't STAY, the next step is to retry with the Splitscreen mod removed — it is
+# the one constant across every failed attempt and may be pinning each window to
+# its splitscreen.properties region.
+# ─────────────────────────────────────────────────────────────────────────────
+_run_position_sweep_session() {
+    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export SPLITSCREEN_FIFO="$fifo"
+    [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
+    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    export SPLITSCREEN_STATE="$state"
+    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+
+    local W H
+    W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
+    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=720
+    local hw=$((W/2)) hh=$((H/2))
+    local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-12}"
+    echo "[sweep] single-instance position sweep on ${W}x${H}, observe ${delay}s/step" >> "$LOG"
+
+    # Give the mod its single-instance config, then spawn slot 1 only.
+    if declare -f _write_splitscreen_properties >/dev/null 2>&1; then
+        _write_splitscreen_properties 1 "1" 2>/dev/null || true
+    fi
+    echo "[sweep] spawning slot 1 (single instance)…" >> "$LOG"
+    spawn_instance 1 "" "" >> "$LOG" 2>&1 || true
+
+    local wid="" i
+    for i in $(seq 1 60); do
+        wid=$(_get_wid_from_state 1 2>/dev/null || true)
+        [[ -n "$wid" ]] && break
+        sleep 1
+    done
+    if [[ -z "$wid" ]]; then
+        echo "[sweep] ERROR: slot 1 window never appeared — aborting sweep" >> "$LOG"
+        declare -f teardown_all_instances >/dev/null 2>&1 && teardown_all_instances 2>/dev/null || true
+        return 1
+    fi
+    echo "[sweep] slot 1 wid=$wid — beginning sweep" >> "$LOG"
+
+    _sweep_geo() { xwininfo -id "$1" 2>/dev/null | awk '/Absolute upper-left X/{x=$NF}/Absolute upper-left Y/{y=$NF}/Width:/{w=$NF}/Height:/{h=$NF}/Map State/{m=$NF}END{if(w=="")print "<none>";else printf "%sx%s+%s+%s %s",w,h,x,y,m}'; }
+
+    local positions=(
+        "FULL 0 0 $W $H"
+        "TOP_HALF 0 0 $W $hh"
+        "BOTTOM_HALF 0 $hh $W $hh"
+        "QUAD_TL 0 0 $hw $hh"
+        "QUAD_TR $hw 0 $hw $hh"
+        "QUAD_BL 0 $hh $hw $hh"
+        "QUAD_BR $hw $hh $hw $hh"
+    )
+    local p name x y w h
+    for p in "${positions[@]}"; do
+        read -r name x y w h <<< "$p"
+        echo "[sweep] ===== $name → target ${w}x${h}+${x}+${y} =====" >> "$LOG"
+        _position_slot 1 "$x" "$y" "$w" "$h" >> "$LOG" 2>&1 || true
+        sleep 2
+        echo "[sweep]   immediately: $(_sweep_geo "$wid")" >> "$LOG"
+        sleep "$delay"
+        echo "[sweep]   after ${delay}s:  $(_sweep_geo "$wid")" >> "$LOG"
+    done
+
+    echo "[sweep] sweep complete — tearing down" >> "$LOG"
+    declare -f teardown_all_instances >/dev/null 2>&1 && teardown_all_instances 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launchNested: Run the Phase B session inside a BARE nested KWin compositor.
+# kwin_wayland nests as a Wayland client of the current session compositor
+# (gamescope in Game Mode, host KWin in Desktop Mode) and owns the full screen
+# with NO Plasma shell/panel — so instances tile across the entire display and
+# nothing draws behind a menu bar.  Controller isolation is unaffected: only the
+# DISPLAY target changes; bwrap --dev-bind device isolation is untouched.
+# ─────────────────────────────────────────────────────────────────────────────
+launchNested() {
+    echo "[launchNested] start" >> "$LOG"
+    if [[ -n "${2:-}" ]]; then
+        export TEST_NUMBER="$2"
+    fi
+
+    # Parent compositor socket (kwin nests into it).  Auto-detect if unset.
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+        local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" cand
+        for cand in gamescope-0 wayland-0 wayland-1; do
+            [[ -S "$rt/$cand" ]] && { export WAYLAND_DISPLAY="$cand"; break; }
+        done
+    fi
+    echo "[launchNested] parent WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<none>}" >> "$LOG"
+
+    # Nested resolution.  CRITICAL: do NOT probe the compositor here (wlr-randr /
+    # xdpyinfo).  When launched as a Steam game, gamescope watches the game's
+    # Wayland clients — a throwaway probe that connects and immediately disconnects
+    # makes gamescope think the game exited and it kills us before we ever exec
+    # kwin (observed: trace died right after a wlr-randr connect/disconnect).  KWin
+    # must be the FIRST and ONLY client.  Use an env override, else default to the
+    # Deck's handheld panel size; gamescope scales the nested surface to its output.
+    local W H
+    W="${SPLITSCREEN_SCREEN_W:-1280}"
+    H="${SPLITSCREEN_SCREEN_H:-800}"
+    echo "[launchNested] nested resolution ${W}x${H} (override SPLITSCREEN_SCREEN_W/H to change)" >> "$LOG"
+
+    # Snapshot existing X sockets so the nested session can identify which XWayland
+    # display kwin creates — it auto-picks the lowest free number and ignores
+    # --xwayland-display (confirmed on-Deck: requesting :2 yields :1 when free).
+    # Passed to the session child via env as a comma-wrapped list.
+    local x_before
+    x_before=",$(ls /tmp/.X11-unix/ 2>/dev/null | tr '\n' ',')"
+
+    # Re-invoke THIS script as kwin's session leader.  kwin_wayland becomes the
+    # FOREGROUND process so Steam/gamescope tracks and focuses it — a backgrounded
+    # nested compositor never gets focus in Game Mode (confirmed on-Deck: gamescope
+    # only displays apps launched through Steam).  kwin launches the session command
+    # with WAYLAND_DISPLAY + DISPLAY pointing at the nested compositor; _nestedSession
+    # runs the orchestrator + tests there and then exits, which makes kwin — and thus
+    # the Steam "game" — exit too.
+    local self; self="$(readlink -f "$0")"
+    echo "[launchNested] exec nested kwin ${W}x${H} → _nestedSession (test=${TEST_NUMBER:-all})" >> "$LOG"
+    exec kwin_wayland \
+        --width "$W" --height "$H" \
+        --no-lockscreen --no-global-shortcuts \
+        --xwayland \
+        -- env \
+            SPLITSCREEN_DEBUG_LOG="$LOG" \
+            SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
+            SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
+            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
+            TEST_NUMBER="${TEST_NUMBER:-all}" \
+            _NESTED_X_BEFORE="$x_before" \
+            bash "$self" _nestedSession
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point — Phase B: event-loop orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+# dispatch_mode is set by the test/testPlasma wrappers to override the
+# default behavior when running automated tests inside nested KDE.
+
+# Fail-fast HARD STOP if the KDE/Plasma/KWin stack (or other critical deps) is missing —
+# a clear, distro-aware message beats a cryptic mid-launch crash (preflight, item G).
+# Skip only the version flag (needs no deps).
+if declare -f _preflight_deps >/dev/null 2>&1; then
+    case "${1:-}" in
+        --version|-v) : ;;
+        *) _preflight_deps launch || exit 1 ;;
+    esac
 fi
+
+case "${1:-}" in
+    launchFromPlasma)
+        # PRODUCTION entry — this is the LaunchOptions the Steam shortcut runs
+        # (set by add-to-steam.py). Start the nested Plasma session; its autostart
+        # re-invokes this script as `prodFromPlasma` INSIDE the session. (A1: previously
+        # this fell through to `*) → main()` with no nested compositor = no splitscreen.)
+        echo "[main] Production launch — launchFromPlasma (starting nested Plasma)" >> "$LOG"
+        launchFromPlasma
+        ;;
+    prodFromPlasma)
+        # PRODUCTION inner handler — runs INSIDE the nested Plasma session (from the
+        # launchFromPlasma autostart). Strips the panel + runs the real orchestrator.
+        echo "[main] Production launch — prodFromPlasma (inside nested Plasma)" >> "$LOG"
+        if declare -f launchProdFromPlasma >/dev/null 2>&1; then
+            launchProdFromPlasma
+        else
+            echo "[main] ERROR: launchProdFromPlasma not available — modules not sourced?" >> "$LOG"
+        fi
+        ;;
+    test)
+        # Phase B lifecycle test: first call from outside nested session.
+        # Optional second arg is a test number for the harness.
+        # Steam launch option: "test" (run all) or "test 6" (run specific)
+        echo "[main] Phase B test mode — starting (outer)" >> "$LOG"
+        if [[ -n "${2:-}" ]]; then
+            export TEST_NUMBER="$2"
+            echo "[main] Test number: $TEST_NUMBER" >> "$LOG"
+        fi
+        testPlasma
+        ;;
+    testFromPlasma|testPlasma)
+        # Called from KDE autostart inside the nested test session
+        echo "[main] Phase B test mode — inside KDE session" >> "$LOG"
+        if declare -f launchTestFromPlasma >/dev/null 2>&1; then
+            launchTestFromPlasma
+        elif declare -f main >/dev/null 2>&1; then
+            echo "[main] No launchTestFromPlasma — starting orchestrator main()" >> "$LOG"
+            main
+        else
+            echo "[main] Falling back to legacy batch runStaticTest" >> "$LOG"
+            launchWindowTest
+        fi
+        ;;
+    testDirect)
+        # Run Phase B tests directly against an EXISTING display session (the bare
+        # host :0).  Does NOT start a nested compositor — windows render on the host
+        # desktop (subject to its panel/WM).  Kept for SSH/headless debugging; for a
+        # clean full-screen run use "testNested".
+        # Usage: DISPLAY=:0 XAUTHORITY=… bash minecraftSplitscreen.sh testDirect [N]
+        echo "[main] testDirect — using existing display ${DISPLAY:-<unset>}" >> "$LOG"
+        if [[ -n "${2:-}" ]]; then
+            export TEST_NUMBER="$2"
+        fi
+        _td_cleanup() {
+            [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && { _kill_tree "$_PHASE_B_ORCH_PID" TERM; sleep 1; _kill_tree "$_PHASE_B_ORCH_PID" KILL; }
+            rm -f "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
+        }
+        trap '_td_cleanup' EXIT
+        _run_phase_b_session
+        trap - EXIT
+        ;;
+    testNested)
+        # Run Phase B tests inside a BARE nested KWin compositor (full screen, no
+        # panel).  Works from Game Mode (nests into gamescope) or Desktop Mode
+        # (nests into host KWin).  This is the intended path — instances tile across
+        # the whole display with no menu bar, and we fully control window placement.
+        # Usage: bash minecraftSplitscreen.sh testNested [N]
+        echo "[main] testNested — bare nested KWin compositor" >> "$LOG"
+        launchNested "$@"
+        ;;
+    _nestedSession)
+        # INTERNAL: runs INSIDE the bare nested kwin (launched by launchNested's
+        # `exec kwin_wayland … -- … bash "$0" _nestedSession`).  kwin sets
+        # WAYLAND_DISPLAY + DISPLAY for this session; resolve/confirm the nested X
+        # display, run the Phase B session against it, then terminate kwin so the
+        # Steam "game" exits cleanly.
+        echo "[_nestedSession] start (DISPLAY=${DISPLAY:-<unset>})" >> "$LOG"
+        _ns_display="${DISPLAY:-}"
+        _ns_ready=0
+        for _i in $(seq 1 60); do
+            if [[ -n "$_ns_display" ]] && DISPLAY="$_ns_display" xdpyinfo >/dev/null 2>&1; then
+                _ns_ready=1; break
+            fi
+            # Fallback: kwin didn't export DISPLAY — find the new X socket vs the
+            # snapshot launchNested passed in _NESTED_X_BEFORE.
+            _newx=""
+            for _x in /tmp/.X11-unix/X*; do
+                [[ -e "$_x" ]] || continue
+                _b="$(basename "$_x")"
+                case "${_NESTED_X_BEFORE:-,}" in
+                    *",$_b,"*) ;;
+                    *) _newx="$_b" ;;
+                esac
+            done
+            if [[ -n "$_newx" ]]; then
+                _ns_display=":${_newx#X}"
+                DISPLAY="$_ns_display" xdpyinfo >/dev/null 2>&1 && { _ns_ready=1; break; }
+            fi
+            sleep 0.5
+        done
+        if [[ "$_ns_ready" -ne 1 ]]; then
+            echo "[_nestedSession] ERROR: nested X display never became ready" >> "$LOG"
+            exit 1
+        fi
+        # nested XWayland accepts local same-user connections without auth; drop any
+        # inherited (stale) cookie so it can't cause a spurious rejection.
+        unset XAUTHORITY
+        export DISPLAY="$_ns_display" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+        echo "[_nestedSession] nested display ready: $DISPLAY" >> "$LOG"
+
+        # Give the nested compositor an IMMEDIATE full-screen background window.
+        # gamescope shows a loading spinner for a nested compositor that presents no
+        # window (the old nested-Plasma path always had plasmashell's surfaces, so
+        # gamescope always had content).  A persistent black full-screen window makes
+        # KWin present a surface right away → gamescope displays it — and it doubles
+        # as the black backdrop behind the splitscreen tiles.  Sized from the nested
+        # root window (querying our OWN XWayland is safe; the earlier problem was
+        # probing the gamescope parent before kwin existed).
+        _ns_geo=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2; exit}')
+        [[ -z "$_ns_geo" ]] && _ns_geo="1280x800"
+        _ns_bw="${_ns_geo%x*}"; _ns_bh="${_ns_geo#*x}"
+        echo "[_nestedSession] spawning ${_ns_bw}x${_ns_bh} background window" >> "$LOG"
+        python3 -c "
+import tkinter as tk
+r=tk.Tk(); r.overrideredirect(True); r.geometry('${_ns_bw}x${_ns_bh}+0+0'); r.configure(bg='black')
+r.lower(); r.mainloop()
+" >> "$LOG" 2>&1 &
+        _NS_BG_PID=$!
+        sleep 1
+
+        _run_phase_b_session
+        kill "$_NS_BG_PID" 2>/dev/null || true
+        echo "[_nestedSession] session complete — terminating nested kwin (PPID=$PPID)" >> "$LOG"
+        kill -TERM "$PPID" 2>/dev/null || true
+        ;;
+    *)
+        # Normal mode
+        if declare -f main >/dev/null 2>&1; then
+            echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
+            main
+        else
+            echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
+            if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
+                echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
+                launchWindowTest
+            else
+                echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
+                nestedPlasma
+            fi
+        fi
+        ;;
+esac
