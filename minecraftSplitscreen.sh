@@ -680,9 +680,13 @@ launchProdFromPlasma() {
     ( while :; do pkill -x plasmashell 2>/dev/null; sleep 2; done ) &
     _PANEL_KILLER_PID=$!
 
-    # On exit: restore leaked session env, stop the panel killer, reap the WHOLE nested
-    # session (so Steam/gamescope return to the library — see _end_nested_session).
-    trap '_restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT
+    # On exit/signal: tear down instances, restore leaked session env, stop the panel killer,
+    # reap the WHOLE nested session (so Steam/gamescope return to the library).
+    # H4 (UNTESTED 2026-06-27): added `cleanup` (orchestrator instance teardown — it was NOT
+    # in this trap, so a SIGTERM/compositor-reset orphaned every bwrap→PolyMC→java tree, the
+    # "5 leftover" leak) and the INT/TERM/HUP signals (a bare EXIT trap does NOT fire on
+    # TERM/INT). cleanup() is re-entrancy-guarded; teardown runs before _end_nested_session.
+    trap 'declare -f cleanup >/dev/null 2>&1 && cleanup; _restore_session_env; kill "${_PANEL_KILLER_PID:-0}" 2>/dev/null; _end_nested_session' EXIT INT TERM HUP
 
     if ! declare -f main >/dev/null 2>&1; then
         echo "[launchProdFromPlasma] ERROR: orchestrator main() not available — modules not sourced?" >> "$LOG"
