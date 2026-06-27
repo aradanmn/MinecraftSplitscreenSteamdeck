@@ -129,18 +129,16 @@ kwin_place_windows() {
             var g = Object.assign({}, w.frameGeometry);
             g.x = tgt.x; g.y = tgt.y; g.width = tgt.w; g.height = tgt.h;
             w.frameGeometry = g;
-            // Force a CLIENT repaint of a possibly-occluded (black) tile. PROVEN on Deck
-            // 2026-06-27: when a new window maps at 0,0 it fully covers an existing tile; the
-            // occluded Wayland surface stops getting wl_surface.frame callbacks and keeps a
-            // stale/black buffer. Moving/resizing via frameGeometry does NOT wake it
-            // (resize-jiggle coalesces to the final size; raise is racy) — both tried and
-            // confirmed insufficient via PATH-CAPTURE (both tiles on MANAGED, occluded one
-            // still black). MINIMIZING then restoring unmaps→remaps the surface, forcing the
-            // client (Minecraft) to produce a fresh buffer. minimized true→false are two
-            // distinct state ACTIONS (unlike geometry they don't coalesce to the final value),
-            // so the restore drives a real repaint. Applied to every placed tile — a brief
-            // minimize of an already-painted tile is harmless.
-            try { w.minimized = true; w.minimized = false; } catch (e) {}
+            // NO in-script repaint trigger here (2026-06-27). We tried three and all failed:
+            //   - raise: racy (helped at 3 windows, not 4),
+            //   - resize-jiggle: coalesces to the final size, no real resize,
+            //   - minimize-toggle: BACKFIRED — black-screened even a NON-occluded window and
+            //     contributed to a gamescope reset (same-pass minimize→restore leaves the
+            //     window restored-but-unpainted).
+            // The managed frameGeometry path does not repaint an occluded surface. The proven
+            // repaint is the override_redirect unmap/remap cycle (Path A), or preventing the
+            // 0,0 occlusion in the first place — to be done deliberately, not as an in-pass
+            // hack. See docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
             placed++;
             report.push("placed pid=" + tgt.pid + " -> " + tgt.x + "," + tgt.y +
                         " " + tgt.w + "x" + tgt.h + " [" + w.caption + "]");
