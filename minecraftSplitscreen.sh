@@ -486,14 +486,32 @@ runStaticTest() {
     done < <(find_controller_pairs)
     logMsg 0 INFO "detected ${#js_devs[@]} controller pair(s)"
 
-    # ── KWin placement rules (fallback positioning)
+    # ── KWin placement rules.
+    # Per-slot title-matched position/size rules (fallback positioning) PLUS a forced
+    # CENTERED map-time rule.
+    #
+    # DRAFT 2026-06-27 — research-based, NOT yet tested on a Deck. The centered rule is the
+    # structural fix for the "black half" bug: a newly-mapped Minecraft window otherwise
+    # appears at 0,0 and FULLY covers an already-tiled window; KWin withholds Wayland frame
+    # callbacks from a 100%-occluded surface, so the covered tile goes black and doesn't
+    # repaint when uncovered. A centered default-size window overlaps only the middle and
+    # never fully covers any tile, so nothing gets culled. Enum values from KWin master src:
+    # placement=5 = Centered (KWin6; was 6 on Plasma5 when Cascade=5 existed — do NOT use 6),
+    # placementrule=2 = Force, wmclassmatch=2 = Substring.
+    # BEFORE TRUSTING THIS: verify the real class on the Deck — `xprop WM_CLASS` on a live
+    # splitscreen window. LWJGL3/GLFW usually reports "Minecraft" (substring "minecraft"
+    # matches), but a PolyMC/Prism Java window can report "java"/"net-minecraft-…"; if so set
+    # wmclass=java (or wmclassmatch=3 regex). Revert this block if positioning regresses.
     {
-        echo "[General]"; echo "count=$n_slots"
+        echo "[General]"; echo "count=$(( n_slots + 1 ))"
         for _s in $(seq 1 "$n_slots"); do
             read _x _y _w _h < <(compute_geometry "$_s" "$n_slots" "$W" "$H")
             printf '\n[%s]\nDescription=SplitscreenP%s\ntitle=SplitscreenP%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
                 "$_s" "$_s" "$_s" "$_x" "$_y" "$_w" "$_h"
         done
+        # [N+1] forced centered placement at map time (DRAFT — see note above).
+        printf '\n[%s]\nDescription=Center Minecraft windows on map (splitscreen)\nwmclass=minecraft\nwmclassmatch=2\nwmclasscomplete=false\nplacement=5\nplacementrule=2\n' \
+            "$(( n_slots + 1 ))"
     } > ~/.config/kwinrulesrc
     logMsg 0 INFO "kwinrulesrc written for $n_slots slots"
 
