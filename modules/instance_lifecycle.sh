@@ -106,10 +106,19 @@ _ensure_state_file() {
 _atomic_write() {
     local target="$1"
     local content="$2"
-    local tmp="${target}.tmp.$$"
-
-    echo "$content" > "$tmp"
-    mv "$tmp" "$target"
+    # H3 (UNTESTED 2026-06-27): unique temp per writer. `$$` is the PARENT shell pid — it is
+    # IDENTICAL across backgrounded `{ } &` subshells (only $BASHPID differs), so two
+    # concurrent spawns would write the SAME ".tmp.$$" and clobber each other before mv,
+    # corrupting the state file. mktemp gives each writer its own temp.
+    local tmp
+    tmp=$(mktemp "${target}.tmp.XXXXXX") || {
+        echo "[instance_lifecycle] ERROR: mktemp failed for $target" >&2
+        return 1
+    }
+    printf '%s\n' "$content" > "$tmp" && mv -f "$tmp" "$target" || {
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    }
 }
 
 # (_write_splitscreen_properties removed 2026-06-23 — the Splitscreen Support mod that
@@ -554,15 +563,28 @@ update_slot_state() {
         _ensure_state_file
     fi
 
-    local updated
-    updated=$(jq --arg slot "$slot" --argjson merge "$merge_json" \
-        '.slots[$slot] = ((.slots[$slot] // {}) * $merge)' \
-        "$state_file" 2>/dev/null) || {
-        echo "[instance_lifecycle] ERROR: jq update failed for slot $slot" >&2
-        return 1
-    }
-
-    _atomic_write "$state_file" "$updated"
+    # H3 (UNTESTED 2026-06-27): serialize the read-modify-write across processes. Up to 4
+    # CONTROLLER_ADD spawns run in backgrounded subshells, each doing jq-read → merge → write
+    # of the WHOLE file over ~120s, overlapping the main loop's active:true reservation and
+    # reap/teardown writes. Without locking, a later writer merging from a STALE snapshot
+    # reverts another slot's just-written field → lost bwrap_pid (un-reapable zombie slot) or
+    # lost active:true (slot handed out twice → double-spawn / controller on wrong player).
+    # flock on a sidecar lock fd makes the jq-read + atomic-write one critical section.
+    local lock_file="${state_file}.lock"
+    (
+        flock -w 5 9 || {
+            echo "[instance_lifecycle] WARNING: state-file lock timeout updating slot $slot" >&2
+            exit 1
+        }
+        local updated
+        updated=$(jq --arg slot "$slot" --argjson merge "$merge_json" \
+            '.slots[$slot] = ((.slots[$slot] // {}) * $merge)' \
+            "$state_file" 2>/dev/null) || {
+            echo "[instance_lifecycle] ERROR: jq update failed for slot $slot" >&2
+            exit 1
+        }
+        _atomic_write "$state_file" "$updated"
+    ) 9>"$lock_file"
 }
 
 # Return active slot numbers as a space-separated string (ascending order).

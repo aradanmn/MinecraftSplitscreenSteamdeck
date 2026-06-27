@@ -85,7 +85,17 @@ _get_mode() {
 _set_mode() {
     local mode="$1"
     local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    jq --arg mode "$mode" '.mode = $mode' "$state" > "${state}.tmp" 2>/dev/null && mv "${state}.tmp" "$state" || true
+    # H3/L2 (UNTESTED 2026-06-27): take the SAME state-file lock as update_slot_state so a
+    # mode write can't race a concurrent slot read-modify-write, and write via _atomic_write
+    # (unique temp) instead of a shared "${state}.tmp". Otherwise _set_mode and a startup
+    # spawn can clobber each other's whole-file write.
+    local lock_file="${state}.lock"
+    (
+        flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode" >&2; exit 1; }
+        local updated
+        updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || exit 1
+        _atomic_write "$state" "$updated"
+    ) 9>"$lock_file"
 }
 
 # =============================================================================
