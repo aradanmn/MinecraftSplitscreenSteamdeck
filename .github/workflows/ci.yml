@@ -1,0 +1,99 @@
+# CI — shellcheck + the existing bash unit-test suites.
+#
+# This is the project's first CI gate (previously: only a release-asset upload on tag
+# push, nothing ran shellcheck or tests/ on push/PR — see the codebase review, 2026-07-01).
+#
+# Design notes:
+#   - shellcheck: gated on ERROR severity only (0 pre-existing errors, verified). There
+#     are ~56 pre-existing WARNING-level findings across the modules; fixing those is real
+#     cleanup work or a separate pass, not something to silently gate on here — they're
+#     reported (informational, non-blocking) so they're visible without turning CI red on
+#     day one for pre-existing debt unrelated to a given change.
+#   - tests/test_*.sh: none of these scripts exit non-zero on a failed sub-test (they
+#     always exit 0 and print "X/Y tests passed") — see the codebase review. So this
+#     workflow parses that summary line and gates on a documented BASELINE pass count per
+#     suite instead of demanding 100%, which would be immediately red for reasons unrelated
+#     to any given PR (a few sub-tests are pre-existing known-fails tied to gated/
+#     unimplemented features — see TODO.md). A regression BELOW the baseline fails the
+#     build; closing one of the known pre-existing gaps means bumping its baseline up here.
+#   - tests/test_installer.sh is excluded from the pass-count gate: several of its
+#     sub-tests exercise install_runtime_modules()'s network-download fallback against
+#     `${REPO_REF:-main}` on GitHub, which will legitimately miss a file that only exists
+#     on the PR branch until merged — a network/branch-mismatch quirk of that test's
+#     design, not a code regression. It still RUNS (and its output is visible in the log)
+#     so a genuine structural break is still visible, just not auto-failing the build.
+#   - Hardware/session-dependent scripts (tests/test_phase_b_lifecycle.sh, tests/kwin-*.sh,
+#     tests/gamescope-*.sh, tests/wintree-capture.sh, tests/window-pos-test.sh,
+#     tests/ssh-override-redirect-test.sh, tests/diagnose.sh, tests/hardware/) require a
+#     live X11/KWin/gamescope session and are NOT run here — they stay Deck-only per the
+#     project's existing "nothing is done until maintainer-confirmed on the Deck" rule.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: shellcheck (error severity — gates the build)
+        run: |
+          shellcheck -S error modules/*.sh minecraftSplitscreen.sh install-minecraft-splitscreen.sh
+
+      - name: shellcheck (warning severity — informational only)
+        if: always()
+        run: |
+          shellcheck -S warning modules/*.sh minecraftSplitscreen.sh install-minecraft-splitscreen.sh || true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies (jq)
+        run: sudo apt-get update -qq && sudo apt-get install -y jq
+
+      - name: Run CI-safe test suites and gate on baseline pass counts
+        run: |
+          set -u
+          fail=0
+
+          # suite:minimum_passing_count — bump the count when a pre-existing gap is closed.
+          declare -A BASELINE=(
+            [tests/test_controller_monitor.sh]=6
+            [tests/test_instance_lifecycle.sh]=11
+            [tests/test_watchdog.sh]=10
+            [tests/test_window_manager.sh]=7
+            [tests/test_dock_detection.sh]=8
+          )
+
+          for suite in "${!BASELINE[@]}"; do
+            echo "=== $suite (baseline: ${BASELINE[$suite]}) ==="
+            out=$(bash "$suite" 2>&1) || true
+            echo "$out"
+            passed=$(echo "$out" | grep -oE '^[0-9]+/[0-9]+ tests passed' | grep -oE '^[0-9]+' | tail -1)
+            if [[ -z "$passed" ]]; then
+              echo "::error::$suite produced no 'X/Y tests passed' summary line — treating as a hard failure"
+              fail=1
+              continue
+            fi
+            if (( passed < BASELINE[$suite] )); then
+              echo "::error::$suite regressed: $passed passed, expected at least ${BASELINE[$suite]}"
+              fail=1
+            else
+              echo "OK: $passed >= ${BASELINE[$suite]}"
+            fi
+          done
+
+          echo "=== tests/test_installer.sh (informational — network/branch-mismatch quirk, see workflow comment) ==="
+          bash tests/test_installer.sh 2>&1 || true
+
+          exit "$fail"

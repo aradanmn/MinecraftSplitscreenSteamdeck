@@ -51,11 +51,26 @@ _preflight_deps() {
     #   dbus-run-session        — starts the nested Plasma session
     #   kwin_wayland/startplasma-wayland — the nested compositor + session
     #   xdpyinfo                — screen-resolution detection on the nested XWayland
-    for t in jq python3 bwrap dbus-run-session kwin_wayland startplasma-wayland xdpyinfo; do
+    #   kwin_wayland_wrapper     — #27: the launcher generates its OWN wrapper at
+    #                              /tmp/kwin_wayland_wrapper (nestedPlasma/testPlasma/
+    #                              launchFromPlasma), but that wrapper itself execs the
+    #                              REAL /usr/bin/kwin_wayland_wrapper — if the system one
+    #                              is missing, the nested session silently fails to start
+    #                              instead of hitting this hard-stop up front.
+    for t in jq python3 bwrap dbus-run-session kwin_wayland startplasma-wayland xdpyinfo \
+             kwin_wayland_wrapper; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
     # qdbus (either the Qt5 or Qt6 build) — KWin scripting/reconfigure
     command -v qdbus6 >/dev/null 2>&1 || command -v qdbus >/dev/null 2>&1 || missing+=("qdbus6")
+
+    # #27: inotifywait (inotify-tools) is NOT hard-required — dock_detection.sh already
+    # falls back to polling at runtime when it's absent — but its absence was previously
+    # invisible until you went looking at a runtime log line. Surface it as a soft,
+    # non-fatal warning here so it shows up at install/launch time instead.
+    if ! command -v inotifywait >/dev/null 2>&1; then
+        echo "[preflight] NOTE: inotifywait (inotify-tools) not found — dock/undock detection will use slower polling instead of instant hotplug notification. Not fatal." >&2
+    fi
 
     if (( ${#missing[@]} == 0 )); then
         return 0

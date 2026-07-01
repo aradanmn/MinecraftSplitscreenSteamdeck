@@ -47,6 +47,8 @@ _DOCK_MONITOR_PID=""
 # cleanup() can kill any orphan spawn subshell that would otherwise keep polling for
 # a window (up to 120s) and map it AFTER teardown.
 _SPAWN_PIDS=()
+# H10: set by _reflow_layout on failure; the event loop retries while this is 1.
+_REFLOW_NEEDED=0
 
 # =============================================================================
 # HELPER: read a single message from the FIFO
@@ -85,15 +87,22 @@ _get_mode() {
 _set_mode() {
     local mode="$1"
     local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    # H3/L2 (UNTESTED 2026-06-27): take the SAME state-file lock as update_slot_state so a
-    # mode write can't race a concurrent slot read-modify-write, and write via _atomic_write
-    # (unique temp) instead of a shared "${state}.tmp". Otherwise _set_mode and a startup
-    # spawn can clobber each other's whole-file write.
+    # #40 (fixes a regression from the H3/L2 flock change, 2026-06-27): the flock version
+    # below hard `exit 1`s (inside a `set -e` subshell) whenever the state file is missing
+    # or unparseable — e.g. main() invoked without going through launchProdFromPlasma's
+    # state-file init. Under `set -e` that killed the WHOLE launcher on first call. The
+    # original was tolerant (`jq ... || true`); restore that tolerance while KEEPING the H3
+    # lock/unique-temp fix: initialize a default state file if it's missing/invalid instead
+    # of failing, so _set_mode can never be the thing that crashes a legitimate launch.
     local lock_file="${state}.lock"
     (
-        flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode" >&2; exit 1; }
+        flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
+        if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
+            echo "[orchestrator] _set_mode: state file missing/invalid at $state — initializing default" >&2
+            _atomic_write "$state" '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}'
+        fi
         local updated
-        updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || exit 1
+        updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || { echo "[orchestrator] WARNING: _set_mode jq failed — leaving state untouched" >&2; exit 0; }
         _atomic_write "$state" "$updated"
     ) 9>"$lock_file"
 }
@@ -172,13 +181,54 @@ _reflow_layout() {
     # such as a window being left unmapped — discarding them made the slot-1
     # unmap bug invisible in the debug log.
     # H10: surface a reflow failure (return non-zero) instead of swallowing it with
-    # `|| true`. Callers decide whether to log/retry; the orchestrator loop never
-    # aborts on it because each call site tolerates the non-zero return.
+    # `|| true`. Setting _REFLOW_NEEDED lets the event loop actually RETRY it on the
+    # next iteration (~ORCHESTRATOR_FIFO_READ_TIMEOUT_S cadence) instead of just logging
+    # once and leaving the layout wrong until the next unrelated reflow trigger — the
+    # retry that was "advertised" (per the comment history) but never implemented.
     if ! sync_apply_layout "$active" "$ruleW" "$ruleH"; then
         echo "[orchestrator] WARNING: reflow (sync_apply_layout) failed for slots: $active" >&2
+        _REFLOW_NEEDED=1
         return 1
     fi
+    _REFLOW_NEEDED=0
     return 0
+}
+
+# =============================================================================
+# _check_monitor_heartbeats — H9. The watchdog/controller_monitor/dock_monitor
+# background PIDs feed the FIFO; previously, if one died silently (crash, unhandled
+# error) nothing noticed — the session just stopped reacting to that class of event
+# (e.g. controller_monitor dying means a newly-connected pad never spawns a player)
+# with no diagnostic and no recovery. Called once per event-loop iteration in BOTH
+# flows: log + best-effort restart any monitor whose PID we expect to be running but
+# isn't. Not rate-limited beyond the FIFO read-timeout cadence (~5s) — a monitor that
+# repeatedly dies immediately is a real bug worth being loud about, not silent.
+# =============================================================================
+_check_monitor_heartbeats() {
+    if [[ -n "$_CONTROLLER_MONITOR_PID" ]] && ! kill -0 "$_CONTROLLER_MONITOR_PID" 2>/dev/null; then
+        echo "[orchestrator] WARNING: controller monitor (PID $_CONTROLLER_MONITOR_PID) is dead — restarting" >&2
+        if type start_controller_monitor >/dev/null 2>&1; then
+            CONTROLLER_MONITOR_SKIP_INITIAL_EMIT=1 start_controller_monitor "$(_get_mode)" &
+            _CONTROLLER_MONITOR_PID=$!
+            echo "[orchestrator] Controller monitor restarted — new PID $_CONTROLLER_MONITOR_PID" >&2
+        fi
+    fi
+    if [[ -n "$_DOCK_MONITOR_PID" ]] && ! kill -0 "$_DOCK_MONITOR_PID" 2>/dev/null; then
+        echo "[orchestrator] WARNING: dock monitor (PID $_DOCK_MONITOR_PID) is dead — restarting" >&2
+        if type watch_display_mode >/dev/null 2>&1; then
+            watch_display_mode &
+            _DOCK_MONITOR_PID=$!
+            echo "[orchestrator] Dock monitor restarted — new PID $_DOCK_MONITOR_PID" >&2
+        fi
+    fi
+    if [[ -n "$_WATCHDOG_PID" ]] && ! kill -0 "$_WATCHDOG_PID" 2>/dev/null; then
+        echo "[orchestrator] WARNING: watchdog (PID $_WATCHDOG_PID) is dead — restarting" >&2
+        if type start_watchdog >/dev/null 2>&1; then
+            start_watchdog &
+            _WATCHDOG_PID=$!
+            echo "[orchestrator] Watchdog restarted — new PID $_WATCHDOG_PID" >&2
+        fi
+    fi
 }
 
 # =============================================================================
@@ -477,6 +527,7 @@ handheld_flow() {
     while true; do
         # Independent liveness reap (don't rely solely on the watchdog — H9).
         _reap_dead_slots
+        _check_monitor_heartbeats
 
         # Check if the main instance is still alive
         if ! slot_is_active 1 2>/dev/null; then
@@ -607,6 +658,14 @@ docked_flow() {
 
         # Independent liveness reap (don't rely solely on the watchdog — H9).
         _reap_dead_slots
+        _check_monitor_heartbeats
+
+        # H10: retry a previously-failed reflow instead of leaving the layout wrong
+        # until the next unrelated trigger.
+        if [[ "$_REFLOW_NEEDED" == "1" ]]; then
+            echo "[orchestrator] Retrying previously-failed reflow" >&2
+            _reflow_layout
+        fi
 
         # Session-end check: exit once everyone who joined has quit.
         local active
@@ -722,10 +781,24 @@ cleanup() {
     fi
 
     # ── Kill dock monitor
+    # N15: watch_display_mode's `inotifywait` is a DIRECT CHILD of this backgrounded
+    # function, not something it further backgrounds — killing only the parent PID
+    # leaves inotifywait to be reparented (to init) and survive teardown, still holding
+    # the FIFO write-end open (which can keep a reader from ever seeing EOF across
+    # runs). Kill children first (via _kill_tree if the launcher defined it in this
+    # same process — bash sourcing shares the function namespace — else a plain
+    # pkill -P fallback), then the parent itself.
     if [[ -n "$_DOCK_MONITOR_PID" ]] && kill -0 "$_DOCK_MONITOR_PID" 2>/dev/null; then
+        if type _kill_tree >/dev/null 2>&1; then
+            _kill_tree "$_DOCK_MONITOR_PID" TERM
+        else
+            pkill -TERM -P "$_DOCK_MONITOR_PID" 2>/dev/null || true
+        fi
         kill -TERM "$_DOCK_MONITOR_PID" 2>/dev/null || true
+        sleep 0.2
+        pkill -KILL -P "$_DOCK_MONITOR_PID" 2>/dev/null || true
         kill -KILL "$_DOCK_MONITOR_PID" 2>/dev/null || true
-        echo "[orchestrator] Dock monitor PID $_DOCK_MONITOR_PID killed" >&2
+        echo "[orchestrator] Dock monitor PID $_DOCK_MONITOR_PID (+ children) killed" >&2
     fi
 
     # ── Kill any in-flight spawn subshells (N2)
@@ -751,6 +824,16 @@ cleanup() {
     if type restorePanels >/dev/null 2>&1; then
         restorePanels 2>&1 | sed 's/^/[orchestrator] /' >&2 || true
     fi
+
+    # M7: dex.sh deliberately does NOT EXIT-trap its own generated backend script (it must
+    # survive across many dex_* calls within this one shell — see dex.sh's DEX_PY_SCRIPT
+    # comment), and adding a trap there would risk clobbering the caller's own EXIT trap
+    # (the exact H4 class of bug). $DEX_PY_SCRIPT is a plain shell var set when dex.sh was
+    # sourced into this SAME process, so it's still in scope here — clean it up once, on
+    # the way out, from the one place that already owns end-of-session teardown. Matters
+    # most for the $XDG_RUNTIME_DIR-unset fallback path (plain /tmp, not an auto-cleaned
+    # per-session tmpfs).
+    [[ -n "${DEX_PY_SCRIPT:-}" ]] && rm -f "$DEX_PY_SCRIPT" 2>/dev/null
 
     echo "[orchestrator] cleanup() complete" >&2
 }

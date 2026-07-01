@@ -233,9 +233,19 @@ watch_display_mode() {
 
     if command -v inotifywait >/dev/null 2>&1 && [[ -d "$drm_path" ]]; then
         echo "[dock_detection] Using inotifywait on $drm_path for display change detection" >&2
-        # Watch for status file modifications under the DRM path
-        # inotifywait exits with 0 when an event is received
-        while inotifywait -q -e modify,create,delete --include 'status' -r "$drm_path" 2>/dev/null; do
+        # N14: `--include 'status'` filtered events to ONLY the per-connector `status`
+        # file, which misses hotplug entirely for a connector whose SYSFS DIRECTORY
+        # itself is created/removed (e.g. a dock/MST-created DRM connector node) — a
+        # directory create/delete event's filename is the connector name (e.g.
+        # "card1-DP-4"), which never matches an `--include 'status'` regex, so a brand
+        # new connector was silently invisible to this watch. Watch the PARENT broadly
+        # (no --include filter, plus moved_to/delete_self) so both a connector
+        # appearing/vanishing AND its status flipping trigger a recheck; a false-
+        # positive wakeup just costs one cheap get_display_mode() call. The poll
+        # fallback below is unchanged as the safety net either way.
+        # inotifywait exits with 0 when an event is received; the outer `while` loop
+        # re-invokes it fresh each time, so it re-scans the current tree on every pass.
+        while inotifywait -q -e modify,create,delete,moved_to,delete_self -r "$drm_path" 2>/dev/null; do
             # Debounce: brief sleep then check
             sleep 0.5
             local new_mode

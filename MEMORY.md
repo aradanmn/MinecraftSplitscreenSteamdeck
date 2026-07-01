@@ -7,6 +7,36 @@ files.
 
 ---
 
+## 2026-07-01 — Codebase review + v1.1 fix batch (all [CODE], NOT Deck-validated)
+
+**What:** A full codebase + open-issue review, followed by a fix pass in the same
+session: the #43 architectural root-cause (no authoritative environment/mode global,
+closes #42's Desktop-Mode runaway at the source instead of just its symptom), the #40
+`_set_mode` crash, #15's nested-session teardown (stopped `exec`-ing away the outside
+supervisor so a bounded reap loop can out-wait systemd's respawn), and 14 smaller
+audit-tracked issues (#16-27, #31, #32) spanning monitor heartbeats, reflow retry,
+the controller_monitor snapshot-skew race, KWin PID-only matching, and several
+smaller hygiene/robustness fixes. Added the project's first CI (shellcheck +
+baseline-gated unit tests) and a research doc on how Steam/SDL/InputPlumber actually
+handle controller-reconnect identity (feeds #38).
+
+**Why:** The issue tracker had 23 open items and no CI; several (#42/#40 in
+particular) were live, user-visible bugs on the current `main`. #43 was flagged in
+its own issue as "the architectural root behind a recurring 'nothing told the code
+what context it's in' failure mode" — worth fixing before patching more symptoms.
+
+**Decision:** Fixed forward rather than redesigning — e.g. #15's fix keeps the
+existing `_end_nested_session` kill-by-name approach but wraps it in a supervising
+outer loop, rather than a rewrite. Full list + issue cross-references in TODO.md's
+2026-07-01 entry. Left the RAW-CONTROLLER-BIND-PLAN.md rewrite untouched (still
+flag-gated, still needs the in-sandbox SDL probe it names before flipping default) —
+the research doc informs it but doesn't implement it.
+
+**Status:** pushed to `claude/codebase-review-v1-1-120ktb`; awaiting Deck validation
+per this project's standing rule (SPEC §3a/§3b) before anything here is "done."
+
+---
+
 ## 2026-06-19 — Docs decluttering pass
 
 **What:** Reduced root-level `.md` clutter (was 15 files, ~400KB).

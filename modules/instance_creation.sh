@@ -356,7 +356,14 @@ EOF
             fi
             
             if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
-                local debug_file="/tmp/mod_${mod_name// /_}_${mod_id}_api_response.json"
+                # #27: was a loose /tmp/mod_*_api_response.json per mod with nothing ever
+                # clearing them, so they accumulated across every --debug install run
+                # indefinitely. Keep the intentional debug output (that's the point of
+                # --debug) but corral it into one dedicated directory, which
+                # main_workflow.sh's --debug handling clears ONCE at the start of a run.
+                local debug_dir="/tmp/mcss-debug-api"
+                mkdir -p "$debug_dir" 2>/dev/null || true
+                local debug_file="${debug_dir}/mod_${mod_name// /_}_${mod_id}_api_response.json"
                 if [[ -n "$resolve_data" ]]; then
                     printf "%s" "$resolve_data" > "$debug_file"
                     print_debug "Saved resolver data for $mod_name to $debug_file"
@@ -485,11 +492,27 @@ EOF
         print_info "Copying mods from instance 1 to $instance_name..."
         local instance1_mods_dir="$TARGET_DIR/instances/latestUpdate-1/.minecraft/mods"
         if [[ -d "$instance1_mods_dir" ]]; then
-            cp -r "$instance1_mods_dir"/* "$mods_dir/" 2>/dev/null
-            if [[ $? -eq 0 ]]; then
-                print_success "✅ Successfully copied mods from instance 1"
+            # N13: without nullglob, an EMPTY instance1_mods_dir leaves the glob
+            # unexpanded (the literal string ".../mods/*"), so `cp -r` fails with
+            # "No such file or directory" and a legitimate empty mod set (zero
+            # optional mods selected) gets reported as a copy FAILURE. Also, a single
+            # unreadable file previously failed the WHOLE batched `cp -r *` — copy
+            # file-by-file so one bad file doesn't mask the rest succeeding.
+            shopt -s nullglob
+            local -a _mod_src_files=("$instance1_mods_dir"/*)
+            shopt -u nullglob
+            if [[ ${#_mod_src_files[@]} -eq 0 ]]; then
+                print_info "Instance 1 has no mods to copy (empty mod set) — nothing to do"
             else
-                print_error "Failed to copy mods from instance 1"
+                local _mod_copy_failed=0 _mod_src
+                for _mod_src in "${_mod_src_files[@]}"; do
+                    cp -r "$_mod_src" "$mods_dir/" 2>/dev/null || _mod_copy_failed=1
+                done
+                if [[ "$_mod_copy_failed" -eq 0 ]]; then
+                    print_success "✅ Successfully copied mods from instance 1"
+                else
+                    print_warning "⚠️  Some mod(s) failed to copy from instance 1 (see above)"
+                fi
             fi
         else
             print_error "Could not find mods directory from instance 1"
@@ -500,22 +523,29 @@ EOF
     # MINECRAFT AUDIO CONFIGURATION
     # =============================================================================
     
-    # SPLITSCREEN AUDIO SETUP: Configure music volume for each instance
-    # Instance 1 keeps music at default volume (0.3), instances 2-4 have music muted
-    # This prevents audio overlap when multiple instances are running simultaneously
+    # SPLITSCREEN AUDIO SETUP: Configure audio volume for each instance
+    # Instance 1 is the primary audio source; instances 2-4 previously only had MUSIC
+    # muted, but all 4 JVMs share ONE PulseAudio sink and each independently renders
+    # proximity-based ambient/environment sound for the SAME shared world (e.g. all 4
+    # players standing near one creeper each trigger their own instance's hostile-mob
+    # sound), so those categories still audibly overlapped/echoed 4x (#32/G7). Extend
+    # the same "instance 1 is the one shared audio source" treatment to every
+    # world-ambient category, while leaving `player` (each player's own action/hurt
+    # feedback — a genuinely per-player, non-duplicated sound) audible on every instance.
     print_progress "Configuring splitscreen audio settings for $instance_name..."
-    
+
     # Extract instance number from instance name (latestUpdate-X format)
     local instance_number
     instance_number=$(echo "$instance_name" | grep -oE '[0-9]+$')
-    
-    # Determine music volume based on instance number
-    local music_volume="0.3"  # Default music volume
+
+    # Determine audio volumes based on instance number
+    local music_volume="0.3" ambient_sfx_volume="1.0"  # Instance 1 defaults
     if [[ "$instance_number" -gt 1 ]]; then
-        music_volume="0.0"    # Mute music for instances 2, 3, and 4
-        print_info "   → Music muted for $instance_name (prevents audio overlap)"
+        music_volume="0.0"        # Mute music for instances 2, 3, and 4
+        ambient_sfx_volume="0.0"  # #32/G7: also mute shared-world ambient/env sound
+        print_info "   → Music + ambient/environment sound muted for $instance_name (prevents audio overlap; per-player sounds stay audible)"
     else
-        print_info "   → Music enabled for $instance_name (primary audio instance)"
+        print_info "   → Music + ambient/environment sound enabled for $instance_name (primary audio instance)"
     fi
     
     # Create or update Minecraft options.txt file with splitscreen-optimized settings
@@ -612,13 +642,13 @@ panoramaScrollSpeed:1.0
 telemetryOptInExtra:false
 soundCategory_master:1.0
 soundCategory_music:${music_volume}
-soundCategory_record:1.0
-soundCategory_weather:1.0
-soundCategory_block:1.0
-soundCategory_hostile:1.0
-soundCategory_neutral:1.0
+soundCategory_record:${ambient_sfx_volume}
+soundCategory_weather:${ambient_sfx_volume}
+soundCategory_block:${ambient_sfx_volume}
+soundCategory_hostile:${ambient_sfx_volume}
+soundCategory_neutral:${ambient_sfx_volume}
 soundCategory_player:1.0
-soundCategory_ambient:1.0
+soundCategory_ambient:${ambient_sfx_volume}
 soundCategory_voice:1.0
 modelPart_cape:true
 modelPart_jacket:true

@@ -180,7 +180,8 @@ _get_wid_from_state() {
     local slot="$1"
     local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
     local wid=""
-    [[ -f "$sf" ]] && wid=$(jq -r ".slots[\"${slot}\"].wid // empty" "$sf" 2>/dev/null || true)
+    # L3: --arg instead of string-interpolating $slot into the filter.
+    [[ -f "$sf" ]] && wid=$(jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true)
     [[ -z "$wid" ]] && wid=$(dex_search --name "SplitscreenP${slot}" 2>/dev/null || true)
     echo "$wid"
 }
@@ -192,7 +193,8 @@ _get_wid_from_state() {
 _get_pid_from_state() {
     local slot="$1"
     local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    [[ -f "$sf" ]] && jq -r ".slots[\"${slot}\"].pid // empty" "$sf" 2>/dev/null || true
+    # L3: --arg instead of string-interpolating $slot into the filter.
+    [[ -f "$sf" ]] && jq -r --arg slot "$slot" '.slots[$slot].pid // empty' "$sf" 2>/dev/null || true
 }
 
 # _position_slot: Position a slot's window to an exact cell.
