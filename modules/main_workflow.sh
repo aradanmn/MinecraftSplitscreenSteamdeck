@@ -42,6 +42,13 @@ main() {
         fi
     done
 
+    # #27: mod-resolver debug output (see instance_creation.sh) accumulated indefinitely
+    # in /tmp across every --debug run with nothing ever clearing it. Start each debug
+    # run with a clean directory instead of piling up files from prior runs forever.
+    if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
+        rm -rf "/tmp/mcss-debug-api" 2>/dev/null || true
+    fi
+
     print_header "🎮 MINECRAFT SPLITSCREEN INSTALLER 🎮"
     print_info "PolyMC launcher setup with manual instance creation"
     print_debug "Debug logging enabled"
@@ -94,18 +101,44 @@ main() {
     # OFFLINE ACCOUNTS DOWNLOAD: Get splitscreen player account configurations
     # These accounts enable splitscreen without requiring multiple Microsoft accounts
     # Each player (P1, P2, P3, P4) gets a separate offline profile for identification
+    # #31/G6: this used to be a WARNING-only failure — accounts.json missing/invalid
+    # doesn't break the installer, it breaks LAUNCH later (PolyMC has no P1-P4 profile
+    # to select with `-a P{slot}`), with nothing tying that failure back to this step.
+    # PolyMC reads accounts.json straight from TARGET_DIR (its own data dir) — there's
+    # no later per-instance copy step to catch this, so it must be validated HERE.
     if ! wget -O accounts.json "https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/accounts.json"; then
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
         if [[ ! -f "accounts.json" ]]; then
-            print_error "❌ No accounts.json found - splitscreen accounts may require manual setup"
-            print_info "   → Splitscreen will still work but players may have generic names"
+            print_error "❌ No accounts.json found — this is required for splitscreen player accounts to work."
+            exit 1
         fi
     else
         print_success "✅ Offline splitscreen accounts configured successfully"
         print_debug "P1, P2, P3, P4 player accounts ready for offline gameplay"
     fi
-    
+
+    # #31/G6: one-instance install smoke test — a downloaded-but-corrupt/truncated
+    # accounts.json (partial write, HTML error page saved as the file, etc.) passes the
+    # `-f` check above but still leaves launch broken with no diagnostic tying it back
+    # here. Validate it actually parses and has at least one profile before moving on.
+    if command -v jq >/dev/null 2>&1; then
+        # The launcher selects an account per slot via `-a P{slot}` (minecraftSplitscreen.sh
+        # launchSlot), matching accounts.json's .accounts[].profile.name — verify all four
+        # P1-P4 profiles are actually present, not just that the file is valid JSON.
+        local _missing_profiles
+        _missing_profiles=$(jq -r '
+            [.accounts[]?.profile.name] as $names
+            | ["P1","P2","P3","P4"] - $names | join(", ")
+        ' accounts.json 2>/dev/null)
+        if [[ -z "$_missing_profiles" ]] && jq -e '.accounts | length > 0' accounts.json >/dev/null 2>&1; then
+            print_debug "accounts.json smoke test passed (P1-P4 profiles present)"
+        else
+            print_error "❌ accounts.json exists but failed validation (not valid JSON, or missing player profile(s): ${_missing_profiles:-all}) — splitscreen launches will fail to select a player account."
+            exit 1
+        fi
+    fi
+
     # =============================================================================
     # MOD ECOSYSTEM SETUP PHASE
     # =============================================================================

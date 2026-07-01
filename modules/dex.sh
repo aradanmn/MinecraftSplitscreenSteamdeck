@@ -544,7 +544,8 @@ dex_wid_from_state() {
     local slot="$1"
     local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
     if [[ -f "$sf" ]] && command -v jq >/dev/null 2>&1; then
-        jq -r ".slots[\"${slot}\"].wid // empty" "$sf" 2>/dev/null || true
+        # L3: --arg instead of string-interpolating $slot into the filter.
+        jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true
     fi
 }
 

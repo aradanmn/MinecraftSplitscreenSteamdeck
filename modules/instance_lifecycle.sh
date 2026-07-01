@@ -776,6 +776,16 @@ spawn_instance() {
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
     echo "[spawn_instance] bwrap PID: $bwrap_pid" >&2
 
+    # N11: liveness check right after launch. Without this, a bwrap that fails/exits
+    # instantly (bad bwrap args, missing binary, immediate sandbox rejection) still
+    # burns the FULL INSTANCE_LIFECYCLE_POLL_TIMEOUT_S (60s) java poll below before
+    # anything notices — a short grace then kill -0 fails fast instead.
+    sleep 0.3
+    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+        echo "[spawn_instance] ERROR: bwrap PID $bwrap_pid died immediately after launch — aborting (skipping the ${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}s java poll)" >&2
+        return 1
+    fi
+
     # 6. Poll for Java process
     local java_pid
     java_pid=$(_poll_for_java "$slot" || true)

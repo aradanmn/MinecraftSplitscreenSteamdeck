@@ -116,7 +116,10 @@ create_desktop_launcher() {
         local launcher_script_path
         local launcher_comment
         launcher_script_path="$TARGET_DIR/minecraftSplitscreen.sh"
-        launcher_comment="Launch Minecraft splitscreen with PolyMC"
+        # #42: splitscreen requires Steam Game Mode (gamescope) — a bare invocation from
+        # this Desktop-Mode shortcut is refused by the launcher's runtime_context guard
+        # (see #43) rather than crashing (#40) or spawning a runaway. Say so up front.
+        launcher_comment="Splitscreen setup only (requires Steam Game Mode to actually play — launch 'Minecraft Splitscreen' from your Steam library)"
         print_info "   → Desktop launcher configured for PolyMC"
         
         # =============================================================================

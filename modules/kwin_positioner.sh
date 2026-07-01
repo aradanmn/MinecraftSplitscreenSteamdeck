@@ -100,9 +100,14 @@ kwin_place_windows() {
 
     # Unique plugin name + temp file per invocation (loadScript won't reload a
     # name that's already loaded; unique avoids that and accumulation).
+    # L5/#27: mktemp instead of a predictable `mcss_place_$$_$RANDOM.js` name — a
+    # predictable path in a world-writable /tmp + a plain `cat >` (which follows
+    # symlinks, no O_EXCL) is a local symlink/TOCTOU footgun, and whatever ends up at
+    # that path gets EXECUTED as KWin JS. mktemp creates the file atomically (0600),
+    # closing that window; low severity on a single-user Deck but cheap to fix.
     local name jsfile
-    name="mcss_place_$$_${RANDOM}"
-    jsfile="/tmp/${name}.js"
+    jsfile=$(mktemp /tmp/mcss_place_XXXXXX.js) || { echo "[kwin_positioner] ERROR: mktemp failed for placement script" >&2; return 1; }
+    name="$(basename "$jsfile" .js)"
 
     cat > "$jsfile" <<KWINJS
 (function () {
@@ -113,10 +118,34 @@ kwin_place_windows() {
     for (var t = 0; t < targets.length; t++) {
         var tgt = targets[t];
         var placed = 0;
+        // N10: PID alone can match more than one top-level window for the same process
+        // (a splash/launcher window sharing the game's PID) — collect ALL pid-matching
+        // candidates first, then prefer the one whose resourceClass/resourceName looks
+        // like the actual Minecraft window over a launcher/splash window, instead of
+        // blindly acting on whichever the pid loop finds first.
+        var candidates = [];
         for (var i = 0; i < wins.length; i++) {
-            var w = wins[i];
-            if (!w || w.pid !== tgt.pid) continue;
-            if (w.specialWindow || w.desktopWindow || w.dock) continue;
+            var cw = wins[i];
+            if (!cw || cw.pid !== tgt.pid) continue;
+            if (cw.specialWindow || cw.desktopWindow || cw.dock) continue;
+            candidates.push(cw);
+        }
+        if (candidates.length > 1) {
+            var mcMatch = candidates.filter(function (cw) {
+                var rc = ((cw.resourceClass || "") + " " + (cw.resourceName || "")).toLowerCase();
+                return rc.indexOf("minecraft") !== -1;
+            });
+            if (mcMatch.length === 1) {
+                candidates = mcMatch;
+            } else {
+                print("[kwin_positioner] WARNING: pid=" + tgt.pid + " matched " + candidates.length +
+                      " windows and resourceClass did not disambiguate (" + mcMatch.length +
+                      " candidates) — using the first: [" + candidates[0].caption + "]");
+                candidates = [candidates[0]];
+            }
+        }
+        for (var ci = 0; ci < candidates.length; ci++) {
+            var w = candidates[ci];
             // Clear any state that would override geometry — but ONLY when actually
             // set, so we never trigger a no-op state change. Crucially we do NOT
             // toggle w.noBorder: setting it makes KWin destroy+recreate the window
@@ -185,7 +214,10 @@ kwin_set_noborder() {
         echo "[kwin_positioner] ERROR: org.kde.KWin not reachable (noborder)" >&2
         return 1
     fi
-    local name="mcss_noborder_${pid}_${RANDOM}" jsfile="/tmp/${name}.js"
+    # L5/#27: mktemp instead of a predictable name — see kwin_place_windows for why.
+    local name jsfile
+    jsfile=$(mktemp /tmp/mcss_noborder_XXXXXX.js) || { echo "[kwin_positioner] ERROR: mktemp failed for noborder script" >&2; return 1; }
+    name="$(basename "$jsfile" .js)"
     cat > "$jsfile" <<KWINJS
 (function () {
     var wins = (typeof workspace.windowList === "function") ? workspace.windowList() : workspace.clientList();

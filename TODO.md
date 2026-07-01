@@ -1,5 +1,77 @@
 # TODO
 
+## ☐ Codebase review + v1.1 fix batch — 2026-07-01 (ALL [CODE], NOT Deck-validated)
+
+Full-codebase review + GitHub issue triage, followed by a same-session fix pass across
+architecture, controller/window-manager robustness, and process hygiene. Nothing below
+has been run on a Deck — same rule as everywhere else in this file.
+
+- **[CODE] #43 — authoritative runtime-context global.** New `modules/runtime_context.sh`
+  (`mcss_resolve_environment`/`mcss_require_gamescope`), resolved once from
+  `XDG_CURRENT_DESKTOP`/`XDG_SESSION_DESKTOP` before any nesting happens. Wired into both
+  installer module-deploy lists (`install-minecraft-splitscreen.sh`, `launcher_setup.sh`).
+- **[CODE] #42 — Desktop-Mode runaway.** The bare `*)` dispatch in `minecraftSplitscreen.sh`
+  now refuses to call `main()` unless `MCSS_NESTED_SESSION=1` (set by
+  launchFromPlasma/testPlasma/nestedPlasma/launchNested before they re-invoke the script)
+  or the outer context is gamescope — closing the root cause, not just the symptom.
+  `launchFromPlasma`'s STARTUP GUARD also stops any stale `app-MinecraftSplitscreen@*`
+  systemd unit before a fresh launch. Desktop shortcut's Comment now states Game-Mode-only.
+- **[CODE] #40 — `_set_mode` crash on missing state file.** No longer hard `exit 1`s under
+  `set -e`; initializes a default state file and tolerates a `jq` failure instead of
+  killing the whole launcher on first call (regression from the H3 flock fix).
+- **[CODE] #15/D6 — nested-session teardown (Abort-Game overlay).** `launchFromPlasma` no
+  longer `exec`s into `dbus-run-session startplasma-wayland` — it stays alive as an outside
+  supervisor (bounded wait, then a NEW `_supervise_reap_nested_session`: tries
+  `systemctl --user stop plasma-workspace.target` first, then retries the kill sweep in a
+  bounded loop to out-wait systemd's Restart=on-failure/burst-limit instead of a single
+  one-shot pass).
+- **[CODE] #16/H9 — monitor heartbeat.** New `_check_monitor_heartbeats` (orchestrator.sh),
+  called every event-loop tick in both flows; restarts controller_monitor/dock_monitor/
+  watchdog if any died.
+- **[CODE] #17/H10 — reflow retry.** `_reflow_layout` sets `_REFLOW_NEEDED`; both event
+  loops retry on the next tick instead of logging once and leaving the layout wrong.
+- **[CODE] #23/N16 (+H1) — controller_monitor snapshot skew.** `_check_devices_changed` now
+  enumerates ONCE and echoes the authoritative node set on stdout; both the udevadm and
+  poll-fallback call sites use that return value instead of re-enumerating separately.
+- **[CODE] #21/N10 — KWin PID-only window match.** `kwin_place_windows`' JS now
+  disambiguates multiple pid-matching windows (a splash/launcher sharing the game's PID) by
+  `resourceClass`/`resourceName` before falling back to the first match.
+- **[CODE] #22/N11 — bwrap liveness check.** `spawn_instance` checks `kill -0` on the bwrap
+  PID (after a brief grace) before burning the full 60s java poll.
+- **[CODE] #19/M7 — dex temp file leak.** `orchestrator.sh cleanup()` removes
+  `$DEX_PY_SCRIPT` on the way out (dex.sh itself still deliberately doesn't self-trap it).
+- **[CODE] #18/L3 — jq `--arg` hygiene.** Fixed in `dex.sh`/`window_manager.sh`'s
+  state-file reads (the "fail on unpaired mask arg" half was already handled).
+- **[CODE] #24/N13 — `cp -r` empty-mod-set false failure.** `nullglob` + per-file copy in
+  `instance_creation.sh`, so an empty mod set isn't reported as a failure and one bad file
+  doesn't fail the whole batch.
+- **[CODE] #25/N14 — inotifywait missed hotplug.** Dropped the `--include 'status'` filter
+  (was invisible to a connector directory itself being created/removed) and added
+  `moved_to`/`delete_self`.
+- **[CODE] #26/N15 — leaked dock monitor.** `cleanup()` now kills `watch_display_mode`'s
+  `inotifywait` child (via `_kill_tree`/`pkill -P`), not just the parent PID.
+- **[CODE] #27 — low-severity batch:** 720→800 fallback consistency; non-GNU `date +%s%N`
+  guard; udev `change` action now handled (not just add/remove); preflight now checks
+  `kwin_wayland_wrapper` (hard) and `inotifywait` (soft warning); `DEBUG_MODE` mod-resolver
+  debug output corralled into `/tmp/mcss-debug-api` and cleared at the start of each
+  `--debug` run; `kwin_positioner.sh`'s generated JS files now use `mktemp` instead of a
+  predictable `/tmp` name.
+- **[CODE] #31/G6 — accounts.json.** A missing/undownloadable file (with no local fallback)
+  is now install-fatal, and a new smoke test validates it parses and contains all 4 P1-P4
+  profiles before the installer proceeds.
+- **[CODE] #32/G7 — sound effect overlap.** Extended the existing music-mute pattern:
+  instances 2-4 now also mute the shared-world ambient/environment categories
+  (weather/block/hostile/neutral/ambient/record), leaving `player` (genuinely per-player)
+  and `master` untouched.
+- **[NEW] CI.** `.github/workflows/ci.yml` — shellcheck (error-severity gate, 0 pre-existing
+  errors; warnings reported non-blocking) + the 5 CI-safe unit-test suites, gated on a
+  documented baseline pass-count per suite (not 100%, to avoid failing on pre-existing
+  known gaps — see the workflow's own comments). Hardware/session tests stay Deck-only.
+- **[NEW] docs/RESEARCH-CONTROLLER-IDENTITY-2026-07-01.md** — how Steam/SDL/InputPlumber
+  actually handle controller reconnect identity (answer: SDL's GUID is model-level, not
+  per-unit; Steam/InputPlumber's real trick is a persistent virtual-pad proxy, not serial
+  matching), feeding #38 and the still-gated `RAW-CONTROLLER-BIND-PLAN.md`.
+
 ## ☐ OPEN ITEMS — consolidated 2026-06-25
 
 > Single source of truth for what's left. Status tags: **[OPEN]** not started ·
