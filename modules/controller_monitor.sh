@@ -480,6 +480,13 @@ _map_external_player_virtuals() {
             local pv_input pv_ev pv_js
             read -r pv_input pv_ev pv_js <<< "${v_sorted[$picked]}"
             echo "[controller_monitor]   → external input${e_input} [${e_ven}:${e_prod}] claims virtual input${pv_input} (event${pv_ev} js${pv_js})" >&2
+            # [vpad-probe]: distinctly-tagged, timestamped line (does NOT change any
+            # decision-making — this is purely so a maintainer can `grep '\[vpad-probe\]'`
+            # across a session's debug log and see, per external vendor:product, whether
+            # the SAME virtual event/js gets claimed again after a physical unplug/replug,
+            # or whether Steam minted a fresh one (new numbers) — see the reconnect-identity
+            # research doc and issue #38. Reused by tests/probe-controller-reconnect.sh.
+            echo "[vpad-probe] t=$(_get_epoch_ms) ext=${e_ven}:${e_prod} ext_input=${e_input} virtual_input=${pv_input} virtual_event=${pv_ev} virtual_js=${pv_js}" >&2
             echo "${pv_ev} ${pv_js} ${e_ven} ${e_prod}"
             count=$((count + 1))
         else
