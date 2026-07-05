@@ -381,7 +381,13 @@ apply_layout() {
     # finishing setup when first positioned, so KWin can drop the geometry; one re-assert
     # after a short settle makes it hold. Skipped/unchanged tiles are already settled and
     # must NOT be re-cycled (that would re-introduce the flicker we just avoided).
-    if [[ "${MCSS_REASSERT:-1}" == "1" && "$grid_mode" != "full" && ${#_positioned[@]} -gt 0 ]]; then
+    # Fix #57 (2026-07-05, UNTESTED): re-assert for FULL mode too. Previously gated to
+    # non-full, which left the single handheld window without the settle+re-assert that
+    # catches a freshly-mapped window dropping its geometry/map — an early contributor to
+    # the black-screen-with-audio bug (the LATE unmap is handled by spawn_instance's
+    # map-keeper). The _positioned guard already limits this to slots actually
+    # (re)positioned this round, so unchanged tiles are never re-cycled (no flicker).
+    if [[ "${MCSS_REASSERT:-1}" == "1" && ${#_positioned[@]} -gt 0 ]]; then
         sleep "${MCSS_REASSERT_DELAY_S:-1.2}"
         local _p
         for _p in "${_positioned[@]}"; do
