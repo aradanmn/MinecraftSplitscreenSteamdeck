@@ -451,6 +451,28 @@ def action_set_decorations(args):
                          ctypes.cast(arr, ctypes.POINTER(ctypes.c_ubyte)), ctypes.c_int(5))
     _lib.XFlush(dpy)
 
+def action_is_viewable(args):
+    """Print the window's visibility: 'viewable' (mapped + on screen), 'unmapped'
+    (never mapped or mapped-away), or 'gone' (window no longer exists). map_state:
+    0=IsUnmapped, 1=IsUnviewable, 2=IsViewable. Used by the map-keeper (#57) to spot a
+    window the game unmapped during its own late startup so it can be re-shown."""
+    wid = int(args[0])
+    a = XWindowAttributes()
+    if _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(a)) == 0:
+        print("gone")            # XGetWindowAttributes failed → window destroyed
+        return
+    print("viewable" if a.map_state == 2 else "unmapped")
+
+def action_map_raise(args):
+    """Plain XMapWindow + XRaiseWindow — the gentle 'just show it' with no unmap /
+    override_redirect / reparent cycle. Used by the map-keeper to re-show a window the
+    game unmapped AFTER apply_layout already positioned it (#57), without disturbing the
+    geometry already set."""
+    wid = int(args[0])
+    _lib.XMapWindow(dpy, Window(wid))
+    _lib.XRaiseWindow(dpy, Window(wid))
+    _lib.XSync(dpy, 0)
+
 # ---- Dispatch ----
 ACTIONS = {
     'root_wid': action_root_wid,
@@ -471,6 +493,8 @@ ACTIONS = {
     'set_root_atom': action_set_root_atom,
     'get_active_wid': action_get_active_wid,
     'find_minecraft': action_find_minecraft,
+    'is_viewable': action_is_viewable,
+    'map_raise': action_map_raise,
 }
 
 if len(sys.argv) < 2:
@@ -529,6 +553,9 @@ dex_resize()     { _dex_run resize "$1" "$2" "$3"; }
 dex_move_resize(){ _dex_run move_resize "$1" "$2" "$3" "$4" "$5"; }
 dex_move_resize_force(){ _dex_run move_resize_force "$1" "$2" "$3" "$4" "$5"; }
 dex_move_resize_remap(){ _dex_run move_resize_remap "$1" "$2" "$3" "$4" "$5"; }
+# Fix #57: is-mapped probe + gentle map/raise for the map-keeper.
+dex_is_viewable() { _dex_run is_viewable "$1"; }
+dex_map_raise()   { _dex_run map_raise "$1"; }
 dex_raise()      { _dex_run raise "$1"; }
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
@@ -544,7 +571,8 @@ dex_wid_from_state() {
     local slot="$1"
     local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
     if [[ -f "$sf" ]] && command -v jq >/dev/null 2>&1; then
-        jq -r ".slots[\"${slot}\"].wid // empty" "$sf" 2>/dev/null || true
+        # L3: --arg instead of string-interpolating $slot into the filter.
+        jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true
     fi
 }
 

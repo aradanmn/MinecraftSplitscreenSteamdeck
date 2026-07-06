@@ -43,6 +43,14 @@ readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
 # a few times over this window to win the race so the label sticks on screen.
 readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT=15
 readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S=1
+# Map-keeper (Fix #57, UNTESTED 2026-07-05): in handheld/full-screen the game's own
+# LATE window setup (GL context / fullscreen switch, well after apply_layout positioned
+# the window) can leave the override_redirect'd window UNMAPPED → black screen with audio
+# (the first on-Deck handheld symptom). Poll the window over its startup and re-map it if
+# the game unmapped it. Longer than the title flash because the unmap can land after MC
+# finishes loading assets: ~90s of coverage (45 × 2s) then self-exit.
+readonly INSTANCE_LIFECYCLE_MAP_KEEP_COUNT=45
+readonly INSTANCE_LIFECYCLE_MAP_KEEP_INTERVAL_S=2
 # Window poll can take longer than the java poll (MC takes 60-90s to open its window).
 readonly INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S=120
 # H11: derive loop iteration counts from timeout / interval instead of hardcoding 120/240
@@ -776,6 +784,16 @@ spawn_instance() {
     update_slot_state "$slot" "{\"bwrap_pid\": ${bwrap_pid}}"
     echo "[spawn_instance] bwrap PID: $bwrap_pid" >&2
 
+    # N11: liveness check right after launch. Without this, a bwrap that fails/exits
+    # instantly (bad bwrap args, missing binary, immediate sandbox rejection) still
+    # burns the FULL INSTANCE_LIFECYCLE_POLL_TIMEOUT_S (60s) java poll below before
+    # anything notices — a short grace then kill -0 fails fast instead.
+    sleep 0.3
+    if ! kill -0 "$bwrap_pid" 2>/dev/null; then
+        echo "[spawn_instance] ERROR: bwrap PID $bwrap_pid died immediately after launch — aborting (skipping the ${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}s java poll)" >&2
+        return 1
+    fi
+
     # 6. Poll for Java process
     local java_pid
     java_pid=$(_poll_for_java "$slot" || true)
@@ -822,6 +840,30 @@ spawn_instance() {
 
     # Apply the layout for all currently-active slots.
     sync_apply_layout "$updated_active" "" ""
+
+    # 9. Map-keeper (Fix #57, UNTESTED 2026-07-05): apply_layout maps the window when it
+    # positions it, but Minecraft/GLFW can unmap→(fail to remap) when it finalizes its
+    # GL/fullscreen window much LATER — leaving a black screen with audio (the first
+    # on-Deck handheld symptom; a manual `xdotool windowmap` late in load fixed it and
+    # stuck). Re-show the window whenever the game leaves it unmapped, over its startup.
+    # Backgrounded + bounded so it never blocks spawn_instance and self-exits; stops early
+    # once the window is gone (teardown/crash). Runs AFTER positioning so it only guards
+    # the post-placement life of the window, not the override_redirect cycle itself.
+    if [[ -n "$window_id" ]] && type dex_is_viewable >/dev/null 2>&1 && type dex_map_raise >/dev/null 2>&1; then
+        (
+            _m=0
+            while (( _m < INSTANCE_LIFECYCLE_MAP_KEEP_COUNT )); do
+                _vis=$(dex_is_viewable "$window_id" 2>/dev/null || echo gone)
+                [[ "$_vis" == "gone" ]] && break
+                if [[ "$_vis" == "unmapped" ]]; then
+                    dex_map_raise "$window_id" 2>/dev/null || true
+                    echo "[spawn_instance] map-keeper: re-mapped unmapped window $window_id (slot $slot)" >&2
+                fi
+                sleep "$INSTANCE_LIFECYCLE_MAP_KEEP_INTERVAL_S"
+                _m=$(( _m + 1 ))
+            done
+        ) &
+    fi
 }
 
 # Tear down the instance in the given slot.

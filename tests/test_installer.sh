@@ -65,7 +65,11 @@ test_t7_1() {
 }
 
 # =============================================================================
-# T7.2 — MODULE_FILES contains all 15 modules (10 installer + 5 runtime)
+# T7.2 — MODULE_FILES contains all 20 modules (10 installer + 10 runtime)
+# NOTE: this count has drifted upward over time as runtime modules were added
+# (preflight/kwin_positioner/orchestrator/dex/runtime_context); keep it in sync with
+# INSTALLER_MODULE_FILES + RUNTIME_MODULE_FILES in install-minecraft-splitscreen.sh
+# whenever a module is added or removed, rather than letting it silently go stale.
 # =============================================================================
 test_t7_2() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
@@ -73,23 +77,23 @@ test_t7_2() {
     local installer_count runtime_count
     installer_count=$(grep -A 15 'readonly INSTALLER_MODULE_FILES=' "$installer" \
         | grep -c '\.sh"' || true)
-    runtime_count=$(grep -A 10 'readonly RUNTIME_MODULE_FILES=' "$installer" \
+    runtime_count=$(grep -A 15 'readonly RUNTIME_MODULE_FILES=' "$installer" \
         | grep -c '\.sh"' || true)
     local total=$(( installer_count + runtime_count ))
 
-    if (( total == 15 )); then
-        _pass "T7.2 — MODULE_FILES contains 15 entries (10 installer + 5 runtime)"
+    if (( total == 20 )); then
+        _pass "T7.2 — MODULE_FILES contains 20 entries (10 installer + 10 runtime)"
     else
-        _fail "T7.2" "expected 15 total entries (INSTALLER_MODULE_FILES + RUNTIME_MODULE_FILES), found ${total} (${installer_count} + ${runtime_count})"
+        _fail "T7.2" "expected 20 total entries (INSTALLER_MODULE_FILES + RUNTIME_MODULE_FILES), found ${total} (${installer_count} + ${runtime_count})"
     fi
 }
 
 # =============================================================================
-# T7.3 — RUNTIME_MODULE_FILES contains exactly the 5 orchestrator modules
+# T7.3 — RUNTIME_MODULE_FILES contains the orchestrator modules (incl. runtime_context.sh, #43)
 # =============================================================================
 test_t7_3() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
-    local expected=("dock_detection.sh" "controller_monitor.sh" "window_manager.sh" "instance_lifecycle.sh" "watchdog.sh")
+    local expected=("dock_detection.sh" "controller_monitor.sh" "window_manager.sh" "instance_lifecycle.sh" "watchdog.sh" "runtime_context.sh")
     local missing=()
 
     for mod in "${expected[@]}"; do
@@ -99,7 +103,7 @@ test_t7_3() {
     done
 
     if (( ${#missing[@]} == 0 )); then
-        _pass "T7.3 — RUNTIME_MODULE_FILES contains all 5 orchestrator modules"
+        _pass "T7.3 — RUNTIME_MODULE_FILES contains all expected orchestrator modules"
     else
         _fail "T7.3" "missing from installer: ${missing[*]}"
     fi

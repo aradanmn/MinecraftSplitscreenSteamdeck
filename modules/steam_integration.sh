@@ -129,7 +129,7 @@ setup_steam_integration() {
                 fi
                 
                 sleep 1
-                ((shutdown_attempts++))
+                shutdown_attempts=$((shutdown_attempts + 1))
             done
             
             if [[ $shutdown_attempts -ge $max_attempts ]]; then

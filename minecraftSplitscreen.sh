@@ -50,7 +50,7 @@ echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_
 
 # Source runtime orchestrator modules
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-for _mod in preflight.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+for _mod in preflight.sh runtime_context.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
@@ -265,7 +265,7 @@ waitForAllReady() {
         for slot in $(seq 1 "$n_slots"); do
             local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
             if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
-                (( ready++ ))
+                ready=$(( ready + 1 ))
             fi
         done
         logMsg 0 DEBUG "$ready/$n_slots at main menu"
@@ -315,7 +315,7 @@ quitSlot() {
             return 0
         }
         sleep 1
-        (( waited++ ))
+        waited=$(( waited + 1 ))
     done
 
     logMsg "$slot" WARN "still alive after 30s — SIGKILL"
@@ -428,7 +428,7 @@ WEOF
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH}
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -482,7 +482,7 @@ runStaticTest() {
     local -a js_devs ev_devs
     local idx=0
     while IFS=' ' read -r js ev; do
-        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; (( idx++ ))
+        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; idx=$(( idx + 1 ))
     done < <(find_controller_pairs)
     logMsg 0 INFO "detected ${#js_devs[@]} controller pair(s)"
 
@@ -613,13 +613,51 @@ WEOF
     cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
     _snapshot_session_env
     echo "[testPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
     exec dbus-run-session startplasma-wayland
+}
+
+# #58: PIDs matching $1 (pgrep -f pattern) that belong to OUR nested-session tree,
+# identified by SPLITSCREEN_DEBUG_LOG= in the process environ — every invocation of
+# this script exports it (top of file), so a nested startplasma-wayland and all its
+# descendants (kwin, plasma_session, baloo, ...) carry it. The REAL Desktop-Mode
+# Plasma session does not, so a first launch right after Desktop → Game Mode (outgoing
+# desktop still tearing down) must never see its processes here. Leftovers from builds
+# predating the SPLITSCREEN_DEBUG_LOG export are invisible to this filter — accepted:
+# they predate this branch and a manual reap/reboot covers the upgrade edge.
+_mcss_nested_pids() {
+    local _pat="$1" _pid
+    for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
+        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null && echo "$_pid"
+    done
+    return 0
+}
+
+# #60: PIDs of STALE RUN TREES — marked processes running this script (a prior run's
+# orchestrator main loop, watchdog, controller monitor, supervisor, or Steam reaper),
+# excluding this process and its ancestors. They survive their session's death — no
+# session/instance name pattern matches a 'bash …/minecraftSplitscreen.sh …' cmdline —
+# and keep acting on the SHARED state file and FIFO. Confirmed on-Deck 2026-07-05: a
+# leftover run's teardown read the shared state and killed the instance a NEWER
+# session had just spawned (~25s after boot). They must die before a new run starts.
+# (The $(…) subshell evaluating this function can list itself; the subsequent kill is
+# a no-op on an already-gone pid.)
+_mcss_stale_tree_pids() {
+    local _chain=" $$ " _p="$PPID" _pid
+    while [[ "$_p" =~ ^[0-9]+$ ]] && (( _p > 1 )); do
+        _chain+=" $_p "
+        _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+    done
+    for _pid in $(_mcss_nested_pids 'minecraftSplitscreen'); do
+        [[ "$_chain" == *" $_pid "* ]] && continue
+        echo "$_pid"
+    done
+    return 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -643,18 +681,52 @@ launchFromPlasma() {
     # re-trigger the Steam UI (the "gamescope restarting" chime), and pile up orphan JVMs.
     # We are in the OUTER gamescope/Steam context here (before exec), so this only kills the
     # leftover nested tree — never gamescope-session or steamwebhelper.
-    if pgrep -f startplasma-wayland >/dev/null 2>&1 || pgrep -f latestUpdate >/dev/null 2>&1; then
-        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch" >> "$LOG"
-        local _g
-        for _g in 1 2 3; do
-            pkill -9 -f 'latestUpdate'; pkill -9 -f 'bwrap.*PolyMC'; pkill -9 -f 'PolyMC'
-            pkill -9 -f 'startplasma-wayland'; pkill -9 -f 'kwin_wayland'
-            pkill -9 -f 'plasma_session'; pkill -9 -f 'baloo_file'
-            sleep 1
-            pgrep -f startplasma-wayland >/dev/null 2>&1 || break
+    #
+    # #58 (2026-07-05, confirmed on Deck): two fixes to the original guard.
+    #  1. The bare pkills ran under errexit (set -euo pipefail leaks in from the sourced
+    #     modules): the first pattern with NO match returned 1 and killed THIS process
+    #     mid-reap — Steam saw the game close, so every first launch after Desktop Mode
+    #     bounced to the library and only the second (guard skipped) launch worked. The
+    #     guard must reap and FALL THROUGH; every kill is now || true like the rest of
+    #     this file.
+    #  2. pkill -9 -f 'startplasma-wayland'/'kwin_wayland'/... matched the OUTGOING real
+    #     Desktop-Mode session mid-teardown, not just our orphaned nested one. Session-level
+    #     names are now scoped via _mcss_nested_pids (environ marker) so a dying desktop
+    #     is left alone. MC-instance patterns (latestUpdate / bwrap→PolyMC) stay unscoped —
+    #     they are unambiguous and a leftover instance must die wherever it came from.
+    # #60: sweep stale run trees FIRST (see _mcss_stale_tree_pids) so no leftover
+    # orchestrator/watchdog/supervisor can react — via the shared state file/FIFO —
+    # while we reap its session and start ours.
+    local _g _name _pid _stale_tree
+    _stale_tree=$(_mcss_stale_tree_pids)
+    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
+        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch (stale trees: ${_stale_tree:-none})" >> "$LOG"
+        for _pid in $_stale_tree; do
+            kill -9 "$_pid" 2>/dev/null || true
         done
-        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null
-        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(pgrep -fc startplasma-wayland) jvm=$(pgrep -fc latestUpdate))" >> "$LOG"
+        for _g in 1 2 3; do
+            pkill -9 -f 'latestUpdate' 2>/dev/null || true
+            pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
+            pkill -9 -f 'PolyMC' 2>/dev/null || true
+            for _name in startplasma-wayland kwin_wayland plasma_session baloo_file; do
+                for _pid in $(_mcss_nested_pids "$_name"); do
+                    kill -9 "$_pid" 2>/dev/null || true
+                done
+            done
+            sleep 1
+            [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || break
+        done
+        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null || true
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc latestUpdate 2>/dev/null || true))" >> "$LOG"
+    fi
+    # #42: a Desktop-Mode double-click of the (now-guarded) desktop shortcut, or an
+    # earlier install predating the #43 environment guard, can leave a transient
+    # systemd --user unit (app-MinecraftSplitscreen@*.service) tracking a runaway
+    # session. Raw pkill doesn't collapse that unit's cgroup and systemd may keep it
+    # registered; explicitly stop any matching unit before a fresh launch. Best-effort
+    # — systemctl may not be present/relevant on every target, hence `|| true` throughout.
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop 'app-MinecraftSplitscreen@*' 2>/dev/null || true
     fi
 
     local RES W H
@@ -676,13 +748,75 @@ WEOF
     cat > ~/.config/autostart/splitscreen-prod.desktop <<DEOF
 [Desktop Entry]
 Name=Splitscreen
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} ${SCRIPT_PATH} prodFromPlasma
+Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH} prodFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
     _snapshot_session_env
-    echo "[launchFromPlasma] autostart written (→ prodFromPlasma), exec startplasma-wayland" >> "$LOG"
-    exec dbus-run-session startplasma-wayland
+
+    # #15/D6 (UNTESTED 2026-06-27 diagnosis → fix 2026-07-01, no Deck access this
+    # session): do NOT `exec` into the nested session. `exec` replaces THIS process, so
+    # once inside, only code running FROM WITHIN the dying session (launchProdFromPlasma's
+    # own EXIT trap) can attempt teardown — and Plasma's systemd --user-managed helpers
+    # (baloo_file, kglobalacceld, kactivitymanagerd, ...) get auto-restarted by systemd's
+    # Restart=on-failure the instant a bare `pkill` kills them, since nothing told systemd
+    # the unit/target is supposed to be going away. That's the confirmed root cause: the
+    # reaper waits on the whole descendant tree, systemd keeps re-populating it, so Steam
+    # never sees the game exit → Abort-Game overlay.
+    #
+    # Keeping THIS process alive as an OUTSIDE supervisor lets us run a SECOND, independent
+    # reap pass (_supervise_reap_nested_session) after the inner session's own trap-driven
+    # teardown has already tried once — a bounded retry loop that out-waits systemd's
+    # restart-burst limit (systemd gives up restarting a unit after enough rapid failures
+    # in a short window) rather than a single one-shot kill. Steam's reaper is watching
+    # THIS pid (the one it launched); we don't return until the reap loop confirms the
+    # tree is actually gone, instead of exiting the instant the nested session's own logout
+    # completes.
+    echo "[launchFromPlasma] autostart written (→ prodFromPlasma), launching nested session (supervised, non-exec)" >> "$LOG"
+    dbus-run-session startplasma-wayland &
+    local _session_pid=$!
+
+    # #60 follow-up (2026-07-05): the original wait here was a FLAT 60s budget from
+    # session start — written for the post-game teardown but placed at launch, it
+    # capped every session's LIFETIME at 60s. Invisible until tonight because the
+    # errexit '((_waited++))' bug killed this supervisor at second one on every run;
+    # fixing that resurrected the cap and it force-reaped LIVE sessions a minute in.
+    # The wait is now three phases; only teardown is bounded (the #15 premise —
+    # plasma_session respawn may keep the top-level session process alive forever —
+    # still holds, hence the phase-3 budget before the forced reap):
+    #   1. boot (bounded): wait for OUR inner handler (prodFromPlasma, marked with
+    #      this run's log path) to appear in the nested session;
+    #   2. lifetime (unbounded): wait while the inner handler lives — this is the
+    #      whole time the user is playing;
+    #   3. teardown grace (bounded): the inner trap gets a window to tear the
+    #      session down itself before we fall through to the forced reap.
+    local _boot=0 _boot_budget_s=90
+    while (( _boot < _boot_budget_s )) && [[ -z "$(_mcss_own_run_pids 'prodFromPlasma')" ]] \
+            && kill -0 "$_session_pid" 2>/dev/null; do
+        sleep 1
+        _boot=$(( _boot + 1 ))
+    done
+    echo "[launchFromPlasma] nested session boot phase ended after ${_boot}s (inner handler $( [[ -n "$(_mcss_own_run_pids 'prodFromPlasma')" ]] && echo up || echo ABSENT ))" >> "$LOG"
+
+    while [[ -n "$(_mcss_own_run_pids 'prodFromPlasma')" ]] && kill -0 "$_session_pid" 2>/dev/null; do
+        sleep 2
+    done
+    echo "[launchFromPlasma] inner handler gone — session over, granting teardown grace" >> "$LOG"
+
+    local _waited=0 _wait_budget_s=30
+    while (( _waited < _wait_budget_s )) && kill -0 "$_session_pid" 2>/dev/null; do
+        sleep 1
+        _waited=$(( _waited + 1 ))
+    done
+    if kill -0 "$_session_pid" 2>/dev/null; then
+        echo "[launchFromPlasma] nested session still alive ${_wait_budget_s}s after game end — proceeding to forced supervised reap" >> "$LOG"
+    else
+        echo "[launchFromPlasma] nested session exited ${_waited}s into teardown grace — supervising final reap" >> "$LOG"
+    fi
+
+    _restore_session_env
+    _supervise_reap_nested_session "$_session_pid"
+    echo "[launchFromPlasma] complete (supervised reap done)" >> "$LOG"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -744,6 +878,21 @@ launchProdFromPlasma() {
     echo "[launchProdFromPlasma] complete" >> "$LOG"
 }
 
+# _mcss_own_run_pids: PIDs matching $1 (pgrep -f pattern) that belong to THIS RUN's
+# tree — environ carries SPLITSCREEN_DEBUG_LOG=<our exact $LOG>, which is unique per
+# run (timestamped) and inherited by every process the run spawns. Stricter than
+# _mcss_nested_pids (any marker value): teardown must kill only ITS OWN session.
+# (#60, confirmed on-Deck 2026-07-05: a stale supervisor's bounded reap loop was
+# still running when the NEXT session launched, and the name-only pkills below
+# murdered the new session's compositor ~25s after boot.)
+_mcss_own_run_pids() {
+    local _pat="$1" _pid
+    for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
+        grep -qzF "SPLITSCREEN_DEBUG_LOG=${LOG}" "/proc/$_pid/environ" 2>/dev/null && echo "$_pid"
+    done
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _end_nested_session: tear down the WHOLE nested Plasma session so Steam's reaper
 # releases and gamescope returns to the library. Two gotchas (both confirmed 2026-06-23):
@@ -752,18 +901,74 @@ launchProdFromPlasma() {
 #      survive a compositor-only teardown, get adopted by Steam's subreaper, and keep the
 #      "game" alive forever (Abort-Game overlay) — the reaper waits on the whole descendant
 #      tree. So reap them too. TERM pass, then KILL pass.
+# #60: kills are scoped to THIS RUN's own tree via _mcss_own_run_pids — a raw name
+# pkill here reaps ANY session, including a newer one launched while a stale
+# supervisor is still inside its retry loop. Session helpers spawned outside our
+# env-inheritance (e.g. re-spawned by the systemd user manager) are invisible to
+# the scoping; those are handled by the plasma-workspace.target stop in
+# _supervise_reap_nested_session, not by widening the kill back to all-names.
 _end_nested_session() {
-    local sig svc
+    local sig svc _pid
     for sig in TERM KILL; do
-        pkill -"$sig" -f kwin_wayland_wrapper 2>/dev/null || true
-        pkill -"$sig" -x kwin_wayland 2>/dev/null || true
-        for svc in startplasma-wayland plasma_session baloo_file kded6 \
+        for svc in kwin_wayland_wrapper kwin_wayland startplasma-wayland \
+                   plasma_session baloo_file kded6 \
                    kglobalacceld kactivitymanagerd kscreen_backend_launcher \
                    xdg-desktop-portal-kde; do
-            pkill -"$sig" -f "$svc" 2>/dev/null || true
+            for _pid in $(_mcss_own_run_pids "$svc"); do
+                kill -"$sig" "$_pid" 2>/dev/null || true
+            done
         done
         [ "$sig" = TERM ] && sleep 1
     done
+}
+
+# _supervise_reap_nested_session: OUTSIDE-the-session supervisor for #15/D6.
+# Called from launchFromPlasma AFTER the nested session's own process has exited (we no
+# longer `exec` into it — see the comment there), so this runs from a process that was
+# never part of the session being torn down. Tries the surgical systemd stop first (which
+# cancels Restart=on-failure for units bound to the target, unlike a raw pkill that
+# systemd just respawns against), then repeats the existing kill sweep in a BOUNDED RETRY
+# loop — exploiting systemd's own restart-burst limit (it gives up respawning a unit after
+# enough rapid failures in a short window) instead of a single one-shot pass. Returns 0
+# once no tracked process names remain, 1 if they survive every pass (logged, not fatal —
+# the caller still returns so Steam's reaper isn't blocked forever on a bug in this reap).
+_supervise_reap_nested_session() {
+    local _session_pid="${1:-}"
+    local _tries=0 _max_tries=8
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop plasma-workspace.target 2>/dev/null || true
+    fi
+    while (( _tries < _max_tries )); do
+        # If the dbus-run-session/startplasma-wayland top-level process itself is still
+        # alive (it may never exit on its own — see the bounded-wait comment above),
+        # collapse its WHOLE tree directly by PID, not just by name.
+        if [[ -n "$_session_pid" ]] && kill -0 "$_session_pid" 2>/dev/null; then
+            _kill_tree "$_session_pid" TERM
+        fi
+        _end_nested_session
+        sleep 1
+        if [[ -n "$_session_pid" ]] && kill -0 "$_session_pid" 2>/dev/null; then
+            _kill_tree "$_session_pid" KILL
+        fi
+        # #60: completion check scoped to OUR OWN run's tree — a name-wide pgrep
+        # here sees a CONCURRENT newer session's processes and keeps this loop
+        # (and its kill sweeps) alive against them for all 8 passes.
+        local _svc _left=""
+        for _svc in kwin_wayland startplasma-wayland plasma_session baloo_file; do
+            if [[ -n "$(_mcss_own_run_pids "$_svc")" ]]; then
+                _left="$_svc"
+                break
+            fi
+        done
+        if [[ -z "$_left" ]]; then
+            echo "[supervise_reap] own nested-session tree confirmed clean after $((_tries + 1)) pass(es)" >> "$LOG"
+            return 0
+        fi
+        _tries=$(( _tries + 1 ))
+        echo "[supervise_reap] own leftovers survived pass ${_tries}/${_max_tries} (${_left}) — retrying" >> "$LOG"
+    done
+    echo "[supervise_reap] WARNING: own nested-session processes survived ${_max_tries} reap passes" >> "$LOG"
+    return 1
 }
 
 # (Decoration is handled by kwin_set_noborder <pid> in spawn_instance — set ONCE when the
@@ -912,8 +1117,10 @@ _run_position_sweep_session() {
     echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
 
     local W H
+    # #27: fall back to 1280x800 (the Deck's actual panel resolution), matching the
+    # fallback used everywhere else in this file — this one line was the odd 720 out.
     W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
-    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=720
+    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=800
     local hw=$((W/2)) hh=$((H/2))
     local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-12}"
     echo "[sweep] single-instance position sweep on ${W}x${H}, observe ${delay}s/step" >> "$LOG"
@@ -1021,6 +1228,7 @@ launchNested() {
         --xwayland \
         -- env \
             SPLITSCREEN_DEBUG_LOG="$LOG" \
+            MCSS_NESTED_SESSION=1 \
             SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
             SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
             SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
@@ -1181,19 +1389,40 @@ r.lower(); r.mainloop()
         kill -TERM "$PPID" 2>/dev/null || true
         ;;
     *)
-        # Normal mode
-        if declare -f main >/dev/null 2>&1; then
-            echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
-            main
-        else
-            echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
-            if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
-                echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
-                launchWindowTest
+        # #43/#42 GUARD: a bare invocation with no argument used to fall straight into
+        # main() -> docked_flow on WHATEVER display is currently active — that's exactly
+        # how #42 happened (a Desktop-Mode .desktop shortcut with no LaunchOptions spawned
+        # a live 4-player splitscreen outside gamescope). Only proceed if we're already
+        # confirmed inside our own nested session (MCSS_NESTED_SESSION=1, set by
+        # launchFromPlasma/testPlasma/nestedPlasma/launchNested before they re-invoke this
+        # script) OR the OUTER context is gamescope itself (mcss_require_gamescope checks
+        # XDG_CURRENT_DESKTOP/XDG_SESSION_DESKTOP, which is only meaningful pre-nesting).
+        if [[ "${MCSS_NESTED_SESSION:-0}" == "1" ]] || { declare -f mcss_require_gamescope >/dev/null 2>&1 && mcss_require_gamescope; }; then
+            if declare -f main >/dev/null 2>&1; then
+                echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
+                main
             else
-                echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
-                nestedPlasma
+                echo "[main] Phase B orchestrator not loaded — falling back to legacy dispatch" >> "$LOG"
+                if [[ "${XDG_SESSION_DESKTOP:-}" == "KDE" || "${XDG_CURRENT_DESKTOP:-}" == "KDE" ]]; then
+                    echo "[main] KDE session detected — launchWindowTest" >> "$LOG"
+                    launchWindowTest
+                else
+                    echo "[main] gamescope session detected — nestedPlasma" >> "$LOG"
+                    nestedPlasma
+                fi
             fi
+        else
+            echo "[main] REFUSED bare invocation outside gamescope/nested session — see runtime_context guard above. Launch via the Steam shortcut instead." >> "$LOG"
+            # #40/#42: a bare double-click (e.g. the desktop shortcut) used to either
+            # crash silently (#40, _set_mode) or spawn a runaway (#42). Now it's refused
+            # safely, but give visible feedback instead of "nothing happens" — Game Mode
+            # has no terminal to see the log in.
+            if command -v kdialog >/dev/null 2>&1; then
+                kdialog --error "Minecraft Splitscreen only runs from the Steam library (Game Mode)." >/dev/null 2>&1 &
+            elif command -v zenity >/dev/null 2>&1; then
+                zenity --error --text="Minecraft Splitscreen only runs from the Steam library (Game Mode)." >/dev/null 2>&1 &
+            fi
+            exit 1
         fi
         ;;
 esac

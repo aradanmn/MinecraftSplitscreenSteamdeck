@@ -127,7 +127,7 @@ setup_splitscreen_launcher_script() {
     return 0
 }
 
-# install_runtime_modules: Deploy the 5 runtime orchestrator modules to TARGET_DIR/modules/
+# install_runtime_modules: Deploy the runtime orchestrator modules to TARGET_DIR/modules/
 # These modules are sourced by minecraftSplitscreen.sh at launch time (not at install time).
 # Prefers files already in MODULES_DIR (put there by the installer's download step),
 # falls back to local repo copy, then GitHub download.
@@ -140,6 +140,7 @@ install_runtime_modules() {
     local base_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/modules"
     local runtime_mods=(
         "preflight.sh"
+        "runtime_context.sh"
         "dock_detection.sh"
         "controller_monitor.sh"
         "kwin_positioner.sh"
