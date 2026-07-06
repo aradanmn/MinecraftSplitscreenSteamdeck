@@ -41,10 +41,18 @@ run_stage3_hotplug() {
     hw_section "Stage 3: Docked Hot-Plug"
 
     # --- D3.0: Confirm docked mode ---
+    # Docked contract (owner decision, 2026-07-05): pads are plugged BEFORE launch.
+    # The orchestrator's startup controller acquisition exits cleanly if no external
+    # controller appears within its 5s window (you can't play docked on the built-in
+    # pad), so the FIRST pad must already be connected when the orchestrator starts.
+    # This stage therefore begins with exactly ONE pad connected; pads 2-4 still
+    # exercise true hotplug against the running event loop.
     if ! hw_prompt "Connect the Steam Deck to a dock or hub with an HDMI or DisplayPort cable.
   The external display should now be active.
-  IMPORTANT: Ensure ALL external controllers are UNPLUGGED before continuing.
-  Once the external display is showing and controllers are unplugged, press Enter."; then
+  Plug in exactly ONE external controller (USB or Bluetooth gamepad) NOW —
+  docked launch requires a controller already connected (5s acquisition window).
+  Ensure all OTHER external controllers are unplugged.
+  Once the display is up and exactly one controller is connected, press Enter."; then
         hw_skip "D3.0-D3.9 — operator skipped docked mode setup"
         return 0
     fi
@@ -72,19 +80,11 @@ run_stage3_hotplug() {
 
     hw_wait_for "D3.1 FIFO created" 10 test -p "${SPLITSCREEN_FIFO}"
 
-    sleep 2
-    local initial_count
-    initial_count=$(_active_slot_count)
-    hw_log "D3.1 active slots at start: ${initial_count}"
-    hw_assert_eq "D3.1 zero active slots before any controller" "0" "$initial_count"
+    # (The old "zero active slots before any controller" assertion is gone: with the
+    # pads-first contract the startup acquisition claims the already-connected pad
+    # immediately, so slot 1 activating IS the expected launch state — checked in D3.2.)
 
-    # --- D3.2: First controller ---
-    if ! hw_prompt "Plug in ONE external controller (USB or Bluetooth gamepad).
-  Wait 3 seconds after plugging it in, then press Enter."; then
-        hw_skip "D3.2-D3.9 — operator skipped controller tests"
-        return 0
-    fi
-
+    # --- D3.2: First controller (already connected — claimed by startup acquisition) ---
     hw_info "D3.2 — Waiting for slot 1 to become active (up to 30s)..."
     if hw_wait_for "D3.2 slot 1 active" 30 _slot_active 1; then
         hw_dump_state
