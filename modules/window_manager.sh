@@ -178,7 +178,7 @@ _verify_window_geometry() {
 # Output: WID on stdout, or empty string on failure.
 _get_wid_from_state() {
     local slot="$1"
-    local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local sf="$SPLITSCREEN_STATE"
     local wid=""
     # L3: --arg instead of string-interpolating $slot into the filter.
     [[ -f "$sf" ]] && wid=$(jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true)
@@ -192,7 +192,7 @@ _get_wid_from_state() {
 # KWin 6.x), so this is the primary identifier for Path-B positioning.
 _get_pid_from_state() {
     local slot="$1"
-    local sf="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local sf="$SPLITSCREEN_STATE"
     # L3: --arg instead of string-interpolating $slot into the filter.
     [[ -f "$sf" ]] && jq -r --arg slot "$slot" '.slots[$slot].pid // empty' "$sf" 2>/dev/null || true
 }
