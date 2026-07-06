@@ -622,6 +622,22 @@ DEOF
     exec dbus-run-session startplasma-wayland
 }
 
+# #58: PIDs matching $1 (pgrep -f pattern) that belong to OUR nested-session tree,
+# identified by SPLITSCREEN_DEBUG_LOG= in the process environ — every invocation of
+# this script exports it (top of file), so a nested startplasma-wayland and all its
+# descendants (kwin, plasma_session, baloo, ...) carry it. The REAL Desktop-Mode
+# Plasma session does not, so a first launch right after Desktop → Game Mode (outgoing
+# desktop still tearing down) must never see its processes here. Leftovers from builds
+# predating the SPLITSCREEN_DEBUG_LOG export are invisible to this filter — accepted:
+# they predate this branch and a manual reap/reboot covers the upgrade edge.
+_mcss_nested_pids() {
+    local _pat="$1" _pid
+    for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
+        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null && echo "$_pid"
+    done
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # launchFromPlasma — PRODUCTION outer entry (this is the LaunchOptions the Steam
 # shortcut runs). Starts the nested KDE/Plasma session exactly like testPlasma, but
@@ -643,18 +659,36 @@ launchFromPlasma() {
     # re-trigger the Steam UI (the "gamescope restarting" chime), and pile up orphan JVMs.
     # We are in the OUTER gamescope/Steam context here (before exec), so this only kills the
     # leftover nested tree — never gamescope-session or steamwebhelper.
-    if pgrep -f startplasma-wayland >/dev/null 2>&1 || pgrep -f latestUpdate >/dev/null 2>&1; then
+    #
+    # #58 (2026-07-05, confirmed on Deck): two fixes to the original guard.
+    #  1. The bare pkills ran under errexit (set -euo pipefail leaks in from the sourced
+    #     modules): the first pattern with NO match returned 1 and killed THIS process
+    #     mid-reap — Steam saw the game close, so every first launch after Desktop Mode
+    #     bounced to the library and only the second (guard skipped) launch worked. The
+    #     guard must reap and FALL THROUGH; every kill is now || true like the rest of
+    #     this file.
+    #  2. pkill -9 -f 'startplasma-wayland'/'kwin_wayland'/... matched the OUTGOING real
+    #     Desktop-Mode session mid-teardown, not just our orphaned nested one. Session-level
+    #     names are now scoped via _mcss_nested_pids (environ marker) so a dying desktop
+    #     is left alone. MC-instance patterns (latestUpdate / bwrap→PolyMC) stay unscoped —
+    #     they are unambiguous and a leftover instance must die wherever it came from.
+    local _g _name _pid
+    if [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
         echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch" >> "$LOG"
-        local _g
         for _g in 1 2 3; do
-            pkill -9 -f 'latestUpdate'; pkill -9 -f 'bwrap.*PolyMC'; pkill -9 -f 'PolyMC'
-            pkill -9 -f 'startplasma-wayland'; pkill -9 -f 'kwin_wayland'
-            pkill -9 -f 'plasma_session'; pkill -9 -f 'baloo_file'
+            pkill -9 -f 'latestUpdate' 2>/dev/null || true
+            pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
+            pkill -9 -f 'PolyMC' 2>/dev/null || true
+            for _name in startplasma-wayland kwin_wayland plasma_session baloo_file; do
+                for _pid in $(_mcss_nested_pids "$_name"); do
+                    kill -9 "$_pid" 2>/dev/null || true
+                done
+            done
             sleep 1
-            pgrep -f startplasma-wayland >/dev/null 2>&1 || break
+            [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || break
         done
-        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null
-        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(pgrep -fc startplasma-wayland) jvm=$(pgrep -fc latestUpdate))" >> "$LOG"
+        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null || true
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc latestUpdate 2>/dev/null || true))" >> "$LOG"
     fi
     # #42: a Desktop-Mode double-click of the (now-guarded) desktop shortcut, or an
     # earlier install predating the #43 environment guard, can leave a transient
