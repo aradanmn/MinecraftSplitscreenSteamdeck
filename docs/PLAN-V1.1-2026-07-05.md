@@ -4,6 +4,18 @@
 
 This plan was produced by a multi-agent deep analysis: 11 inventory agents read every module function-by-function, consolidation agents built the globals set / duplication map / style guide / release plan, and adversarial verifiers checked the globals proposal for naming collisions and completeness. **Confidence notes:** the process-boundary (scoping) verifier and the five per-duplication verifiers were cut off by a session limit; the five high-severity duplication claims were re-verified by hand against the source afterward (all confirmed), and the corrections from the two verifiers that did run are folded into Part 4. Line numbers cite `main` unless marked *(branch)*.
 
+
+> **STATUS (2026-07-06):** v1.1.0 shipped (PR #63, tag `v1.1.0`) with the campaign's
+> core validated on hardware — stages 0–5, R1 answered, R2 vindicated (the 60s
+> supervisor wait was indeed the top regression, twice over — see #60). This
+> document is now the **frozen design record**; living status moved to GitHub:
+> **milestones** (`v1.1.1 — validation debt + hygiene`, `v1.2 — controller
+> identity + consolidation`, `backlog`) and the **#68 umbrella issue** for the
+> v1.1.1 gap campaign (unrun plan items 6/7/10/12/13 + ship-mechanics verify).
+> Part 4 Group B and dup kill-list D1/D3/D5 landed early (PRs #64/#65). New
+> since this plan: #61 (4-pad cascade symptom record) and #62 (sandbox input-node
+> leakage — probable #61 mechanism; intersects the #38 decision).
+
 ---
 
 ## Part 1 — Codebase map (the 30-second version)
