@@ -35,14 +35,21 @@ DEX_DISPLAY="${DEX_DISPLAY:-${DISPLAY:-:0}}"
 # Prefer $XDG_RUNTIME_DIR (per-session tmpfs, auto-removed by systemd on logout) over
 # /tmp so the generated backend doesn't leak on crash — the cleanup is not EXIT-trapped
 # by design (the script must survive across many dex invocations in one shell). M7.
-DEX_PY_SCRIPT="${DEX_PY_SCRIPT:-${XDG_RUNTIME_DIR:-/tmp}/dex_$$.py}"
+# #19: stable per-UID name (was per-PID dex_$$.py) — every sourcing process
+# minted its own file and nothing reaped the /tmp fallback copies (EXIT traps
+# are off-limits here, see _dex_cleanup). One shared file per user, written
+# atomically, regenerated on every source and on demand if a cleanup removed it.
+DEX_PY_SCRIPT="${DEX_PY_SCRIPT:-${XDG_RUNTIME_DIR:-/tmp}/dex_backend_${UID}.py}"
 
 # ============================================================
 # Generate the Python backend script once, then call it for each op.
 # This avoids heredoc expansion issues and is more efficient.
 # ============================================================
 _dex_generate_backend() {
-    cat > "$DEX_PY_SCRIPT" << 'DEXPYEOF'
+    # #19: atomic — a concurrent _dex_run keeps reading the old inode.
+    local _tmp
+    _tmp=$(mktemp "${DEX_PY_SCRIPT}.XXXXXX") || return 1
+    cat > "$_tmp" << 'DEXPYEOF'
 #!/usr/bin/env python3
 """DEX Backend — X11 window manipulation via ctypes Xlib.
 Usage: dex_backend.py <action> [args...]
@@ -521,16 +528,19 @@ else:
 
 _lib.XCloseDisplay(dpy)
 DEXPYEOF
-    chmod +x "$DEX_PY_SCRIPT"
+    chmod +x "$_tmp"
+    mv -f "$_tmp" "$DEX_PY_SCRIPT"
 }
 
-# Ensure backend exists
-if [[ ! -f "$DEX_PY_SCRIPT" ]]; then
-    _dex_generate_backend
-fi
+# Always (re)generate at source time: the path is shared per-UID, so a stale
+# copy from an older code version must not survive an update (#19). The write
+# is atomic (mktemp+mv in _dex_generate_backend), so concurrent sourcing is safe.
+_dex_generate_backend
 
 # ---- Run an action ----
 _dex_run() {
+    # #19: the per-UID backend is shared; another run's cleanup may have removed it.
+    [[ -f "$DEX_PY_SCRIPT" ]] || _dex_generate_backend
     DEX_DISPLAY="$DEX_DISPLAY" python3 "$DEX_PY_SCRIPT" "$@"
 }
 
