@@ -59,7 +59,6 @@ INSTANCE_LIFECYCLE_JAVA_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_P
 INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
 readonly INSTANCE_LIFECYCLE_JAVA_POLL_ITERS INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS
 readonly INSTANCE_LIFECYCLE_DEFAULT_LAUNCHER_DIR="$HOME/.local/share/PolyMC"
-readonly INSTANCE_LIFECYCLE_DEFAULT_STATE_FILE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 
 # --- Internal functions ---
 
@@ -70,7 +69,10 @@ _get_launcher_dir() {
 
 # _get_state_file: Return the state file path.
 _get_state_file() {
-    echo "${SPLITSCREEN_STATE:-$INSTANCE_LIFECYCLE_DEFAULT_STATE_FILE}"
+    # #50: SPLITSCREEN_STATE is resolved+exported once in runtime_context.sh;
+    # no per-module fallback — a lost export must fail loud, not fork the system
+    # across two state files.
+    echo "$SPLITSCREEN_STATE"
 }
 
 # _get_bwrap_cmd: Return the bwrap command path.
@@ -85,7 +87,17 @@ _get_launcher_exec() {
 
 # _ensure_state_file: Reset the state file to default (all slots inactive).
 # Called on every startup to guarantee a known clean state.
+# $1 (optional) = mode (docked|handheld); defaults via get_display_mode. #46:
+# this is now the ONLY initializer — the launcher's three inline JSON blobs
+# (hardcoded "docked") had already drifted against this function's hardcoded
+# "handheld", and none of the four consulted dock detection.
 _ensure_state_file() {
+    local mode="${1:-}"
+    if [[ -z "$mode" ]]; then
+        mode=$(get_display_mode 2>/dev/null) || mode=""
+    fi
+    [[ "$mode" == "docked" || "$mode" == "handheld" ]] || mode="handheld"
+
     local state_file
     state_file=$(_get_state_file)
 
@@ -97,8 +109,8 @@ _ensure_state_file() {
     # wid field holds the X11 window ID (hex integer) so apply_layout can locate
     # the Minecraft window without relying on xdotool name-search (which fails in
     # gamescope's XWayland where xdotool set_window --name doesn't persist).
-    jq -n '{
-        mode: "handheld",
+    jq -n --arg mode "$mode" '{
+        mode: $mode,
         slots: {
             "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
             "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
@@ -578,7 +590,7 @@ update_slot_state() {
     # reverts another slot's just-written field → lost bwrap_pid (un-reapable zombie slot) or
     # lost active:true (slot handed out twice → double-spawn / controller on wrong player).
     # flock on a sidecar lock fd makes the jq-read + atomic-write one critical section.
-    local lock_file="${state_file}.lock"
+    local lock_file="$MCSS_STATE_LOCK"
     (
         flock -w 5 9 || {
             echo "[instance_lifecycle] WARNING: state-file lock timeout updating slot $slot" >&2

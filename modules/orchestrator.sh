@@ -77,7 +77,7 @@ _read_fifo_msg() {
 # HELPER: get the current mode from SPLITSCREEN_STATE
 # =============================================================================
 _get_mode() {
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local state="$SPLITSCREEN_STATE"
     jq -r '.mode // "docked"' "$state" 2>/dev/null || echo "docked"
 }
 
@@ -86,7 +86,7 @@ _get_mode() {
 # =============================================================================
 _set_mode() {
     local mode="$1"
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local state="$SPLITSCREEN_STATE"
     # #40 (fixes a regression from the H3/L2 flock change, 2026-06-27): the flock version
     # below hard `exit 1`s (inside a `set -e` subshell) whenever the state file is missing
     # or unparseable — e.g. main() invoked without going through launchProdFromPlasma's
@@ -94,7 +94,7 @@ _set_mode() {
     # original was tolerant (`jq ... || true`); restore that tolerance while KEEPING the H3
     # lock/unique-temp fix: initialize a default state file if it's missing/invalid instead
     # of failing, so _set_mode can never be the thing that crashes a legitimate launch.
-    local lock_file="${state}.lock"
+    local lock_file="$MCSS_STATE_LOCK"
     (
         flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
@@ -129,7 +129,7 @@ _find_free_slot() {
 # =============================================================================
 _find_slot_by_event_node() {
     local node="$1"
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local state="$SPLITSCREEN_STATE"
     [[ -n "$node" && -f "$state" ]] || return 0
     jq -r --arg n "$node" \
         'first(.slots | to_entries[] | select(.value.active == true and .value.event_node == $n) | .key) // empty' \
@@ -145,7 +145,7 @@ _find_slot_by_event_node() {
 # =============================================================================
 _collect_mask_pairs() {
     local current="$1"
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+    local state="$SPLITSCREEN_STATE"
     [[ -f "$state" ]] || return 0
     jq -r --arg cur "$current" \
         '.slots | to_entries[]
