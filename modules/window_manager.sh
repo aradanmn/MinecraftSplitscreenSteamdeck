@@ -253,7 +253,7 @@ compute_grid_mode() {
 
     local count=0 slot
     for slot in $active_slots; do
-        [[ "$slot" =~ ^[1-4]$ ]] && (( count++ ))
+        [[ "$slot" =~ ^[1-4]$ ]] && count=$(( count + 1 ))
     done
 
     if   (( count <= 1 )); then echo "full"
