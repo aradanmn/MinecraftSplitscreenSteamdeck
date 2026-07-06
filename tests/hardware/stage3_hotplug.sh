@@ -335,6 +335,62 @@ run_stage3_hotplug() {
         hw_skip "D3.9 — max-4 cap test skipped (no 5th controller)"
     fi
 
+    # ── D3.10 (#16): controller monitor killed mid-session → orchestrator restarts it
+    if hw_prompt "CHAOS 1/3 (#16): the controller monitor will now be killed mid-session.
+  Expected: the orchestrator's heartbeat restarts it within ~15s and hotplug keeps working.
+  Press Enter to run, or type 'skip'."; then
+        local mon_udev old_mon new_udev
+        mon_udev=$(pgrep -f 'udevadm monitor' | head -1 || true)
+        if [[ -n "$mon_udev" ]]; then
+            old_mon=$(ps -o ppid= -p "$mon_udev" 2>/dev/null | tr -d ' ')
+            hw_log "D3.10 monitor shell=$old_mon (udevadm child=$mon_udev) — kill -9 both"
+            kill -9 "$old_mon" "$mon_udev" 2>/dev/null || true
+            hw_wait_for "D3.10 heartbeat restarted the monitor (new udevadm)" 30 \
+                bash -c '[[ -n "$(pgrep -f "udevadm monitor" 2>/dev/null)" ]]' || true
+            hw_prompt "Unplug ANY one pad, wait 3s, plug it back in — its slot should cycle
+  (game torn down, then respawned). Press Enter when you have seen the cycle, or 'skip'." \
+                && hw_confirm "Did the slot cycle correctly after the monitor kill?" \
+                && hw_pass "D3.10 (#16) session survived monitor kill; hotplug still live" \
+                || hw_fail "D3.10 (#16) hotplug did not survive the monitor kill"
+        else
+            hw_skip "D3.10 — no udevadm monitor process found (polling fallback in use?)"
+        fi
+    else
+        hw_skip "D3.10 (#16) monitor-kill chaos skipped"
+    fi
+
+    # ── D3.11 (#23): rapid double-plug must not double-add
+    if hw_prompt "CHAOS 2/3 (#23): unplug ONE pad, then plug it back in TWICE in rapid
+  succession (insert, yank within ~1s, insert again). Do that now, wait 10s, press Enter."; then
+        sleep 5
+        local n_active n_java
+        n_active=$(_active_slot_count)
+        n_java=$(pgrep -fc 'java.*latestUpd[a]te' 2>/dev/null || echo 0)
+        hw_log "D3.11 active_slots=$n_active java_instances=$n_java"
+        hw_assert_eq "D3.11 (#23) no double-add: java count matches active slots" "$n_active" "$n_java"
+        if (( n_active <= 4 )); then
+            hw_pass "D3.11 (#23) slot count within cap after rapid double-plug ($n_active)"
+        else
+            hw_fail "D3.11 (#23) slot count exceeded cap: $n_active"
+        fi
+        hw_dump_state
+    else
+        hw_skip "D3.11 (#23) rapid double-plug chaos skipped"
+    fi
+
+    # ── D3.12 (#25): whole-hub unplug/replug
+    if hw_prompt "CHAOS 3/3 (#25): unplug the WHOLE hub/dock USB (all pads drop at once).
+  Wait 5s, then plug the hub back in. Wait ~30s for respawns, then press Enter."; then
+        sleep 5
+        hw_dump_state
+        hw_checklist "D3.12 (#25) hub replug" \
+            "All quadrants eventually returned to running games (or placeholders while loading)" \
+            "No stuck black quadrant that never recovers" \
+            "Each pad controls the same quadrant it did before the hub pull"
+    else
+        hw_skip "D3.12 (#25) hub replug chaos skipped"
+    fi
+
     hw_dump_state
     hw_dump_processes
     hw_info "Stage 3 complete — orchestrator left running for stages 4 and 5"
