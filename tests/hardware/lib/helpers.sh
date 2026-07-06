@@ -359,6 +359,10 @@ hw_expected_slot_geometry() {
 # hw_assert_window_at LABEL TITLE EXP_X EXP_Y EXP_W EXP_H [TOLERANCE_PX]
 # Fails if the named window is not found or is not within TOLERANCE of the
 # expected position. Tolerates window-manager decoration offsets.
+# Like every hw_assert_*, this records the failure and RETURNS 0 — the stage
+# scripts run under set -euo pipefail and call asserts bare, so a nonzero
+# return here killed the whole run at the first failed assert (on-Deck
+# 2026-07-05; the suite's contract is count-and-continue, summary at exit).
 hw_assert_window_at() {
     local label="$1" title="$2" exp_x="$3" exp_y="$4" exp_w="$5" exp_h="$6"
     local tol="${7:-50}"
@@ -369,7 +373,7 @@ hw_assert_window_at() {
 
     if [[ -z "$wid" ]]; then
         hw_fail "${label} — window '${title}' not visible on DISPLAY=${HW_XDO_DISPLAY:-?} (nested game display)"
-        return 1
+        return 0
     fi
 
     local geom
@@ -378,7 +382,7 @@ hw_assert_window_at() {
 
     if [[ -z "$geom" ]]; then
         hw_fail "${label} — could not read geometry for window '${title}' (id ${wid})"
-        return 1
+        return 0
     fi
 
     # geom sets X, Y, WIDTH, HEIGHT, SCREEN, WINDOW
@@ -528,12 +532,50 @@ HW_ORCH_PID=""
 # hw_launch_orchestrator MODE
 # Launches minecraftSplitscreen.sh launchFromPlasma with SPLITSCREEN_MODE set.
 # Waits up to 5s for FIFO to appear. Exports HW_ORCH_PID.
+# hw_reap_stale_session: pre-launch hygiene. Back-to-back suite runs race the
+# previous session's teardown: the new launch's STARTUP GUARD kills the old
+# nested tree asynchronously while this harness's first checks read the OLD
+# state file and probe the OLD (dying) windows — stale passes, then phantom
+# fails (on-Deck 2026-07-05). Reap the old session HERE, synchronously, and
+# reset the state file so every launch starts from a known-clean slate.
+# Ours-only scoping mirrors the launcher's #58 guard: a process is ours iff
+# its environ carries SPLITSCREEN_DEBUG_LOG=.
+hw_reap_stale_session() {
+    local _name _pid _tries
+    pkill -9 -f 'latestUpdate' 2>/dev/null || true
+    pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
+    for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland; do
+        for _pid in $(pgrep -f "$_name" 2>/dev/null || true); do
+            grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
+                && kill -9 "$_pid" 2>/dev/null || true
+        done
+    done
+    local _left
+    for _tries in 1 2 3 4 5; do
+        _left=""
+        for _pid in $(pgrep -f 'startplasma-wayland' 2>/dev/null || true); do
+            if grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null; then
+                _left="$_pid"
+                break
+            fi
+        done
+        [[ -z "$_left" ]] && break
+        sleep 1
+    done
+    if [[ -n "${SPLITSCREEN_STATE:-}" ]]; then
+        echo '{"mode":"unknown","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$SPLITSCREEN_STATE"
+        hw_info "hw_reap_stale_session: state file reset to all-inactive"
+    fi
+}
+
 hw_launch_orchestrator() {
     local mode="${1:-}"
     if [[ "$mode" != "handheld" && "$mode" != "docked" ]]; then
         hw_fail "hw_launch_orchestrator: invalid mode '${mode}' (must be handheld or docked)"
         return 1
     fi
+
+    hw_reap_stale_session
 
     local orch_log="${HW_LOG}.orch"
     hw_info "Launching orchestrator in ${mode} mode (log: ${orch_log})"
