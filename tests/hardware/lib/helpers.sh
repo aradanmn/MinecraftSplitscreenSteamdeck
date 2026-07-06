@@ -418,20 +418,13 @@ hw_assert_window_at() {
 # contains the expected mode value before Minecraft reads it.
 hw_assert_splitscreen_properties() {
     local label="$1" slot="$2" expected_mode="$3"
-    local launcher_dir="${4:-$HOME/.local/share/PolyMC}"
-    local prop_file="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
-
-    hw_log "Checking ${prop_file}"
-
-    if [[ ! -f "$prop_file" ]]; then
-        hw_fail "${label} — splitscreen.properties not found: ${prop_file}"
-        return 1
-    fi
-
-    local actual_mode
-    actual_mode=$(grep '^mode=' "$prop_file" 2>/dev/null | cut -d= -f2 || true)
-    hw_log "${label}: splitscreen.properties mode=${actual_mode} (expected ${expected_mode})"
-    hw_assert_eq "${label} splitscreen.properties mode" "$expected_mode" "$actual_mode"
+    # The Splitscreen Support mod that consumed splitscreen.properties was removed
+    # 2026-06-23 (_write_splitscreen_properties deleted with it); KWin does the
+    # tiling, and layout correctness is asserted via hw_assert_window_at geometry.
+    # Kept as a recorded skip so stage logs keep their check IDs (found asserting
+    # against the removed file during first on-Deck stage3 runs, 2026-07-05).
+    hw_skip "${label} — splitscreen.properties retired 2026-06-23 (mode ${expected_mode}, slot ${slot} covered by window geometry assert)"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -483,7 +476,10 @@ hw_checklist() {
 
     hw_log "━━━ End checklist: ${title} ━━━"
     hw_log ""
-    return "$failed"
+    # Record-and-continue: failures are already counted via hw_fail. Returning
+    # the failed-count made a single 'n' answer kill the whole run under the
+    # stage scripts' set -euo pipefail (same errexit class as #58/#60).
+    return 0
 }
 
 # ---------------------------------------------------------------------------
