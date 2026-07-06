@@ -548,6 +548,9 @@ hw_reap_stale_session() {
         grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
             && kill -9 "$_pid" 2>/dev/null || true
     done
+    # Stale Steam reaper for our shortcut: while it lives, Steam thinks the game
+    # is still running and steam://rungameid/ won't relaunch it.
+    pkill -9 -f 'SteamLaunch.*minecraftSplitscreen' 2>/dev/null || true
     pkill -9 -f 'latestUpdate' 2>/dev/null || true
     pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
     for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland; do
@@ -574,6 +577,44 @@ hw_reap_stale_session() {
     fi
 }
 
+# hw_shortcut_gameid: resolve the Steam shortcut gameid for the splitscreen
+# launcher from shortcuts.vdf (gameid = appid<<32 | 0x02000000). Empty if absent.
+hw_shortcut_gameid() {
+    python3 - <<'PYEOF' 2>/dev/null || true
+import glob, struct
+for path in glob.glob("/home/deck/.steam/steam/userdata/*/config/shortcuts.vdf"):
+    data = open(path, "rb").read()
+    appid, i = None, 0
+    while i < len(data):
+        b = data[i]
+        if b == 0x02:
+            end = data.index(b"\x00", i + 1)
+            name = data[i + 1:end].decode(errors="replace").lower()
+            val = struct.unpack("<I", data[end + 1:end + 5])[0]
+            if name == "appid":
+                appid = val
+            i = end + 5
+        elif b == 0x01:
+            end = data.index(b"\x00", i + 1)
+            end2 = data.index(b"\x00", end + 1)
+            val = data[end + 1:end2].decode(errors="replace")
+            if "minecraftSplitscreen.sh" in val and appid is not None:
+                print((appid << 32) | 0x02000000)
+                raise SystemExit
+            i = end2 + 1
+        else:
+            i += 1
+PYEOF
+}
+
+# hw_launch_orchestrator MODE
+# Launches the splitscreen session THROUGH THE STEAM SHORTCUT. A directly
+# spawned launchFromPlasma runs perfectly — orchestrator, instances, windows,
+# all X11 checks green — but gamescope only DISPLAYS windows of the app Steam
+# launched, so the TV keeps showing the Steam library while the game plays to
+# an invisible compositor (operator watched the library for 40 minutes of
+# "passing" runs, 2026-07-05). Steam launch is the only path that renders.
+# MODE is advisory: the production launcher detects docked/handheld itself.
 hw_launch_orchestrator() {
     local mode="${1:-}"
     if [[ "$mode" != "handheld" && "$mode" != "docked" ]]; then
@@ -581,23 +622,28 @@ hw_launch_orchestrator() {
         return 1
     fi
 
+    # Steam-launched sessions use the production default paths — repoint our
+    # checks (and the state reset in hw_reap_stale_session) at them.
+    export SPLITSCREEN_FIFO="/tmp/minecraft-splitscreen.fifo"
+    export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
+
     hw_reap_stale_session
 
-    local orch_log="${HW_LOG}.orch"
-    hw_info "Launching orchestrator in ${mode} mode (log: ${orch_log})"
-    hw_info "Running: SPLITSCREEN_MODE=${mode} bash ${REPO_ROOT}/minecraftSplitscreen.sh launchFromPlasma"
+    local gameid="${HW_STEAM_GAMEID:-$(hw_shortcut_gameid)}"
+    if [[ -z "$gameid" ]]; then
+        hw_fail "hw_launch_orchestrator: no Steam shortcut found for minecraftSplitscreen.sh — add it to Steam first (add-to-steam.py)"
+        return 1
+    fi
 
-    SPLITSCREEN_MODE="$mode" \
-    bash "${REPO_ROOT}/minecraftSplitscreen.sh" launchFromPlasma \
-        >> "$orch_log" 2>&1 &
-    HW_ORCH_PID=$!
+    hw_info "Launching via Steam shortcut (gameid ${gameid}) so gamescope displays the session; expecting ${mode} mode"
+    steam "steam://rungameid/${gameid}" >/dev/null 2>&1 &
+    HW_ORCH_PID=""
     export HW_ORCH_PID
 
-    hw_info "Orchestrator started with PID ${HW_ORCH_PID}"
-
-    # Wait up to 5s for FIFO to appear
+    # Steam launch → reaper → launchFromPlasma → FIFO. Slower than a direct
+    # spawn; allow 45s.
     local elapsed=0
-    while (( elapsed < 5 )); do
+    while (( elapsed < 45 )); do
         if [[ -p "${SPLITSCREEN_FIFO:-}" ]]; then
             hw_info "FIFO appeared after ${elapsed}s: ${SPLITSCREEN_FIFO}"
             return 0
@@ -606,14 +652,16 @@ hw_launch_orchestrator() {
         elapsed=$(( elapsed + 1 ))
     done
 
-    hw_warn "FIFO did not appear within 5s — orchestrator may still be starting"
+    hw_warn "FIFO did not appear within 45s — Steam launch may have failed; check the TV"
     return 0
 }
 
-# hw_stop_orchestrator: send SIGTERM to the orchestrator and wait for it to exit
+# hw_stop_orchestrator: end the session. Steam-launched sessions have no direct
+# pid to signal — reap the marked run tree instead.
 hw_stop_orchestrator() {
     if [[ -z "${HW_ORCH_PID:-}" ]]; then
-        hw_warn "hw_stop_orchestrator: HW_ORCH_PID is not set"
+        hw_info "hw_stop_orchestrator: Steam-launched session — reaping marked run tree"
+        hw_reap_stale_session
         return 0
     fi
 
