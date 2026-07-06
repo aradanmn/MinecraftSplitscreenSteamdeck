@@ -708,7 +708,9 @@ launchFromPlasma() {
             pkill -9 -f 'latestUpdate' 2>/dev/null || true
             pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
             pkill -9 -f 'PolyMC' 2>/dev/null || true
-            for _name in startplasma-wayland kwin_wayland plasma_session baloo_file; do
+            # #26/#60: 'udevadm monitor' / inotifywait are our monitors' children and
+            # can orphan past a parent-only kill; marked-only match spares system udev.
+            for _name in startplasma-wayland kwin_wayland plasma_session baloo_file 'udevadm monitor' inotifywait; do
                 for _pid in $(_mcss_nested_pids "$_name"); do
                     kill -9 "$_pid" 2>/dev/null || true
                 done
@@ -933,6 +935,11 @@ _end_nested_session() {
 # once no tracked process names remain, 1 if they survive every pass (logged, not fatal —
 # the caller still returns so Steam's reaper isn't blocked forever on a bug in this reap).
 _supervise_reap_nested_session() {
+    # #60 residual: this function was invoked (xtrace shows the call) yet none of
+    # its own log lines ever appeared and the supervisor process vanished — cause
+    # unknown. First statement writes a breadcrumb so the next occurrence pins the
+    # death to before/after function entry.
+    echo "[supervise_reap] entered (session_pid=${1:-none}, pid=$$)" >> "$LOG"
     local _session_pid="${1:-}"
     local _tries=0 _max_tries=8
     if command -v systemctl >/dev/null 2>&1; then

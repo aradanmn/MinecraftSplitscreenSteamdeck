@@ -603,7 +603,7 @@ hw_reap_stale_session() {
     pkill -9 -f 'SteamLaunch.*minecraftSplitscreen' 2>/dev/null || true
     pkill -9 -f 'latestUpdate' 2>/dev/null || true
     pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
-    for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland; do
+    for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland 'udevadm monitor' inotifywait; do
         for _pid in $(pgrep -f "$_name" 2>/dev/null || true); do
             grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
                 && kill -9 "$_pid" 2>/dev/null || true
