@@ -542,6 +542,16 @@ HW_ORCH_PID=""
 # its environ carries SPLITSCREEN_DEBUG_LOG=.
 hw_reap_stale_session() {
     local _name _pid _tries
+    # Stale run trees first (#60): a prior run's orchestrator/watchdog/monitor/
+    # supervisor survives its session's death and keeps acting on the shared
+    # state file/FIFO — one of them killed a fresh session's instance ~25s after
+    # boot during the first on-Deck stage3 runs. Kill the actors before the
+    # scenery. (This harness process doesn't match: its cmdline is the stage
+    # script, not minecraftSplitscreen.sh, and it carries no marker.)
+    for _pid in $(pgrep -f 'minecraftSplitscreen' 2>/dev/null || true); do
+        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
+            && kill -9 "$_pid" 2>/dev/null || true
+    done
     pkill -9 -f 'latestUpdate' 2>/dev/null || true
     pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
     for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland; do

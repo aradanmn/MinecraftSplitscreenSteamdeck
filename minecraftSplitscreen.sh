@@ -265,7 +265,7 @@ waitForAllReady() {
         for slot in $(seq 1 "$n_slots"); do
             local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
             if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
-                (( ready++ ))
+                ready=$(( ready + 1 ))
             fi
         done
         logMsg 0 DEBUG "$ready/$n_slots at main menu"
@@ -315,7 +315,7 @@ quitSlot() {
             return 0
         }
         sleep 1
-        (( waited++ ))
+        waited=$(( waited + 1 ))
     done
 
     logMsg "$slot" WARN "still alive after 30s — SIGKILL"
@@ -482,7 +482,7 @@ runStaticTest() {
     local -a js_devs ev_devs
     local idx=0
     while IFS=' ' read -r js ev; do
-        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; (( idx++ ))
+        js_devs[$idx]="$js"; ev_devs[$idx]="$ev"; idx=$(( idx + 1 ))
     done < <(find_controller_pairs)
     logMsg 0 INFO "detected ${#js_devs[@]} controller pair(s)"
 
@@ -638,6 +638,28 @@ _mcss_nested_pids() {
     return 0
 }
 
+# #60: PIDs of STALE RUN TREES — marked processes running this script (a prior run's
+# orchestrator main loop, watchdog, controller monitor, supervisor, or Steam reaper),
+# excluding this process and its ancestors. They survive their session's death — no
+# session/instance name pattern matches a 'bash …/minecraftSplitscreen.sh …' cmdline —
+# and keep acting on the SHARED state file and FIFO. Confirmed on-Deck 2026-07-05: a
+# leftover run's teardown read the shared state and killed the instance a NEWER
+# session had just spawned (~25s after boot). They must die before a new run starts.
+# (The $(…) subshell evaluating this function can list itself; the subsequent kill is
+# a no-op on an already-gone pid.)
+_mcss_stale_tree_pids() {
+    local _chain=" $$ " _p="$PPID" _pid
+    while [[ "$_p" =~ ^[0-9]+$ ]] && (( _p > 1 )); do
+        _chain+=" $_p "
+        _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+    done
+    for _pid in $(_mcss_nested_pids 'minecraftSplitscreen'); do
+        [[ "$_chain" == *" $_pid "* ]] && continue
+        echo "$_pid"
+    done
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # launchFromPlasma — PRODUCTION outer entry (this is the LaunchOptions the Steam
 # shortcut runs). Starts the nested KDE/Plasma session exactly like testPlasma, but
@@ -672,9 +694,16 @@ launchFromPlasma() {
     #     names are now scoped via _mcss_nested_pids (environ marker) so a dying desktop
     #     is left alone. MC-instance patterns (latestUpdate / bwrap→PolyMC) stay unscoped —
     #     they are unambiguous and a leftover instance must die wherever it came from.
-    local _g _name _pid
-    if [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
-        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch" >> "$LOG"
+    # #60: sweep stale run trees FIRST (see _mcss_stale_tree_pids) so no leftover
+    # orchestrator/watchdog/supervisor can react — via the shared state file/FIFO —
+    # while we reap its session and start ours.
+    local _g _name _pid _stale_tree
+    _stale_tree=$(_mcss_stale_tree_pids)
+    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
+        echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch (stale trees: ${_stale_tree:-none})" >> "$LOG"
+        for _pid in $_stale_tree; do
+            kill -9 "$_pid" 2>/dev/null || true
+        done
         for _g in 1 2 3; do
             pkill -9 -f 'latestUpdate' 2>/dev/null || true
             pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
@@ -756,7 +785,7 @@ DEOF
     local _waited=0 _wait_budget_s=60
     while (( _waited < _wait_budget_s )) && kill -0 "$_session_pid" 2>/dev/null; do
         sleep 1
-        (( _waited++ ))
+        _waited=$(( _waited + 1 ))
     done
     if kill -0 "$_session_pid" 2>/dev/null; then
         echo "[launchFromPlasma] nested session still alive after ${_wait_budget_s}s — proceeding to forced supervised reap" >> "$LOG"
@@ -828,6 +857,21 @@ launchProdFromPlasma() {
     echo "[launchProdFromPlasma] complete" >> "$LOG"
 }
 
+# _mcss_own_run_pids: PIDs matching $1 (pgrep -f pattern) that belong to THIS RUN's
+# tree — environ carries SPLITSCREEN_DEBUG_LOG=<our exact $LOG>, which is unique per
+# run (timestamped) and inherited by every process the run spawns. Stricter than
+# _mcss_nested_pids (any marker value): teardown must kill only ITS OWN session.
+# (#60, confirmed on-Deck 2026-07-05: a stale supervisor's bounded reap loop was
+# still running when the NEXT session launched, and the name-only pkills below
+# murdered the new session's compositor ~25s after boot.)
+_mcss_own_run_pids() {
+    local _pat="$1" _pid
+    for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
+        grep -qzF "SPLITSCREEN_DEBUG_LOG=${LOG}" "/proc/$_pid/environ" 2>/dev/null && echo "$_pid"
+    done
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _end_nested_session: tear down the WHOLE nested Plasma session so Steam's reaper
 # releases and gamescope returns to the library. Two gotchas (both confirmed 2026-06-23):
@@ -836,15 +880,22 @@ launchProdFromPlasma() {
 #      survive a compositor-only teardown, get adopted by Steam's subreaper, and keep the
 #      "game" alive forever (Abort-Game overlay) — the reaper waits on the whole descendant
 #      tree. So reap them too. TERM pass, then KILL pass.
+# #60: kills are scoped to THIS RUN's own tree via _mcss_own_run_pids — a raw name
+# pkill here reaps ANY session, including a newer one launched while a stale
+# supervisor is still inside its retry loop. Session helpers spawned outside our
+# env-inheritance (e.g. re-spawned by the systemd user manager) are invisible to
+# the scoping; those are handled by the plasma-workspace.target stop in
+# _supervise_reap_nested_session, not by widening the kill back to all-names.
 _end_nested_session() {
-    local sig svc
+    local sig svc _pid
     for sig in TERM KILL; do
-        pkill -"$sig" -f kwin_wayland_wrapper 2>/dev/null || true
-        pkill -"$sig" -x kwin_wayland 2>/dev/null || true
-        for svc in startplasma-wayland plasma_session baloo_file kded6 \
+        for svc in kwin_wayland_wrapper kwin_wayland startplasma-wayland \
+                   plasma_session baloo_file kded6 \
                    kglobalacceld kactivitymanagerd kscreen_backend_launcher \
                    xdg-desktop-portal-kde; do
-            pkill -"$sig" -f "$svc" 2>/dev/null || true
+            for _pid in $(_mcss_own_run_pids "$svc"); do
+                kill -"$sig" "$_pid" 2>/dev/null || true
+            done
         done
         [ "$sig" = TERM ] && sleep 1
     done
@@ -878,14 +929,24 @@ _supervise_reap_nested_session() {
         if [[ -n "$_session_pid" ]] && kill -0 "$_session_pid" 2>/dev/null; then
             _kill_tree "$_session_pid" KILL
         fi
-        if ! pgrep -f 'kwin_wayland|startplasma-wayland|dbus-run-session.*startplasma|plasma_session|baloo_file' >/dev/null 2>&1; then
-            echo "[supervise_reap] nested-session tree confirmed clean after $((_tries + 1)) pass(es)" >> "$LOG"
+        # #60: completion check scoped to OUR OWN run's tree — a name-wide pgrep
+        # here sees a CONCURRENT newer session's processes and keeps this loop
+        # (and its kill sweeps) alive against them for all 8 passes.
+        local _svc _left=""
+        for _svc in kwin_wayland startplasma-wayland plasma_session baloo_file; do
+            if [[ -n "$(_mcss_own_run_pids "$_svc")" ]]; then
+                _left="$_svc"
+                break
+            fi
+        done
+        if [[ -z "$_left" ]]; then
+            echo "[supervise_reap] own nested-session tree confirmed clean after $((_tries + 1)) pass(es)" >> "$LOG"
             return 0
         fi
-        (( _tries++ ))
-        echo "[supervise_reap] leftovers survived pass ${_tries}/${_max_tries} — retrying" >> "$LOG"
+        _tries=$(( _tries + 1 ))
+        echo "[supervise_reap] own leftovers survived pass ${_tries}/${_max_tries} (${_left}) — retrying" >> "$LOG"
     done
-    echo "[supervise_reap] WARNING: leftover nested-session processes survived ${_max_tries} reap passes: $(pgrep -fa 'kwin_wayland|startplasma-wayland|plasma_session|baloo_file' 2>/dev/null | tr '\n' ';')" >> "$LOG"
+    echo "[supervise_reap] WARNING: own nested-session processes survived ${_max_tries} reap passes" >> "$LOG"
     return 1
 }
 

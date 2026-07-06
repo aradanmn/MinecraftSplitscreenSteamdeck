@@ -1886,7 +1886,7 @@ select_user_mods() {
         if [[ "$skip" == false ]]; then
             echo "  $counter. ${SUPPORTED_MODS[$i]}"
             user_mod_indexes+=("$i")
-            ((counter++))
+            counter=$((counter + 1))
         fi
     done
     
