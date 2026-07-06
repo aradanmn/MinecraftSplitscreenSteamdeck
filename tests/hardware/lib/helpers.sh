@@ -356,6 +356,56 @@ hw_expected_slot_geometry() {
     esac
 }
 
+# hw_slot_wid SLOT: the window id the orchestrator recorded for SLOT in the
+# state file — the product's own source of truth. Title-based lookup is only
+# valid during boot: Minecraft RENAMES its window (SplitscreenPn -> "Minecraft*
+# <version>") once fully loaded (observed on-Deck 2026-07-05).
+hw_slot_wid() {
+    jq -r ".slots[\"${1}\"].wid // empty" "${SPLITSCREEN_STATE}" 2>/dev/null || true
+}
+
+# hw_slot_window_visible SLOT: true when SLOT's recorded window is viewable on
+# the nested game display. Usable as a hw_wait_for check command.
+hw_slot_window_visible() {
+    local wid
+    wid=$(hw_slot_wid "$1")
+    [[ -n "$wid" && "$wid" != "null" ]] || return 1
+    hw_xdo xwininfo -id "$wid" 2>/dev/null | grep -q "Map State: IsViewable"
+}
+
+# hw_assert_slot_window_at LABEL SLOT EXP_X EXP_Y EXP_W EXP_H [TOL] [BUDGET_S]
+# Geometry assert against SLOT's recorded wid, RETRYING until the window
+# converges on the expected box or the budget runs out — placement is
+# asynchronous (initial 854x480 window, layout re-asserts seconds later), so a
+# single-shot read races it (on-Deck 2026-07-05). Records once; returns 0.
+hw_assert_slot_window_at() {
+    local label="$1" slot="$2" exp_x="$3" exp_y="$4" exp_w="$5" exp_h="$6"
+    local tol="${7:-50}" budget="${8:-45}"
+    local elapsed=0 wid geom X Y WIDTH HEIGHT SCREEN WINDOW dx dy dw dh
+    while (( elapsed < budget )); do
+        wid=$(hw_slot_wid "$slot")
+        if [[ -n "$wid" && "$wid" != "null" ]]; then
+            geom=$(hw_xdo xdotool getwindowgeometry --shell "$wid" 2>/dev/null || true)
+            if [[ -n "$geom" ]]; then
+                X=0; Y=0; WIDTH=0; HEIGHT=0; SCREEN=0; WINDOW=0
+                eval "$geom"
+                dx=$(( X - exp_x ));      (( dx < 0 )) && dx=$(( -dx ))
+                dy=$(( Y - exp_y ));      (( dy < 0 )) && dy=$(( -dy ))
+                dw=$(( WIDTH - exp_w ));  (( dw < 0 )) && dw=$(( -dw ))
+                dh=$(( HEIGHT - exp_h )); (( dh < 0 )) && dh=$(( -dh ))
+                if (( dx <= tol && dy <= tol && dw <= tol && dh <= tol )); then
+                    hw_pass "${label} — slot ${slot} wid ${wid} at ${X},${Y} ${WIDTH}x${HEIGHT} (converged after ${elapsed}s)"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 3
+        elapsed=$(( elapsed + 3 ))
+    done
+    hw_fail "${label} — slot ${slot} did not reach ${exp_x},${exp_y} ${exp_w}x${exp_h} within ${budget}s (last: ${X:-?},${Y:-?} ${WIDTH:-?}x${HEIGHT:-?}, wid ${wid:-none})"
+    return 0
+}
+
 # hw_assert_window_at LABEL TITLE EXP_X EXP_Y EXP_W EXP_H [TOLERANCE_PX]
 # Fails if the named window is not found or is not within TOLERANCE of the
 # expected position. Tolerates window-manager decoration offsets.
