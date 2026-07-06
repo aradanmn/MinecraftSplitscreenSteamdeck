@@ -95,6 +95,7 @@ readonly INSTALLER_MODULE_FILES=(
 # can source them at play time. NOT sourced by the installer.
 readonly RUNTIME_MODULE_FILES=(
     "preflight.sh"
+    "runtime_context.sh"
     "dock_detection.sh"
     "controller_monitor.sh"
     "kwin_positioner.sh"

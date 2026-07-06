@@ -41,10 +41,18 @@ run_stage3_hotplug() {
     hw_section "Stage 3: Docked Hot-Plug"
 
     # --- D3.0: Confirm docked mode ---
+    # Docked contract (owner decision, 2026-07-05): pads are plugged BEFORE launch.
+    # The orchestrator's startup controller acquisition exits cleanly if no external
+    # controller appears within its 5s window (you can't play docked on the built-in
+    # pad), so the FIRST pad must already be connected when the orchestrator starts.
+    # This stage therefore begins with exactly ONE pad connected; pads 2-4 still
+    # exercise true hotplug against the running event loop.
     if ! hw_prompt "Connect the Steam Deck to a dock or hub with an HDMI or DisplayPort cable.
   The external display should now be active.
-  IMPORTANT: Ensure ALL external controllers are UNPLUGGED before continuing.
-  Once the external display is showing and controllers are unplugged, press Enter."; then
+  Plug in exactly ONE external controller (USB or Bluetooth gamepad) NOW —
+  docked launch requires a controller already connected (5s acquisition window).
+  Ensure all OTHER external controllers are unplugged.
+  Once the display is up and exactly one controller is connected, press Enter."; then
         hw_skip "D3.0-D3.9 — operator skipped docked mode setup"
         return 0
     fi
@@ -59,12 +67,10 @@ run_stage3_hotplug() {
         return 0
     fi
 
-    # Capture external screen resolution
+    # (Screen resolution is captured in D3.2, after the session is up — before
+    # launch there is no nested root to measure and the fallback ambient display
+    # reports the wrong tiling space.)
     local screen_res sw sh
-    screen_res=$(hw_get_screen_resolution)
-    sw="${screen_res%%x*}"
-    sh="${screen_res##*x}"
-    hw_log "D3.0 external screen resolution: ${screen_res} (${sw}×${sh})"
 
     # --- D3.1: Launch orchestrator in docked mode ---
     hw_info "D3.1 — Launching orchestrator in docked mode..."
@@ -72,22 +78,17 @@ run_stage3_hotplug() {
 
     hw_wait_for "D3.1 FIFO created" 10 test -p "${SPLITSCREEN_FIFO}"
 
-    sleep 2
-    local initial_count
-    initial_count=$(_active_slot_count)
-    hw_log "D3.1 active slots at start: ${initial_count}"
-    hw_assert_eq "D3.1 zero active slots before any controller" "0" "$initial_count"
+    # (The old "zero active slots before any controller" assertion is gone: with the
+    # pads-first contract the startup acquisition claims the already-connected pad
+    # immediately, so slot 1 activating IS the expected launch state — checked in D3.2.)
 
-    # --- D3.2: First controller ---
-    if ! hw_prompt "Plug in ONE external controller (USB or Bluetooth gamepad).
-  Wait 3 seconds after plugging it in, then press Enter."; then
-        hw_skip "D3.2-D3.9 — operator skipped controller tests"
-        return 0
-    fi
-
+    # --- D3.2: First controller (already connected — claimed by startup acquisition) ---
     hw_info "D3.2 — Waiting for slot 1 to become active (up to 30s)..."
     if hw_wait_for "D3.2 slot 1 active" 30 _slot_active 1; then
         hw_dump_state
+        screen_res=$(hw_get_screen_resolution)
+        sw="${screen_res%%x*}"; sh="${screen_res##*x}"
+        hw_log "D3.2 nested tiling area: ${screen_res} (${sw}×${sh})"
         local ev1 js1
         ev1=$(jq -r '.slots["1"].event_node // "null"' "${SPLITSCREEN_STATE}" 2>/dev/null || echo "null")
         js1=$(jq -r '.slots["1"].js_node    // "null"' "${SPLITSCREEN_STATE}" 2>/dev/null || echo "null")
@@ -96,7 +97,7 @@ run_stage3_hotplug() {
 
         # Automated: wait for window and verify geometry (1 player = fullscreen)
         hw_wait_for "D3.2 SplitscreenP1 window" 30 \
-            bash -c "xdotool search --onlyvisible --name SplitscreenP1 >/dev/null 2>&1" || true
+            hw_slot_window_visible 1 || true
 
         local g_x g_y g_w g_h
         read -r g_x g_y g_w g_h < <(hw_expected_slot_geometry 1 "1" "$sw" "$sh")
@@ -136,13 +137,13 @@ run_stage3_hotplug() {
 
     # Automated: verify window positions for 2-player (top/bottom)
     hw_wait_for "D3.4 SplitscreenP2 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP2 >/dev/null 2>&1" || true
+        hw_slot_window_visible 2 || true
 
     local g1_x g1_y g1_w g1_h  g2_x g2_y g2_w g2_h
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2" "$sw" "$sh")
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2" "$sw" "$sh")
-    hw_assert_window_at "D3.4 P1 window (2-player top)"    "SplitscreenP1" "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
-    hw_assert_window_at "D3.4 P2 window (2-player bottom)" "SplitscreenP2" "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
+    hw_assert_slot_window_at "D3.4 P1 window (2-player top)" 1 "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
+    hw_assert_slot_window_at "D3.4 P2 window (2-player bottom)" 2 "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
     hw_assert_splitscreen_properties "D3.4 slot 1" 1 "TOP"
     hw_assert_splitscreen_properties "D3.4 slot 2" 2 "BOTTOM"
 
@@ -169,16 +170,16 @@ run_stage3_hotplug() {
 
     # Automated: verify 3-player quad geometry
     hw_wait_for "D3.5 SplitscreenP3 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP3 >/dev/null 2>&1" || true
+        hw_slot_window_visible 3 || true
 
     local g3_x g3_y g3_w g3_h
     read -r g3_x g3_y g3_w g3_h < <(hw_expected_slot_geometry 3 "1 2 3" "$sw" "$sh")
     # Re-read P1 and P2 with quad geometry
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2 3" "$sw" "$sh")
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2 3" "$sw" "$sh")
-    hw_assert_window_at "D3.5 P1 position (3-player quad top-left)"    "SplitscreenP1" "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
-    hw_assert_window_at "D3.5 P2 position (3-player quad top-right)"   "SplitscreenP2" "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
-    hw_assert_window_at "D3.5 P3 position (3-player quad bottom-left)" "SplitscreenP3" "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
+    hw_assert_slot_window_at "D3.5 P1 position (3-player quad top-left)" 1 "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
+    hw_assert_slot_window_at "D3.5 P2 position (3-player quad top-right)" 2 "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
+    hw_assert_slot_window_at "D3.5 P3 position (3-player quad bottom-left)" 3 "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
     hw_assert_splitscreen_properties "D3.5 slot 1" 1 "TOP_LEFT"
     hw_assert_splitscreen_properties "D3.5 slot 2" 2 "TOP_RIGHT"
     hw_assert_splitscreen_properties "D3.5 slot 3" 3 "BOTTOM_LEFT"
@@ -207,17 +208,17 @@ run_stage3_hotplug() {
 
     # Automated: verify all 4 windows at quad positions
     hw_wait_for "D3.6 SplitscreenP4 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP4 >/dev/null 2>&1" || true
+        hw_slot_window_visible 4 || true
 
     local g4_x g4_y g4_w g4_h
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2 3 4" "$sw" "$sh")
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2 3 4" "$sw" "$sh")
     read -r g3_x g3_y g3_w g3_h < <(hw_expected_slot_geometry 3 "1 2 3 4" "$sw" "$sh")
     read -r g4_x g4_y g4_w g4_h < <(hw_expected_slot_geometry 4 "1 2 3 4" "$sw" "$sh")
-    hw_assert_window_at "D3.6 P1 quad top-left"     "SplitscreenP1" "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
-    hw_assert_window_at "D3.6 P2 quad top-right"    "SplitscreenP2" "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
-    hw_assert_window_at "D3.6 P3 quad bottom-left"  "SplitscreenP3" "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
-    hw_assert_window_at "D3.6 P4 quad bottom-right" "SplitscreenP4" "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
+    hw_assert_slot_window_at "D3.6 P1 quad top-left" 1 "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
+    hw_assert_slot_window_at "D3.6 P2 quad top-right" 2 "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
+    hw_assert_slot_window_at "D3.6 P3 quad bottom-left" 3 "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
+    hw_assert_slot_window_at "D3.6 P4 quad bottom-right" 4 "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
     hw_assert_splitscreen_properties "D3.6 slot 4" 4 "BOTTOM_RIGHT"
 
     if hw_prompt "All four Minecraft instances should be visible in a 2×2 grid.
@@ -265,12 +266,12 @@ run_stage3_hotplug() {
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2 3 4" "$sw" "$sh")
     read -r g3_x g3_y g3_w g3_h < <(hw_expected_slot_geometry 3 "1 2 3 4" "$sw" "$sh")
     read -r g4_x g4_y g4_w g4_h < <(hw_expected_slot_geometry 4 "1 2 3 4" "$sw" "$sh")
-    hw_assert_window_at "D3.7 P1 still at top-left after P2 disconnect"    "SplitscreenP1" "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
-    hw_assert_window_at "D3.7 P3 still at bottom-left after P2 disconnect" "SplitscreenP3" "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
-    hw_assert_window_at "D3.7 P4 still at bottom-right after P2 disconnect" "SplitscreenP4" "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
+    hw_assert_slot_window_at "D3.7 P1 still at top-left after P2 disconnect" 1 "$g1_x" "$g1_y" "$g1_w" "$g1_h" 50
+    hw_assert_slot_window_at "D3.7 P3 still at bottom-left after P2 disconnect" 3 "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
+    hw_assert_slot_window_at "D3.7 P4 still at bottom-right after P2 disconnect" 4 "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
 
     local p2_still_there
-    p2_still_there=$(xdotool search --onlyvisible --name SplitscreenP2 2>/dev/null || true)
+    p2_still_there=$(hw_xdo xdotool search --onlyvisible --name SplitscreenP2 2>/dev/null || true)
     hw_log "D3.7 SplitscreenP2 window after disconnect: '${p2_still_there:-<not found>}'"
     hw_assert_empty "D3.7 SplitscreenP2 Minecraft window gone after disconnect" "$p2_still_there"
 
@@ -297,9 +298,9 @@ run_stage3_hotplug() {
     hw_dump_state
 
     hw_wait_for "D3.8 SplitscreenP2 window reappears" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP2 >/dev/null 2>&1" || true
+        hw_slot_window_visible 2 || true
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2 3 4" "$sw" "$sh")
-    hw_assert_window_at "D3.8 P2 back at top-right after reconnect" "SplitscreenP2" "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
+    hw_assert_slot_window_at "D3.8 P2 back at top-right after reconnect" 2 "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
     hw_assert_splitscreen_properties "D3.8 slot 2 reused" 2 "TOP_RIGHT"
 
     if hw_prompt "Slot 2 (top-right) should now show a new Minecraft instance for P2.

@@ -346,7 +346,7 @@ get_minecraft_version() {
     for version in "${supported_versions[@]}"; do
         if [[ $counter -le 10 ]]; then  # Show top 10 most recent supported versions
             echo "  $counter. Minecraft $version"
-            ((counter++))
+            counter=$((counter + 1))
         fi
     done
     

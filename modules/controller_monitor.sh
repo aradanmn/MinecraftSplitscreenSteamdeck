@@ -52,6 +52,12 @@ declare -A _CONTROLLER_MONITOR_DEBOUNCE_MAP
 _get_epoch_ms() {
     local epoch_ns
     epoch_ns=$(date +%s%N 2>/dev/null || echo "0")
+    # #27: non-GNU `date` (BusyBox, BSD/macOS) doesn't support %N and emits it back
+    # LITERALLY (e.g. "1751328000N"), which would corrupt the arithmetic below into a
+    # garbage debounce timestamp instead of erroring. SteamOS ships GNU coreutils, so
+    # this is defensive rather than an observed failure — fall back to seconds-since-
+    # epoch padded to millisecond precision when %N wasn't expanded to digits.
+    [[ "$epoch_ns" =~ ^[0-9]+$ ]] || epoch_ns="$(date +%s 2>/dev/null || echo 0)000000000"
     echo $(( epoch_ns / 1000000 ))
 }
 
@@ -474,6 +480,13 @@ _map_external_player_virtuals() {
             local pv_input pv_ev pv_js
             read -r pv_input pv_ev pv_js <<< "${v_sorted[$picked]}"
             echo "[controller_monitor]   → external input${e_input} [${e_ven}:${e_prod}] claims virtual input${pv_input} (event${pv_ev} js${pv_js})" >&2
+            # [vpad-probe]: distinctly-tagged, timestamped line (does NOT change any
+            # decision-making — this is purely so a maintainer can `grep '\[vpad-probe\]'`
+            # across a session's debug log and see, per external vendor:product, whether
+            # the SAME virtual event/js gets claimed again after a physical unplug/replug,
+            # or whether Steam minted a fresh one (new numbers) — see the reconnect-identity
+            # research doc and issue #38. Reused by tests/probe-controller-reconnect.sh.
+            echo "[vpad-probe] t=$(_get_epoch_ms) ext=${e_ven}:${e_prod} ext_input=${e_input} virtual_input=${pv_input} virtual_event=${pv_ev} virtual_js=${pv_js}" >&2
             echo "${pv_ev} ${pv_js} ${e_ven} ${e_prod}"
             count=$((count + 1))
         else
@@ -776,6 +789,14 @@ get_controller_by_index() {
 # _check_devices_changed: Compare current eligible device list against a
 # previously stored snapshot (tracked by event node).
 # Writes CONTROLLER_ADD or CONTROLLER_REMOVE messages to $SPLITSCREEN_FIFO.
+# N16/H1: ALSO echoes the current event-node set to STDOUT (space-separated) — the
+# ONE enumeration this function does (line ~792 below) is now the SOLE source for both
+# the diff AND the caller's next `prev_nodes` baseline. Previously start_controller_monitor
+# enumerated a SECOND time itself (`new_nodes`) after calling this, so the diff and the
+# stored baseline came from two scans taken ms apart; if a device transiently appeared or
+# vanished between them, prev_nodes could be poisoned with a node that was never actually
+# diffed against, permanently hiding a real controller. Callers MUST now do
+# `prev_nodes=$(_check_devices_changed "$mode" "$prev_nodes")` instead of re-enumerating.
 # $1 = mode
 # $2 = space-separated list of previously seen event nodes (by path)
 _check_devices_changed() {
@@ -844,6 +865,10 @@ _check_devices_changed() {
             unset '_CONTROLLER_MONITOR_DEBOUNCE_MAP[$pev]'
         fi
     done
+
+    # N16/H1: authoritative node set for the caller's next prev_nodes — see the docstring
+    # above. This is the function's ONLY stdout output (everything else goes to >&2/$fifo).
+    echo "${!current_nodes[*]}"
 }
 
 # Start monitoring. Blocks. Writes CONTROLLER_ADD / CONTROLLER_REMOVE
@@ -913,27 +938,24 @@ start_controller_monitor() {
             # UDEV  [1701234567.123456] add      /devices/virtual/input/input652 (input)
             # UDEV  [1701234567.456789] remove   /devices/virtual/input/input652 (input)
             # Extract action from column 3
+            # #27: also react to "change" (e.g. a Bluetooth pad's link re-key on
+            # wake-from-idle drops/restores its js node without a clean remove/add
+            # pair — previously invisible to this monitor since only add/remove were
+            # matched). "bind"/"unbind" (driver attach/detach, not device presence)
+            # are intentionally still not matched — add/remove/change cover every case
+            # where eligibility can actually change.
             local action=""
-            if [[ "$raw_line" =~ ^UDEV[[:space:]]+\[[0-9.]+\][[:space:]]+(add|remove) ]]; then
+            if [[ "$raw_line" =~ ^UDEV[[:space:]]+\[[0-9.]+\][[:space:]]+(add|remove|change) ]]; then
                 action="${BASH_REMATCH[1]}"
             fi
 
-            if [[ "$action" == "add" || "$action" == "remove" ]]; then
+            if [[ "$action" == "add" || "$action" == "remove" || "$action" == "change" ]]; then
                 # Brief settle time for the device to appear in /proc
                 sleep 0.1
 
-                # Re-enumerate and check for changes
-                local new_nodes=""
-                local nline
-                while IFS= read -r nline; do
-                    [[ -z "$nline" ]] && continue
-                    local ev
-                    ev=$(echo "$nline" | awk '{print $1}')
-                    new_nodes="$new_nodes $ev"
-                done < <(list_eligible_controllers "$mode")
-
-                _check_devices_changed "$mode" "$prev_nodes"
-                prev_nodes="$new_nodes"
+                # N16/H1: single enumeration inside _check_devices_changed feeds BOTH the
+                # diff AND the new baseline (its stdout) — no separate re-enumeration here.
+                prev_nodes=$(_check_devices_changed "$mode" "$prev_nodes")
             fi
         done < <("$udevadm_cmd" monitor --subsystem-match=input --udev 2>/dev/null)
     else
@@ -942,17 +964,8 @@ start_controller_monitor() {
         while true; do
             sleep 2
 
-            local new_nodes=""
-            local nline
-            while IFS= read -r nline; do
-                [[ -z "$nline" ]] && continue
-                local ev
-                ev=$(echo "$nline" | awk '{print $1}')
-                new_nodes="$new_nodes $ev"
-            done < <(list_eligible_controllers "$mode")
-
-            _check_devices_changed "$mode" "$prev_nodes"
-            prev_nodes="$new_nodes"
+            # N16/H1: see the udevadm branch above — single enumeration, no re-scan.
+            prev_nodes=$(_check_devices_changed "$mode" "$prev_nodes")
         done
     fi
 }

@@ -264,13 +264,50 @@ hw_wait_for() {
 # Screen and window geometry
 # ---------------------------------------------------------------------------
 
-# hw_get_screen_resolution: echo "WxH" (e.g. "1920x1080") for the active display
+# hw_nested_display: resolve the display the game windows actually live on.
+# The orchestrator runs INSIDE the nested plasma session, so its windows are on
+# the nested KWin's Xwayland — NOT on the ambient gamescope display this harness
+# runs under (found on-Deck 2026-07-05: every window assert failed on :1 while
+# the SplitscreenP1 window sat fullscreen on :2). The nested Xwayland is the one
+# started with an explicit '-auth <file>' (gamescope's own :0/:1 run authless).
+# Sets HW_XDO_DISPLAY / HW_XDO_XAUTH; falls back to ambient when no nested
+# session is up. Re-resolved per call (via hw_xdo) so a session restart
+# mid-stage picks up the fresh display/auth pair.
+hw_nested_display() {
+    local line
+    line=$(pgrep -a Xwayland 2>/dev/null | grep -- '-auth' | tail -1 || true)
+    if [[ -n "$line" ]]; then
+        HW_XDO_DISPLAY=$(echo "$line" | grep -oE ' :[0-9]+ ' | head -1 | tr -d ' ')
+        HW_XDO_XAUTH=$(echo "$line" | sed -n 's/.*-auth \([^ ]*\).*/\1/p')
+    else
+        HW_XDO_DISPLAY=""
+        HW_XDO_XAUTH=""
+    fi
+    HW_XDO_DISPLAY="${HW_XDO_DISPLAY:-${DISPLAY:-:0}}"
+    HW_XDO_XAUTH="${HW_XDO_XAUTH:-${XAUTHORITY:-}}"
+}
+
+# hw_xdo CMD [ARGS...]: run an X client (xdotool/xdpyinfo/...) against the
+# nested game display resolved by hw_nested_display.
+hw_xdo() {
+    hw_nested_display
+    DISPLAY="$HW_XDO_DISPLAY" XAUTHORITY="$HW_XDO_XAUTH" "$@"
+}
+
+# hw_window_visible TITLE: true if a visible window with TITLE exists on the
+# nested game display. Usable directly as a hw_wait_for check command.
+hw_window_visible() {
+    hw_xdo xdotool search --onlyvisible --name "$1" >/dev/null 2>&1
+}
+
+# hw_get_screen_resolution: echo "WxH" (e.g. "1920x1080") for the display the
+# game windows tile on (the nested session root when one is up).
 hw_get_screen_resolution() {
     local res
-    res=$(DISPLAY="${DISPLAY:-:0}" xdpyinfo 2>/dev/null \
+    res=$(hw_xdo xdpyinfo 2>/dev/null \
         | awk '/dimensions:/{print $2}' | head -1 || true)
     [[ -n "$res" ]] && { echo "$res"; return 0; }
-    res=$(DISPLAY="${DISPLAY:-:0}" xrandr 2>/dev/null \
+    res=$(hw_xdo xrandr 2>/dev/null \
         | awk '/\*/{print $1}' | head -1 || true)
     [[ -n "$res" ]] && { echo "$res"; return 0; }
     hw_warn "hw_get_screen_resolution: could not detect resolution, assuming 1280x800"
@@ -319,29 +356,83 @@ hw_expected_slot_geometry() {
     esac
 }
 
+# hw_slot_wid SLOT: the window id the orchestrator recorded for SLOT in the
+# state file — the product's own source of truth. Title-based lookup is only
+# valid during boot: Minecraft RENAMES its window (SplitscreenPn -> "Minecraft*
+# <version>") once fully loaded (observed on-Deck 2026-07-05).
+hw_slot_wid() {
+    jq -r ".slots[\"${1}\"].wid // empty" "${SPLITSCREEN_STATE}" 2>/dev/null || true
+}
+
+# hw_slot_window_visible SLOT: true when SLOT's recorded window is viewable on
+# the nested game display. Usable as a hw_wait_for check command.
+hw_slot_window_visible() {
+    local wid
+    wid=$(hw_slot_wid "$1")
+    [[ -n "$wid" && "$wid" != "null" ]] || return 1
+    hw_xdo xwininfo -id "$wid" 2>/dev/null | grep -q "Map State: IsViewable"
+}
+
+# hw_assert_slot_window_at LABEL SLOT EXP_X EXP_Y EXP_W EXP_H [TOL] [BUDGET_S]
+# Geometry assert against SLOT's recorded wid, RETRYING until the window
+# converges on the expected box or the budget runs out — placement is
+# asynchronous (initial 854x480 window, layout re-asserts seconds later), so a
+# single-shot read races it (on-Deck 2026-07-05). Records once; returns 0.
+hw_assert_slot_window_at() {
+    local label="$1" slot="$2" exp_x="$3" exp_y="$4" exp_w="$5" exp_h="$6"
+    local tol="${7:-50}" budget="${8:-45}"
+    local elapsed=0 wid geom X Y WIDTH HEIGHT SCREEN WINDOW dx dy dw dh
+    while (( elapsed < budget )); do
+        wid=$(hw_slot_wid "$slot")
+        if [[ -n "$wid" && "$wid" != "null" ]]; then
+            geom=$(hw_xdo xdotool getwindowgeometry --shell "$wid" 2>/dev/null || true)
+            if [[ -n "$geom" ]]; then
+                X=0; Y=0; WIDTH=0; HEIGHT=0; SCREEN=0; WINDOW=0
+                eval "$geom"
+                dx=$(( X - exp_x ));      (( dx < 0 )) && dx=$(( -dx ))
+                dy=$(( Y - exp_y ));      (( dy < 0 )) && dy=$(( -dy ))
+                dw=$(( WIDTH - exp_w ));  (( dw < 0 )) && dw=$(( -dw ))
+                dh=$(( HEIGHT - exp_h )); (( dh < 0 )) && dh=$(( -dh ))
+                if (( dx <= tol && dy <= tol && dw <= tol && dh <= tol )); then
+                    hw_pass "${label} — slot ${slot} wid ${wid} at ${X},${Y} ${WIDTH}x${HEIGHT} (converged after ${elapsed}s)"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 3
+        elapsed=$(( elapsed + 3 ))
+    done
+    hw_fail "${label} — slot ${slot} did not reach ${exp_x},${exp_y} ${exp_w}x${exp_h} within ${budget}s (last: ${X:-?},${Y:-?} ${WIDTH:-?}x${HEIGHT:-?}, wid ${wid:-none})"
+    return 0
+}
+
 # hw_assert_window_at LABEL TITLE EXP_X EXP_Y EXP_W EXP_H [TOLERANCE_PX]
 # Fails if the named window is not found or is not within TOLERANCE of the
 # expected position. Tolerates window-manager decoration offsets.
+# Like every hw_assert_*, this records the failure and RETURNS 0 — the stage
+# scripts run under set -euo pipefail and call asserts bare, so a nonzero
+# return here killed the whole run at the first failed assert (on-Deck
+# 2026-07-05; the suite's contract is count-and-continue, summary at exit).
 hw_assert_window_at() {
     local label="$1" title="$2" exp_x="$3" exp_y="$4" exp_w="$5" exp_h="$6"
     local tol="${7:-50}"
 
     local wid
-    wid=$(DISPLAY="${DISPLAY:-:0}" xdotool search --onlyvisible --name "$title" \
+    wid=$(hw_xdo xdotool search --onlyvisible --name "$title" \
         2>/dev/null | head -1 || true)
 
     if [[ -z "$wid" ]]; then
-        hw_fail "${label} — window '${title}' not visible on DISPLAY=${DISPLAY:-:0}"
-        return 1
+        hw_fail "${label} — window '${title}' not visible on DISPLAY=${HW_XDO_DISPLAY:-?} (nested game display)"
+        return 0
     fi
 
     local geom
-    geom=$(DISPLAY="${DISPLAY:-:0}" xdotool getwindowgeometry --shell "$wid" \
+    geom=$(hw_xdo xdotool getwindowgeometry --shell "$wid" \
         2>/dev/null || true)
 
     if [[ -z "$geom" ]]; then
         hw_fail "${label} — could not read geometry for window '${title}' (id ${wid})"
-        return 1
+        return 0
     fi
 
     # geom sets X, Y, WIDTH, HEIGHT, SCREEN, WINDOW
@@ -377,20 +468,13 @@ hw_assert_window_at() {
 # contains the expected mode value before Minecraft reads it.
 hw_assert_splitscreen_properties() {
     local label="$1" slot="$2" expected_mode="$3"
-    local launcher_dir="${4:-$HOME/.local/share/PolyMC}"
-    local prop_file="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/splitscreen.properties"
-
-    hw_log "Checking ${prop_file}"
-
-    if [[ ! -f "$prop_file" ]]; then
-        hw_fail "${label} — splitscreen.properties not found: ${prop_file}"
-        return 1
-    fi
-
-    local actual_mode
-    actual_mode=$(grep '^mode=' "$prop_file" 2>/dev/null | cut -d= -f2 || true)
-    hw_log "${label}: splitscreen.properties mode=${actual_mode} (expected ${expected_mode})"
-    hw_assert_eq "${label} splitscreen.properties mode" "$expected_mode" "$actual_mode"
+    # The Splitscreen Support mod that consumed splitscreen.properties was removed
+    # 2026-06-23 (_write_splitscreen_properties deleted with it); KWin does the
+    # tiling, and layout correctness is asserted via hw_assert_window_at geometry.
+    # Kept as a recorded skip so stage logs keep their check IDs (found asserting
+    # against the removed file during first on-Deck stage3 runs, 2026-07-05).
+    hw_skip "${label} — splitscreen.properties retired 2026-06-23 (mode ${expected_mode}, slot ${slot} covered by window geometry assert)"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -442,7 +526,10 @@ hw_checklist() {
 
     hw_log "━━━ End checklist: ${title} ━━━"
     hw_log ""
-    return "$failed"
+    # Record-and-continue: failures are already counted via hw_fail. Returning
+    # the failed-count made a single 'n' answer kill the whole run under the
+    # stage scripts' set -euo pipefail (same errexit class as #58/#60).
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -491,6 +578,93 @@ HW_ORCH_PID=""
 # hw_launch_orchestrator MODE
 # Launches minecraftSplitscreen.sh launchFromPlasma with SPLITSCREEN_MODE set.
 # Waits up to 5s for FIFO to appear. Exports HW_ORCH_PID.
+# hw_reap_stale_session: pre-launch hygiene. Back-to-back suite runs race the
+# previous session's teardown: the new launch's STARTUP GUARD kills the old
+# nested tree asynchronously while this harness's first checks read the OLD
+# state file and probe the OLD (dying) windows — stale passes, then phantom
+# fails (on-Deck 2026-07-05). Reap the old session HERE, synchronously, and
+# reset the state file so every launch starts from a known-clean slate.
+# Ours-only scoping mirrors the launcher's #58 guard: a process is ours iff
+# its environ carries SPLITSCREEN_DEBUG_LOG=.
+hw_reap_stale_session() {
+    local _name _pid _tries
+    # Stale run trees first (#60): a prior run's orchestrator/watchdog/monitor/
+    # supervisor survives its session's death and keeps acting on the shared
+    # state file/FIFO — one of them killed a fresh session's instance ~25s after
+    # boot during the first on-Deck stage3 runs. Kill the actors before the
+    # scenery. (This harness process doesn't match: its cmdline is the stage
+    # script, not minecraftSplitscreen.sh, and it carries no marker.)
+    for _pid in $(pgrep -f 'minecraftSplitscreen' 2>/dev/null || true); do
+        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
+            && kill -9 "$_pid" 2>/dev/null || true
+    done
+    # Stale Steam reaper for our shortcut: while it lives, Steam thinks the game
+    # is still running and steam://rungameid/ won't relaunch it.
+    pkill -9 -f 'SteamLaunch.*minecraftSplitscreen' 2>/dev/null || true
+    pkill -9 -f 'latestUpdate' 2>/dev/null || true
+    pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
+    for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland; do
+        for _pid in $(pgrep -f "$_name" 2>/dev/null || true); do
+            grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
+                && kill -9 "$_pid" 2>/dev/null || true
+        done
+    done
+    local _left
+    for _tries in 1 2 3 4 5; do
+        _left=""
+        for _pid in $(pgrep -f 'startplasma-wayland' 2>/dev/null || true); do
+            if grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null; then
+                _left="$_pid"
+                break
+            fi
+        done
+        [[ -z "$_left" ]] && break
+        sleep 1
+    done
+    if [[ -n "${SPLITSCREEN_STATE:-}" ]]; then
+        echo '{"mode":"unknown","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$SPLITSCREEN_STATE"
+        hw_info "hw_reap_stale_session: state file reset to all-inactive"
+    fi
+}
+
+# hw_shortcut_gameid: resolve the Steam shortcut gameid for the splitscreen
+# launcher from shortcuts.vdf (gameid = appid<<32 | 0x02000000). Empty if absent.
+hw_shortcut_gameid() {
+    python3 - <<'PYEOF' 2>/dev/null || true
+import glob, struct
+for path in glob.glob("/home/deck/.steam/steam/userdata/*/config/shortcuts.vdf"):
+    data = open(path, "rb").read()
+    appid, i = None, 0
+    while i < len(data):
+        b = data[i]
+        if b == 0x02:
+            end = data.index(b"\x00", i + 1)
+            name = data[i + 1:end].decode(errors="replace").lower()
+            val = struct.unpack("<I", data[end + 1:end + 5])[0]
+            if name == "appid":
+                appid = val
+            i = end + 5
+        elif b == 0x01:
+            end = data.index(b"\x00", i + 1)
+            end2 = data.index(b"\x00", end + 1)
+            val = data[end + 1:end2].decode(errors="replace")
+            if "minecraftSplitscreen.sh" in val and appid is not None:
+                print((appid << 32) | 0x02000000)
+                raise SystemExit
+            i = end2 + 1
+        else:
+            i += 1
+PYEOF
+}
+
+# hw_launch_orchestrator MODE
+# Launches the splitscreen session THROUGH THE STEAM SHORTCUT. A directly
+# spawned launchFromPlasma runs perfectly — orchestrator, instances, windows,
+# all X11 checks green — but gamescope only DISPLAYS windows of the app Steam
+# launched, so the TV keeps showing the Steam library while the game plays to
+# an invisible compositor (operator watched the library for 40 minutes of
+# "passing" runs, 2026-07-05). Steam launch is the only path that renders.
+# MODE is advisory: the production launcher detects docked/handheld itself.
 hw_launch_orchestrator() {
     local mode="${1:-}"
     if [[ "$mode" != "handheld" && "$mode" != "docked" ]]; then
@@ -498,21 +672,28 @@ hw_launch_orchestrator() {
         return 1
     fi
 
-    local orch_log="${HW_LOG}.orch"
-    hw_info "Launching orchestrator in ${mode} mode (log: ${orch_log})"
-    hw_info "Running: SPLITSCREEN_MODE=${mode} bash ${REPO_ROOT}/minecraftSplitscreen.sh launchFromPlasma"
+    # Steam-launched sessions use the production default paths — repoint our
+    # checks (and the state reset in hw_reap_stale_session) at them.
+    export SPLITSCREEN_FIFO="/tmp/minecraft-splitscreen.fifo"
+    export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
 
-    SPLITSCREEN_MODE="$mode" \
-    bash "${REPO_ROOT}/minecraftSplitscreen.sh" launchFromPlasma \
-        >> "$orch_log" 2>&1 &
-    HW_ORCH_PID=$!
+    hw_reap_stale_session
+
+    local gameid="${HW_STEAM_GAMEID:-$(hw_shortcut_gameid)}"
+    if [[ -z "$gameid" ]]; then
+        hw_fail "hw_launch_orchestrator: no Steam shortcut found for minecraftSplitscreen.sh — add it to Steam first (add-to-steam.py)"
+        return 1
+    fi
+
+    hw_info "Launching via Steam shortcut (gameid ${gameid}) so gamescope displays the session; expecting ${mode} mode"
+    steam "steam://rungameid/${gameid}" >/dev/null 2>&1 &
+    HW_ORCH_PID=""
     export HW_ORCH_PID
 
-    hw_info "Orchestrator started with PID ${HW_ORCH_PID}"
-
-    # Wait up to 5s for FIFO to appear
+    # Steam launch → reaper → launchFromPlasma → FIFO. Slower than a direct
+    # spawn; allow 45s.
     local elapsed=0
-    while (( elapsed < 5 )); do
+    while (( elapsed < 45 )); do
         if [[ -p "${SPLITSCREEN_FIFO:-}" ]]; then
             hw_info "FIFO appeared after ${elapsed}s: ${SPLITSCREEN_FIFO}"
             return 0
@@ -521,14 +702,16 @@ hw_launch_orchestrator() {
         elapsed=$(( elapsed + 1 ))
     done
 
-    hw_warn "FIFO did not appear within 5s — orchestrator may still be starting"
+    hw_warn "FIFO did not appear within 45s — Steam launch may have failed; check the TV"
     return 0
 }
 
-# hw_stop_orchestrator: send SIGTERM to the orchestrator and wait for it to exit
+# hw_stop_orchestrator: end the session. Steam-launched sessions have no direct
+# pid to signal — reap the marked run tree instead.
 hw_stop_orchestrator() {
     if [[ -z "${HW_ORCH_PID:-}" ]]; then
-        hw_warn "hw_stop_orchestrator: HW_ORCH_PID is not set"
+        hw_info "hw_stop_orchestrator: Steam-launched session — reaping marked run tree"
+        hw_reap_stale_session
         return 0
     fi
 
