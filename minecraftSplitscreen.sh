@@ -776,21 +776,42 @@ DEOF
     dbus-run-session startplasma-wayland &
     local _session_pid=$!
 
-    # Bounded wait, NOT an unbounded `wait`: the whole premise of #15 is that
-    # plasma_session can keep respawning components indefinitely, and it's unconfirmed
-    # whether that also keeps the TOP-LEVEL startplasma-wayland process itself alive
-    # forever. An unbounded wait here would just move the hang from "Abort-Game" to
-    # "this supervisor never reaches its own reap step." Poll instead; once the budget
-    # is spent, fall through to the reap loop regardless (it force-kills by name/PID).
-    local _waited=0 _wait_budget_s=60
+    # #60 follow-up (2026-07-05): the original wait here was a FLAT 60s budget from
+    # session start — written for the post-game teardown but placed at launch, it
+    # capped every session's LIFETIME at 60s. Invisible until tonight because the
+    # errexit '((_waited++))' bug killed this supervisor at second one on every run;
+    # fixing that resurrected the cap and it force-reaped LIVE sessions a minute in.
+    # The wait is now three phases; only teardown is bounded (the #15 premise —
+    # plasma_session respawn may keep the top-level session process alive forever —
+    # still holds, hence the phase-3 budget before the forced reap):
+    #   1. boot (bounded): wait for OUR inner handler (prodFromPlasma, marked with
+    #      this run's log path) to appear in the nested session;
+    #   2. lifetime (unbounded): wait while the inner handler lives — this is the
+    #      whole time the user is playing;
+    #   3. teardown grace (bounded): the inner trap gets a window to tear the
+    #      session down itself before we fall through to the forced reap.
+    local _boot=0 _boot_budget_s=90
+    while (( _boot < _boot_budget_s )) && [[ -z "$(_mcss_own_run_pids 'prodFromPlasma')" ]] \
+            && kill -0 "$_session_pid" 2>/dev/null; do
+        sleep 1
+        _boot=$(( _boot + 1 ))
+    done
+    echo "[launchFromPlasma] nested session boot phase ended after ${_boot}s (inner handler $( [[ -n "$(_mcss_own_run_pids 'prodFromPlasma')" ]] && echo up || echo ABSENT ))" >> "$LOG"
+
+    while [[ -n "$(_mcss_own_run_pids 'prodFromPlasma')" ]] && kill -0 "$_session_pid" 2>/dev/null; do
+        sleep 2
+    done
+    echo "[launchFromPlasma] inner handler gone — session over, granting teardown grace" >> "$LOG"
+
+    local _waited=0 _wait_budget_s=30
     while (( _waited < _wait_budget_s )) && kill -0 "$_session_pid" 2>/dev/null; do
         sleep 1
         _waited=$(( _waited + 1 ))
     done
     if kill -0 "$_session_pid" 2>/dev/null; then
-        echo "[launchFromPlasma] nested session still alive after ${_wait_budget_s}s — proceeding to forced supervised reap" >> "$LOG"
+        echo "[launchFromPlasma] nested session still alive ${_wait_budget_s}s after game end — proceeding to forced supervised reap" >> "$LOG"
     else
-        echo "[launchFromPlasma] nested session exited after ${_waited}s — supervising final reap" >> "$LOG"
+        echo "[launchFromPlasma] nested session exited ${_waited}s into teardown grace — supervising final reap" >> "$LOG"
     fi
 
     _restore_session_env
