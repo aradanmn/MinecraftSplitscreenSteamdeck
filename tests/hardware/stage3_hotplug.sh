@@ -96,7 +96,7 @@ run_stage3_hotplug() {
 
         # Automated: wait for window and verify geometry (1 player = fullscreen)
         hw_wait_for "D3.2 SplitscreenP1 window" 30 \
-            bash -c "xdotool search --onlyvisible --name SplitscreenP1 >/dev/null 2>&1" || true
+            hw_window_visible SplitscreenP1 || true
 
         local g_x g_y g_w g_h
         read -r g_x g_y g_w g_h < <(hw_expected_slot_geometry 1 "1" "$sw" "$sh")
@@ -136,7 +136,7 @@ run_stage3_hotplug() {
 
     # Automated: verify window positions for 2-player (top/bottom)
     hw_wait_for "D3.4 SplitscreenP2 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP2 >/dev/null 2>&1" || true
+        hw_window_visible SplitscreenP2 || true
 
     local g1_x g1_y g1_w g1_h  g2_x g2_y g2_w g2_h
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2" "$sw" "$sh")
@@ -169,7 +169,7 @@ run_stage3_hotplug() {
 
     # Automated: verify 3-player quad geometry
     hw_wait_for "D3.5 SplitscreenP3 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP3 >/dev/null 2>&1" || true
+        hw_window_visible SplitscreenP3 || true
 
     local g3_x g3_y g3_w g3_h
     read -r g3_x g3_y g3_w g3_h < <(hw_expected_slot_geometry 3 "1 2 3" "$sw" "$sh")
@@ -207,7 +207,7 @@ run_stage3_hotplug() {
 
     # Automated: verify all 4 windows at quad positions
     hw_wait_for "D3.6 SplitscreenP4 window" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP4 >/dev/null 2>&1" || true
+        hw_window_visible SplitscreenP4 || true
 
     local g4_x g4_y g4_w g4_h
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2 3 4" "$sw" "$sh")
@@ -270,7 +270,7 @@ run_stage3_hotplug() {
     hw_assert_window_at "D3.7 P4 still at bottom-right after P2 disconnect" "SplitscreenP4" "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
 
     local p2_still_there
-    p2_still_there=$(xdotool search --onlyvisible --name SplitscreenP2 2>/dev/null || true)
+    p2_still_there=$(hw_xdo xdotool search --onlyvisible --name SplitscreenP2 2>/dev/null || true)
     hw_log "D3.7 SplitscreenP2 window after disconnect: '${p2_still_there:-<not found>}'"
     hw_assert_empty "D3.7 SplitscreenP2 Minecraft window gone after disconnect" "$p2_still_there"
 
@@ -297,7 +297,7 @@ run_stage3_hotplug() {
     hw_dump_state
 
     hw_wait_for "D3.8 SplitscreenP2 window reappears" 20 \
-        bash -c "xdotool search --onlyvisible --name SplitscreenP2 >/dev/null 2>&1" || true
+        hw_window_visible SplitscreenP2 || true
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2 3 4" "$sw" "$sh")
     hw_assert_window_at "D3.8 P2 back at top-right after reconnect" "SplitscreenP2" "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
     hw_assert_splitscreen_properties "D3.8 slot 2 reused" 2 "TOP_RIGHT"
