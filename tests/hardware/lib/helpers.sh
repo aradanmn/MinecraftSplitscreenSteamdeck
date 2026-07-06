@@ -264,13 +264,50 @@ hw_wait_for() {
 # Screen and window geometry
 # ---------------------------------------------------------------------------
 
-# hw_get_screen_resolution: echo "WxH" (e.g. "1920x1080") for the active display
+# hw_nested_display: resolve the display the game windows actually live on.
+# The orchestrator runs INSIDE the nested plasma session, so its windows are on
+# the nested KWin's Xwayland — NOT on the ambient gamescope display this harness
+# runs under (found on-Deck 2026-07-05: every window assert failed on :1 while
+# the SplitscreenP1 window sat fullscreen on :2). The nested Xwayland is the one
+# started with an explicit '-auth <file>' (gamescope's own :0/:1 run authless).
+# Sets HW_XDO_DISPLAY / HW_XDO_XAUTH; falls back to ambient when no nested
+# session is up. Re-resolved per call (via hw_xdo) so a session restart
+# mid-stage picks up the fresh display/auth pair.
+hw_nested_display() {
+    local line
+    line=$(pgrep -a Xwayland 2>/dev/null | grep -- '-auth' | tail -1 || true)
+    if [[ -n "$line" ]]; then
+        HW_XDO_DISPLAY=$(echo "$line" | grep -oE ' :[0-9]+ ' | head -1 | tr -d ' ')
+        HW_XDO_XAUTH=$(echo "$line" | sed -n 's/.*-auth \([^ ]*\).*/\1/p')
+    else
+        HW_XDO_DISPLAY=""
+        HW_XDO_XAUTH=""
+    fi
+    HW_XDO_DISPLAY="${HW_XDO_DISPLAY:-${DISPLAY:-:0}}"
+    HW_XDO_XAUTH="${HW_XDO_XAUTH:-${XAUTHORITY:-}}"
+}
+
+# hw_xdo CMD [ARGS...]: run an X client (xdotool/xdpyinfo/...) against the
+# nested game display resolved by hw_nested_display.
+hw_xdo() {
+    hw_nested_display
+    DISPLAY="$HW_XDO_DISPLAY" XAUTHORITY="$HW_XDO_XAUTH" "$@"
+}
+
+# hw_window_visible TITLE: true if a visible window with TITLE exists on the
+# nested game display. Usable directly as a hw_wait_for check command.
+hw_window_visible() {
+    hw_xdo xdotool search --onlyvisible --name "$1" >/dev/null 2>&1
+}
+
+# hw_get_screen_resolution: echo "WxH" (e.g. "1920x1080") for the display the
+# game windows tile on (the nested session root when one is up).
 hw_get_screen_resolution() {
     local res
-    res=$(DISPLAY="${DISPLAY:-:0}" xdpyinfo 2>/dev/null \
+    res=$(hw_xdo xdpyinfo 2>/dev/null \
         | awk '/dimensions:/{print $2}' | head -1 || true)
     [[ -n "$res" ]] && { echo "$res"; return 0; }
-    res=$(DISPLAY="${DISPLAY:-:0}" xrandr 2>/dev/null \
+    res=$(hw_xdo xrandr 2>/dev/null \
         | awk '/\*/{print $1}' | head -1 || true)
     [[ -n "$res" ]] && { echo "$res"; return 0; }
     hw_warn "hw_get_screen_resolution: could not detect resolution, assuming 1280x800"
@@ -327,16 +364,16 @@ hw_assert_window_at() {
     local tol="${7:-50}"
 
     local wid
-    wid=$(DISPLAY="${DISPLAY:-:0}" xdotool search --onlyvisible --name "$title" \
+    wid=$(hw_xdo xdotool search --onlyvisible --name "$title" \
         2>/dev/null | head -1 || true)
 
     if [[ -z "$wid" ]]; then
-        hw_fail "${label} — window '${title}' not visible on DISPLAY=${DISPLAY:-:0}"
+        hw_fail "${label} — window '${title}' not visible on DISPLAY=${HW_XDO_DISPLAY:-?} (nested game display)"
         return 1
     fi
 
     local geom
-    geom=$(DISPLAY="${DISPLAY:-:0}" xdotool getwindowgeometry --shell "$wid" \
+    geom=$(hw_xdo xdotool getwindowgeometry --shell "$wid" \
         2>/dev/null || true)
 
     if [[ -z "$geom" ]]; then
