@@ -1,8 +1,49 @@
 #!/bin/bash
 # =============================================================================
 # JAVA MANAGEMENT MODULE
+# _java_output_matches_major: does `java -version` output $2 report major $1?
+# #48: the per-major match tables (8/16/17/21/23/24, four copies) silently
+# lacked Java 25 — a correctly installed jdk-25 (required by MC 26.x) was
+# undetectable offline. One generic pattern instead of a table to maintain.
+_java_output_matches_major() {
+    local major="$1" output="$2"
+    if [[ "$major" == "8" ]]; then
+        echo "$output" | grep -q '1\.8\|openjdk version "8'
+    else
+        echo "$output" | grep -q "openjdk version \"${major}\|java version \"${major}"
+    fi
+}
+
 # =============================================================================
 # Automatic Java detection, installation and management functions
+
+# _mc_version_to_java_major: offline fallback table mapping a Minecraft version
+# to its required Java major. Used ONLY when the Mojang manifest is unreachable
+# or lacks the version — the API's javaVersion.majorVersion always wins when
+# available. #48: this table previously existed as four verbatim copies inside
+# get_required_java_version, and none of them knew the 2026 yearly scheme
+# (26.x), so any 26.x version fell through to "8" offline — the installer
+# picked Java 8 for a Java-25 game.
+# Parameters:
+#   $1 - mc_version (e.g., "1.21.3", "26.1.2")
+# Returns: Java major on stdout (e.g., "25", "21", "17", "16", "8")
+_mc_version_to_java_major() {
+    local mc_version="$1"
+    if [[ "$mc_version" =~ ^[2-9][0-9]+\. ]]; then
+        # 2026 yearly scheme (26.x+): ships against Java 25 (verified: MC 26.1.2
+        # installs jdk-25 via the manifest path). Same scheme test as
+        # lwjgl_management.sh:get_lwjgl_version_by_mapping.
+        echo "25"
+    elif [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
+        echo "21"  # 1.21+ requires Java 21
+    elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
+        echo "17"  # 1.18-1.20 requires Java 17
+    elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
+        echo "16"  # 1.17 requires Java 16
+    else
+        echo "8"   # 1.16 and below work with / require Java 8
+    fi
+}
 
 # get_required_java_version: Determine the required Java version for a Minecraft version
 # Fetches version manifest from Mojang API to get the official Java requirements
@@ -23,17 +64,7 @@ get_required_java_version() {
     
     if [[ -z "$manifest_json" ]]; then
         # Fallback logic based on known Minecraft Java requirements
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"  # 1.21+ requires Java 21
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"  # 1.18-1.20 requires Java 17
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"  # 1.17 requires Java 16
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"   # 1.13-1.16 works with Java 8
-        else
-            echo "8"   # Older versions (1.12 and below) require Java 8
-        fi
+        _mc_version_to_java_major "$mc_version"
         return 0
     fi
     
@@ -43,17 +74,7 @@ get_required_java_version() {
     
     if [[ -z "$version_url" || "$version_url" == "null" ]]; then
         # Use same fallback logic as above
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        _mc_version_to_java_major "$mc_version"
         return 0
     fi
     
@@ -63,17 +84,7 @@ get_required_java_version() {
     
     if [[ -z "$version_json" ]]; then
         # Fallback logic
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        _mc_version_to_java_major "$mc_version"
         return 0
     fi
     
@@ -85,17 +96,7 @@ get_required_java_version() {
         echo "$java_version"
     else
         # Fallback logic
-        if [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
-            echo "21"
-        elif [[ "$mc_version" =~ ^1\.(1[8-9]|20)(\.|$) ]]; then
-            echo "17"
-        elif [[ "$mc_version" =~ ^1\.17(\.|$) ]]; then
-            echo "16"
-        elif [[ "$mc_version" =~ ^1\.(1[3-6])(\.|$) ]]; then
-            echo "8"
-        else
-            echo "8"
-        fi
+        _mc_version_to_java_major "$mc_version"
     fi
 }
 
@@ -220,147 +221,44 @@ find_java_installation() {
             if [[ -x "${jdk_dir}bin/java" ]]; then
                 local version_output
                 version_output=$("${jdk_dir}bin/java" -version 2>&1 | head -1)
-                case "$required_version" in
-                    8)
-                        if echo "$version_output" | grep -q "1\.8\|openjdk version \"8"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                    16)
-                        if echo "$version_output" | grep -q "openjdk version \"16\|java version \"16"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                    17)
-                        if echo "$version_output" | grep -q "openjdk version \"17\|java version \"17"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                    21)
-                        if echo "$version_output" | grep -q "openjdk version \"21\|java version \"21"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                    23)
-                        if echo "$version_output" | grep -q "openjdk version \"23\|java version \"23"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                    24)
-                        if echo "$version_output" | grep -q "openjdk version \"24\|java version \"24"; then
-                            java_path="${jdk_dir}bin/java"
-                            break
-                        fi
-                        ;;
-                esac
+                # #48: generic major match (was a per-major table missing Java 25).
+                if _java_output_matches_major "$required_version" "$version_output"; then
+                    java_path="${jdk_dir}bin/java"
+                    break
+                fi
             fi
         done
     fi
     
     # Check system locations if not found in ~/.local/jdk
     if [[ -z "$java_path" ]]; then
-        case "$required_version" in
-            8)
-                for path in "/usr/lib/jvm/java-8-openjdk/bin/java" \
-                           "/usr/lib/jvm/java-1.8.0-openjdk/bin/java" \
-                           "/usr/lib/jvm/zulu8/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-            16)
-                for path in "/usr/lib/jvm/java-16-openjdk/bin/java" \
-                           "/usr/lib/jvm/jdk-16/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-            17)
-                for path in "/usr/lib/jvm/java-17-openjdk/bin/java" \
-                           "/usr/lib/jvm/java-17-oracle/bin/java" \
-                           "/usr/lib/jvm/zulu17/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-            21)
-                for path in "/usr/lib/jvm/java-21-openjdk/bin/java" \
-                           "/usr/lib/jvm/java-21-oracle/bin/java" \
-                           "/usr/lib/jvm/zulu21/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-            23)
-                for path in "/usr/lib/jvm/java-23-openjdk/bin/java" \
-                           "/usr/lib/jvm/jdk-23/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-            24)
-                for path in "/usr/lib/jvm/java-24-openjdk/bin/java" \
-                           "/usr/lib/jvm/jdk-24/bin/java"; do
-                    if [[ -x "$path" ]]; then
-                        java_path="$path"
-                        break
-                    fi
-                done
-                ;;
-        esac
+        # #48: generic candidate list (was a per-major table of the same three
+        # path shapes, missing Java 25 and every future major). The java-1.8.0
+        # legacy name is the 8-only special case.
+        local _jvm_candidates=(
+            "/usr/lib/jvm/java-${required_version}-openjdk/bin/java"
+            "/usr/lib/jvm/java-${required_version}-oracle/bin/java"
+            "/usr/lib/jvm/jdk-${required_version}/bin/java"
+            "/usr/lib/jvm/zulu${required_version}/bin/java"
+        )
+        [[ "$required_version" == "8" ]] && _jvm_candidates+=("/usr/lib/jvm/java-1.8.0-openjdk/bin/java")
+        local path
+        for path in "${_jvm_candidates[@]}"; do
+            if [[ -x "$path" ]]; then
+                java_path="$path"
+                break
+            fi
+        done
     fi
     
     # Check system default java and validate version
     if [[ -z "$java_path" ]] && command -v java >/dev/null 2>&1; then
         local version_output
         version_output=$(java -version 2>&1 | head -1)
-        case "$required_version" in
-            8)
-                if echo "$version_output" | grep -q "1\.8\|openjdk version \"8"; then
-                    java_path="java"
-                fi
-                ;;
-            16)
-                if echo "$version_output" | grep -q "openjdk version \"16\|java version \"16"; then
-                    java_path="java"
-                fi
-                ;;
-            17)
-                if echo "$version_output" | grep -q "openjdk version \"17\|java version \"17"; then
-                    java_path="java"
-                fi
-                ;;
-            21)
-                if echo "$version_output" | grep -q "openjdk version \"21\|java version \"21"; then
-                    java_path="java"
-                fi
-                ;;
-            23)
-                if echo "$version_output" | grep -q "openjdk version \"23\|java version \"23"; then
-                    java_path="java"
-                fi
-                ;;
-            24)
-                if echo "$version_output" | grep -q "openjdk version \"24\|java version \"24"; then
-                    java_path="java"
-                fi
-                ;;
-        esac
+        # #48: generic major match (was a per-major table missing Java 25).
+        if _java_output_matches_major "$required_version" "$version_output"; then
+            java_path="java"
+        fi
     fi
     
     echo "$java_path"
@@ -400,38 +298,10 @@ detect_and_install_java() {
         
         # Verify version matches requirement
         local version_matches=false
-        case "$required_java_version" in
-            8)
-                if echo "$java_version_output" | grep -q "1\.8\|openjdk version \"8"; then
-                    version_matches=true
-                fi
-                ;;
-            16)
-                if echo "$java_version_output" | grep -q "openjdk version \"16\|java version \"16"; then
-                    version_matches=true
-                fi
-                ;;
-            17)
-                if echo "$java_version_output" | grep -q "openjdk version \"17\|java version \"17"; then
-                    version_matches=true
-                fi
-                ;;
-            21)
-                if echo "$java_version_output" | grep -q "openjdk version \"21\|java version \"21"; then
-                    version_matches=true
-                fi
-                ;;
-            23)
-                if echo "$java_version_output" | grep -q "openjdk version \"23\|java version \"23"; then
-                    version_matches=true
-                fi
-                ;;
-            24)
-                if echo "$java_version_output" | grep -q "openjdk version \"24\|java version \"24"; then
-                    version_matches=true
-                fi
-                ;;
-        esac
+        # #48: generic major match (was a per-major table missing Java 25).
+        if _java_output_matches_major "$required_java_version" "$java_version_output"; then
+            version_matches=true
+        fi
         
         if [[ "$version_matches" == true ]]; then
             print_success "Found compatible Java $required_java_version at: $JAVA_PATH"
@@ -480,24 +350,15 @@ detect_and_install_java() {
         print_error "Automatic Java installation failed"
         print_error "Please install Java $required_java_version manually and try again"
         print_info "Manual installation options:"
-        case "$required_java_version" in
-            "21")
-                print_info "  • System package: sudo pacman -S jdk21-openjdk"
-                print_info "  • Download from: https://adoptium.net/temurin/releases/?version=21"
-                ;;
-            "17")
-                print_info "  • System package: sudo pacman -S jdk17-openjdk"
-                print_info "  • Download from: https://adoptium.net/temurin/releases/?version=17"
-                ;;
-            "16")
-                print_info "  • Java 16 is deprecated, consider Java 17 (compatible)"
-                print_info "  • System package: sudo pacman -S jdk17-openjdk"
-                ;;
-            "8")
-                print_info "  • System package: sudo pacman -S jdk8-openjdk"
-                print_info "  • Download from: https://adoptium.net/temurin/releases/?version=8"
-                ;;
-        esac
+        # #48: generic suggestion (was a per-major table stopping at 21 — a
+        # Java-25 requirement, MC 26.x, printed no package hint at all).
+        if [[ "$required_java_version" == "16" ]]; then
+            print_info "  • Java 16 is deprecated, consider Java 17 (compatible)"
+            print_info "  • System package: sudo pacman -S jdk17-openjdk"
+        else
+            print_info "  • System package: sudo pacman -S jdk${required_java_version}-openjdk"
+            print_info "  • Download from: https://adoptium.net/temurin/releases/?version=${required_java_version}"
+        fi
         print_info "  • Or download directly from Eclipse Temurin:"
         print_info "    https://adoptium.net/temurin/releases/?version=${required_java_version}&os=linux&arch=x64&package=jdk"
         exit 1
