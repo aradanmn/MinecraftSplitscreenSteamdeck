@@ -776,10 +776,22 @@ cleanup() {
     fi
 
     # ── Kill controller monitor
+    # #26/#60: same N15 class as the dock monitor below — start_controller_monitor's
+    # udevadm runs as a process-substitution CHILD of the monitor shell, so killing
+    # only the parent PID orphans it. Confirmed on-Deck 2026-07-06: the orphaned
+    # (marked) udevadm reparented onto Steam's reaper and kept the game showing as
+    # Running after an otherwise clean exit. Children first, then the parent.
     if [[ -n "$_CONTROLLER_MONITOR_PID" ]] && kill -0 "$_CONTROLLER_MONITOR_PID" 2>/dev/null; then
+        if type _kill_tree >/dev/null 2>&1; then
+            _kill_tree "$_CONTROLLER_MONITOR_PID" TERM
+        else
+            pkill -TERM -P "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        fi
         kill -TERM "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
+        sleep 0.2
+        pkill -KILL -P "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
         kill -KILL "$_CONTROLLER_MONITOR_PID" 2>/dev/null || true
-        echo "[orchestrator] Controller monitor PID $_CONTROLLER_MONITOR_PID killed" >&2
+        echo "[orchestrator] Controller monitor PID $_CONTROLLER_MONITOR_PID (+ children) killed" >&2
     fi
 
     # ── Kill dock monitor
