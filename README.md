@@ -90,6 +90,23 @@ If you hit a rough edge, check back — fixes land in point releases.
 
 ---
 
+## Developing & testing
+
+The launcher does not run from your git checkout — it runs from the deployed
+tree under `~/.local/share/PolyMC/`. **`git pull` is not a deploy.** After
+pulling or editing, sync the deployed tree before testing:
+
+```bash
+./deploy.sh          # copy the launcher + runtime modules into place, print what changed
+./deploy.sh --check  # verify the deployed tree matches the checkout (exit 1 on drift)
+```
+
+`tests/hardware/run_all.sh` runs the `--check` automatically and refuses to
+start against a stale tree (`HW_SKIP_FRESHNESS=1` overrides, e.g. when stage0b
+is about to run the full installer anyway).
+
+---
+
 ## Credits & license
 
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen).
