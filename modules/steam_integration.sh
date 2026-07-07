@@ -28,7 +28,9 @@
 # 3. Creates backup of existing shortcuts for safety
 # 4. Uses specialized Python script to modify binary shortcuts.vdf format
 # 5. Downloads custom artwork from SteamGridDB for professional appearance
-# 6. Restarts Steam with new shortcut available
+# 6. Leaves Steam stopped — it picks up the new shortcut on its next normal
+#    start (auto-restarting inherited the installer's environment and died
+#    headless / over SSH, killing the user's Steam session — see issue #56)
 #
 # SAFETY MEASURES:
 # - Checks for existing shortcut to prevent duplicates
@@ -78,22 +80,31 @@ setup_steam_integration() {
             # Steam must be completely closed to safely modify the shortcuts.vdf binary database
             # The shortcuts.vdf file is locked while Steam is running and changes may be lost
             # STEAM DECK SAFETY: Use precise process targeting to avoid killing SteamOS components
-            print_progress "Shutting down Steam to safely modify shortcuts database..."
-            
+            # Only touch Steam at all if it is actually running (headless/SSH
+            # installs usually have no Steam client up — nothing to shut down)
+            local steam_was_running=false
+
             # Temporarily disable strict error handling for Steam shutdown
             set +e
-            
-            # Steam Deck-aware shutdown approach
-            print_info "   → Attempting graceful Steam shutdown..."
-            steam -shutdown 2>/dev/null || true
-            sleep 3
-            
-            # Only force close the actual Steam client process, avoiding SteamOS components
-            print_info "   → Force closing Steam client process (preserving SteamOS)..."
-            # Use exact process name matching to avoid killing SteamOS processes
-            pkill -x "steam" 2>/dev/null || true
-            sleep 2
-            
+
+            if pgrep -x "steam" >/dev/null 2>&1; then
+                steam_was_running=true
+                print_progress "Shutting down Steam to safely modify shortcuts database..."
+
+                # Steam Deck-aware shutdown approach
+                print_info "   → Attempting graceful Steam shutdown..."
+                steam -shutdown 2>/dev/null || true
+                sleep 3
+
+                # Only force close the actual Steam client process, avoiding SteamOS components
+                print_info "   → Force closing Steam client process (preserving SteamOS)..."
+                # Use exact process name matching to avoid killing SteamOS processes
+                pkill -x "steam" 2>/dev/null || true
+                sleep 2
+            else
+                print_info "   → Steam is not running - shortcuts database is safe to edit"
+            fi
+
             # Re-enable strict error handling
             set -e
             
@@ -223,17 +234,22 @@ setup_steam_integration() {
             set -e
             
             # =============================================================================
-            # STEAM RESTART AND VERIFICATION
+            # STEAM PICKS UP THE SHORTCUT ON ITS NEXT START
             # =============================================================================
-            
-            # STEAM RESTART: Launch Steam in background after successful modification
-            # Use nohup to prevent Steam from being tied to terminal session
-            # Steam will automatically detect the new shortcut in its library
-            print_progress "Restarting Steam with new shortcut..."
-            nohup steam >/dev/null 2>&1 &
-            
+
+            # NO AUTO-RESTART (issue #56): relaunching Steam here inherits the
+            # installer's environment — over SSH / headless there is no
+            # DISPLAY/Wayland socket, so the new Steam process dies ("Unable to
+            # open display") and the user's Steam session stays down. Steam
+            # reads shortcuts.vdf on every normal start, so simply leaving it
+            # stopped is safe; the user restarts it however they normally would.
             print_success "🎮 Steam integration complete!"
-            print_info "   → Minecraft Splitscreen should now appear in your Steam library"
+            print_info "   → Minecraft Splitscreen will appear in your Steam library the next time Steam starts"
+            if [[ "$steam_was_running" == true ]]; then
+                print_info "   → Steam was shut down to edit the shortcuts database - start Steam (or Return to Gaming Mode on Steam Deck) to see the shortcut"
+            else
+                print_info "   → Start Steam (or Return to Gaming Mode on Steam Deck) to see the shortcut"
+            fi
             print_info "   → Accessible from Steam Big Picture mode and Steam Deck Game Mode"
             print_info "   → Launch directly from Steam for automatic controller detection"
         else
