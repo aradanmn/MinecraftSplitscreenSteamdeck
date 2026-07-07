@@ -22,6 +22,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/lib/helpers.sh"
+# #50 loading-order rule: runtime_context resolves+exports the shared globals
+# (SPLITSCREEN_STATE, MCSS_STATE_LOCK, MCSS_ENV_CONTEXT) that other modules
+# bare-read; it must source before any of them (caught by stage1 on-Deck:
+# update_slot_state died on an unset global under set -u).
+source "$REPO_ROOT/modules/runtime_context.sh"
 source "$REPO_ROOT/modules/dock_detection.sh"
 source "$REPO_ROOT/modules/instance_lifecycle.sh"
 

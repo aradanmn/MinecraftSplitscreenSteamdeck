@@ -590,7 +590,8 @@ update_slot_state() {
     # reverts another slot's just-written field → lost bwrap_pid (un-reapable zombie slot) or
     # lost active:true (slot handed out twice → double-spawn / controller on wrong player).
     # flock on a sidecar lock fd makes the jq-read + atomic-write one critical section.
-    local lock_file="$MCSS_STATE_LOCK"
+    # #50: use-time derivation from the single-resolved state path (see orchestrator).
+    local lock_file="${state_file}.lock"
     (
         flock -w 5 9 || {
             echo "[instance_lifecycle] WARNING: state-file lock timeout updating slot $slot" >&2

@@ -94,7 +94,10 @@ _set_mode() {
     # original was tolerant (`jq ... || true`); restore that tolerance while KEEPING the H3
     # lock/unique-temp fix: initialize a default state file if it's missing/invalid instead
     # of failing, so _set_mode can never be the thing that crashes a legitimate launch.
-    local lock_file="$MCSS_STATE_LOCK"
+    # #50: derived from the SAME single-resolved state path as every other site
+    # (use-time, not source-time: tests legitimately re-point SPLITSCREEN_STATE
+    # after modules load, and the lock must follow the file actually locked).
+    local lock_file="${state}.lock"
     (
         flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then

@@ -44,6 +44,9 @@
 # two separate locks (the H3 state-corruption race). Every other site now does
 # a bare read of these exports.
 export SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+# Advisory mirror for external tooling; the flock sites derive "<state>.lock"
+# at use time from the same resolved path (tests re-point SPLITSCREEN_STATE
+# after source, and the lock must follow the file actually being locked).
 export MCSS_STATE_LOCK="${SPLITSCREEN_STATE}.lock"
 
 mcss_resolve_environment() {
