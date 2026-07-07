@@ -15,6 +15,9 @@ FULL_TARGETS=(
     "$HOME/.local/share/PrismLauncher"
     "$HOME/Desktop/MinecraftSplitscreen.desktop"
     "$HOME/.local/share/applications/MinecraftSplitscreen.desktop"
+    # Legacy JDK dir from older installers (#41 — current installs keep Java
+    # under ~/.local/share/PolyMC/java, removed with the tree above)
+    "$HOME/.local/jdk"
 )
 
 KEEP_DATA_TARGETS=(
@@ -180,6 +183,28 @@ else
         remove_path "$path"
     done
 fi
+
+# Clean stale JAVA_<ver>_HOME exports that older installers appended to
+# ~/.profile (#41 — current installs never touch the profile). Only lines
+# pointing at directories this project managed are removed.
+clean_profile_java_exports() {
+    local profile="$HOME/.profile"
+    [[ -f "$profile" ]] || return 0
+
+    local pattern='^export JAVA_[0-9]+_HOME=.*(/\.local/jdk|/\.local/share/PolyMC/java|'"$HOME"'/java)'
+    local matches
+    matches=$(grep -cE "$pattern" "$profile" 2>/dev/null || true)
+    [[ "${matches:-0}" -gt 0 ]] || return 0
+
+    if [[ "$DRY_RUN" == true ]]; then
+        print_info "[dry-run] Would remove $matches JAVA_*_HOME line(s) from $profile"
+    else
+        sed -i -E "\\#${pattern}#d" "$profile"
+        print_success "Removed $matches stale JAVA_*_HOME line(s) from $profile"
+    fi
+    ((removed_count+=1))
+}
+clean_profile_java_exports
 
 echo ""
 if [[ "$DRY_RUN" == true ]]; then

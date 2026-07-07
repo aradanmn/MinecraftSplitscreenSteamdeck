@@ -102,14 +102,19 @@ get_required_java_version() {
 
 # download_and_install_jdk: Download and install JDK directly from Eclipse Temurin (Adoptium).
 # Queries the Adoptium API for the latest release of the requested major version,
-# downloads the tarball, verifies its SHA-256 checksum, extracts it to ~/.local/jdk/,
-# and exports JAVA_<version>_HOME so the caller can locate the new binary immediately.
+# downloads the tarball, verifies its SHA-256 checksum, extracts it under the
+# app's own data dir ($TARGET_DIR/java — #41: keep the install self-contained,
+# nothing at the top of HOME), and exports JAVA_<version>_HOME so the caller can
+# locate the new binary immediately. In-process export ONLY — no ~/.profile
+# edits (#41): the resolved JAVA_PATH is baked into polymc.cfg/instance.cfg at
+# install time and find_java_installation scans the install dirs directly, so
+# nothing needs the variable after this installer run ends.
 # No git, no third-party installer scripts.
 # Parameters:
 #   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
 download_and_install_jdk() {
     local required_version="$1"
-    local install_dir="$HOME/.local/jdk"
+    local install_dir="${TARGET_DIR:-$HOME/.local/share/PolyMC}/java"
     local arch="x64"
     local adoptium_api="https://api.adoptium.net/v3/assets/latest/${required_version}/hotspot"
 
@@ -181,12 +186,10 @@ download_and_install_jdk() {
         return 1
     fi
 
-    # Persist JAVA_<version>_HOME into ~/.profile, deduplicating any previous entry.
+    # In-process export only — deliberately NOT persisted to ~/.profile (#41).
+    # Editing the user's shell profile is a global side effect that lingers
+    # after uninstall; nothing outside this installer run reads the variable.
     local java_home_var="JAVA_${required_version}_HOME"
-    if [[ -f ~/.profile ]]; then
-        sed -i "/^export ${java_home_var}=/d" ~/.profile
-    fi
-    echo "export ${java_home_var}=\"${jdk_dir}\"" >> ~/.profile
     export "${java_home_var}=${jdk_dir}"
 
     print_success "Eclipse Temurin JDK $required_version installed to: $jdk_dir"
@@ -207,7 +210,7 @@ find_java_installation() {
     local required_version="$1"
     local java_path=""
     
-    # First, check the automatic installer location (~/.local/jdk)
+    # First, check a JAVA_<ver>_HOME exported by this run's automatic install
     local jdk_home_var="JAVA_${required_version}_HOME"
     if [[ -n "${!jdk_home_var:-}" && -x "${!jdk_home_var}/bin/java" ]]; then
         java_path="${!jdk_home_var}/bin/java"
@@ -215,9 +218,14 @@ find_java_installation() {
         return 0
     fi
     
-    # Check ~/.local/jdk directory directly (in case env vars aren't loaded)
-    if [[ -d "$HOME/.local/jdk" ]]; then
-        for jdk_dir in "$HOME/.local/jdk"/*/; do
+    # Scan the app-owned install dir, then legacy locations from older
+    # installers (~/.local/jdk, ~/java — #41 relocated new installs but
+    # existing ones keep working without a re-download).
+    local scan_root
+    for scan_root in "${TARGET_DIR:-$HOME/.local/share/PolyMC}/java" "$HOME/.local/jdk" "$HOME/java"; do
+        [[ -n "$java_path" ]] && break
+        [[ -d "$scan_root" ]] || continue
+        for jdk_dir in "$scan_root"/*/; do
             if [[ -x "${jdk_dir}bin/java" ]]; then
                 local version_output
                 version_output=$("${jdk_dir}bin/java" -version 2>&1 | head -1)
@@ -228,7 +236,7 @@ find_java_installation() {
                 fi
             fi
         done
-    fi
+    done
     
     # Check system locations if not found in ~/.local/jdk
     if [[ -z "$java_path" ]]; then
@@ -320,9 +328,9 @@ detect_and_install_java() {
     print_info "Automatically installing Eclipse Temurin JDK $required_java_version..."
     print_info "This installation:"
     print_info "  • Downloads from Eclipse Temurin (Adoptium) with SHA-256 verification"
-    print_info "  • Installs to ~/.local/jdk/ (no root access needed)"
+    print_info "  • Installs to ${TARGET_DIR:-$HOME/.local/share/PolyMC}/java/ (self-contained, no root access needed)"
     print_info "  • Supports multiple Java versions side-by-side"
-    print_info "  • Sets up JAVA_${required_java_version}_HOME in ~/.profile automatically"
+    print_info "  • Leaves your shell profile untouched"
     
     # Attempt automatic installation
     if download_and_run_jdk_installer "$required_java_version"; then
