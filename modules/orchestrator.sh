@@ -575,10 +575,9 @@ docked_flow() {
     # The built-in is excluded by ENUMERATION, not by masking: it exposes no raw js
     # gamepad node, so under raw binding (_list_raw_external_pads) it is structurally
     # unselectable, and under the legacy virtual mapper its 28de virtual is never claimed.
-    # External controllers are assigned one-per-slot. (The old comment here referenced
-    # _identify_internal_virtual_index() + per-sandbox --bind /dev/null masking of the
-    # built-in; that function is now DEAD and slated for the deferred cleanup commit, and
-    # the cross-slot mask is inert under --dev /dev + js-only binding — see
+    # External controllers are assigned one-per-slot. (The dead virtual-index/masking
+    # helpers this comment once referenced were removed in the #28 cleanup; the
+    # cross-slot mask is inert under --dev /dev + js-only binding — see
     # _build_bwrap_command.)
     # ────────────────────────────────────────────────────────────────────
 
