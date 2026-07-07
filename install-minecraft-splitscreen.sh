@@ -64,7 +64,11 @@ trap cleanup EXIT INT TERM
 # =============================================================================
 
 # Get the directory where this script is located
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# curl|bash delivers this script on STDIN: BASH_SOURCE is unset there, and the
+# sourced modules leak set -u, so any bare reference is fatal (post-merge verify,
+# 2026-07-06). $0 is "bash" in that mode → SCRIPT_DIR falls back to the CWD, and
+# mods.conf lookup falls back to built-in defaults by design.
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # Create a temporary directory for modules that will be cleaned up automatically
 MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 
@@ -347,7 +351,10 @@ declare -a MISSING_MODS=()
 
 # Execute main function if script is run directly
 # This allows the script to be sourced for testing without auto-execution
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
+# ${BASH_SOURCE[0]:-$0}: under curl|bash BASH_SOURCE is unset (set -u fatal — the
+# 'line 350 unbound variable' failure) and the fallback compares $0 to itself,
+# so piped execution correctly runs main.
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]] && [[ -z "${TESTING_MODE:-}" ]]; then
     main "$@"
 fi
 
