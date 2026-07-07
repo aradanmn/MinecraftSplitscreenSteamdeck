@@ -63,6 +63,27 @@ hw_log "============================================================"
 hw_detect_display
 
 # ---------------------------------------------------------------------------
+# Deploy-freshness gate (issue #54): git pull is not a deploy. The launcher
+# runs from ~/.local/share/PolyMC/, and testing a stale deployed tree has
+# produced false results twice. Refuse to run stages against drift.
+# Override (e.g. when stage0b is about to run the full installer anyway):
+#   HW_SKIP_FRESHNESS=1 bash run_all.sh ...
+# ---------------------------------------------------------------------------
+if [[ "${HW_SKIP_FRESHNESS:-0}" != "1" ]]; then
+    if [[ -x "$REPO_ROOT/deploy.sh" ]]; then
+        hw_log "Checking deployed tree freshness (deploy.sh --check)..."
+        if ! "$REPO_ROOT/deploy.sh" --check 2>&1 | tee -a "$HW_LOG"; then
+            hw_log ""
+            hw_log "ABORT: deployed tree is stale — run $REPO_ROOT/deploy.sh first,"
+            hw_log "       or set HW_SKIP_FRESHNESS=1 to run against it anyway."
+            exit 1
+        fi
+    else
+        hw_warn "deploy.sh not found in repo root — skipping freshness check"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Stage runner helpers
 # ---------------------------------------------------------------------------
 
