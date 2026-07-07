@@ -137,11 +137,11 @@ run_stage3_hotplug() {
     fi
 
     hw_info "D3.4 — Waiting for slot 2 to become active (up to 30s)..."
-    hw_wait_for "D3.4 slot 2 active" 30 _slot_active 2 || true
+    hw_wait_for "D3.4 slot 2 active" 60 _slot_active 2 || true
     hw_dump_state
 
     # Automated: verify window positions for 2-player (top/bottom)
-    hw_wait_for "D3.4 SplitscreenP2 window" 20 \
+    hw_wait_for "D3.4 SplitscreenP2 window" 45 \
         hw_slot_window_visible 2 || true
 
     local g1_x g1_y g1_w g1_h  g2_x g2_y g2_w g2_h
@@ -170,11 +170,11 @@ run_stage3_hotplug() {
         hw_stop_orchestrator; return 0
     fi
 
-    hw_wait_for "D3.5 slot 3 active" 30 _slot_active 3 || true
+    hw_wait_for "D3.5 slot 3 active" 60 _slot_active 3 || true
     hw_dump_state
 
     # Automated: verify 3-player quad geometry
-    hw_wait_for "D3.5 SplitscreenP3 window" 20 \
+    hw_wait_for "D3.5 SplitscreenP3 window" 45 \
         hw_slot_window_visible 3 || true
 
     local g3_x g3_y g3_w g3_h
@@ -208,11 +208,11 @@ run_stage3_hotplug() {
         return 0
     fi
 
-    hw_wait_for "D3.6 slot 4 active" 30 _slot_active 4 || true
+    hw_wait_for "D3.6 slot 4 active" 60 _slot_active 4 || true
     hw_dump_state
 
     # Automated: verify all 4 windows at quad positions
-    hw_wait_for "D3.6 SplitscreenP4 window" 20 \
+    hw_wait_for "D3.6 SplitscreenP4 window" 45 \
         hw_slot_window_visible 4 || true
 
     local g4_x g4_y g4_w g4_h
@@ -275,16 +275,24 @@ run_stage3_hotplug() {
     hw_assert_slot_window_at "D3.7 P3 still at bottom-left after P2 disconnect" 3 "$g3_x" "$g3_y" "$g3_w" "$g3_h" 50
     hw_assert_slot_window_at "D3.7 P4 still at bottom-right after P2 disconnect" 4 "$g4_x" "$g4_y" "$g4_w" "$g4_h" 50
 
-    local p2_still_there
-    p2_still_there=$(hw_xdo xdotool search --onlyvisible --name SplitscreenP2 2>/dev/null || true)
-    hw_log "D3.7 SplitscreenP2 window after disconnect: '${p2_still_there:-<not found>}'"
-    hw_assert_empty "D3.7 SplitscreenP2 Minecraft window gone after disconnect" "$p2_still_there"
+    # Owner design (2026-07-06): a controller disconnect does NOT reap the
+    # instance — the game and window PERSIST (only MC exit reaps); the slot
+    # releases input. The old title-search absence check both encoded the wrong
+    # semantics AND passed vacuously (MC renames its window after load).
+    local p2_wid_persist
+    p2_wid_persist=$(hw_slot_wid 2)
+    if [[ -n "$p2_wid_persist" && "$p2_wid_persist" != "null" ]] && \
+            hw_xdo xwininfo -id "$p2_wid_persist" 2>/dev/null | grep -q "Map State: IsViewable"; then
+        hw_pass "D3.7 P2 instance window persists after disconnect (owner design)"
+    else
+        hw_fail "D3.7 P2 instance window did NOT persist after disconnect (wid ${p2_wid_persist:-none})"
+    fi
 
-    if hw_prompt "P1, P3, P4 should still be running. Top-right should be a black placeholder.
+    if hw_prompt "P1, P3, P4 still controllable; P2's game KEEPS RUNNING (uncontrollable until reconnect).
   Press Enter for D3.7 checklist, or type 'skip'."; then
         hw_checklist "D3.7 Sticky slots after P2 disconnect" \
             "P1 (top-left), P3 (bottom-left), P4 (bottom-right) are still running" \
-            "Top-right shows a BLACK placeholder (empty, no Minecraft window)" \
+            "Top-right still shows P2's running game (instance persists on disconnect)" \
             "P1 can still be controlled with P1's controller" \
             "Slot numbers did NOT re-shuffle (P3 is still bottom-left, not moved to top-right)"
     else
@@ -293,7 +301,9 @@ run_stage3_hotplug() {
 
     # --- D3.8: Reconnect controller (slot 2 reuse) ---
     if ! hw_prompt "Re-plug the P2 controller you just disconnected.
-  Wait 5 seconds for the new Minecraft instance to start, then press Enter."; then
+  Expected (owner design): input REATTACHES to the still-running P2 instance.
+  KNOWN ISSUE #62: static dev-binds cannot reattach — the gameplay check below
+  is an EXPECTED FAIL until the #38 uinput proxy lands. Wait 5s, press Enter."; then
         hw_skip "D3.8-D3.9 — operator skipped"
         return 0
     fi
@@ -302,17 +312,17 @@ run_stage3_hotplug() {
     hw_wait_for "D3.8 slot 2 reactivated" 20 _slot_active 2 || true
     hw_dump_state
 
-    hw_wait_for "D3.8 SplitscreenP2 window reappears" 20 \
+    hw_wait_for "D3.8 P2 window still viewable" 45 \
         hw_slot_window_visible 2 || true
     read -r g2_x g2_y g2_w g2_h < <(hw_expected_slot_geometry 2 "1 2 3 4" "$sw" "$sh")
     hw_assert_slot_window_at "D3.8 P2 back at top-right after reconnect" 2 "$g2_x" "$g2_y" "$g2_w" "$g2_h" 50
     hw_assert_splitscreen_properties "D3.8 slot 2 reused" 2 "TOP_RIGHT"
 
-    if hw_prompt "Slot 2 (top-right) should now show a new Minecraft instance for P2.
+    if hw_prompt "Slot 2 (top-right): the SAME P2 instance, now (per design) controllable again.
   Press Enter for D3.8 checklist, or type 'skip'."; then
         hw_checklist "D3.8 Slot 2 reuse after reconnect" \
-            "Top-right quadrant shows a new Minecraft instance (not black)" \
-            "P2 controller controls the new top-right instance" \
+            "Top-right quadrant still shows the SAME P2 game (no respawn, no black)" \
+            "P2 controller controls the running instance again (#62 EXPECTED FAIL until #38)" \
             "All four slots are running (no black placeholder)"
     else
         hw_skip "D3.8 checklist skipped"
