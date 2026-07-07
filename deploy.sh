@@ -132,12 +132,21 @@ if [[ ! -d "$TARGET_DIR" ]]; then
 fi
 mkdir -p "$MODULES_DST_DIR"
 
-changed=0 unchanged=0
+changed=0 unchanged=0 launcher_differs=false
 for entry in "${WORK[@]}"; do
     IFS='|' read -r src dst label normalize <<<"$entry"
     if [[ ! -f "$src" ]]; then
         echo "deploy.sh: $label missing from checkout ($src)" >&2
         exit 2
+    fi
+    # The launcher is deployed AFTER this loop (its stamp must reflect the
+    # whole tree, so it is refreshed whenever ANY file changes) — here it only
+    # contributes to the changed/unchanged accounting.
+    if [[ "$src" == "$LAUNCHER_SRC" ]]; then
+        if files_differ "$src" "$dst" "$normalize"; then
+            launcher_differs=true
+        fi
+        continue
     fi
     if files_differ "$src" "$dst" "$normalize"; then
         status="updated"; [[ -f "$dst" ]] || status="NEW"
@@ -150,9 +159,19 @@ for entry in "${WORK[@]}"; do
     fi
 done
 
-# Stamp the deployed launcher exactly like the installer does (launcher_setup.sh),
-# plus a +dirty marker so a test log can never claim a clean commit it didn't run.
-if [[ $changed -gt 0 || ! -f "$LAUNCHER_DST" ]]; then
+# Deploy + stamp the launcher whenever anything in the tree changed — not just
+# when the launcher itself did. The stamp describes the deployed TREE; found
+# on-Deck: a module-only redeploy left the launcher carrying the previous
+# deploy's commit/date while this script claimed the new stamp. Re-copying from
+# the checkout restores the placeholders so the sed always takes effect.
+# Stamped exactly like the installer (launcher_setup.sh), plus a +dirty marker
+# so a test log can never claim a clean commit it didn't run.
+if [[ "$launcher_differs" == true || $changed -gt 0 || ! -f "$LAUNCHER_DST" ]]; then
+    status="updated"; [[ -f "$LAUNCHER_DST" ]] || status="NEW"
+    [[ "$launcher_differs" == true || ! -f "$LAUNCHER_DST" ]] || status="re-stamped"
+    cp "$LAUNCHER_SRC" "$LAUNCHER_DST"
+    chmod +x "$LAUNCHER_DST"
+    changed=$((changed + 1))
     _ver=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "dev")
     _commit=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
     if ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- minecraftSplitscreen.sh modules/ 2>/dev/null; then
@@ -164,7 +183,9 @@ if [[ $changed -gt 0 || ! -f "$LAUNCHER_DST" ]]; then
         -e "s/__MCSS_COMMIT__/${_commit}/" \
         -e "s|__MCSS_BUILD_DATE__|${_date}|" \
         "$LAUNCHER_DST"
-    echo "  → stamped launcher: version=${_ver} commit=${_commit}"
+    echo "  → minecraftSplitscreen.sh ($status; stamped version=${_ver} commit=${_commit})"
+else
+    unchanged=$((unchanged + 1))
 fi
 
 echo ""
