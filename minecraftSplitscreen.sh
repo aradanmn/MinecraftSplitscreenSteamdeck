@@ -855,9 +855,11 @@ launchProdFromPlasma() {
     local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    export SPLITSCREEN_STATE="$state"
-    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+    # #46/#50: single initializer (instance_lifecycle) + single path resolution
+    # (runtime_context); mode auto-detected via get_display_mode instead of the
+    # hardcoded "docked" that drifted against instance_lifecycle's "handheld".
+    local state="$SPLITSCREEN_STATE"
+    _ensure_state_file
 
     # Run the real orchestrator. It blocks until the session ends (P1/Deck instance
     # exits). Output to the log directly (NO pipe — a pipe's write-end would be inherited
@@ -1069,9 +1071,9 @@ _run_phase_b_session() {
     local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    export SPLITSCREEN_STATE="$state"
-    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+    # #46/#50: single initializer; docked is the scenario under test here.
+    local state="$SPLITSCREEN_STATE"
+    _ensure_state_file docked
 
     _orch_loop() { while true; do docked_flow || true; sleep 0.5; done; }
     _orch_loop &
@@ -1112,9 +1114,9 @@ _run_position_sweep_session() {
     local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
-    local state="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
-    export SPLITSCREEN_STATE="$state"
-    echo '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$state"
+    # #46/#50: single initializer; docked is the scenario under test here.
+    local state="$SPLITSCREEN_STATE"
+    _ensure_state_file docked
 
     local W H
     # #27: fall back to 1280x800 (the Deck's actual panel resolution), matching the
@@ -1122,7 +1124,8 @@ _run_position_sweep_session() {
     W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
     H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=800
     local hw=$((W/2)) hh=$((H/2))
-    local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-12}"
+    # #55: default was 12 here while every other harness path used 15 — drifted.
+    local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
     echo "[sweep] single-instance position sweep on ${W}x${H}, observe ${delay}s/step" >> "$LOG"
 
     # Give the mod its single-instance config, then spawn slot 1 only.
@@ -1230,7 +1233,7 @@ launchNested() {
             SPLITSCREEN_DEBUG_LOG="$LOG" \
             MCSS_NESTED_SESSION=1 \
             SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
-            SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}" \
+            SPLITSCREEN_STATE="$SPLITSCREEN_STATE" \
             SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
             TEST_NUMBER="${TEST_NUMBER:-all}" \
             _NESTED_X_BEFORE="$x_before" \

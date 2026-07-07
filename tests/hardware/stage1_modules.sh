@@ -35,6 +35,10 @@ run_stage1_modules() {
     # Source all modules into the current shell so we can call their functions
     hw_info "Sourcing modules from ${REPO_ROOT}/modules/"
     hw_log "Running: source ${REPO_ROOT}/modules/dock_detection.sh"
+    # #50 loading-order rule: runtime_context resolves the shared globals other
+    # modules bare-read; source it before any of them (stage1 caught the set -u
+    # death in update_slot_state when it was missing).
+    source "${REPO_ROOT}/modules/runtime_context.sh"
     source "${REPO_ROOT}/modules/dock_detection.sh"
     hw_log "Running: source ${REPO_ROOT}/modules/controller_monitor.sh"
     source "${REPO_ROOT}/modules/controller_monitor.sh"

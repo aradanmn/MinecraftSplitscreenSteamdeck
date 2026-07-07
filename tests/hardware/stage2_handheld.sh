@@ -40,6 +40,10 @@ fi
 
 source "$_STAGE2_SCRIPT_DIR/lib/helpers.sh"
 hw_detect_display
+# #50 loading-order rule: runtime_context resolves the shared globals other
+# modules bare-read; source it before any of them (stage1 caught the set -u
+# death in update_slot_state when it was missing).
+source "${REPO_ROOT}/modules/runtime_context.sh"
 source "${REPO_ROOT}/modules/dock_detection.sh"
 
 # ---------------------------------------------------------------------------
