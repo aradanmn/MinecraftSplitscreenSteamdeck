@@ -29,7 +29,25 @@
 #                                  nestedPlasma/_nestedSession before they
 #                                  re-invoke this script) as an alternative —
 #                                  see minecraftSplitscreen.sh's `*)` dispatch.
+#
+#   SPLITSCREEN_STATE / MCSS_STATE_LOCK — resolved + exported below, at source
+#                                  time, exactly once (#50). Respects a value
+#                                  already set in the environment (test
+#                                  harnesses, nested-session Exec lines).
 # =============================================================================
+
+# #50: the ONLY place the state-file default exists. Previously this fallback
+# was inline-expanded at 13 runtime sites; losing the export anywhere meant
+# every component silently agreed on the fallback EXCEPT the watchdog (which
+# hard-requires the var and errored out — slot-death detection quietly gone),
+# and the two independently-built ".lock" sidecars could degrade flock into
+# two separate locks (the H3 state-corruption race). Every other site now does
+# a bare read of these exports.
+export SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
+# Advisory mirror for external tooling; the flock sites derive "<state>.lock"
+# at use time from the same resolved path (tests re-point SPLITSCREEN_STATE
+# after source, and the lock must follow the file actually being locked).
+export MCSS_STATE_LOCK="${SPLITSCREEN_STATE}.lock"
 
 mcss_resolve_environment() {
     # Idempotent: resolve once per process, callers may call this freely.
