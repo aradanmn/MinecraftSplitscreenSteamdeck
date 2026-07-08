@@ -11,11 +11,21 @@ set -euo pipefail
 # Run: bash tests/test_runtime_context.sh
 # =============================================================================
 
-readonly TEST_TOTAL=14
+readonly TEST_TOTAL=18
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RC_MODULE="$REPO_ROOT/modules/runtime_context.sh"
+
+# The module honors legacy override env vars (N_SLOTS, INSTANCES_DIR, ...). If
+# the developer's own shell exports any of them, they would leak into the plain
+# `rc_run` subshells below and make cases pass/fail for the wrong reason — a
+# CI/local split. Strip them from THIS shell so children inherit a clean base;
+# cases that test an override set it explicitly via `env VAR=val`.
+unset N_SLOTS INSTANCES_DIR LAUNCHER_EXEC SPLITSCREEN_SCREEN_W SPLITSCREEN_SCREEN_H \
+      CONTROLLER_MONITOR_RAW_BINDING MCSS_LAUNCHER_ROOT MCSS_INSTANCES_DIR \
+      MCSS_LAUNCHER_EXEC MCSS_SCREEN_W MCSS_SCREEN_H MCSS_MAX_PLAYERS \
+      MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID MCSS_RAW_BINDING 2>/dev/null || true
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -113,6 +123,37 @@ case "$out" in
         ;;
 esac
 
+# --- T15: mcss_exec_env_string includes MCSS_NESTED_SESSION (canonical list) ---
+out=$(rc_run 'mcss_exec_env_string')
+case "$out" in
+    *MCSS_NESTED_SESSION=*) assert_equals "ok" "ok" "T15: exec_env_string carries MCSS_NESTED_SESSION" || true ;;
+    *) assert_equals "$out" "(should contain MCSS_NESTED_SESSION)" "T15: exec_env_string carries MCSS_NESTED_SESSION" || true ;;
+esac
+
+# --- T16: exec_env_string self-resolves origin context (no prior resolve call) ---
+out=$(env -u MCSS_ENV_CONTEXT XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_exec_env_string" 2>/dev/null)
+case "$out" in
+    *MCSS_ENV_CONTEXT=gamescope*) assert_equals "ok" "ok" "T16: exec_env_string resolves context before emitting" || true ;;
+    *) assert_equals "$out" "(should contain MCSS_ENV_CONTEXT=gamescope)" "T16: exec_env_string resolves context before emitting" || true ;;
+esac
+
+# --- T17: constants re-resolve per process (exported value does NOT beat a child override) ---
+# Simulates a child that inherited the parent's resolved MCSS_MAX_PLAYERS=4 but
+# was launched with its own N_SLOTS=2 override — the override must win.
+out=$(env MCSS_MAX_PLAYERS=4 N_SLOTS=2 bash -c "set -euo pipefail; source '$RC_MODULE'; echo \$MCSS_MAX_PLAYERS" 2>/dev/null)
+assert_equals "$out" "2" "T17: child N_SLOTS override beats inherited MCSS_MAX_PLAYERS" || true
+
+# --- T18: mcss_resolve_screen --refresh retains last-good on an empty probe ---
+# Prior good 1920x1080 (as if a previous resolution), refresh with no override
+# and --no-probe (empty probe result) must NOT clobber it to the 1280x800 fallback.
+out=$(env MCSS_SCREEN_W=1920 MCSS_SCREEN_H=1080 bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_resolve_screen --refresh --no-probe; echo \${MCSS_SCREEN_W}x\${MCSS_SCREEN_H}" 2>/dev/null)
+assert_equals "$out" "1920x1080" "T18: --refresh retains last-good dims on empty probe" || true
+
 # --- Summary ---
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
+
+# Exit non-zero if any assertion failed — the contract every other tests/test_*.sh
+# honors (an all-|| true suite that always exits 0 hides regressions from any
+# pre-push / verify chain that gates on exit status).
+[[ "$TESTS_FAILED" -eq 0 ]]
