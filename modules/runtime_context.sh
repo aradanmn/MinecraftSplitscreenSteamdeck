@@ -105,10 +105,17 @@ mcss_require_gamescope() {
 # Part 4). Module-local tunables (ORCHESTRATOR_*_S, WATCHDOG_*, ...) stay in
 # their modules on purpose.
 #
-# Load-guard rule (plan Part 4, verifier catch): exported VALUES cross an exec
-# boundary but FUNCTIONS do not, so this file never early-returns on a guard
-# flag — functions are always (re)defined; only the readonly declarations are
-# guarded per-variable with [[ -v ]]. That also makes re-sourcing safe.
+# Load-guard rule (plan Part 4, verifier catch + review of PR #76): functions
+# are always (re)defined — a re-exec'd child that sources this file needs the
+# API even though it inherited the exported values. Idempotency is gated on
+# NON-exported, process-local sentinels (_MCSS_*_LOCKED/_DONE), never on the
+# presence of an exported value. That distinction is load-bearing: an exported
+# value crosses fork/exec, so a value-presence guard in a CHILD would see the
+# parent's value and skip re-resolution — silently ignoring the child's own
+# legacy overrides (N_SLOTS, INSTANCES_DIR, ...), which on main were always
+# re-read per process. The non-exported sentinel is absent in the child, so the
+# child re-resolves from ITS environment; within one process the sentinel is
+# set, so re-sourcing is a no-op and never trips a readonly re-declaration.
 #
 # Legacy override inputs (consumed here, never read downstream after the PR-2
 # migration): INSTANCES_DIR, LAUNCHER_EXEC, N_SLOTS, SPLITSCREEN_SCREEN_W/H,
@@ -120,48 +127,40 @@ mcss_require_gamescope() {
 # watchdog, controller monitor, dex's Python backend, generated KWin JS, JVM
 # window titles). A drifted copy doesn't error — it silently partitions the
 # system (a pkill pattern that misses, a window search that never matches).
-if [[ ! -v MCSS_MAX_PLAYERS ]]; then
+#
+# Per-value precedence: explicit legacy override → inherited/prior value →
+# default. Each value self-defaults independently (`${VAR:-…}`) so a partial
+# preset — a consumer/test setting only one of a pair — still leaves BOTH
+# members of the pair defined (review finding: the vendor/product pair
+# previously shared one guard, so presetting one left the other unbound).
+if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     # Slot count; N_SLOTS honored as the legacy override name.
-    export MCSS_MAX_PLAYERS="${N_SLOTS:-4}"
-    readonly MCSS_MAX_PLAYERS
-fi
-if [[ ! -v MCSS_INSTANCE_PREFIX ]]; then
+    export MCSS_MAX_PLAYERS="${N_SLOTS:-${MCSS_MAX_PLAYERS:-4}}"
     # PolyMC instance dir prefix → latestUpdate-1..N. Also appears in
     # pgrep/pkill process-match patterns — the highest-blast-radius copy.
-    export MCSS_INSTANCE_PREFIX="latestUpdate-"
-    readonly MCSS_INSTANCE_PREFIX
-fi
-if [[ ! -v MCSS_ACCOUNT_PREFIX ]]; then
+    export MCSS_INSTANCE_PREFIX="${MCSS_INSTANCE_PREFIX:-latestUpdate-}"
     # accounts.json profile names P1..PN (NOT derivable from the instance
     # prefix — independent contract with the installer-shipped accounts.json).
-    export MCSS_ACCOUNT_PREFIX="P"
-    readonly MCSS_ACCOUNT_PREFIX
-fi
-if [[ ! -v MCSS_WINDOW_TITLE_PREFIX ]]; then
+    export MCSS_ACCOUNT_PREFIX="${MCSS_ACCOUNT_PREFIX:-P}"
     # The join key between JVM -Dorg.lwjgl.opengl.Window.title args, dex's
     # window search, KWin rules, and the watchdog.
-    export MCSS_WINDOW_TITLE_PREFIX="SplitscreenP"
-    readonly MCSS_WINDOW_TITLE_PREFIX
-fi
-if [[ ! -v MCSS_STEAM_VENDOR_ID ]]; then
+    export MCSS_WINDOW_TITLE_PREFIX="${MCSS_WINDOW_TITLE_PREFIX:-SplitscreenP}"
     # Deck built-in controller USB ids (28de:11ff) — excluded from player
     # slots by design. CONTROLLER_MONITOR_STEAM_VENDOR/PRODUCT remain as
     # aliases in controller_monitor.sh for one release.
-    export MCSS_STEAM_VENDOR_ID="28de"
-    export MCSS_STEAM_PRODUCT_ID="11ff"
-    readonly MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID
-fi
-if [[ ! -v MCSS_RAW_BINDING ]]; then
+    export MCSS_STEAM_VENDOR_ID="${MCSS_STEAM_VENDOR_ID:-28de}"
+    export MCSS_STEAM_PRODUCT_ID="${MCSS_STEAM_PRODUCT_ID:-11ff}"
     # Raw per-slot controller binding. Resolved ONCE from the legacy override:
     # controller_monitor (enumeration) and instance_lifecycle (sandboxing)
     # previously each defaulted this independently — they MUST agree or
     # enumeration and sandbox masking diverge.
-    export MCSS_RAW_BINDING="${CONTROLLER_MONITOR_RAW_BINDING:-1}"
-    readonly MCSS_RAW_BINDING
-fi
-if [[ ! -v MCSS_STATE_LOCK_TIMEOUT_S ]]; then
-    export MCSS_STATE_LOCK_TIMEOUT_S=5
-    readonly MCSS_STATE_LOCK_TIMEOUT_S
+    export MCSS_RAW_BINDING="${CONTROLLER_MONITOR_RAW_BINDING:-${MCSS_RAW_BINDING:-1}}"
+    export MCSS_STATE_LOCK_TIMEOUT_S="${MCSS_STATE_LOCK_TIMEOUT_S:-5}"
+
+    readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
+             MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
+             MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S
+    _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
 fi
 
 # MCSS_NESTED_SESSION: 0 outside our nested session; truthy inside (today the
@@ -171,11 +170,16 @@ fi
 export MCSS_NESTED_SESSION="${MCSS_NESTED_SESSION:-0}"
 
 # --- mcss_resolve_paths (Group B) --------------------------------------------
-# Idempotent one-shot; resolves + exports the path group. Runs detection
-# cascades (flatpak probe, launcher-exec candidates) at most once per session —
-# results are exported, so forked/exec'd children inherit values and skip it.
+# Idempotent PER PROCESS; resolves + exports the path group. The detection
+# cascades (flatpak probe, launcher-exec candidates) run at most once per
+# process. The guard is a NON-exported sentinel (_MCSS_PATHS_DONE): a child
+# process re-runs this so its own INSTANCES_DIR/LAUNCHER_EXEC overrides win —
+# an exported flag would let the child inherit "already resolved" and silently
+# keep the parent's paths (review finding). Values stay exported for
+# same-process consumers and for the internal `${OVERRIDE:-${INHERITED:-…}}`
+# precedence, which honors a child's explicit override first.
 mcss_resolve_paths() {
-    [[ "${MCSS_PATHS_RESOLVED:-0}" == "1" ]] && return 0
+    [[ -n "${_MCSS_PATHS_DONE:-}" ]] && return 0
 
     # Launcher root. Single probe order: PolyMC native, PolyMC flatpak,
     # PrismLauncher native, PrismLauncher flatpak (same order as the entry
@@ -256,7 +260,7 @@ mcss_resolve_paths() {
     export MCSS_AUTOSTART_TEST_DESKTOP="${MCSS_AUTOSTART_TEST_DESKTOP:-splitscreen-test.desktop}"
     export MCSS_AUTOSTART_PROD_DESKTOP="${MCSS_AUTOSTART_PROD_DESKTOP:-splitscreen-prod.desktop}"
 
-    export MCSS_PATHS_RESOLVED=1
+    _MCSS_PATHS_DONE=1   # process-local — NOT exported (see load-guard rule)
 
     local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
     if [[ -n "$_logf" ]]; then
@@ -290,7 +294,13 @@ mcss_resolve_screen() {
         esac
     done
 
-    if [[ -n "${MCSS_SCREEN_W:-}" && -n "${MCSS_SCREEN_H:-}" && "$_refresh" != "1" ]]; then
+    # Early-return gate is the NON-exported per-process sentinel, not the
+    # presence of the exported MCSS_SCREEN_W/H — a fresh child must re-resolve
+    # so its own SPLITSCREEN_SCREEN_W/H override applies (review finding: an
+    # inherited value otherwise beat the child's override unless the call site
+    # remembered --refresh, which a 1:1 migration from window_manager's
+    # always-honor-override behavior would not).
+    if [[ -n "${_MCSS_SCREEN_DONE:-}" && "$_refresh" != "1" ]]; then
         return 0
     fi
 
@@ -309,7 +319,12 @@ mcss_resolve_screen() {
         fi
         if [[ -z "$_w" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
             _out=$(kscreen-doctor -o 2>/dev/null || true)
-            _line=$(echo "$_out" | grep -m1 'enabled' | grep -v 'eDP' || true)
+            # Prefer the first EXTERNAL enabled output. The eDP filter must run
+            # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
+            # the internal panel when it is listed first, and grep -v then drops
+            # it to nothing, so a docked Deck fell back to the eDP resolution
+            # (review finding; window_manager.sh:90 has the same latent bug).
+            _line=$(echo "$_out" | grep 'enabled' | grep -v 'eDP' | head -n1 || true)
             [[ -z "$_line" ]] && _line=$(echo "$_out" | grep -m1 'enabled' || true)
             [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
@@ -324,9 +339,14 @@ mcss_resolve_screen() {
         fi
     fi
 
-    # 3. Fallback — 1280x800 everywhere (the 720 drift is what this kills).
-    export MCSS_SCREEN_W="${_w:-1280}"
-    export MCSS_SCREEN_H="${_h:-800}"
+    # 3. Result. Retain the last-known-good dimensions when a probe transiently
+    #    yields nothing (review finding: a --refresh whose probes all fail —
+    #    e.g. gamescope killed wlr-randr and the others are absent — must NOT
+    #    clobber a good 1920x1080 with the 1280x800 fallback and tile four
+    #    windows into a corner). Fall to 1280x800 only with no prior value.
+    export MCSS_SCREEN_W="${_w:-${MCSS_SCREEN_W:-1280}}"
+    export MCSS_SCREEN_H="${_h:-${MCSS_SCREEN_H:-800}}"
+    _MCSS_SCREEN_DONE=1   # process-local — NOT exported (see load-guard rule)
 
     local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
     if [[ -n "$_logf" ]]; then
@@ -359,9 +379,21 @@ mcss_set_display() {
 # without spaces); .desktop Exec parsing has its own quoting rules, so keep
 # generated values space-free.
 mcss_exec_env_string() {
+    # Resolve the origin context NOW, before emitting. A re-exec child inside
+    # nested Plasma re-derives MCSS_ENV_CONTEXT from XDG_CURRENT_DESKTOP=KDE and
+    # would get 'desktop' instead of the origin 'gamescope' — so the value MUST
+    # be carried across explicitly. If the emitting site never happened to have
+    # called mcss_resolve_environment, MCSS_ENV_CONTEXT would be unset here and
+    # silently dropped, reintroducing the #42-class guard false-positive (review
+    # finding). Resolving here makes the emission self-sufficient.
+    mcss_resolve_environment
+
     local _canonical=(
         MCSS_ENV_CONTEXT
         MCSS_LAUNCHED_BY_STEAM
+        MCSS_NESTED_SESSION       # plan Part 4 canonical list; omitting it let a
+                                  # PR-2 Exec line default the child to 0 → the
+                                  # gamescope guard REFUSES inside nested Plasma
         MCSS_MODE
         SPLITSCREEN_STATE
         SPLITSCREEN_FIFO
