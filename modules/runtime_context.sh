@@ -96,3 +96,322 @@ mcss_require_gamescope() {
     [[ -n "$_logf" ]] && echo "$msg" >> "$_logf" 2>/dev/null
     return 1
 }
+
+# =============================================================================
+# #45 (#43 part 2) — paths, screen, and cross-module constants
+# =============================================================================
+# Everything below centralizes values that were previously re-derived at 2+
+# independent sites (the bar for inclusion — see docs/PLAN-V1.1-2026-07-05.md
+# Part 4). Module-local tunables (ORCHESTRATOR_*_S, WATCHDOG_*, ...) stay in
+# their modules on purpose.
+#
+# Load-guard rule (plan Part 4, verifier catch + review of PR #76): functions
+# are always (re)defined — a re-exec'd child that sources this file needs the
+# API even though it inherited the exported values. Idempotency is gated on
+# NON-exported, process-local sentinels (_MCSS_*_LOCKED/_DONE), never on the
+# presence of an exported value. That distinction is load-bearing: an exported
+# value crosses fork/exec, so a value-presence guard in a CHILD would see the
+# parent's value and skip re-resolution — silently ignoring the child's own
+# legacy overrides (N_SLOTS, INSTANCES_DIR, ...), which on main were always
+# re-read per process. The non-exported sentinel is absent in the child, so the
+# child re-resolves from ITS environment; within one process the sentinel is
+# set, so re-sourcing is a no-op and never trips a readonly re-declaration.
+#
+# Legacy override inputs (consumed here, never read downstream after the PR-2
+# migration): INSTANCES_DIR, LAUNCHER_EXEC, N_SLOTS, SPLITSCREEN_SCREEN_W/H,
+# CONTROLLER_MONITOR_RAW_BINDING.
+# =============================================================================
+
+# --- Constants block (Group C) — the cross-process contracts ----------------
+# These are protocol values between cooperating components (orchestrator,
+# watchdog, controller monitor, dex's Python backend, generated KWin JS, JVM
+# window titles). A drifted copy doesn't error — it silently partitions the
+# system (a pkill pattern that misses, a window search that never matches).
+#
+# Per-value precedence: explicit legacy override → inherited/prior value →
+# default. Each value self-defaults independently (`${VAR:-…}`) so a partial
+# preset — a consumer/test setting only one of a pair — still leaves BOTH
+# members of the pair defined (review finding: the vendor/product pair
+# previously shared one guard, so presetting one left the other unbound).
+if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
+    # Slot count; N_SLOTS honored as the legacy override name.
+    export MCSS_MAX_PLAYERS="${N_SLOTS:-${MCSS_MAX_PLAYERS:-4}}"
+    # PolyMC instance dir prefix → latestUpdate-1..N. Also appears in
+    # pgrep/pkill process-match patterns — the highest-blast-radius copy.
+    export MCSS_INSTANCE_PREFIX="${MCSS_INSTANCE_PREFIX:-latestUpdate-}"
+    # accounts.json profile names P1..PN (NOT derivable from the instance
+    # prefix — independent contract with the installer-shipped accounts.json).
+    export MCSS_ACCOUNT_PREFIX="${MCSS_ACCOUNT_PREFIX:-P}"
+    # The join key between JVM -Dorg.lwjgl.opengl.Window.title args, dex's
+    # window search, KWin rules, and the watchdog.
+    export MCSS_WINDOW_TITLE_PREFIX="${MCSS_WINDOW_TITLE_PREFIX:-SplitscreenP}"
+    # Deck built-in controller USB ids (28de:11ff) — excluded from player
+    # slots by design. CONTROLLER_MONITOR_STEAM_VENDOR/PRODUCT remain as
+    # aliases in controller_monitor.sh for one release.
+    export MCSS_STEAM_VENDOR_ID="${MCSS_STEAM_VENDOR_ID:-28de}"
+    export MCSS_STEAM_PRODUCT_ID="${MCSS_STEAM_PRODUCT_ID:-11ff}"
+    # Raw per-slot controller binding. Resolved ONCE from the legacy override:
+    # controller_monitor (enumeration) and instance_lifecycle (sandboxing)
+    # previously each defaulted this independently — they MUST agree or
+    # enumeration and sandbox masking diverge.
+    export MCSS_RAW_BINDING="${CONTROLLER_MONITOR_RAW_BINDING:-${MCSS_RAW_BINDING:-1}}"
+    export MCSS_STATE_LOCK_TIMEOUT_S="${MCSS_STATE_LOCK_TIMEOUT_S:-5}"
+
+    readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
+             MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
+             MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S
+    _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
+fi
+
+# MCSS_NESTED_SESSION: 0 outside our nested session; truthy inside (today the
+# Exec-line writers set 1; the planned value space is 0|plasma|kwin so teardown
+# can pick its path — writers migrate in the PR-2 pass). Default the export so
+# bare readers stop needing their own :-0 fallbacks.
+export MCSS_NESTED_SESSION="${MCSS_NESTED_SESSION:-0}"
+
+# --- mcss_resolve_paths (Group B) --------------------------------------------
+# Idempotent PER PROCESS; resolves + exports the path group. The detection
+# cascades (flatpak probe, launcher-exec candidates) run at most once per
+# process. The guard is a NON-exported sentinel (_MCSS_PATHS_DONE): a child
+# process re-runs this so its own INSTANCES_DIR/LAUNCHER_EXEC overrides win —
+# an exported flag would let the child inherit "already resolved" and silently
+# keep the parent's paths (review finding). Values stay exported for
+# same-process consumers and for the internal `${OVERRIDE:-${INHERITED:-…}}`
+# precedence, which honors a child's explicit override first.
+mcss_resolve_paths() {
+    [[ -n "${_MCSS_PATHS_DONE:-}" ]] && return 0
+
+    # Launcher root. Single probe order: PolyMC native, PolyMC flatpak,
+    # PrismLauncher native, PrismLauncher flatpak (same order as the entry
+    # script's historical _detect_instances_dir candidate list).
+    if [[ -z "${MCSS_LAUNCHER_ROOT:-}" ]]; then
+        local _root
+        for _root in \
+            "$HOME/.local/share/PolyMC" \
+            "$HOME/.var/app/org.fn2006.PolyMC/data/PolyMC" \
+            "$HOME/.local/share/PrismLauncher" \
+            "$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"; do
+            if [[ -d "$_root/instances" ]]; then
+                MCSS_LAUNCHER_ROOT="$_root"
+                break
+            fi
+        done
+        # Nothing found (fresh box, tests): default to the primary install
+        # location rather than leaving consumers with an empty root.
+        MCSS_LAUNCHER_ROOT="${MCSS_LAUNCHER_ROOT:-$HOME/.local/share/PolyMC}"
+    fi
+    export MCSS_LAUNCHER_ROOT
+
+    # INSTANCES_DIR is the legacy override name (test harnesses set it).
+    export MCSS_INSTANCES_DIR="${INSTANCES_DIR:-${MCSS_INSTANCES_DIR:-$MCSS_LAUNCHER_ROOT/instances}}"
+
+    # Launcher executable. LAUNCHER_EXEC honored as legacy override. One
+    # cascade replaces the entry script's probe AND instance_lifecycle's
+    # divergent bare default; the squashfs-root/AppRun candidate is the FUSE
+    # workaround previously only utilities.sh (installer side) knew about.
+    if [[ -z "${LAUNCHER_EXEC:-}" && -z "${MCSS_LAUNCHER_EXEC:-}" ]]; then
+        local _exec=""
+        if [[ -x "$MCSS_LAUNCHER_ROOT/squashfs-root/AppRun" ]]; then
+            _exec="$MCSS_LAUNCHER_ROOT/squashfs-root/AppRun"
+        elif [[ -x "$MCSS_LAUNCHER_ROOT/PolyMC.AppImage" ]]; then
+            _exec="$MCSS_LAUNCHER_ROOT/PolyMC.AppImage"
+        elif [[ -x "$MCSS_LAUNCHER_ROOT/PrismLauncher.AppImage" ]]; then
+            _exec="$MCSS_LAUNCHER_ROOT/PrismLauncher.AppImage"
+        elif command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "org.fn2006.PolyMC"; then
+            _exec="flatpak run org.fn2006.PolyMC"
+        elif command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "org.prismlauncher.PrismLauncher"; then
+            _exec="flatpak run org.prismlauncher.PrismLauncher"
+        elif command -v polymc >/dev/null 2>&1; then
+            _exec="polymc"
+        elif command -v prismlauncher >/dev/null 2>&1; then
+            _exec="prismlauncher"
+        fi
+        MCSS_LAUNCHER_EXEC="$_exec"   # may be empty — callers report, not us
+    else
+        MCSS_LAUNCHER_EXEC="${LAUNCHER_EXEC:-$MCSS_LAUNCHER_EXEC}"
+    fi
+    export MCSS_LAUNCHER_EXEC
+
+    # IPC paths. SPLITSCREEN_FIFO keeps its name (cross-process contract, same
+    # rationale as SPLITSCREEN_STATE above); default resolved exactly once.
+    # mkfifo stays in orchestrator.sh:main — this only names the path.
+    export SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    export MCSS_GEOM_DIR="${MCSS_GEOM_DIR:-/tmp/mcss-geom}"
+
+    # Launch-time runtime dir snapshot. kwin_positioner legitimately rewrites
+    # XDG_RUNTIME_DIR when importing the nested session bus — MCSS_RUNTIME_DIR
+    # deliberately preserves the ORIGINAL value for consumers like
+    # MCSS_PULSE_SERVER that must keep pointing at the host session.
+    export MCSS_RUNTIME_DIR="${MCSS_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
+    export MCSS_PULSE_SERVER="${MCSS_PULSE_SERVER:-unix:$MCSS_RUNTIME_DIR/pulse/native}"
+
+    # Generated-helper directory: replaces world-writable /tmp drops (the kwin
+    # wrapper shim is injected into PATH and KWin EXECUTES the generated .js —
+    # security items N6/N7). 0700 like XDG_RUNTIME_DIR itself.
+    export MCSS_HELPER_DIR="${MCSS_HELPER_DIR:-$MCSS_RUNTIME_DIR/mcss}"
+    mkdir -p "$MCSS_HELPER_DIR" 2>/dev/null || true
+    chmod 700 "$MCSS_HELPER_DIR" 2>/dev/null || true
+    export MCSS_KWIN_WRAPPER_PATH="${MCSS_KWIN_WRAPPER_PATH:-$MCSS_HELPER_DIR/kwin_wayland_wrapper}"
+    export MCSS_SESSION_ENV_BAK="${MCSS_SESSION_ENV_BAK:-$MCSS_HELPER_DIR/session-env.bak}"
+
+    # Autostart contract: exactly two .desktop names exist; a missed rm here
+    # strands an autostart that relaunches the game on every Plasma login.
+    export MCSS_AUTOSTART_DIR="${MCSS_AUTOSTART_DIR:-$HOME/.config/autostart}"
+    export MCSS_AUTOSTART_TEST_DESKTOP="${MCSS_AUTOSTART_TEST_DESKTOP:-splitscreen-test.desktop}"
+    export MCSS_AUTOSTART_PROD_DESKTOP="${MCSS_AUTOSTART_PROD_DESKTOP:-splitscreen-prod.desktop}"
+
+    _MCSS_PATHS_DONE=1   # process-local — NOT exported (see load-guard rule)
+
+    local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
+    if [[ -n "$_logf" ]]; then
+        echo "[runtime_context] paths: root=${MCSS_LAUNCHER_ROOT} instances=${MCSS_INSTANCES_DIR} exec=${MCSS_LAUNCHER_EXEC:-<none>} fifo=${SPLITSCREEN_FIFO} helper=${MCSS_HELPER_DIR}" >> "$_logf" 2>/dev/null
+    fi
+}
+
+# mcss_instance_dir <slot> — the ONE place the instance-dir shape lives.
+mcss_instance_dir() {
+    mcss_resolve_paths
+    echo "$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}$1"
+}
+
+# --- mcss_resolve_screen ------------------------------------------------------
+# Sets/exports MCSS_SCREEN_W / MCSS_SCREEN_H (NOT readonly — hotplug changes
+# them; re-run with --refresh on DISPLAY_MODE_CHANGE).
+#
+# Env override comes FIRST — the historical cascade in window_manager.sh
+# checked SPLITSCREEN_SCREEN_W/H only after all four probes, so a test
+# harness's forced dimensions lost to whatever the live display reported.
+#
+# --no-probe: skip all probes (override or 1280x800 fallback only). For the
+# launchNested path — wlr-randr is a throwaway Wayland client and gamescope
+# kills those (see GAMESCOPE-WINDOWING.md).
+mcss_resolve_screen() {
+    local _refresh=0 _no_probe=0 _arg
+    for _arg in "$@"; do
+        case "$_arg" in
+            --refresh)  _refresh=1 ;;
+            --no-probe) _no_probe=1 ;;
+        esac
+    done
+
+    # Early-return gate is the NON-exported per-process sentinel, not the
+    # presence of the exported MCSS_SCREEN_W/H — a fresh child must re-resolve
+    # so its own SPLITSCREEN_SCREEN_W/H override applies (review finding: an
+    # inherited value otherwise beat the child's override unless the call site
+    # remembered --refresh, which a 1:1 migration from window_manager's
+    # always-honor-override behavior would not).
+    if [[ -n "${_MCSS_SCREEN_DONE:-}" && "$_refresh" != "1" ]]; then
+        return 0
+    fi
+
+    local _w="" _h=""
+
+    # 1. Explicit override (legacy names kept as the override inputs).
+    if [[ -n "${SPLITSCREEN_SCREEN_W:-}" && -n "${SPLITSCREEN_SCREEN_H:-}" ]]; then
+        _w="$SPLITSCREEN_SCREEN_W"; _h="$SPLITSCREEN_SCREEN_H"
+    elif [[ "$_no_probe" != "1" ]]; then
+        # 2. Probe cascade (same order as window_manager's historical one).
+        local _out _line
+        if command -v wlr-randr >/dev/null 2>&1; then
+            _out=$(wlr-randr 2>/dev/null || true)
+            _line=$(echo "$_out" | grep -m1 '(current)' || true)
+            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
+        fi
+        if [[ -z "$_w" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
+            _out=$(kscreen-doctor -o 2>/dev/null || true)
+            # Prefer the first EXTERNAL enabled output. The eDP filter must run
+            # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
+            # the internal panel when it is listed first, and grep -v then drops
+            # it to nothing, so a docked Deck fell back to the eDP resolution
+            # (review finding; window_manager.sh:90 has the same latent bug).
+            _line=$(echo "$_out" | grep 'enabled' | grep -v 'eDP' | head -n1 || true)
+            [[ -z "$_line" ]] && _line=$(echo "$_out" | grep -m1 'enabled' || true)
+            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
+        fi
+        if [[ -z "$_w" ]] && command -v xrandr >/dev/null 2>&1; then
+            _out=$(xrandr 2>/dev/null || true)
+            _line=$(echo "$_out" | grep -m1 '\*' || true)
+            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
+        fi
+        if [[ -z "$_w" ]] && command -v xdpyinfo >/dev/null 2>&1; then
+            _out=$(xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
+            [[ "$_out" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
+        fi
+    fi
+
+    # 3. Result. Retain the last-known-good dimensions when a probe transiently
+    #    yields nothing (review finding: a --refresh whose probes all fail —
+    #    e.g. gamescope killed wlr-randr and the others are absent — must NOT
+    #    clobber a good 1920x1080 with the 1280x800 fallback and tile four
+    #    windows into a corner). Fall to 1280x800 only with no prior value.
+    export MCSS_SCREEN_W="${_w:-${MCSS_SCREEN_W:-1280}}"
+    export MCSS_SCREEN_H="${_h:-${MCSS_SCREEN_H:-800}}"
+    _MCSS_SCREEN_DONE=1   # process-local — NOT exported (see load-guard rule)
+
+    local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
+    if [[ -n "$_logf" ]]; then
+        echo "[runtime_context] screen: ${MCSS_SCREEN_W}x${MCSS_SCREEN_H} (refresh=${_refresh} no_probe=${_no_probe})" >> "$_logf" 2>/dev/null
+    fi
+}
+
+# --- mcss_set_display ---------------------------------------------------------
+# Single writer for MCSS_DISPLAY — the nested Xwayland DISPLAY, set once by
+# launch code WHEN THE X SOCKET IS CONFIRMED UP (never at source time: dex.sh's
+# old source-time DEX_DISPLAY capture ran before the nested X existed).
+mcss_set_display() {
+    export MCSS_DISPLAY="$1"
+    local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
+    [[ -n "$_logf" ]] && echo "[runtime_context] display: MCSS_DISPLAY=$1" >> "$_logf" 2>/dev/null
+    return 0
+}
+
+# --- mcss_exec_env_string -----------------------------------------------------
+# The canonical env list for the three RE-EXEC boundaries (autostart .desktop
+# Exec= lines, the kwin session command, dbus-run-session), where exported env
+# does NOT flow and every launch path previously hand-listed its own drifting
+# subset (only 2 of ~7 vars were common to all four sites).
+#
+# Emits space-separated NAME=VALUE pairs (printf %q-escaped) for every
+# canonical var that is currently set and non-empty, plus any extra NAME=VALUE
+# args verbatim (values %q-escaped). Usage:
+#   Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=1) ${SCRIPT_PATH} ...
+# Note: %q backslash-escaping is fine for the current value space (paths
+# without spaces); .desktop Exec parsing has its own quoting rules, so keep
+# generated values space-free.
+mcss_exec_env_string() {
+    # Resolve the origin context NOW, before emitting. A re-exec child inside
+    # nested Plasma re-derives MCSS_ENV_CONTEXT from XDG_CURRENT_DESKTOP=KDE and
+    # would get 'desktop' instead of the origin 'gamescope' — so the value MUST
+    # be carried across explicitly. If the emitting site never happened to have
+    # called mcss_resolve_environment, MCSS_ENV_CONTEXT would be unset here and
+    # silently dropped, reintroducing the #42-class guard false-positive (review
+    # finding). Resolving here makes the emission self-sufficient.
+    mcss_resolve_environment
+
+    local _canonical=(
+        MCSS_ENV_CONTEXT
+        MCSS_LAUNCHED_BY_STEAM
+        MCSS_NESTED_SESSION       # plan Part 4 canonical list; omitting it let a
+                                  # PR-2 Exec line default the child to 0 → the
+                                  # gamescope guard REFUSES inside nested Plasma
+        MCSS_MODE
+        SPLITSCREEN_STATE
+        SPLITSCREEN_FIFO
+        SPLITSCREEN_DEBUG_LOG
+        SPLITSCREEN_TEST_OBSERVE_DELAY_S
+        TEST_NUMBER
+    )
+    local _parts=() _var
+    for _var in "${_canonical[@]}"; do
+        if [[ -n "${!_var:-}" ]]; then
+            _parts+=("$(printf '%s=%q' "$_var" "${!_var}")")
+        fi
+    done
+    # Extras (e.g. MCSS_NESTED_SESSION=1, _NESTED_X_BEFORE=...) override or
+    # extend; caller-specified values win by coming last on the env line.
+    local _extra
+    for _extra in "$@"; do
+        _parts+=("$(printf '%s=%q' "${_extra%%=*}" "${_extra#*=}")")
+    done
+    echo "${_parts[*]}"
+}
