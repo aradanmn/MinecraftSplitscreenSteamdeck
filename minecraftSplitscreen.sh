@@ -339,7 +339,9 @@ quitAllSlots() {
 # sddm relaunches forever → both displays stay black.
 # We snapshot the gamescope value BEFORE going nested and restore it on the way out.
 # ─────────────────────────────────────────────────────────────────────────────
-_SESSION_ENV_BAK="/tmp/splitscreen-session-env.bak"
+# #45/N7: env-snapshot moves out of world-writable /tmp (it is re-sourced into
+# the session on restore). Path resolved by the prologue's mcss_resolve_paths.
+_SESSION_ENV_BAK="$MCSS_SESSION_ENV_BAK"
 
 _snapshot_session_env() {
     : > "$_SESSION_ENV_BAK" 2>/dev/null || true
@@ -391,12 +393,14 @@ nestedPlasma() {
     kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
 
     # KWin wrapper with correct resolution
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     # Autostart re-invokes this script once KDE session is running
     local SCRIPT_PATH
@@ -576,12 +580,14 @@ testPlasma() {
     echo "[testPlasma] W=$W H=$H" >> "$LOG"
 
     # KWin wrapper with correct resolution
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     # Autostart calls launchTestFromPlasma
     local SCRIPT_PATH
@@ -725,12 +731,14 @@ launchFromPlasma() {
     W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
 
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
