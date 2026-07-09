@@ -204,6 +204,9 @@ _vendor_of_js_node() {
 # command string (same shape spawn_instance expects, just without the bwrap prefix).
 _build_direct_command() {
     local slot="$1"
+    # Path-group values (launcher exec, pulse socket) resolve on call, not
+    # source — idempotent, so standalone callers (tests) get canonical values.
+    mcss_resolve_paths
     local launcher_exec
     launcher_exec="$MCSS_LAUNCHER_EXEC"
 
@@ -219,7 +222,7 @@ _build_direct_command() {
     local -a _env=(
         APPIMAGE_EXTRACT_AND_RUN=1
         QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
+        "PULSE_SERVER=$MCSS_PULSE_SERVER"
         # Full controller access — the built-in reaches the game as a Steam 28de:11ff
         # virtual, so allow Steam virtual gamepads. Deliberately NO isolation hints
         # (DISABLE_UDEV / udev tmpfs / pipe mask): we WANT normal udev + Steam discovery so
@@ -256,6 +259,8 @@ _build_bwrap_command() {
     local event_node="$2"
     local js_node="$3"
     shift 3
+    # Path-group values resolve on call (see _build_direct_command).
+    mcss_resolve_paths
     local launcher_exec
     launcher_exec="$MCSS_LAUNCHER_EXEC"
 
@@ -400,7 +405,7 @@ _build_bwrap_command() {
     local -a _env_vars=(
         APPIMAGE_EXTRACT_AND_RUN=1
         QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native"
+        "PULSE_SERVER=$MCSS_PULSE_SERVER"
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=${_allow}
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0

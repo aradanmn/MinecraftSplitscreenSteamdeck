@@ -191,13 +191,13 @@ launchSlot() {
         --setenv APPIMAGE_EXTRACT_AND_RUN 1
         --setenv XDG_RUNTIME_DIR "$slot_runtime"
         --setenv QT_QPA_PLATFORM xcb
-        --setenv DISPLAY "${DISPLAY:-:2}"
+        --setenv DISPLAY "${MCSS_DISPLAY:-${DISPLAY:-:2}}"
         # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
         # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
         # leaving every instance silent. Point PULSE_SERVER at the real host socket
         # by absolute path so each instance gets audio. The socket is already inside
         # the sandbox via --dev-bind / /.
-        --setenv PULSE_SERVER "unix:/run/user/$(id -u)/pulse/native"
+        --setenv PULSE_SERVER "$MCSS_PULSE_SERVER"
     )
     [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
     [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
@@ -850,7 +850,7 @@ launchProdFromPlasma() {
     # the test path does this in _run_phase_b_session. Without SPLITSCREEN_STATE the
     # watchdog/spawn fail ("SPLITSCREEN_STATE is not set") so nothing launches → gamescope
     # shows only the spinner. (2026-06-23)
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer (instance_lifecycle) + single path resolution
@@ -1071,7 +1071,7 @@ _run_phase_b_session() {
         return 1
     fi
 
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer; docked is the scenario under test here.
@@ -1114,7 +1114,7 @@ _run_phase_b_session() {
 # its splitscreen.properties region.
 # ─────────────────────────────────────────────────────────────────────────────
 _run_position_sweep_session() {
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer; docked is the scenario under test here.
@@ -1308,7 +1308,7 @@ case "${1:-}" in
         fi
         _td_cleanup() {
             [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && { _kill_tree "$_PHASE_B_ORCH_PID" TERM; sleep 1; _kill_tree "$_PHASE_B_ORCH_PID" KILL; }
-            rm -f "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
+            rm -f "$SPLITSCREEN_FIFO" 2>/dev/null || true
         }
         trap '_td_cleanup' EXIT
         _run_phase_b_session
@@ -1361,6 +1361,9 @@ case "${1:-}" in
         # inherited (stale) cookie so it can't cause a spurious rejection.
         unset XAUTHORITY
         export DISPLAY="$_ns_display" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+        # #45: single-writer for the nested X display — consumers (dex, launchSlot)
+        # read MCSS_DISPLAY at call time instead of capturing DISPLAY at source time.
+        mcss_set_display "$_ns_display"
         echo "[_nestedSession] nested display ready: $DISPLAY" >> "$LOG"
 
         # Give the nested compositor an IMMEDIATE full-screen background window.
