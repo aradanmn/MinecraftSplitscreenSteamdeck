@@ -24,8 +24,12 @@ set -euo pipefail
 #   window_manager.sh, watchdog.sh
 # =============================================================================
 
+# #45: slot count + screen dims are runtime_context-owned; sourcing it here is
+# idempotent (process-local sentinels) so standalone sourcing (unit tests)
+# behaves like the launcher prologue, which sources it first.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # ── Module-level constants ───────────────────────────────────────────────────
-readonly ORCHESTRATOR_MAX_SLOTS=4
 readonly ORCHESTRATOR_SPAWN_DELAY_S=3
 # FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
 readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
@@ -111,11 +115,11 @@ _set_mode() {
 }
 
 # =============================================================================
-# HELPER: find the first free slot (1–ORCHESTRATOR_MAX_SLOTS)
+# HELPER: find the first free slot (1–MCSS_MAX_PLAYERS)
 # Returns slot number on stdout, empty string if all slots full
 # =============================================================================
 _find_free_slot() {
-    for slot in $(seq 1 "$ORCHESTRATOR_MAX_SLOTS"); do
+    for slot in $(seq 1 "$MCSS_MAX_PLAYERS"); do
         if ! slot_is_active "$slot" 2>/dev/null; then
             echo "$slot"
             return 0
@@ -281,7 +285,7 @@ _handle_msg() {
             local slot
             slot=$(_find_free_slot)
             if [[ -z "$slot" ]]; then
-                echo "[orchestrator] All $ORCHESTRATOR_MAX_SLOTS slots full — ignoring controller add" >&2
+                echo "[orchestrator] All $MCSS_MAX_PLAYERS slots full — ignoring controller add" >&2
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_ADD → slot $slot (spawning instance)" >&2
@@ -430,6 +434,10 @@ _handle_msg() {
         DISPLAY_MODE_CHANGE)
             local new_mode="$msg_arg"
             echo "[orchestrator] DISPLAY_MODE_CHANGE → $new_mode" >&2
+            # #45: the display just changed — re-probe dimensions so subsequent
+            # reflows tile against the NEW output. Retains last-known-good if
+            # the probes transiently fail mid-transition.
+            mcss_resolve_screen --refresh
             case "$new_mode" in
                 docked)
                     echo "[orchestrator] Switching to docked mode (external display detected)" >&2
