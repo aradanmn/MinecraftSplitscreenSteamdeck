@@ -401,17 +401,33 @@ mcss_exec_env_string() {
         SPLITSCREEN_TEST_OBSERVE_DELAY_S
         TEST_NUMBER
     )
-    local _parts=() _var
+    # Emission is RAW NAME=VALUE, not shell-quoted: the consumers (.desktop
+    # Exec= parsing, env(1) argv after $()-word-splitting) do NOT shell-unquote,
+    # so %q output would arrive literally (an empty value would become two
+    # literal apostrophes). Values therefore must be word-safe; anything with
+    # whitespace/quotes is REFUSED loudly rather than emitted corrupted —
+    # callers pass such values as their own quoted env args outside the
+    # substitution (e.g. _NESTED_X_BEFORE="$x_before").
+    local _parts=() _var _val
+    _mcss_emit_env() {
+        # $1=name $2=value → appends to _parts, or warns+skips if word-unsafe
+        if [[ "$2" == *[[:space:]\'\"\\]* ]]; then
+            echo "[runtime_context] WARNING: mcss_exec_env_string refused $1 (value not word-safe: '$2') — pass it as a quoted env arg at the call site" >&2
+            return 1
+        fi
+        _parts+=("$1=$2")
+    }
     for _var in "${_canonical[@]}"; do
         if [[ -n "${!_var:-}" ]]; then
-            _parts+=("$(printf '%s=%q' "$_var" "${!_var}")")
+            _mcss_emit_env "$_var" "${!_var}" || true
         fi
     done
-    # Extras (e.g. MCSS_NESTED_SESSION=1, _NESTED_X_BEFORE=...) override or
-    # extend; caller-specified values win by coming last on the env line.
+    # Extras (e.g. MCSS_NESTED_SESSION=plasma) override or extend; caller
+    # values win by coming last on the env line. Empty extra values emit NAME=
+    # (env sets the variable to empty, which is what a caller passing X= wants).
     local _extra
     for _extra in "$@"; do
-        _parts+=("$(printf '%s=%q' "${_extra%%=*}" "${_extra#*=}")")
+        _mcss_emit_env "${_extra%%=*}" "${_extra#*=}" || true
     done
     echo "${_parts[*]}"
 }
