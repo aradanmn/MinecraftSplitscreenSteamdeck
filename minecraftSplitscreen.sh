@@ -673,17 +673,25 @@ launchFromPlasma() {
     # #60: sweep stale run trees FIRST (see _mcss_stale_tree_pids) so no leftover
     # orchestrator/watchdog/supervisor can react — via the shared state file/FIFO —
     # while we reap its session and start ours.
+    # #45: instance kill-patterns derive from the runtime_context constants.
+    # MCSS_INSTANCE_PREFIX includes the trailing dash, so the pattern is
+    # STRICTER than the old bare 'latestUpdate' literal (cannot match an
+    # unrelated 'latestUpdater' style cmdline). The launcher pattern derives
+    # from the resolved root's basename (PolyMC or PrismLauncher), so a Prism
+    # install reaps its own launcher instead of a hardcoded 'PolyMC'.
+    local _launcher_name
+    _launcher_name=$(basename "$MCSS_LAUNCHER_ROOT")
     local _g _name _pid _stale_tree
     _stale_tree=$(_mcss_stale_tree_pids)
-    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
+    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f "$MCSS_INSTANCE_PREFIX" >/dev/null 2>&1; then
         echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch (stale trees: ${_stale_tree:-none})" >> "$LOG"
         for _pid in $_stale_tree; do
             kill -9 "$_pid" 2>/dev/null || true
         done
         for _g in 1 2 3; do
-            pkill -9 -f 'latestUpdate' 2>/dev/null || true
-            pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
-            pkill -9 -f 'PolyMC' 2>/dev/null || true
+            pkill -9 -f "$MCSS_INSTANCE_PREFIX" 2>/dev/null || true
+            pkill -9 -f "bwrap.*$_launcher_name" 2>/dev/null || true
+            pkill -9 -f "$_launcher_name" 2>/dev/null || true
             # #26/#60: 'udevadm monitor' / inotifywait are our monitors' children and
             # can orphan past a parent-only kill; marked-only match spares system udev.
             for _name in startplasma-wayland kwin_wayland plasma_session baloo_file 'udevadm monitor' inotifywait; do
@@ -694,8 +702,8 @@ launchFromPlasma() {
             sleep 1
             [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || break
         done
-        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null || true
-        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc latestUpdate 2>/dev/null || true))" >> "$LOG"
+        rm -rf "$MCSS_GEOM_DIR" 2>/dev/null || true
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc "$MCSS_INSTANCE_PREFIX" 2>/dev/null || true))" >> "$LOG"
     fi
     # #42: a Desktop-Mode double-click of the (now-guarded) desktop shortcut, or an
     # earlier install predating the #43 environment guard, can leave a transient
