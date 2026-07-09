@@ -381,10 +381,11 @@ nestedPlasma() {
     echo "[nestedPlasma] start" >> "$LOG"
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[nestedPlasma] W=$W H=$H" >> "$LOG"
 
     kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
@@ -448,10 +449,11 @@ runStaticTest() {
     done
 
     # ── Screen size
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     logMsg 0 INFO "screen: ${W}x${H}"
 
     # ── Detect controller pairs
@@ -566,10 +568,11 @@ testPlasma() {
     echo "[testPlasma] start" >> "$LOG"
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[testPlasma] W=$W H=$H" >> "$LOG"
 
     # KWin wrapper with correct resolution
@@ -715,10 +718,11 @@ launchFromPlasma() {
         systemctl --user stop 'app-MinecraftSplitscreen@*' 2>/dev/null || true
     fi
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
 
     cat > /tmp/kwin_wayland_wrapper <<WEOF
@@ -1110,10 +1114,9 @@ _run_position_sweep_session() {
     _ensure_state_file docked
 
     local W H
-    # #27: fall back to 1280x800 (the Deck's actual panel resolution), matching the
-    # fallback used everywhere else in this file — this one line was the odd 720 out.
-    W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
-    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=800
+    # #45/D7: canonical resolver (this site was the old odd-720-out, #27).
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     local hw=$((W/2)) hh=$((H/2))
     # #55: default was 12 here while every other harness path used 15 — drifted.
     local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
@@ -1193,11 +1196,11 @@ launchNested() {
     # Wayland clients — a throwaway probe that connects and immediately disconnects
     # makes gamescope think the game exited and it kills us before we ever exec
     # kwin (observed: trace died right after a wlr-randr connect/disconnect).  KWin
-    # must be the FIRST and ONLY client.  Use an env override, else default to the
-    # Deck's handheld panel size; gamescope scales the nested surface to its output.
+    # must be the FIRST and ONLY client.  mcss_resolve_screen --no-probe exists
+    # for exactly this path: env override or 1280x800, never a probe.
     local W H
-    W="${SPLITSCREEN_SCREEN_W:-1280}"
-    H="${SPLITSCREEN_SCREEN_H:-800}"
+    mcss_resolve_screen --no-probe
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[launchNested] nested resolution ${W}x${H} (override SPLITSCREEN_SCREEN_W/H to change)" >> "$LOG"
 
     # Snapshot existing X sockets so the nested session can identify which XWayland

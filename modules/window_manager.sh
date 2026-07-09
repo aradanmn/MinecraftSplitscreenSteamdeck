@@ -22,8 +22,6 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
-readonly WINDOW_MANAGER_DEFAULT_SCREEN_W=1280
-readonly WINDOW_MANAGER_DEFAULT_SCREEN_H=800
 readonly WINDOW_MANAGER_WINDOW_WAIT_TIMEOUT_S=30
 
 # --- Internal functions ---
@@ -65,84 +63,11 @@ _apply_override_redirect_cycle() {
     return 1
 }
 
-# _get_screen_resolution: Discover screen dimensions.
-# Priority: wlr-randr → kscreen-doctor → xrandr → xdpyinfo → env override → fallback.
-# Output: "W H" on stdout.
-_get_screen_resolution() {
-    # 1. wlr-randr
-    if command -v wlr-randr >/dev/null 2>&1; then
-        local wr_output
-        wr_output=$(wlr-randr 2>/dev/null || true)
-        if [[ -n "$wr_output" ]]; then
-            # Parse lines like: "HDMI-A-1 ... 1920x1080@60 ... (current)"
-            local wr_line
-            wr_line=$(echo "$wr_output" | grep -m1 '(current)' || true)
-            if [[ "$wr_line" =~ ([0-9]+)x([0-9]+) ]]; then
-                echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
-                echo "[window_manager] Screen resolution via wlr-randr: ${BASH_REMATCH[1]}x${BASH_REMATCH[2]}" >&2
-                return 0
-            fi
-        fi
-    fi
-
-    # 2. kscreen-doctor
-    if command -v kscreen-doctor >/dev/null 2>&1; then
-        local ks_output
-        ks_output=$(kscreen-doctor -o 2>/dev/null || true)
-        if [[ -n "$ks_output" ]]; then
-            # Look for enabled primary output's resolution
-            local ks_line
-            ks_line=$(echo "$ks_output" | grep -m1 'enabled' | grep -v 'eDP' || true)
-            if [[ -z "$ks_line" ]]; then
-                ks_line=$(echo "$ks_output" | grep -m1 'enabled' || true)
-            fi
-            if [[ "$ks_line" =~ ([0-9]+)x([0-9]+) ]]; then
-                echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
-                echo "[window_manager] Screen resolution via kscreen-doctor: ${BASH_REMATCH[1]}x${BASH_REMATCH[2]}" >&2
-                return 0
-            fi
-        fi
-    fi
-
-    # 3. xrandr
-    if command -v xrandr >/dev/null 2>&1; then
-        local xr_output
-        xr_output=$(xrandr 2>/dev/null || true)
-        if [[ -n "$xr_output" ]]; then
-            # Parse the current mode line: "   1920x1080      60.00*+"
-            local xr_line
-            xr_line=$(echo "$xr_output" | grep -m1 '\*' || true)
-            if [[ "$xr_line" =~ ([0-9]+)x([0-9]+) ]]; then
-                echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
-                echo "[window_manager] Screen resolution via xrandr: ${BASH_REMATCH[1]}x${BASH_REMATCH[2]}" >&2
-                return 0
-            fi
-        fi
-    fi
-
-    # 4. xdpyinfo
-    if command -v xdpyinfo >/dev/null 2>&1; then
-        local xd_output
-        xd_output=$(xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
-        if [[ "$xd_output" =~ ([0-9]+)x([0-9]+) ]]; then
-            echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
-            echo "[window_manager] Screen resolution via xdpyinfo: ${BASH_REMATCH[1]}x${BASH_REMATCH[2]}" >&2
-            return 0
-        fi
-    fi
-
-    # 5. Environment variable override
-    if [[ -n "${SPLITSCREEN_SCREEN_W:-}" && -n "${SPLITSCREEN_SCREEN_H:-}" ]]; then
-        echo "${SPLITSCREEN_SCREEN_W} ${SPLITSCREEN_SCREEN_H}"
-        echo "[window_manager] Screen resolution via env override: ${SPLITSCREEN_SCREEN_W}x${SPLITSCREEN_SCREEN_H}" >&2
-        return 0
-    fi
-
-    # 6. Fallback
-    echo "[window_manager] All resolution detection methods failed, using fallback ${WINDOW_MANAGER_DEFAULT_SCREEN_W}x${WINDOW_MANAGER_DEFAULT_SCREEN_H}" >&2
-    echo "${WINDOW_MANAGER_DEFAULT_SCREEN_W} ${WINDOW_MANAGER_DEFAULT_SCREEN_H}"
-    return 0
-}
+# (#45/D7: _get_screen_resolution DELETED — mcss_resolve_screen in
+# runtime_context.sh is the one cascade, env-override-FIRST. This module's copy
+# checked the SPLITSCREEN_SCREEN_W/H override only AFTER all four probes, so a
+# test harness's forced dimensions lost to the live display; it also carried
+# the eDP-before-head kscreen ordering bug. Callers read MCSS_SCREEN_W/H.)
 
 # NOTE: black placeholder windows were removed 2026-06-23. They existed only to mask
 # the desktop showing through empty quad cells, but the splitscreen session kills
@@ -274,8 +199,8 @@ compute_grid_mode() {
 compute_slot_geometry() {
     local slot="${1:-1}"
     local grid_mode="${2:-full}"
-    local screen_w="${3:-1280}"
-    local screen_h="${4:-800}"
+    local screen_w="${3:-${MCSS_SCREEN_W:-1280}}"
+    local screen_h="${4:-${MCSS_SCREEN_H:-800}}"
 
     case "$grid_mode" in
         full)
@@ -317,12 +242,11 @@ apply_layout() {
     local screen_w="${2:-}"
     local screen_h="${3:-}"
 
-    # Resolve screen dimensions if not provided
+    # Resolve screen dimensions if not provided (#45: canonical resolver)
     if [[ -z "$screen_w" || -z "$screen_h" ]]; then
-        local dims
-        dims=$(_get_screen_resolution)
-        screen_w=$(echo "$dims" | awk '{print $1}')
-        screen_h=$(echo "$dims" | awk '{print $2}')
+        mcss_resolve_screen
+        screen_w="$MCSS_SCREEN_W"
+        screen_h="$MCSS_SCREEN_H"
     fi
 
     local grid_mode
@@ -369,10 +293,10 @@ apply_layout() {
         # override_redirect cycle on an unchanged window would needlessly unmap/remap it
         # (a visible flicker) — the user's "don't move the windows in quad mode". WID-keyed
         # so a NEW instance reusing this slot (different WID) is still positioned; per-slot
-        # file so it survives the orchestrator's subshells. Disable via MCSS_SKIP_UNCHANGED=0.
+        # file so it survives the orchestrator's subshells. Disable via WINDOW_MANAGER_SKIP_UNCHANGED=0 (#53: MCSS_ prefix now means runtime_context-owned; old MCSS_ names honored one release).
         local _gf="$_gd/slot${slot}"
         local _sig="${wid:-nowid} $x $y $w $h $grid_mode"
-        if [[ "${MCSS_SKIP_UNCHANGED:-1}" == "1" && -n "$wid" && "$(cat "$_gf" 2>/dev/null)" == "$_sig" ]]; then
+        if [[ "${WINDOW_MANAGER_SKIP_UNCHANGED:-${MCSS_SKIP_UNCHANGED:-1}}" == "1" && -n "$wid" && "$(cat "$_gf" 2>/dev/null)" == "$_sig" ]]; then
             echo "[window_manager] slot $slot already at ${w}x${h}+${x}+${y} ($grid_mode) — skip reposition (no flicker)" >&2
             continue
         fi
@@ -396,8 +320,8 @@ apply_layout() {
     # the black-screen-with-audio bug (the LATE unmap is handled by spawn_instance's
     # map-keeper). The _positioned guard already limits this to slots actually
     # (re)positioned this round, so unchanged tiles are never re-cycled (no flicker).
-    if [[ "${MCSS_REASSERT:-1}" == "1" && ${#_positioned[@]} -gt 0 ]]; then
-        sleep "${MCSS_REASSERT_DELAY_S:-1.2}"
+    if [[ "${WINDOW_MANAGER_REASSERT:-${MCSS_REASSERT:-1}}" == "1" && ${#_positioned[@]} -gt 0 ]]; then
+        sleep "${WINDOW_MANAGER_REASSERT_DELAY_S:-${MCSS_REASSERT_DELAY_S:-1.2}}"
         local _p
         for _p in "${_positioned[@]}"; do
             IFS=: read -r slot x y w h <<< "$_p"
