@@ -100,7 +100,7 @@ compute_geometry() {
 # ─────────────────────────────────────────────────────────────────────────────
 setSplitscreenModeForPlayer() {
     local player=$1 n=$2
-    local config_path="$MCSS_INSTANCES_DIR/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
+    local config_path="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${player}/.minecraft/config/splitscreen.properties"
     mkdir -p "$(dirname "$config_path")"
     local mode="FULLSCREEN"
     case "$n" in
@@ -161,7 +161,7 @@ find_controller_pairs() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchSlot() {
     local slot="$1" js_dev="$2" ev_dev="$3"
-    local instance_id="latestUpdate-${slot}"
+    local instance_id="${MCSS_INSTANCE_PREFIX}${slot}"
 
     logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
 
@@ -204,10 +204,10 @@ launchSlot() {
 
     if command -v kde-inhibit >/dev/null 2>&1; then
         "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+            $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     else
         logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
-        "${bwrap_cmd[@]}" $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+        "${bwrap_cmd[@]}" $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     fi
 
     local pid=$!
@@ -239,7 +239,7 @@ waitForAllReady() {
     while [[ $(date +%s) -lt $deadline ]]; do
         local ready=0
         for slot in $(seq 1 "$n_slots"); do
-            local mc_log="$MCSS_INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+            local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
             if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
                 ready=$(( ready + 1 ))
             fi
@@ -254,7 +254,7 @@ waitForAllReady() {
 
     logMsg 0 ERROR "load timeout after ${timeout_s}s — per-slot status:"
     for slot in $(seq 1 "$n_slots"); do
-        local mc_log="$MCSS_INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
         if [[ ! -f "$mc_log" ]]; then
             logMsg "$slot" ERROR "no log file at $mc_log — instance likely crashed"
         elif grep -q "$marker" "$mc_log" 2>/dev/null; then
@@ -439,7 +439,7 @@ runStaticTest() {
         return 1
     fi
     for slot in $(seq 1 "$n_slots"); do
-        local inst_dir="$MCSS_INSTANCES_DIR/latestUpdate-${slot}"
+        local inst_dir="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}"
         if [[ ! -d "$inst_dir" ]]; then
             logMsg "$slot" ERROR "instance dir missing: $inst_dir — run the installer first"
             return 1
@@ -482,7 +482,7 @@ runStaticTest() {
         echo "[General]"; echo "count=$(( n_slots + 1 ))"
         for _s in $(seq 1 "$n_slots"); do
             read _x _y _w _h < <(compute_geometry "$_s" "$n_slots" "$W" "$H")
-            printf '\n[%s]\nDescription=SplitscreenP%s\ntitle=SplitscreenP%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
+            printf '\n[%s]\nDescription=${MCSS_WINDOW_TITLE_PREFIX}%s\ntitle=${MCSS_WINDOW_TITLE_PREFIX}%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
                 "$_s" "$_s" "$_s" "$_x" "$_y" "$_w" "$_h"
         done
         # [N+1] forced centered placement at map time (DRAFT — see note above).
@@ -493,7 +493,7 @@ runStaticTest() {
 
     # ── Clear stale Minecraft logs so waitForAllReady doesn't match previous-run entries
     for slot in $(seq 1 "$n_slots"); do
-        local mc_log="$MCSS_INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
         [[ -f "$mc_log" ]] && > "$mc_log" && logMsg "$slot" INFO "cleared stale latest.log"
     done
 
@@ -520,7 +520,7 @@ runStaticTest() {
     # ── Wait for all instances to reach main menu
     if ! waitForAllReady "$n_slots" "$LOAD_TIMEOUT_S"; then
         logMsg 0 ERROR "load failed — instances left running for SSH inspection"
-        logMsg 0 INFO "inspect: $MCSS_INSTANCES_DIR/latestUpdate-N/.minecraft/logs/latest.log"
+        logMsg 0 INFO "inspect: $MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}N/.minecraft/logs/latest.log"
         logMsg 0 INFO "waiting 5min grace period before force-quit"
         sleep 300
         quitAllSlots; return 1
