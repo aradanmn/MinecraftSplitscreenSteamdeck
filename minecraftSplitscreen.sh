@@ -405,11 +405,11 @@ WEOF
     # Autostart re-invokes this script once KDE session is running
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
-    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+    mkdir -p "$MCSS_AUTOSTART_DIR"
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH}
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -550,7 +550,7 @@ runStaticTest() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchWindowTest() {
     echo "[launchWindowTest] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
     pkill plasmashell 2>/dev/null || true
     sleep 0.5
 
@@ -592,13 +592,13 @@ WEOF
     # Autostart calls launchTestFromPlasma
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
+    mkdir -p "$MCSS_AUTOSTART_DIR"
     # Propagate the chosen test number + observation delay into the nested session
     # (the autostart re-invocation is a fresh process — env does not carry over).
-    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -742,11 +742,11 @@ WEOF
 
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
-    cat > ~/.config/autostart/splitscreen-prod.desktop <<DEOF
+    mkdir -p "$MCSS_AUTOSTART_DIR"
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_PROD_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH} prodFromPlasma
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH} prodFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -826,7 +826,7 @@ DEOF
 # ─────────────────────────────────────────────────────────────────────────────
 launchProdFromPlasma() {
     echo "[launchProdFromPlasma] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-prod.desktop ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_PROD_DESKTOP" "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
 
     # Strip the Plasma panel (black backdrop, full tiling area); respawn-killer loop.
     pkill -x plasmashell 2>/dev/null || true
@@ -988,7 +988,7 @@ _supervise_reap_nested_session() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchTestFromPlasma() {
     echo "[launchTestFromPlasma] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
 
     # Strip the Plasma panel for full-screen real estate.  plasma-session can
     # respawn plasmashell, so keep a background killer running for the whole
@@ -1232,12 +1232,7 @@ launchNested() {
         --no-lockscreen --no-global-shortcuts \
         --xwayland \
         -- env \
-            SPLITSCREEN_DEBUG_LOG="$LOG" \
-            MCSS_NESTED_SESSION=1 \
-            SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
-            SPLITSCREEN_STATE="$SPLITSCREEN_STATE" \
-            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
-            TEST_NUMBER="${TEST_NUMBER:-all}" \
+            $(mcss_exec_env_string MCSS_NESTED_SESSION=kwin TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) \
             _NESTED_X_BEFORE="$x_before" \
             bash "$self" _nestedSession
 }
@@ -1398,11 +1393,11 @@ r.lower(); r.mainloop()
         # main() -> docked_flow on WHATEVER display is currently active — that's exactly
         # how #42 happened (a Desktop-Mode .desktop shortcut with no LaunchOptions spawned
         # a live 4-player splitscreen outside gamescope). Only proceed if we're already
-        # confirmed inside our own nested session (MCSS_NESTED_SESSION=1, set by
+        # confirmed inside our own nested session (MCSS_NESTED_SESSION=plasma|kwin, set by
         # launchFromPlasma/testPlasma/nestedPlasma/launchNested before they re-invoke this
         # script) OR the OUTER context is gamescope itself (mcss_require_gamescope checks
         # XDG_CURRENT_DESKTOP/XDG_SESSION_DESKTOP, which is only meaningful pre-nesting).
-        if [[ "${MCSS_NESTED_SESSION:-0}" == "1" ]] || { declare -f mcss_require_gamescope >/dev/null 2>&1 && mcss_require_gamescope; }; then
+        if [[ "${MCSS_NESTED_SESSION:-0}" != "0" ]] || { declare -f mcss_require_gamescope >/dev/null 2>&1 && mcss_require_gamescope; }; then
             if declare -f main >/dev/null 2>&1; then
                 echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
                 main

@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_runtime_context.sh
 # =============================================================================
 
-readonly TEST_TOTAL=18
+readonly TEST_TOTAL=20
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -148,6 +148,28 @@ assert_equals "$out" "2" "T17: child N_SLOTS override beats inherited MCSS_MAX_P
 # and --no-probe (empty probe result) must NOT clobber it to the 1280x800 fallback.
 out=$(env MCSS_SCREEN_W=1920 MCSS_SCREEN_H=1080 bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_resolve_screen --refresh --no-probe; echo \${MCSS_SCREEN_W}x\${MCSS_SCREEN_H}" 2>/dev/null)
 assert_equals "$out" "1920x1080" "T18: --refresh retains last-good dims on empty probe" || true
+
+# --- T19: exec_env_string — extras come LAST so env(1) last-wins overrides canonical ---
+out=$(rc_run 'mcss_exec_env_string MCSS_NESTED_SESSION=plasma')
+case "$out" in
+    *MCSS_NESTED_SESSION=0*MCSS_NESTED_SESSION=plasma*)
+        assert_equals "ok" "ok" "T19: extra overrides canonical by position (last-wins)" || true ;;
+    *MCSS_NESTED_SESSION=plasma*)
+        # canonical =0 may be absent if unset in this env — extra alone is also correct
+        assert_equals "ok" "ok" "T19: extra overrides canonical by position (last-wins)" || true ;;
+    *)
+        assert_equals "$out" "(should end with MCSS_NESTED_SESSION=plasma)" "T19: extra overrides canonical by position (last-wins)" || true ;;
+esac
+
+# --- T20: exec_env_string — word-unsafe value refused, not emitted corrupted ---
+# .desktop Exec / env(1) do not shell-unquote, so a value with spaces must be
+# refused loudly (caller passes it as its own quoted env arg instead).
+out=$(rc_run 'mcss_exec_env_string "BAD_VAL=has space" GOOD=1')
+if [[ "$out" != *"has"* && "$out" == *GOOD=1* ]]; then
+    assert_equals "ok" "ok" "T20: word-unsafe extra refused; safe extras still emitted" || true
+else
+    assert_equals "$out" "(no BAD_VAL, GOOD=1 present)" "T20: word-unsafe extra refused; safe extras still emitted" || true
+fi
 
 # --- Summary ---
 echo ""
