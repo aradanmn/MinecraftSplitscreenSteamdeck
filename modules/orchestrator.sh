@@ -91,6 +91,11 @@ _get_mode() {
 _set_mode() {
     local mode="$1"
     local state="$SPLITSCREEN_STATE"
+    # #45: _set_mode is the SINGLE WRITER of both the exported in-shell mirror
+    # and the state-file .mode. MCSS_MODE retires ad-hoc mode inference for
+    # same-process readers (the state file stays authoritative cross-process;
+    # #62's sandbox work consumes this instead of js_node-emptiness inference).
+    export MCSS_MODE="$mode"
     # #40 (fixes a regression from the H3/L2 flock change, 2026-06-27): the flock version
     # below hard `exit 1`s (inside a `set -e` subshell) whenever the state file is missing
     # or unparseable — e.g. main() invoked without going through launchProdFromPlasma's
@@ -106,7 +111,15 @@ _set_mode() {
         flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
             echo "[orchestrator] _set_mode: state file missing/invalid at $state — initializing default" >&2
-            _atomic_write "$state" '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}'
+            _atomic_write "$state" "$(jq -n --arg mode "${MCSS_MODE:-docked}" '{
+                mode: $mode,
+                slots: {
+                    "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
+                }
+            }')"
         fi
         local updated
         updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || { echo "[orchestrator] WARNING: _set_mode jq failed — leaving state untouched" >&2; exit 0; }
