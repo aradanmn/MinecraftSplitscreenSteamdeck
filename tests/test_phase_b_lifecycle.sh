@@ -151,7 +151,7 @@ _kill_slot_process() {
 # manual launch before running tests to avoid hitting this limit).
 _wait_for_minecraft_ready() {
     local slot="$1" timeout_s="${2:-600}" label="${3:-slot $slot}"
-    local launcher_dir="${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$HOME/.local/share/PolyMC}"
+    local launcher_dir="${MCSS_LAUNCHER_ROOT:-$HOME/.local/share/PolyMC}"
     local log="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/logs/latest.log"
     local deadline=$(( $(date +%s) + timeout_s ))
     _info "$label: waiting for Minecraft main menu (Sound engine started) …"
@@ -183,7 +183,7 @@ _wait_for_minecraft_ready() {
 # polling, so a stale log causes an immediate false-positive on second+ tests).
 _prep_slot() {
     local slot="$1"
-    local launcher_dir="${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$HOME/.local/share/PolyMC}"
+    local launcher_dir="${MCSS_LAUNCHER_ROOT:-$HOME/.local/share/PolyMC}"
     : > "${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/logs/latest.log" 2>/dev/null || true
 }
 
