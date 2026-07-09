@@ -27,13 +27,19 @@ set -euo pipefail
 #
 # Environment overrides (for testing):
 #   BWRAP_CMD                     — override bwrap path
-#   LAUNCHER_EXEC                 — override PolyMC executable path
+#   MCSS_LAUNCHER_EXEC            — override PolyMC executable path (legacy name
+#                                     LAUNCHER_EXEC still works via mcss_resolve_paths)
 #   SPLITSCREEN_STATE             — override state file path
-#   INSTANCE_LIFECYCLE_LAUNCHER_DIR — override ~/.local/share/PolyMC base
+#   MCSS_LAUNCHER_ROOT — override launcher base dir (resolved by runtime_context.sh)
 # =============================================================================
 
+# #45: instance prefix, account prefix, window-title prefix, slot count, and
+# raw-binding flag are owned by runtime_context.sh. Sourcing it here is
+# idempotent (process-local sentinels) and makes standalone sourcing (unit
+# tests) behave like the launcher prologue, which sources it first.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # --- Module-level constants ---
-readonly INSTANCE_LIFECYCLE_MAX_PLAYERS=4
 readonly INSTANCE_LIFECYCLE_POLL_INTERVAL_S=0.5
 readonly INSTANCE_LIFECYCLE_POLL_TIMEOUT_S=60
 readonly INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S=30
@@ -58,14 +64,16 @@ readonly INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S=120
 INSTANCE_LIFECYCLE_JAVA_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
 INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
 readonly INSTANCE_LIFECYCLE_JAVA_POLL_ITERS INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS
-readonly INSTANCE_LIFECYCLE_DEFAULT_LAUNCHER_DIR="$HOME/.local/share/PolyMC"
 
 # --- Internal functions ---
 
-# _get_launcher_dir: Return the PolyMC base directory.
-_get_launcher_dir() {
-    echo "${INSTANCE_LIFECYCLE_LAUNCHER_DIR:-$INSTANCE_LIFECYCLE_DEFAULT_LAUNCHER_DIR}"
-}
+# Launcher root/executable come from runtime_context.sh's mcss_resolve_paths
+# (#45): bare reads of MCSS_LAUNCHER_ROOT / MCSS_LAUNCHER_EXEC, same
+# fail-loud-on-lost-export contract as SPLITSCREEN_STATE below. This module's
+# old _get_launcher_dir/_get_launcher_exec pair carried a launcher-exec default
+# (bare <root>/PolyMC.AppImage) that had silently diverged from the entry
+# script's flatpak/PATH cascade — the resolver is now the only cascade.
+# Test override: preset MCSS_LAUNCHER_ROOT (replaces INSTANCE_LIFECYCLE_LAUNCHER_DIR).
 
 # _get_state_file: Return the state file path.
 _get_state_file() {
@@ -78,11 +86,6 @@ _get_state_file() {
 # _get_bwrap_cmd: Return the bwrap command path.
 _get_bwrap_cmd() {
     echo "${BWRAP_CMD:-bwrap}"
-}
-
-# _get_launcher_exec: Return the PolyMC executable path.
-_get_launcher_exec() {
-    echo "${LAUNCHER_EXEC:-$(_get_launcher_dir)/PolyMC.AppImage}"
 }
 
 # _ensure_state_file: Reset the state file to default (all slots inactive).
@@ -202,7 +205,7 @@ _vendor_of_js_node() {
 _build_direct_command() {
     local slot="$1"
     local launcher_exec
-    launcher_exec=$(_get_launcher_exec)
+    launcher_exec="$MCSS_LAUNCHER_EXEC"
 
     # Reach the nested session's XWayland the same way the sandbox path does.
     local _xauth=""
@@ -238,8 +241,8 @@ _build_direct_command() {
         -u ENABLE_GAMESCOPE_WSI
         "${_env[@]}"
         "${launcher_exec}"
-        -l "latestUpdate-${slot}"
-        -a "P${slot}"
+        -l "${MCSS_INSTANCE_PREFIX}${slot}"
+        -a "${MCSS_ACCOUNT_PREFIX}${slot}"
     )
     printf '%q ' "${cmd[@]}"
 }
@@ -254,7 +257,7 @@ _build_bwrap_command() {
     local js_node="$3"
     shift 3
     local launcher_exec
-    launcher_exec=$(_get_launcher_exec)
+    launcher_exec="$MCSS_LAUNCHER_EXEC"
 
     local -a cmd=(
         $(_get_bwrap_cmd)
@@ -289,7 +292,7 @@ _build_bwrap_command() {
         [[ -e "$HOME/.steam/steam.pipe" ]] && cmd+=(--bind /dev/null "$HOME/.steam/steam.pipe")
     fi
 
-    local _raw="${CONTROLLER_MONITOR_RAW_BINDING:-1}"
+    local _raw="$MCSS_RAW_BINDING"
     local _js_bound=0
 
     # event_node bind: under RAW binding WITH a real js_node we bind js-ONLY and SKIP the
@@ -432,8 +435,8 @@ _build_bwrap_command() {
         -u ENABLE_GAMESCOPE_WSI
         "${_env_vars[@]}"
         "${launcher_exec}"
-        -l "latestUpdate-${slot}"
-        -a "P${slot}"
+        -l "${MCSS_INSTANCE_PREFIX}${slot}"
+        -a "${MCSS_ACCOUNT_PREFIX}${slot}"
     )
 
     # Output the command as a safely-quoted single string
@@ -446,8 +449,8 @@ _build_bwrap_command() {
 _poll_for_java() {
     local slot="$1"
     local launcher_dir
-    launcher_dir=$(_get_launcher_dir)
-    local search_pattern="instances/latestUpdate-${slot}/natives"
+    launcher_dir="$MCSS_LAUNCHER_ROOT"
+    local search_pattern="instances/${MCSS_INSTANCE_PREFIX}${slot}/natives"
 
     local max_iterations="$INSTANCE_LIFECYCLE_JAVA_POLL_ITERS"
 
@@ -476,7 +479,7 @@ _poll_for_java() {
 # PID per line, de-duplicated.
 _collect_slot_pids() {
     local slot="$1"
-    local search_pattern="instances/latestUpdate-${slot}/natives"
+    local search_pattern="instances/${MCSS_INSTANCE_PREFIX}${slot}/natives"
     local roots root
     roots=$(pgrep -f "$search_pattern" 2>/dev/null || true)
     {
@@ -519,7 +522,7 @@ _poll_for_window() {
     for (( _i = 0; _i < max_iterations; _i++ )); do
         # Strategy 1: title-based (works if the LWJGL2 title property was honoured)
         local wid
-        wid=$(dex_search --name "SplitscreenP${slot}" 2>/dev/null | head -1 || true)
+        wid=$(dex_search --name "${MCSS_WINDOW_TITLE_PREFIX}${slot}" 2>/dev/null | head -1 || true)
         if [[ -n "$wid" ]]; then
             echo "$wid"
             return 0
@@ -540,7 +543,7 @@ _poll_for_window() {
                     # Rename WM_NAME so apply_layout / _get_wid_from_state can find
                     # it by name on subsequent calls — and so it survives the caption
                     # flash to "Minecraft* <ver>".
-                    dex_set_name "$wid" "SplitscreenP${slot}" 2>/dev/null || true
+                    dex_set_name "$wid" "${MCSS_WINDOW_TITLE_PREFIX}${slot}" 2>/dev/null || true
 
                     # NOTE: window POSITIONING (override_redirect + move/resize) is
                     # intentionally NOT done here. apply_layout() positions every
@@ -734,11 +737,11 @@ spawn_instance() {
 
     # 2. Clear selected_controllers.json
     local launcher_dir
-    launcher_dir=$(_get_launcher_dir)
-    rm -f "${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/controllable/selected_controllers.json"
+    launcher_dir="$MCSS_LAUNCHER_ROOT"
+    rm -f "${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/config/controllable/selected_controllers.json"
 
     # 2.3 Set out_of_focus_input=true so unfocused instances respond to their controller
-    local controlify_cfg="${launcher_dir}/instances/latestUpdate-${slot}/.minecraft/config/controlify.json"
+    local controlify_cfg="${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/config/controlify.json"
     if [[ -f "$controlify_cfg" ]] && command -v jq >/dev/null 2>&1; then
         local updated_cfg
         updated_cfg=$(jq '.global.out_of_focus_input = true' "$controlify_cfg" 2>/dev/null)
@@ -749,11 +752,11 @@ spawn_instance() {
     fi
 
     # 2.5 Set window title via instance.cfg JvmArgs
-    local cfg_path="${launcher_dir}/instances/latestUpdate-${slot}/instance.cfg"
+    local cfg_path="${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/instance.cfg"
     if [[ -f "$cfg_path" ]]; then
         setInstanceCfgValue "$cfg_path" "OverrideJavaArgs" "true"
-        setInstanceCfgValue "$cfg_path" "JvmArgs" "-Dorg.lwjgl.opengl.Window.title=SplitscreenP${slot}"
-        echo "[spawn_instance] Set window title SplitscreenP${slot} via instance.cfg" >&2
+        setInstanceCfgValue "$cfg_path" "JvmArgs" "-Dorg.lwjgl.opengl.Window.title=${MCSS_WINDOW_TITLE_PREFIX}${slot}"
+        echo "[spawn_instance] Set window title ${MCSS_WINDOW_TITLE_PREFIX}${slot} via instance.cfg" >&2
     fi
 
     # 3. Build the launch command string.
@@ -831,7 +834,7 @@ spawn_instance() {
             (
                 _k=0
                 while (( _k < INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT )); do
-                    dex_set_name "$window_id" "SplitscreenP${slot}" 2>/dev/null || true
+                    dex_set_name "$window_id" "${MCSS_WINDOW_TITLE_PREFIX}${slot}" 2>/dev/null || true
                     sleep "$INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S"
                     _k=$(( _k + 1 ))
                 done

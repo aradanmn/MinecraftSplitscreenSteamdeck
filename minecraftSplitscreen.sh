@@ -48,54 +48,30 @@ set -x
 
 echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
 
-# Source runtime orchestrator modules
+# Source runtime orchestrator modules. runtime_context.sh sources FIRST and its
+# resolvers run BEFORE the other modules source (#45 / PLAN Part 4 loading-order
+# rule): module source-time defaults must read the canonical values, not race
+# them. INSTANCES_DIR/LAUNCHER_EXEC/N_SLOTS survive as legacy override inputs
+# consumed by mcss_resolve_paths — the old _detect_instances_dir /
+# _detect_launcher_exec cascades live in the resolver now (superset: it also
+# probes squashfs-root/AppRun, the FUSE workaround only the installer knew).
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-for _mod in preflight.sh runtime_context.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+if [[ ! -f "$SCRIPT_DIR/modules/runtime_context.sh" ]]; then
+    echo "FATAL: $SCRIPT_DIR/modules/runtime_context.sh missing — broken deploy (run deploy.sh or the installer)" | tee -a "$LOG" >&2
+    exit 1
+fi
+source "$SCRIPT_DIR/modules/runtime_context.sh"
+mcss_resolve_environment
+mcss_resolve_paths
+for _mod in preflight.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
     fi
 done
 
-N_SLOTS="${N_SLOTS:-4}"
 TEST_ACTIVE_S="${TEST_ACTIVE_S:-600}"
 LOAD_TIMEOUT_S="${LOAD_TIMEOUT_S:-180}"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Launcher auto-detection  (prototype only — generator bakes these in via sed)
-# ─────────────────────────────────────────────────────────────────────────────
-
-_detect_instances_dir() {
-    local candidates=(
-        "$HOME/.local/share/PolyMC/instances"
-        "$HOME/.var/app/org.fn2006.PolyMC/data/PolyMC/instances"
-        "$HOME/.local/share/PrismLauncher/instances"
-        "$HOME/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"
-    )
-    for dir in "${candidates[@]}"; do
-        [[ -d "$dir" ]] && { echo "$dir"; return 0; }
-    done
-    return 1
-}
-
-_detect_launcher_exec() {
-    # AppImage bundled alongside the PolyMC data directory
-    local appimage="$HOME/.local/share/PolyMC/PolyMC.AppImage"
-    [[ -x "$appimage" ]] && { echo "$appimage"; return 0; }
-
-    if flatpak list 2>/dev/null | grep -q "org.fn2006.PolyMC"; then
-        echo "flatpak run org.fn2006.PolyMC"; return 0
-    fi
-    if flatpak list 2>/dev/null | grep -q "org.prismlauncher.PrismLauncher"; then
-        echo "flatpak run org.prismlauncher.PrismLauncher"; return 0
-    fi
-    command -v polymc        >/dev/null 2>&1 && { echo "polymc"; return 0; }
-    command -v prismlauncher >/dev/null 2>&1 && { echo "prismlauncher"; return 0; }
-    return 1
-}
-
-INSTANCES_DIR="${INSTANCES_DIR:-$(_detect_instances_dir)}"
-LAUNCHER_EXEC="${LAUNCHER_EXEC:-$(_detect_launcher_exec)}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # compute_geometry  slot total W H  →  stdout "x y w h"
@@ -124,7 +100,7 @@ compute_geometry() {
 # ─────────────────────────────────────────────────────────────────────────────
 setSplitscreenModeForPlayer() {
     local player=$1 n=$2
-    local config_path="$INSTANCES_DIR/latestUpdate-${player}/.minecraft/config/splitscreen.properties"
+    local config_path="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${player}/.minecraft/config/splitscreen.properties"
     mkdir -p "$(dirname "$config_path")"
     local mode="FULLSCREEN"
     case "$n" in
@@ -185,12 +161,12 @@ find_controller_pairs() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchSlot() {
     local slot="$1" js_dev="$2" ev_dev="$3"
-    local instance_id="latestUpdate-${slot}"
+    local instance_id="${MCSS_INSTANCE_PREFIX}${slot}"
 
     logMsg "$slot" INFO "launching instance=$instance_id js=${js_dev:-none} ev=${ev_dev:-none}"
 
-    if [[ -z "$LAUNCHER_EXEC" ]]; then
-        logMsg "$slot" ERROR "LAUNCHER_EXEC not set — cannot launch"
+    if [[ -z "$MCSS_LAUNCHER_EXEC" ]]; then
+        logMsg "$slot" ERROR "no launcher resolved (MCSS_LAUNCHER_EXEC empty) — cannot launch"
         return 1
     fi
 
@@ -228,10 +204,10 @@ launchSlot() {
 
     if command -v kde-inhibit >/dev/null 2>&1; then
         "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+            $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     else
         logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
-        "${bwrap_cmd[@]}" $LAUNCHER_EXEC -l "$instance_id" -a "P${slot}" &
+        "${bwrap_cmd[@]}" $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     fi
 
     local pid=$!
@@ -239,7 +215,7 @@ launchSlot() {
 
     sleep 2
     if ! kill -0 "$pid" 2>/dev/null; then
-        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and LAUNCHER_EXEC=$LAUNCHER_EXEC"
+        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and MCSS_LAUNCHER_EXEC=$MCSS_LAUNCHER_EXEC"
         return 1
     fi
 
@@ -263,7 +239,7 @@ waitForAllReady() {
     while [[ $(date +%s) -lt $deadline ]]; do
         local ready=0
         for slot in $(seq 1 "$n_slots"); do
-            local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+            local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
             if [[ -f "$mc_log" ]] && grep -q "$marker" "$mc_log" 2>/dev/null; then
                 ready=$(( ready + 1 ))
             fi
@@ -278,7 +254,7 @@ waitForAllReady() {
 
     logMsg 0 ERROR "load timeout after ${timeout_s}s — per-slot status:"
     for slot in $(seq 1 "$n_slots"); do
-        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
         if [[ ! -f "$mc_log" ]]; then
             logMsg "$slot" ERROR "no log file at $mc_log — instance likely crashed"
         elif grep -q "$marker" "$mc_log" 2>/dev/null; then
@@ -446,24 +422,24 @@ DEOF
 #   launch all slots → wait for main menu → active test → auto-quit
 # ─────────────────────────────────────────────────────────────────────────────
 runStaticTest() {
-    local n_slots="${1:-$N_SLOTS}" test_active_s="${2:-$TEST_ACTIVE_S}"
+    local n_slots="${1:-$MCSS_MAX_PLAYERS}" test_active_s="${2:-$TEST_ACTIVE_S}"
 
     logMsg 0 INFO "=== PHASE A STATIC TEST === slots=$n_slots active=${test_active_s}s load_timeout=${LOAD_TIMEOUT_S}s"
-    logMsg 0 INFO "INSTANCES_DIR=${INSTANCES_DIR:-<not detected>}"
-    logMsg 0 INFO "LAUNCHER_EXEC=${LAUNCHER_EXEC:-<not detected>}"
+    logMsg 0 INFO "INSTANCES_DIR=${MCSS_INSTANCES_DIR:-<not detected>}"
+    logMsg 0 INFO "LAUNCHER_EXEC=${MCSS_LAUNCHER_EXEC:-<not detected>}"
 
     # ── Pre-flight checks
-    if [[ -z "$INSTANCES_DIR" || ! -d "$INSTANCES_DIR" ]]; then
-        logMsg 0 ERROR "INSTANCES_DIR not found: '${INSTANCES_DIR:-empty}'"
+    if [[ -z "$MCSS_INSTANCES_DIR" || ! -d "$MCSS_INSTANCES_DIR" ]]; then
+        logMsg 0 ERROR "instances dir not found: '${MCSS_INSTANCES_DIR:-empty}'"
         logMsg 0 ERROR "ensure PolyMC/PrismLauncher is installed, or set INSTANCES_DIR"
         return 1
     fi
-    if [[ -z "$LAUNCHER_EXEC" ]]; then
+    if [[ -z "$MCSS_LAUNCHER_EXEC" ]]; then
         logMsg 0 ERROR "no launcher detected — install PolyMC/PrismLauncher or set LAUNCHER_EXEC"
         return 1
     fi
     for slot in $(seq 1 "$n_slots"); do
-        local inst_dir="$INSTANCES_DIR/latestUpdate-${slot}"
+        local inst_dir="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}"
         if [[ ! -d "$inst_dir" ]]; then
             logMsg "$slot" ERROR "instance dir missing: $inst_dir — run the installer first"
             return 1
@@ -506,7 +482,7 @@ runStaticTest() {
         echo "[General]"; echo "count=$(( n_slots + 1 ))"
         for _s in $(seq 1 "$n_slots"); do
             read _x _y _w _h < <(compute_geometry "$_s" "$n_slots" "$W" "$H")
-            printf '\n[%s]\nDescription=SplitscreenP%s\ntitle=SplitscreenP%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
+            printf '\n[%s]\nDescription=${MCSS_WINDOW_TITLE_PREFIX}%s\ntitle=${MCSS_WINDOW_TITLE_PREFIX}%s\ntitlematch=1\nposition=%s,%s\npositionrule=3\nsize=%s,%s\nsizerule=3\n' \
                 "$_s" "$_s" "$_s" "$_x" "$_y" "$_w" "$_h"
         done
         # [N+1] forced centered placement at map time (DRAFT — see note above).
@@ -517,7 +493,7 @@ runStaticTest() {
 
     # ── Clear stale Minecraft logs so waitForAllReady doesn't match previous-run entries
     for slot in $(seq 1 "$n_slots"); do
-        local mc_log="$INSTANCES_DIR/latestUpdate-${slot}/.minecraft/logs/latest.log"
+        local mc_log="$MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/logs/latest.log"
         [[ -f "$mc_log" ]] && > "$mc_log" && logMsg "$slot" INFO "cleared stale latest.log"
     done
 
@@ -544,7 +520,7 @@ runStaticTest() {
     # ── Wait for all instances to reach main menu
     if ! waitForAllReady "$n_slots" "$LOAD_TIMEOUT_S"; then
         logMsg 0 ERROR "load failed — instances left running for SSH inspection"
-        logMsg 0 INFO "inspect: $INSTANCES_DIR/latestUpdate-N/.minecraft/logs/latest.log"
+        logMsg 0 INFO "inspect: $MCSS_INSTANCES_DIR/${MCSS_INSTANCE_PREFIX}N/.minecraft/logs/latest.log"
         logMsg 0 INFO "waiting 5min grace period before force-quit"
         sleep 300
         quitAllSlots; return 1
@@ -572,7 +548,7 @@ launchWindowTest() {
     pkill plasmashell 2>/dev/null || true
     sleep 0.5
 
-    runStaticTest "$N_SLOTS" "$TEST_ACTIVE_S"
+    runStaticTest "$MCSS_MAX_PLAYERS" "$TEST_ACTIVE_S"
     local result=$?
 
     pkill -TERM kwin_wayland 2>/dev/null || true
@@ -697,17 +673,25 @@ launchFromPlasma() {
     # #60: sweep stale run trees FIRST (see _mcss_stale_tree_pids) so no leftover
     # orchestrator/watchdog/supervisor can react — via the shared state file/FIFO —
     # while we reap its session and start ours.
+    # #45: instance kill-patterns derive from the runtime_context constants.
+    # MCSS_INSTANCE_PREFIX includes the trailing dash, so the pattern is
+    # STRICTER than the old bare 'latestUpdate' literal (cannot match an
+    # unrelated 'latestUpdater' style cmdline). The launcher pattern derives
+    # from the resolved root's basename (PolyMC or PrismLauncher), so a Prism
+    # install reaps its own launcher instead of a hardcoded 'PolyMC'.
+    local _launcher_name
+    _launcher_name=$(basename "$MCSS_LAUNCHER_ROOT")
     local _g _name _pid _stale_tree
     _stale_tree=$(_mcss_stale_tree_pids)
-    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f latestUpdate >/dev/null 2>&1; then
+    if [[ -n "$_stale_tree" ]] || [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || pgrep -f "$MCSS_INSTANCE_PREFIX" >/dev/null 2>&1; then
         echo "[launchFromPlasma] STARTUP GUARD: leftover nested session/instances found — reaping before launch (stale trees: ${_stale_tree:-none})" >> "$LOG"
         for _pid in $_stale_tree; do
             kill -9 "$_pid" 2>/dev/null || true
         done
         for _g in 1 2 3; do
-            pkill -9 -f 'latestUpdate' 2>/dev/null || true
-            pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
-            pkill -9 -f 'PolyMC' 2>/dev/null || true
+            pkill -9 -f "$MCSS_INSTANCE_PREFIX" 2>/dev/null || true
+            pkill -9 -f "bwrap.*$_launcher_name" 2>/dev/null || true
+            pkill -9 -f "$_launcher_name" 2>/dev/null || true
             # #26/#60: 'udevadm monitor' / inotifywait are our monitors' children and
             # can orphan past a parent-only kill; marked-only match spares system udev.
             for _name in startplasma-wayland kwin_wayland plasma_session baloo_file 'udevadm monitor' inotifywait; do
@@ -718,8 +702,8 @@ launchFromPlasma() {
             sleep 1
             [[ -n "$(_mcss_nested_pids 'startplasma-wayland')" ]] || break
         done
-        rm -rf "${MCSS_GEOM_DIR:-/tmp/mcss-geom}" 2>/dev/null || true
-        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc latestUpdate 2>/dev/null || true))" >> "$LOG"
+        rm -rf "$MCSS_GEOM_DIR" 2>/dev/null || true
+        echo "[launchFromPlasma] STARTUP GUARD: reap done (nested=$(_mcss_nested_pids 'startplasma-wayland' | wc -l) jvm=$(pgrep -fc "$MCSS_INSTANCE_PREFIX" 2>/dev/null || true))" >> "$LOG"
     fi
     # #42: a Desktop-Mode double-click of the (now-guarded) desktop shortcut, or an
     # earlier install predating the #43 environment guard, can leave a transient

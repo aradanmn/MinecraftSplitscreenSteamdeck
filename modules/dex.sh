@@ -428,10 +428,15 @@ def action_get_active_wid(args):
             print(wid)
 
 def action_find_minecraft(args):
+    # #45: slot count + title prefix come from the environment (exported by
+    # runtime_context.sh — Python can't source bash); hardcoded fallbacks keep
+    # standalone invocations working.
+    max_players = int(os.environ.get('MCSS_MAX_PLAYERS', '4'))
+    title_prefix = os.environ.get('MCSS_WINDOW_TITLE_PREFIX', 'SplitscreenP')
     def recurse(w):
         name = get_wm_name(w)
-        for slot in ['1','2','3','4']:
-            if f'SplitscreenP{slot}' in name:
+        for slot in range(1, max_players + 1):
+            if f'{title_prefix}{slot}' in name:
                 print(f"{w} {slot}")
         for c in query_tree(w):
             recurse(c)
