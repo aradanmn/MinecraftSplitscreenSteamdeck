@@ -36,12 +36,23 @@ set -euo pipefail
 #                                     nodes; "0" = legacy virtual mapper (escape hatch)
 # =============================================================================
 
+# #45: slot count, Deck vendor/product ids, and the raw-binding flag are owned
+# by runtime_context.sh (MCSS_MAX_PLAYERS, MCSS_STEAM_VENDOR_ID/PRODUCT_ID,
+# MCSS_RAW_BINDING — the latter resolved ONCE from CONTROLLER_MONITOR_RAW_BINDING
+# so enumeration and instance_lifecycle's sandbox masking can never disagree).
+# Sourcing it here is idempotent (process-local sentinels) and makes standalone
+# sourcing (unit tests) behave like the launcher prologue, which sources it first.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # --- Module-level constants ---
-readonly CONTROLLER_MONITOR_MAX_PLAYERS=4
 readonly CONTROLLER_MONITOR_DEBOUNCE_MS=500
 readonly CONTROLLER_MONITOR_DEFAULT_PROC_PATH="/proc/bus/input/devices"
-readonly CONTROLLER_MONITOR_STEAM_VENDOR="28de"
-readonly CONTROLLER_MONITOR_STEAM_PRODUCT="11ff"
+# One-release deprecation aliases for the ids (external consumers/tests);
+# internal reads use the MCSS names. Guarded: re-sourcing must not re-readonly.
+if [[ ! -v CONTROLLER_MONITOR_STEAM_VENDOR ]]; then
+    readonly CONTROLLER_MONITOR_STEAM_VENDOR="$MCSS_STEAM_VENDOR_ID"
+    readonly CONTROLLER_MONITOR_STEAM_PRODUCT="$MCSS_STEAM_PRODUCT_ID"
+fi
 
 # --- Internal data structures ---
 # We maintain a global associative array (bash 4+) for debounce tracking.
@@ -87,7 +98,7 @@ _parse_steam_virtual_devices() {
     while IFS= read -r line; do
         # Blank line terminates a block
         if [[ -z "$line" ]]; then
-            if (( in_block == 1 )) && [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]] && [[ "$product" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]]; then
+            if (( in_block == 1 )) && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]]; then
                 local eventN=""
                 local jsN=""
                 # Parse handlers: "event29 js1" → extract eventN and jsN
@@ -127,7 +138,7 @@ _parse_steam_virtual_devices() {
     done < "$proc_path"
 
     # Handle the last block (if file doesn't end with blank line)
-    if (( in_block == 1 )) && [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]] && [[ "$product" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]]; then
+    if (( in_block == 1 )) && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]]; then
         local eventN="" jsN=""
         for _h in $handlers; do
             case "$_h" in
@@ -239,8 +250,8 @@ _find_internal_by_pad_name() {
     while IFS= read -r line; do
         if [[ -z "$line" ]]; then
             if (( in_block == 1 )) \
-               && [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]] \
-               && [[ "$product" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]] \
+               && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] \
+               && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]] \
                && [[ "$devname" == *"pad 0"* ]]; then
                 local eventN="" _h
                 for _h in $handlers; do
@@ -319,7 +330,7 @@ _eventN_to_virtual_idx() {
 #
 # Output: one line per claimed virtual: "<eventN> <jsN> <ext_vendor> <ext_product>"
 # (event/js are the VIRTUAL's; vendor/product are the matched external's). Capped at
-# CONTROLLER_MONITOR_MAX_PLAYERS.
+# MCSS_MAX_PLAYERS.
 _map_external_player_virtuals() {
     local -a virtuals=()   # "inputN eventN jsN"
     local -a externals=()  # "inputN eventN jsN vendor product"
@@ -330,7 +341,7 @@ _map_external_player_virtuals() {
         inputn=""
         [[ "$sysfs" =~ input([0-9]+)$ ]] && inputn="${BASH_REMATCH[1]}"
         [[ -z "$inputn" || -z "$ev" || -z "$js" ]] && continue
-        if [[ "$vnd" == "$CONTROLLER_MONITOR_STEAM_VENDOR" && "$prd" == "$CONTROLLER_MONITOR_STEAM_PRODUCT" ]]; then
+        if [[ "$vnd" == "$MCSS_STEAM_VENDOR_ID" && "$prd" == "$MCSS_STEAM_PRODUCT_ID" ]]; then
             virtuals+=("$inputn $ev $js")
         else
             externals+=("$inputn $ev $js ${vnd:-0000} ${prd:-0000}")
@@ -356,7 +367,7 @@ _map_external_player_virtuals() {
     local -a claimed=()
     local count=0 ei vi
     for ei in "${!e_sorted[@]}"; do
-        (( count >= CONTROLLER_MONITOR_MAX_PLAYERS )) && break
+        (( count >= MCSS_MAX_PLAYERS )) && break
         local e_input e_ev e_js e_ven e_prod
         read -r e_input e_ev e_js e_ven e_prod <<< "${e_sorted[$ei]}"
         local picked=-1
@@ -451,7 +462,7 @@ _has_gamepad_buttons() {
 #   8) DUAL-TRANSPORT GUARD: if 2+ survivors share the SAME vendor:product, emit ONE loud
 #      >&2 warning (possible same pad on USB+BT OR two identical pads). Do NOT auto-collapse
 #      (VID:PID dedup would wrongly merge two identical same-MAC DS4s).
-#   9) CAP at CONTROLLER_MONITOR_MAX_PLAYERS AFTER the sort.
+#   9) CAP at MCSS_MAX_PLAYERS AFTER the sort.
 #  10) EMIT "<eventN> <jsN> <vendor> <product>" — the pad's OWN raw nodes (the
 #      list_eligible_controllers docked branch prefixes /dev/input/event and /dev/input/js,
 #      preserving the 4-field public contract). keybits/sysfs/phys are NEVER emitted.
@@ -485,7 +496,7 @@ _list_raw_external_pads() {
             return 0
         fi
         # step 3: VENDOR GATE — drop the Steam vendor (28de:11ff virtuals AND 1205-with-js).
-        if [[ "$vendor" == "$CONTROLLER_MONITOR_STEAM_VENDOR" ]]; then
+        if [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]]; then
             echo "[controller_monitor]   raw: drop event${_eventN} js${_jsN} [${vendor}:${product}] — Steam vendor (built-in/virtual)" >&2
             return 0
         fi
@@ -595,7 +606,7 @@ _list_raw_external_pads() {
     # steps 9 + 10: cap at MAX_PLAYERS, then emit "<eventN> <jsN> <vendor> <product>".
     local _count=0 o_input o_ev o_js o_vn o_pr
     for _row in "${_sorted[@]}"; do
-        (( _count >= CONTROLLER_MONITOR_MAX_PLAYERS )) && break
+        (( _count >= MCSS_MAX_PLAYERS )) && break
         read -r o_input o_ev o_js o_vn o_pr <<< "$_row"
         echo "[controller_monitor]   raw pad: input${o_input} [${o_vn}:${o_pr}] event${o_ev} js${o_js}" >&2
         echo "${o_ev} ${o_js} ${o_vn} ${o_pr}"
@@ -645,7 +656,7 @@ list_eligible_controllers() {
     # Both sources emit the IDENTICAL 4-field internal contract; the formatting below is
     # unchanged, so the public stdout contract is the same regardless of the flag.
     local src
-    if [[ "${CONTROLLER_MONITOR_RAW_BINDING:-1}" == "1" ]]; then
+    if [[ "$MCSS_RAW_BINDING" == "1" ]]; then
         src=_list_raw_external_pads
     else
         src=_map_external_player_virtuals

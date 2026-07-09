@@ -135,7 +135,7 @@ test_t4_5() {
 
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
-    INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
+    MCSS_LAUNCHER_ROOT="$tmpdir"
 
     # Set up: slot 2 active with non-existent PID (kill will fail gracefully)
     cat > "$state_file" <<'JSON'
@@ -174,7 +174,7 @@ test_t4_6() {
 
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
-    INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
+    MCSS_LAUNCHER_ROOT="$tmpdir"
 
     local stderr_output
     local exit_code
@@ -201,7 +201,7 @@ test_t4_7() {
 
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
-    INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
+    MCSS_LAUNCHER_ROOT="$tmpdir"
 
     local mock_bin="$tmpdir/mock_bin"
     mkdir -p "$mock_bin"
@@ -239,7 +239,7 @@ MOCKPOLY
     # Suppress stderr noise, capture the exit code
     set +e
     BWRAP_CMD="$mock_bin/bwrap" \
-        LAUNCHER_EXEC="$tmpdir/PolyMC.AppImage" \
+        MCSS_LAUNCHER_EXEC="$tmpdir/PolyMC.AppImage" \
         PATH="$mock_bin:$PATH" \
         spawn_instance 2 /dev/input/event4 /dev/input/js1 >/dev/null 2>&1
     set -e
@@ -268,7 +268,7 @@ test_t4_8() {
 
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
-    INSTANCE_LIFECYCLE_LAUNCHER_DIR="$tmpdir"
+    MCSS_LAUNCHER_ROOT="$tmpdir"
 
     # All 4 slots active with non-existent PIDs
     cat > "$state_file" <<'JSON'
@@ -356,7 +356,7 @@ test_t4_10() {
     # Disconnect→reconnect→same-node: an orphaned slot still claims our reused node,
     # so the mask pair equals our OWN node. Masking it would /dev/null our controller.
     local out
-    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+    out=$(MCSS_LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
         _build_bwrap_command 2 "$own_e" "$own_j" "$own_e" "$own_j" 2>/dev/null)
     if grep -q -- "--dev-bind $own_j $own_j" <<<"$out" && ! grep -q -- "--bind /dev/null $own_j" <<<"$out"; then
         _pass "T4.10 — own node NOT masked when another slot claims the same node (N5a)"
@@ -373,7 +373,7 @@ test_t4_11() {
     local own_e="$tmpdir/event22" own_j="$tmpdir/js2"; touch "$own_e" "$own_j"
     local oth_e="$tmpdir/event30" oth_j="$tmpdir/js4"; touch "$oth_e" "$oth_j"
     local out
-    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+    out=$(MCSS_LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
         _build_bwrap_command 2 "$own_e" "$own_j" "$oth_e" "$oth_j" 2>/dev/null)
     if grep -q -- "--bind /dev/null $oth_j" <<<"$out" && ! grep -q -- "--bind /dev/null $own_j" <<<"$out"; then
         _pass "T4.11 — other slot's node masked, own node left intact"
@@ -390,7 +390,7 @@ test_t4_12() {
     local own_e="$tmpdir/event22" own_j="$tmpdir/js2"; touch "$own_e" "$own_j"
     local oth_e="$tmpdir/event30"; touch "$oth_e"
     local out
-    out=$(LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
+    out=$(MCSS_LAUNCHER_EXEC=/fake/PolyMC.AppImage BWRAP_CMD=bwrap \
         _build_bwrap_command 2 "$own_e" "$own_j" "$oth_e" 2>"$tmpdir/err")
     local err; err=$(cat "$tmpdir/err")
     if grep -q -- "--bind /dev/null $oth_e" <<<"$out" && grep -qi 'odd controller-mask' <<<"$err"; then
