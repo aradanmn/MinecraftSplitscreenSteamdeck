@@ -608,5 +608,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "Source this file: source modules/dex.sh"
     echo "Then use: dex_search, dex_move, dex_resize, dex_move_resize, etc."
     echo ""
-    echo "For direct backend access: DEX_DISPLAY=:0 python3 /tmp/dex_backend.py <action> [args...]"
+    echo "For direct backend access: DEX_DISPLAY=:0 python3 \$XDG_RUNTIME_DIR/dex_backend_\$UID.py <action> [args...]"
 fi
