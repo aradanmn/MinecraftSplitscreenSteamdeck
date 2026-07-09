@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_controller_monitor.sh
 # =============================================================================
 
-readonly TEST_TOTAL=11
+readonly TEST_TOTAL=12
 
 # Find the repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -637,6 +637,22 @@ PROCEOF
 }
 
 # =============================================================================
+# Test T2.12 — #45 deprecation aliases mirror the MCSS-owned ids
+# =============================================================================
+test_t2_12() {
+    # CONTROLLER_MONITOR_STEAM_VENDOR/PRODUCT survive one release as aliases for
+    # external consumers; they must equal the runtime_context-owned values so a
+    # consumer on either name sees the same Deck built-in exclusion.
+    if [[ "$CONTROLLER_MONITOR_STEAM_VENDOR" == "$MCSS_STEAM_VENDOR_ID" \
+       && "$CONTROLLER_MONITOR_STEAM_PRODUCT" == "$MCSS_STEAM_PRODUCT_ID" \
+       && "$MCSS_STEAM_VENDOR_ID" == "28de" && "$MCSS_STEAM_PRODUCT_ID" == "11ff" ]]; then
+        _pass "T2.12 — deprecation aliases mirror MCSS_STEAM_VENDOR_ID/PRODUCT_ID (28de:11ff)"
+    else
+        _fail "T2.12" "alias mismatch: alias=$CONTROLLER_MONITOR_STEAM_VENDOR:$CONTROLLER_MONITOR_STEAM_PRODUCT mcss=$MCSS_STEAM_VENDOR_ID:$MCSS_STEAM_PRODUCT_ID"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== controller_monitor test suite ==="
@@ -653,6 +669,7 @@ test_t2_8
 test_t2_9
 test_t2_10
 test_t2_11
+test_t2_12
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."

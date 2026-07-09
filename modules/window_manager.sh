@@ -16,6 +16,11 @@ set -euo pipefail
 #   SPLITSCREEN_SCREEN_W, SPLITSCREEN_SCREEN_H — force screen dimensions
 # =============================================================================
 
+# #45: window-title prefix, slot count, and geom dir are owned by
+# runtime_context.sh. Sourcing it here is idempotent (process-local sentinels)
+# and makes standalone sourcing (unit tests) behave like the launcher prologue.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # --- Module-level constants ---
 readonly WINDOW_MANAGER_DEFAULT_SCREEN_W=1280
 readonly WINDOW_MANAGER_DEFAULT_SCREEN_H=800
@@ -182,7 +187,7 @@ _get_wid_from_state() {
     local wid=""
     # L3: --arg instead of string-interpolating $slot into the filter.
     [[ -f "$sf" ]] && wid=$(jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true)
-    [[ -z "$wid" ]] && wid=$(dex_search --name "SplitscreenP${slot}" 2>/dev/null || true)
+    [[ -z "$wid" ]] && wid=$(dex_search --name "${MCSS_WINDOW_TITLE_PREFIX}${slot}" 2>/dev/null || true)
     echo "$wid"
 }
 
@@ -253,7 +258,7 @@ compute_grid_mode() {
 
     local count=0 slot
     for slot in $active_slots; do
-        [[ "$slot" =~ ^[1-4]$ ]] && count=$(( count + 1 ))
+        [[ "$slot" =~ ^[1-${MCSS_MAX_PLAYERS}]$ ]] && count=$(( count + 1 ))
     done
 
     if   (( count <= 1 )); then echo "full"
@@ -345,11 +350,15 @@ apply_layout() {
     # compute_slot_geometry maps a cell index → rectangle (quad cell1=UL..cell4=LR).
     local -a active_array=($active_slots)
     local slot cell geometry x y w h wid order=0
-    local _gd="${MCSS_GEOM_DIR:-/tmp/mcss-geom}"
+    # MCSS_GEOM_DIR is path-group (set by mcss_resolve_paths, not at source
+    # time) — resolve idempotently here so standalone callers get the canonical
+    # value instead of an unbound-variable abort.
+    mcss_resolve_paths
+    local _gd="$MCSS_GEOM_DIR"
     local -a _positioned=()
 
     for slot in "${active_array[@]}"; do
-        [[ "$slot" =~ ^[1-4]$ ]] || continue
+        [[ "$slot" =~ ^[1-${MCSS_MAX_PLAYERS}]$ ]] || continue
         order=$((order+1))
         if [[ "$grid_mode" == "quad" ]]; then cell="$slot"; else cell="$order"; fi
         geometry=$(compute_slot_geometry "$cell" "$grid_mode" "$screen_w" "$screen_h")
@@ -371,7 +380,7 @@ apply_layout() {
         echo "[window_manager] Repositioning slot $slot → cell $cell ${w}x${h}+${x}+${y} ($grid_mode)" >&2
         _position_slot "$slot" "$x" "$y" "$w" "$h"
         mkdir -p "$_gd" 2>/dev/null; printf '%s' "$_sig" > "$_gf" 2>/dev/null
-        echo "[orchestrator] WINDOW SplitscreenP${slot}: ${x},${y} ${w}x${h} ($grid_mode cell $cell) [kwin frameGeometry]" >&2
+        echo "[orchestrator] WINDOW ${MCSS_WINDOW_TITLE_PREFIX}${slot}: ${x},${y} ${w}x${h} ($grid_mode cell $cell) [kwin frameGeometry]" >&2
         [[ -n "$wid" ]] && _verify_window_geometry "$slot" "$wid" "$x" "$y" "$w" "$h"
         _positioned+=("$slot:$x:$y:$w:$h")
     done
