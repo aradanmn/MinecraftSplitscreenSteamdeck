@@ -1233,6 +1233,9 @@ launchNested() {
         --xwayland \
         -- env \
             $(mcss_exec_env_string MCSS_NESTED_SESSION=kwin TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) \
+            SPLITSCREEN_STATE="$SPLITSCREEN_STATE" \
+            SPLITSCREEN_FIFO="$SPLITSCREEN_FIFO" \
+            SPLITSCREEN_DEBUG_LOG="$LOG" \
             _NESTED_X_BEFORE="$x_before" \
             bash "$self" _nestedSession
 }
