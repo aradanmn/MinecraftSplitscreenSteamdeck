@@ -150,15 +150,20 @@ out=$(env MCSS_SCREEN_W=1920 MCSS_SCREEN_H=1080 bash -c "set -euo pipefail; sour
 assert_equals "$out" "1920x1080" "T18: --refresh retains last-good dims on empty probe" || true
 
 # --- T19: exec_env_string — extras come LAST so env(1) last-wins overrides canonical ---
+# The module always exports MCSS_NESTED_SESSION (default 0) at source time, so
+# the canonical =0 is ALWAYS present here — the assertion demands strict
+# ordering (=0 before =plasma) with no lax fallback arm. Review finding on
+# PR #78: the old second arm also matched extras-emitted-FIRST, in which case
+# env(1) would resolve =0 in the child and the gamescope guard would refuse
+# inside nested Plasma while this test stayed green.
 out=$(rc_run 'mcss_exec_env_string MCSS_NESTED_SESSION=plasma')
 case "$out" in
+    *MCSS_NESTED_SESSION=plasma*MCSS_NESTED_SESSION=0*)
+        assert_equals "$out" "(plasma must come AFTER =0, not before)" "T19: extra overrides canonical by position (last-wins)" || true ;;
     *MCSS_NESTED_SESSION=0*MCSS_NESTED_SESSION=plasma*)
         assert_equals "ok" "ok" "T19: extra overrides canonical by position (last-wins)" || true ;;
-    *MCSS_NESTED_SESSION=plasma*)
-        # canonical =0 may be absent if unset in this env — extra alone is also correct
-        assert_equals "ok" "ok" "T19: extra overrides canonical by position (last-wins)" || true ;;
     *)
-        assert_equals "$out" "(should end with MCSS_NESTED_SESSION=plasma)" "T19: extra overrides canonical by position (last-wins)" || true ;;
+        assert_equals "$out" "(canonical =0 then extra =plasma expected)" "T19: extra overrides canonical by position (last-wins)" || true ;;
 esac
 
 # --- T20: exec_env_string — word-unsafe value refused, not emitted corrupted ---
