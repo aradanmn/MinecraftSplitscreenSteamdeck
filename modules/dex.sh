@@ -24,14 +24,18 @@
 #   dex_find_minecraft_windows       — stdout: "WID SLOT" for each SplitscreenP{N}
 #
 # Environment:
-#   DEX_DISPLAY — override DISPLAY (default: $DISPLAY or :0)
+#   DEX_DISPLAY — override DISPLAY (default: $MCSS_DISPLAY, then $DISPLAY, then :0)
 #   DEX_PY_SCRIPT — path to generated Python script
 #                   (default: $XDG_RUNTIME_DIR/dex_$$.py, falling back to /tmp/dex_$$.py)
 # =============================================================================
 
 set -euo pipefail
 
-DEX_DISPLAY="${DEX_DISPLAY:-${DISPLAY:-:0}}"
+# #45: NO source-time DISPLAY capture (latent bug: dex sources before the
+# nested Xwayland exists, freezing :0/stale DISPLAY into every later call).
+# Resolution happens at call time in _dex_run: explicit DEX_DISPLAY override,
+# else MCSS_DISPLAY (set by mcss_set_display once the nested X socket is
+# confirmed up), else the ambient DISPLAY, else :0.
 # Prefer $XDG_RUNTIME_DIR (per-session tmpfs, auto-removed by systemd on logout) over
 # /tmp so the generated backend doesn't leak on crash — the cleanup is not EXIT-trapped
 # by design (the script must survive across many dex invocations in one shell). M7.
@@ -546,7 +550,7 @@ _dex_generate_backend
 _dex_run() {
     # #19: the per-UID backend is shared; another run's cleanup may have removed it.
     [[ -f "$DEX_PY_SCRIPT" ]] || _dex_generate_backend
-    DEX_DISPLAY="$DEX_DISPLAY" python3 "$DEX_PY_SCRIPT" "$@"
+    DEX_DISPLAY="${DEX_DISPLAY:-${MCSS_DISPLAY:-${DISPLAY:-:0}}}" python3 "$DEX_PY_SCRIPT" "$@"
 }
 
 # ============================================================
@@ -608,5 +612,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "Source this file: source modules/dex.sh"
     echo "Then use: dex_search, dex_move, dex_resize, dex_move_resize, etc."
     echo ""
-    echo "For direct backend access: DEX_DISPLAY=:0 python3 /tmp/dex_backend.py <action> [args...]"
+    echo "For direct backend access: DEX_DISPLAY=:0 python3 \$XDG_RUNTIME_DIR/dex_backend_\$UID.py <action> [args...]"
 fi

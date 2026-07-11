@@ -134,8 +134,17 @@ mcss_require_gamescope() {
 # members of the pair defined (review finding: the vendor/product pair
 # previously shared one guard, so presetting one left the other unbound).
 if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
-    # Slot count; N_SLOTS honored as the legacy override name.
+    # Slot count; N_SLOTS honored as the legacy override name. Clamped to 1..4:
+    # the 4-slot ceiling is STRUCTURAL (state-file schema, compute_geometry's
+    # layout arms, installer-created latestUpdate-1..4 instances) — an
+    # unclamped N_SLOTS=5 previously only sized the static test, but now feeds
+    # _find_free_slot and would spawn-error-loop on a nonexistent slot 5
+    # (review finding on PR #78).
     export MCSS_MAX_PLAYERS="${N_SLOTS:-${MCSS_MAX_PLAYERS:-4}}"
+    if ! [[ "$MCSS_MAX_PLAYERS" =~ ^[1-4]$ ]]; then
+        echo "[runtime_context] WARNING: MCSS_MAX_PLAYERS='$MCSS_MAX_PLAYERS' outside the structural 1-4 range — clamping to 4" >&2
+        MCSS_MAX_PLAYERS=4
+    fi
     # PolyMC instance dir prefix → latestUpdate-1..N. Also appears in
     # pgrep/pkill process-match patterns — the highest-blast-radius copy.
     export MCSS_INSTANCE_PREFIX="${MCSS_INSTANCE_PREFIX:-latestUpdate-}"
@@ -247,10 +256,18 @@ mcss_resolve_paths() {
 
     # Generated-helper directory: replaces world-writable /tmp drops (the kwin
     # wrapper shim is injected into PATH and KWin EXECUTES the generated .js —
-    # security items N6/N7). 0700 like XDG_RUNTIME_DIR itself.
+    # security items N6/N7). 0700 like XDG_RUNTIME_DIR itself. If the dir can't
+    # be created/written (no /run/user/$UID: containers, root/cron, bare CI),
+    # fall back to /tmp — that restores the old guaranteed-writable invariant
+    # (mktemp in kwin_positioner must not hard-fail positioning; review finding
+    # on PR #78), trading the 0700 hardening only in already-degraded envs.
     export MCSS_HELPER_DIR="${MCSS_HELPER_DIR:-$MCSS_RUNTIME_DIR/mcss}"
     mkdir -p "$MCSS_HELPER_DIR" 2>/dev/null || true
     chmod 700 "$MCSS_HELPER_DIR" 2>/dev/null || true
+    if [[ ! -d "$MCSS_HELPER_DIR" || ! -w "$MCSS_HELPER_DIR" ]]; then
+        echo "[runtime_context] WARNING: helper dir '$MCSS_HELPER_DIR' not writable — falling back to /tmp (N6/N7 hardening degraded)" >&2
+        export MCSS_HELPER_DIR="/tmp"
+    fi
     export MCSS_KWIN_WRAPPER_PATH="${MCSS_KWIN_WRAPPER_PATH:-$MCSS_HELPER_DIR/kwin_wayland_wrapper}"
     export MCSS_SESSION_ENV_BAK="${MCSS_SESSION_ENV_BAK:-$MCSS_HELPER_DIR/session-env.bak}"
 
@@ -306,19 +323,44 @@ mcss_resolve_screen() {
 
     local _w="" _h=""
 
-    # 1. Explicit override (legacy names kept as the override inputs).
+    # 1. Explicit override (legacy names kept as the override inputs). Values
+    #    must be pure digits: they feed $((W/2)) arithmetic under leaked set -e,
+    #    where SPLITSCREEN_SCREEN_W=1920px would abort the whole session — the
+    #    old per-site probes validated this; the resolver must too (review
+    #    finding on PR #78). A malformed override is ignored loudly and the
+    #    cascade/fallback proceeds, matching the old degrade-don't-die behavior.
     if [[ -n "${SPLITSCREEN_SCREEN_W:-}" && -n "${SPLITSCREEN_SCREEN_H:-}" ]]; then
-        _w="$SPLITSCREEN_SCREEN_W"; _h="$SPLITSCREEN_SCREEN_H"
-    elif [[ "$_no_probe" != "1" ]]; then
-        # 2. Probe cascade (same order as window_manager's historical one).
-        local _out _line
-        if command -v wlr-randr >/dev/null 2>&1; then
-            _out=$(wlr-randr 2>/dev/null || true)
-            _line=$(echo "$_out" | grep -m1 '(current)' || true)
-            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
+        if [[ "$SPLITSCREEN_SCREEN_W" =~ ^[0-9]+$ && "$SPLITSCREEN_SCREEN_H" =~ ^[0-9]+$ ]]; then
+            _w="$SPLITSCREEN_SCREEN_W"; _h="$SPLITSCREEN_SCREEN_H"
+        else
+            echo "[runtime_context] WARNING: ignoring non-numeric SPLITSCREEN_SCREEN_W/H override ('$SPLITSCREEN_SCREEN_W'x'$SPLITSCREEN_SCREEN_H')" >&2
         fi
-        if [[ -z "$_w" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
-            _out=$(kscreen-doctor -o 2>/dev/null || true)
+    fi
+    if [[ -z "$_w" && "$_no_probe" != "1" ]]; then
+        # 2. Probe cascade — X11 CLIENTS ONLY. wlr-randr is deliberately ABSENT
+        #    (it led window_manager's old cascade): it is a throwaway Wayland
+        #    client, and gamescope kills the launcher when one connects and
+        #    disconnects (documented in GAMESCOPE-WINDOWING.md; the reason
+        #    --no-probe exists). The old gamescope-side probe sites silently
+        #    enforced 'X11-only' by being xdpyinfo one-liners — this resolver
+        #    must enforce it explicitly, for every context it can run in
+        #    (review finding on PR #78: latent only because the Deck doesn't
+        #    ship wlr-randr). kscreen-doctor is D-Bus (not a Wayland client),
+        #    but with no KWin session it BLOCKS forever waiting for the
+        #    org.kde.KScreen service instead of erroring (hung a Game Mode
+        #    launch, 2026-07-10). Two guards: it is only tried at all inside
+        #    a KDE session (host Plasma, or our nested plasma/kwin — the only
+        #    places a KWin answers AND the only places its per-output fidelity
+        #    beats xrandr's merged XWayland screen), and every probe runs
+        #    under timeout(1) so a hang falls through like a failure. The
+        #    binary existing is NOT a session signal — SteamOS ships Plasma,
+        #    so Game Mode has kscreen-doctor on PATH with nothing listening.
+        local _out _line _kde_session=0
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || -n "${KDE_FULL_SESSION:-}" || "${MCSS_NESTED_SESSION:-0}" != "0" ]]; then
+            _kde_session=1
+        fi
+        if [[ -z "$_w" && "$_kde_session" == "1" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
+            _out=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
             # Prefer the first EXTERNAL enabled output. The eDP filter must run
             # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
             # the internal panel when it is listed first, and grep -v then drops
@@ -329,12 +371,12 @@ mcss_resolve_screen() {
             [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
         if [[ -z "$_w" ]] && command -v xrandr >/dev/null 2>&1; then
-            _out=$(xrandr 2>/dev/null || true)
+            _out=$(timeout 3 xrandr 2>/dev/null || true)
             _line=$(echo "$_out" | grep -m1 '\*' || true)
             [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
         if [[ -z "$_w" ]] && command -v xdpyinfo >/dev/null 2>&1; then
-            _out=$(xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
+            _out=$(timeout 3 xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
             [[ "$_out" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
     fi
@@ -401,17 +443,33 @@ mcss_exec_env_string() {
         SPLITSCREEN_TEST_OBSERVE_DELAY_S
         TEST_NUMBER
     )
-    local _parts=() _var
+    # Emission is RAW NAME=VALUE, not shell-quoted: the consumers (.desktop
+    # Exec= parsing, env(1) argv after $()-word-splitting) do NOT shell-unquote,
+    # so %q output would arrive literally (an empty value would become two
+    # literal apostrophes). Values therefore must be word-safe; anything with
+    # whitespace/quotes is REFUSED loudly rather than emitted corrupted —
+    # callers pass such values as their own quoted env args outside the
+    # substitution (e.g. _NESTED_X_BEFORE="$x_before").
+    local _parts=() _var _val
+    _mcss_emit_env() {
+        # $1=name $2=value → appends to _parts, or warns+skips if word-unsafe
+        if [[ "$2" == *[[:space:]\'\"\\]* ]]; then
+            echo "[runtime_context] WARNING: mcss_exec_env_string refused $1 (value not word-safe: '$2') — pass it as a quoted env arg at the call site" >&2
+            return 1
+        fi
+        _parts+=("$1=$2")
+    }
     for _var in "${_canonical[@]}"; do
         if [[ -n "${!_var:-}" ]]; then
-            _parts+=("$(printf '%s=%q' "$_var" "${!_var}")")
+            _mcss_emit_env "$_var" "${!_var}" || true
         fi
     done
-    # Extras (e.g. MCSS_NESTED_SESSION=1, _NESTED_X_BEFORE=...) override or
-    # extend; caller-specified values win by coming last on the env line.
+    # Extras (e.g. MCSS_NESTED_SESSION=plasma) override or extend; caller
+    # values win by coming last on the env line. Empty extra values emit NAME=
+    # (env sets the variable to empty, which is what a caller passing X= wants).
     local _extra
     for _extra in "$@"; do
-        _parts+=("$(printf '%s=%q' "${_extra%%=*}" "${_extra#*=}")")
+        _mcss_emit_env "${_extra%%=*}" "${_extra#*=}" || true
     done
     echo "${_parts[*]}"
 }

@@ -32,6 +32,11 @@
 #   kwin_set_noborder <pid>              -> strip title bar/border once (at spawn)
 # =============================================================================
 
+# #45: generated-script dir (MCSS_HELPER_DIR) is runtime_context-owned; sourcing
+# it here is idempotent and makes standalone sourcing (kwin-place-test) behave
+# like the launcher prologue.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # qdbus wrapper — prefer the Qt6 build (Plasma 6).
 kwin_qdbus() {
     if command -v qdbus6 >/dev/null 2>&1; then qdbus6 "$@"
@@ -106,7 +111,11 @@ kwin_place_windows() {
     # that path gets EXECUTED as KWin JS. mktemp creates the file atomically (0600),
     # closing that window; low severity on a single-user Deck but cheap to fix.
     local name jsfile
-    jsfile=$(mktemp /tmp/mcss_place_XXXXXX.js) || { echo "[kwin_positioner] ERROR: mktemp failed for placement script" >&2; return 1; }
+    # #45/N7: KWin EXECUTES this generated script — it must live in the 0700
+    # helper dir, not world-writable /tmp. Resolve idempotently: this module is
+    # exercised standalone (tests/kwin-place-test.sh) without the prologue.
+    mcss_resolve_paths
+    jsfile=$(mktemp "$MCSS_HELPER_DIR/mcss_place_XXXXXX.js") || { echo "[kwin_positioner] ERROR: mktemp failed for placement script" >&2; return 1; }
     name="$(basename "$jsfile" .js)"
 
     cat > "$jsfile" <<KWINJS
@@ -216,7 +225,8 @@ kwin_set_noborder() {
     fi
     # L5/#27: mktemp instead of a predictable name — see kwin_place_windows for why.
     local name jsfile
-    jsfile=$(mktemp /tmp/mcss_noborder_XXXXXX.js) || { echo "[kwin_positioner] ERROR: mktemp failed for noborder script" >&2; return 1; }
+    mcss_resolve_paths   # #45/N7: same rationale as kwin_place_windows
+    jsfile=$(mktemp "$MCSS_HELPER_DIR/mcss_noborder_XXXXXX.js") || { echo "[kwin_positioner] ERROR: mktemp failed for noborder script" >&2; return 1; }
     name="$(basename "$jsfile" .js)"
     cat > "$jsfile" <<KWINJS
 (function () {
