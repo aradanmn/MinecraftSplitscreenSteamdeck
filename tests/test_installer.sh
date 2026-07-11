@@ -162,9 +162,13 @@ test_t7_7() {
     local target_dir="$tmpdir/PolyMC"
     mkdir -p "$src_modules" "$target_dir"
 
-    # Provide stub runtime modules in MODULES_DIR
-    for mod in dock_detection.sh controller_monitor.sh window_manager.sh \
-                instance_lifecycle.sh watchdog.sh; do
+    # Provide stub runtime modules in MODULES_DIR — ALL of them. Stubbing a
+    # subset made the test quietly network-dependent: the unstubbed ones fell
+    # back to a live GitHub download inside install_runtime_modules (the
+    # "network quirk" that keeps this suite out of the CI gate).
+    for mod in preflight.sh runtime_context.sh dock_detection.sh \
+                controller_monitor.sh kwin_positioner.sh window_manager.sh \
+                instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
         printf '#!/bin/bash\n# stub %s\n' "$mod" > "$src_modules/$mod"
     done
 
@@ -174,6 +178,9 @@ test_t7_7() {
         MODULES_DIR="$src_modules"
         TARGET_DIR="$target_dir"
         SCRIPT_DIR="$tmpdir"
+        # Entry-provided global (D15); inert host proves the local-copy path
+        # never touches the network
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
         # Provide stubs for print_* functions
         print_progress() { :; }
         print_success() { :; }
@@ -186,8 +193,9 @@ test_t7_7() {
     )
 
     local all_ok=1
-    for mod in dock_detection.sh controller_monitor.sh window_manager.sh \
-                instance_lifecycle.sh watchdog.sh; do
+    for mod in preflight.sh runtime_context.sh dock_detection.sh \
+                controller_monitor.sh kwin_positioner.sh window_manager.sh \
+                instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
         if [[ ! -f "$target_dir/modules/$mod" ]]; then
             all_ok=0
             break
@@ -195,7 +203,7 @@ test_t7_7() {
     done
 
     if (( all_ok == 1 )); then
-        _pass "T7.7 — install_runtime_modules() deploys all 5 modules to TARGET_DIR/modules/"
+        _pass "T7.7 — install_runtime_modules() deploys all 10 modules to TARGET_DIR/modules/"
     else
         _fail "T7.7" "one or more runtime modules not found in $target_dir/modules/"
     fi
