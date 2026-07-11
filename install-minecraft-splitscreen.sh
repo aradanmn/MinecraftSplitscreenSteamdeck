@@ -84,6 +84,13 @@ export REPO_REF="${REPO_REF:-main}"
 # Exported so sourced modules and child processes use the same ref.
 export MCSS_REPO_RAW_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}"
 
+# Mod-platform API bases (#45 PR 3): one home per service instead of retyped
+# hosts at every query site. mod_management.sh's sites migrate onto these in
+# the BYOK branch (wip/curseforge-byok), which rewrites that code anyway.
+export MODRINTH_API_BASE="${MODRINTH_API_BASE:-https://api.modrinth.com/v2}"
+export CURSEFORGE_API_BASE="${CURSEFORGE_API_BASE:-https://api.curseforge.com/v1}"
+export FABRIC_META_BASE="${FABRIC_META_BASE:-https://meta.fabricmc.net/v2}"
+
 # GitHub repository information (modify these URLs to match your actual repository)
 readonly REPO_BASE_URL="${MCSS_REPO_RAW_URL}/modules"
 

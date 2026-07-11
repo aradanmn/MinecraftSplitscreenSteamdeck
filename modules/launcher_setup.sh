@@ -59,6 +59,10 @@ configure_polymc_defaults() {
     fi
 
     local java_cfg_path="${JAVA_PATH:-java}"
+    # Heap policy home: modules/instance_creation.sh (MCSS_MAX/MIN_MEM_MB —
+    # 4×3072 MiB fits a 16 GB Deck; the 4096 previously hardcoded here was the
+    # exact drift the per-instance writer fixed). Sourced alongside this
+    # module by the installer entry, so the pair is set before any call.
     cat > "$cfg_path" <<EOF
 [General]
 ApplicationTheme=system
@@ -67,8 +71,8 @@ IconTheme=pe_colored
 JavaPath=${java_cfg_path}
 Language=en_US
 LastHostname=${current_hostname}
-MaxMemAlloc=4096
-MinMemAlloc=512
+MaxMemAlloc=${MCSS_MAX_MEM_MB}
+MinMemAlloc=${MCSS_MIN_MEM_MB}
 ToolbarsLocked=false
 EOF
 

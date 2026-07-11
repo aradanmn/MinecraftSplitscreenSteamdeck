@@ -328,7 +328,7 @@ EOF
             local temp_resolve_file=$(mktemp)
             
             # Fetch all versions for this dependency
-            local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
+            local versions_url="${MODRINTH_API_BASE}/project/$mod_id/version"
             
             if command -v curl >/dev/null 2>&1; then
                 print_debug "Trying curl for $mod_name"
