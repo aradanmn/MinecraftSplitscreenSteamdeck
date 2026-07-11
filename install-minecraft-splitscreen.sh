@@ -251,6 +251,17 @@ source "$MODULES_DIR/main_workflow.sh"
 # Script configuration paths
 readonly TARGET_DIR="$HOME/.local/share/PolyMC"
 
+# --- Installer-side constants (PAIRED with modules/runtime_context.sh) -------
+# The installer runs as a SEPARATE PROCESS from the launcher (often via
+# curl|bash with no checkout), so it cannot source runtime_context.sh. These
+# are the INSTALL-TIME home of constants whose PLAY-TIME home is
+# runtime_context.sh — when changing one, grep the same MCSS_ name there and
+# change both (#45 PR 3 / PLAN Part 4 "two homes, documented pairing").
+readonly MCSS_MAX_PLAYERS=4                    # pairs runtime_context.sh:MCSS_MAX_PLAYERS
+readonly MCSS_INSTANCE_PREFIX="latestUpdate-"  # pairs runtime_context.sh:MCSS_INSTANCE_PREFIX
+readonly MCSS_ACCOUNT_PREFIX="P"               # pairs runtime_context.sh:MCSS_ACCOUNT_PREFIX
+export MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX
+
 # Runtime variables (set during execution)
 JAVA_PATH=""
 MC_VERSION=""

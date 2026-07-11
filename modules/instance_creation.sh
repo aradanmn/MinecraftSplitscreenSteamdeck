@@ -53,8 +53,8 @@ create_instances() {
     local existing_instances=0
     local instances_dir="$TARGET_DIR/instances"
     
-    for i in {1..4}; do
-        local instance_name="latestUpdate-$i"
+    for i in $(seq 1 "$MCSS_MAX_PLAYERS"); do
+        local instance_name="${MCSS_INSTANCE_PREFIX}$i"
         if [[ -d "$TARGET_DIR/instances/$instance_name" ]]; then
             existing_instances=$((existing_instances + 1))
         fi
@@ -69,19 +69,20 @@ create_instances() {
         print_info "🆕 FRESH INSTALL: Creating new splitscreen instances"
     fi
     
-    print_progress "Creating 4 splitscreen instances..."
-    
-    # Create exactly 4 instances: latestUpdate-1, latestUpdate-2, latestUpdate-3, latestUpdate-4
-    # This naming convention is expected by the splitscreen launcher script
-    
+    print_progress "Creating $MCSS_MAX_PLAYERS splitscreen instances..."
+
+    # Create exactly MCSS_MAX_PLAYERS instances named ${MCSS_INSTANCE_PREFIX}1..N —
+    # the naming convention the splitscreen launcher expects (paired constants:
+    # installer entry ↔ runtime_context.sh).
+
     # Disable strict error handling for instance creation to prevent early exit
     print_debug "Starting instance creation with improved error handling"
     set +e  # Disable exit on error for this section
-    
-    for i in {1..4}; do
-        local instance_name="latestUpdate-$i"
+
+    for i in $(seq 1 "$MCSS_MAX_PLAYERS"); do
+        local instance_name="${MCSS_INSTANCE_PREFIX}$i"
         local preserve_options_txt=false  # Reset for each instance
-        print_progress "Creating instance $i of 4: $instance_name"
+        print_progress "Creating instance $i of $MCSS_MAX_PLAYERS: $instance_name"
         
         # Check if this is an update scenario - look in the correct instances directory
         if [[ -d "$instances_dir/$instance_name" ]]; then
@@ -490,7 +491,7 @@ EOF
     else
         # For instances 2-4, copy mods from instance 1
         print_info "Copying mods from instance 1 to $instance_name..."
-        local instance1_mods_dir="$TARGET_DIR/instances/latestUpdate-1/.minecraft/mods"
+        local instance1_mods_dir="$TARGET_DIR/instances/${MCSS_INSTANCE_PREFIX}1/.minecraft/mods"
         if [[ -d "$instance1_mods_dir" ]]; then
             # N13: without nullglob, an EMPTY instance1_mods_dir leaves the glob
             # unexpanded (the literal string ".../mods/*"), so `cp -r` fails with
