@@ -13,7 +13,7 @@ get_lwjgl_version() {
     print_progress "Detecting LWJGL version for Minecraft $MC_VERSION..."
     
     # First try to get LWJGL version from Fabric Meta API
-    local fabric_game_url="https://meta.fabricmc.net/v2/versions/game"
+    local fabric_game_url="${FABRIC_META_BASE}/versions/game"
     local temp_file="/tmp/fabric_versions_$$.json"
     
     if command -v wget >/dev/null 2>&1; then
