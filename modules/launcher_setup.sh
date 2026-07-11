@@ -142,18 +142,40 @@ install_runtime_modules() {
     mkdir -p "$dest_dir"
 
     local base_url="${MCSS_REPO_RAW_URL}/modules"
-    local runtime_mods=(
-        "preflight.sh"
-        "runtime_context.sh"
-        "dock_detection.sh"
-        "controller_monitor.sh"
-        "kwin_positioner.sh"
-        "window_manager.sh"
-        "instance_lifecycle.sh"
-        "watchdog.sh"
-        "orchestrator.sh"
-        "dex.sh"
-    )
+
+    # #49: the module list comes from the ONE manifest (runtime_modules.list) —
+    # preferred from MODULES_DIR (the installer entry put it there), then the
+    # local repo checkout, then GitHub. Missing/empty is FATAL: silently
+    # deploying zero modules would brick the launcher.
+    local manifest="runtime_modules.list"
+    local manifest_src=""
+    if [[ -n "${MODULES_DIR:-}" && -s "$MODULES_DIR/$manifest" ]]; then
+        manifest_src="$MODULES_DIR/$manifest"
+    elif [[ -n "${SCRIPT_DIR:-}" && -s "$SCRIPT_DIR/modules/$manifest" ]]; then
+        manifest_src="$SCRIPT_DIR/modules/$manifest"
+    else
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$base_url/$manifest" -o "$dest_dir/$manifest" 2>/dev/null || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO "$dest_dir/$manifest" "$base_url/$manifest" 2>/dev/null || true
+        fi
+        [[ -s "$dest_dir/$manifest" ]] && manifest_src="$dest_dir/$manifest"
+    fi
+    if [[ -z "$manifest_src" ]]; then
+        print_error "$manifest not found (MODULES_DIR, repo checkout, or download) — cannot install runtime modules"
+        return 1
+    fi
+    local runtime_mods=()
+    mapfile -t runtime_mods < <(grep -vE '^[[:space:]]*(#|$)' "$manifest_src")
+    if [[ ${#runtime_mods[@]} -eq 0 ]]; then
+        print_error "$manifest is empty — refusing to deploy a launcher with no runtime modules"
+        return 1
+    fi
+    # Deploy the manifest itself alongside the modules: the launcher reads it
+    # at startup to know what to source.
+    if [[ "$manifest_src" != "$dest_dir/$manifest" ]]; then
+        cp "$manifest_src" "$dest_dir/$manifest"
+    fi
 
     local failed=0
     for mod in "${runtime_mods[@]}"; do

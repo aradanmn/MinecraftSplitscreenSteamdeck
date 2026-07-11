@@ -63,12 +63,22 @@ fi
 source "$SCRIPT_DIR/modules/runtime_context.sh"
 mcss_resolve_environment
 mcss_resolve_paths
-for _mod in preflight.sh dock_detection.sh controller_monitor.sh kwin_positioner.sh window_manager.sh instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+# #49: the module list is the ONE manifest deployed alongside the modules
+# (installer and deploy.sh both ship it). runtime_context.sh is skipped in the
+# loop — it was sourced explicitly above, before its resolvers ran.
+_MOD_MANIFEST="$SCRIPT_DIR/modules/runtime_modules.list"
+if [[ ! -f "$_MOD_MANIFEST" ]]; then
+    echo "FATAL: $_MOD_MANIFEST missing — broken deploy (run deploy.sh or the installer)" | tee -a "$LOG" >&2
+    exit 1
+fi
+while IFS= read -r _mod; do
+    [[ "$_mod" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$_mod" == "runtime_context.sh" ]] && continue
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
     fi
-done
+done < "$_MOD_MANIFEST"
 
 TEST_ACTIVE_S="${TEST_ACTIVE_S:-600}"
 LOAD_TIMEOUT_S="${LOAD_TIMEOUT_S:-180}"

@@ -1,0 +1,19 @@
+# Runtime orchestrator modules — deployed to TARGET_DIR/modules/ and sourced by
+# minecraftSplitscreen.sh at launch, in THIS order (#49: the ONE manifest).
+# Readers:
+#   minecraftSplitscreen.sh          — sources these at launch (runtime_context.sh
+#                                      explicitly first, the rest in file order)
+#   install-minecraft-splitscreen.sh — download + presence-check list
+#   modules/launcher_setup.sh        — install_runtime_modules() deploy list
+#   deploy.sh                        — dev deploy / freshness-check list
+# One filename per line; blank lines and #-comments are ignored.
+preflight.sh
+runtime_context.sh
+dock_detection.sh
+controller_monitor.sh
+kwin_positioner.sh
+window_manager.sh
+instance_lifecycle.sh
+watchdog.sh
+orchestrator.sh
+dex.sh
