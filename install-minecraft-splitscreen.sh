@@ -78,8 +78,14 @@ MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 # Exported so every sourced module's download URL uses the same ref.
 export REPO_REF="${REPO_REF:-main}"
 
+# Single home for the repo's raw-content URL (D15/#45 PR 3): every file the
+# installer chain fetches (modules, launcher, accounts.json, add-to-steam.py)
+# builds its URL from this instead of retyping the host/repo/ref triple.
+# Exported so sourced modules and child processes use the same ref.
+export MCSS_REPO_RAW_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}"
+
 # GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}/modules"
+readonly REPO_BASE_URL="${MCSS_REPO_RAW_URL}/modules"
 
 # Installer modules — sourced during installation to run the setup workflow.
 readonly INSTALLER_MODULE_FILES=(
