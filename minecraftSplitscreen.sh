@@ -191,13 +191,13 @@ launchSlot() {
         --setenv APPIMAGE_EXTRACT_AND_RUN 1
         --setenv XDG_RUNTIME_DIR "$slot_runtime"
         --setenv QT_QPA_PLATFORM xcb
-        --setenv DISPLAY "${DISPLAY:-:2}"
+        --setenv DISPLAY "${MCSS_DISPLAY:-${DISPLAY:-:2}}"
         # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
         # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
         # leaving every instance silent. Point PULSE_SERVER at the real host socket
         # by absolute path so each instance gets audio. The socket is already inside
         # the sandbox via --dev-bind / /.
-        --setenv PULSE_SERVER "unix:/run/user/$(id -u)/pulse/native"
+        --setenv PULSE_SERVER "$MCSS_PULSE_SERVER"
     )
     [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
     [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
@@ -339,7 +339,9 @@ quitAllSlots() {
 # sddm relaunches forever → both displays stay black.
 # We snapshot the gamescope value BEFORE going nested and restore it on the way out.
 # ─────────────────────────────────────────────────────────────────────────────
-_SESSION_ENV_BAK="/tmp/splitscreen-session-env.bak"
+# #45/N7: env-snapshot moves out of world-writable /tmp (it is re-sourced into
+# the session on restore). Path resolved by the prologue's mcss_resolve_paths.
+_SESSION_ENV_BAK="$MCSS_SESSION_ENV_BAK"
 
 _snapshot_session_env() {
     : > "$_SESSION_ENV_BAK" 2>/dev/null || true
@@ -381,30 +383,33 @@ nestedPlasma() {
     echo "[nestedPlasma] start" >> "$LOG"
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[nestedPlasma] W=$W H=$H" >> "$LOG"
 
     kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
 
     # KWin wrapper with correct resolution
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     # Autostart re-invokes this script once KDE session is running
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
-    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+    mkdir -p "$MCSS_AUTOSTART_DIR"
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH}
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -448,10 +453,11 @@ runStaticTest() {
     done
 
     # ── Screen size
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     logMsg 0 INFO "screen: ${W}x${H}"
 
     # ── Detect controller pairs
@@ -544,7 +550,7 @@ runStaticTest() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchWindowTest() {
     echo "[launchWindowTest] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
     pkill plasmashell 2>/dev/null || true
     sleep 0.5
 
@@ -566,30 +572,33 @@ testPlasma() {
     echo "[testPlasma] start" >> "$LOG"
     unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[testPlasma] W=$W H=$H" >> "$LOG"
 
     # KWin wrapper with correct resolution
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     # Autostart calls launchTestFromPlasma
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
+    mkdir -p "$MCSS_AUTOSTART_DIR"
     # Propagate the chosen test number + observation delay into the nested session
     # (the autostart re-invocation is a fresh process — env does not carry over).
-    cat > ~/.config/autostart/splitscreen-test.desktop <<DEOF
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen Test
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15} ${SCRIPT_PATH} testFromPlasma
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) ${SCRIPT_PATH} testFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -715,26 +724,29 @@ launchFromPlasma() {
         systemctl --user stop 'app-MinecraftSplitscreen@*' 2>/dev/null || true
     fi
 
-    local RES W H
-    RES=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}') || true
-    [[ -z "$RES" ]] && RES="1280x800"
-    W="${RES%x*}"; H="${RES#*x}"
+    local W H
+    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
+    # fallback) — replaces this site's private xdpyinfo one-liner.
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
 
-    cat > /tmp/kwin_wayland_wrapper <<WEOF
+    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
+    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
 WEOF
-    chmod +x /tmp/kwin_wayland_wrapper
-    export PATH=/tmp:$PATH
+    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
+    export PATH="$MCSS_HELPER_DIR:$PATH"
 
     local SCRIPT_PATH
     SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p ~/.config/autostart
-    cat > ~/.config/autostart/splitscreen-prod.desktop <<DEOF
+    mkdir -p "$MCSS_AUTOSTART_DIR"
+    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_PROD_DESKTOP" <<DEOF
 [Desktop Entry]
 Name=Splitscreen
-Exec=env SPLITSCREEN_DEBUG_LOG=${LOG} MCSS_NESTED_SESSION=1 ${SCRIPT_PATH} prodFromPlasma
+Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH} prodFromPlasma
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
@@ -814,7 +826,7 @@ DEOF
 # ─────────────────────────────────────────────────────────────────────────────
 launchProdFromPlasma() {
     echo "[launchProdFromPlasma] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-prod.desktop ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_PROD_DESKTOP" "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
 
     # Strip the Plasma panel (black backdrop, full tiling area); respawn-killer loop.
     pkill -x plasmashell 2>/dev/null || true
@@ -838,7 +850,7 @@ launchProdFromPlasma() {
     # the test path does this in _run_phase_b_session. Without SPLITSCREEN_STATE the
     # watchdog/spawn fail ("SPLITSCREEN_STATE is not set") so nothing launches → gamescope
     # shows only the spinner. (2026-06-23)
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer (instance_lifecycle) + single path resolution
@@ -976,7 +988,7 @@ _supervise_reap_nested_session() {
 # ─────────────────────────────────────────────────────────────────────────────
 launchTestFromPlasma() {
     echo "[launchTestFromPlasma] start" >> "$LOG"
-    rm -f ~/.config/autostart/splitscreen-test.desktop 2>/dev/null || true
+    rm -f "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" 2>/dev/null || true
 
     # Strip the Plasma panel for full-screen real estate.  plasma-session can
     # respawn plasmashell, so keep a background killer running for the whole
@@ -1059,7 +1071,7 @@ _run_phase_b_session() {
         return 1
     fi
 
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer; docked is the scenario under test here.
@@ -1102,7 +1114,7 @@ _run_phase_b_session() {
 # its splitscreen.properties region.
 # ─────────────────────────────────────────────────────────────────────────────
 _run_position_sweep_session() {
-    local fifo="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
+    local fifo="$SPLITSCREEN_FIFO"
     export SPLITSCREEN_FIFO="$fifo"
     [[ -p "$fifo" ]] || mkfifo "$fifo" 2>/dev/null || true
     # #46/#50: single initializer; docked is the scenario under test here.
@@ -1110,10 +1122,9 @@ _run_position_sweep_session() {
     _ensure_state_file docked
 
     local W H
-    # #27: fall back to 1280x800 (the Deck's actual panel resolution), matching the
-    # fallback used everywhere else in this file — this one line was the odd 720 out.
-    W=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f1); [[ "$W" =~ ^[0-9]+$ ]] || W=1280
-    H=$(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' | cut -dx -f2); [[ "$H" =~ ^[0-9]+$ ]] || H=800
+    # #45/D7: canonical resolver (this site was the old odd-720-out, #27).
+    mcss_resolve_screen
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     local hw=$((W/2)) hh=$((H/2))
     # #55: default was 12 here while every other harness path used 15 — drifted.
     local delay="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
@@ -1193,11 +1204,11 @@ launchNested() {
     # Wayland clients — a throwaway probe that connects and immediately disconnects
     # makes gamescope think the game exited and it kills us before we ever exec
     # kwin (observed: trace died right after a wlr-randr connect/disconnect).  KWin
-    # must be the FIRST and ONLY client.  Use an env override, else default to the
-    # Deck's handheld panel size; gamescope scales the nested surface to its output.
+    # must be the FIRST and ONLY client.  mcss_resolve_screen --no-probe exists
+    # for exactly this path: env override or 1280x800, never a probe.
     local W H
-    W="${SPLITSCREEN_SCREEN_W:-1280}"
-    H="${SPLITSCREEN_SCREEN_H:-800}"
+    mcss_resolve_screen --no-probe
+    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[launchNested] nested resolution ${W}x${H} (override SPLITSCREEN_SCREEN_W/H to change)" >> "$LOG"
 
     # Snapshot existing X sockets so the nested session can identify which XWayland
@@ -1221,12 +1232,10 @@ launchNested() {
         --no-lockscreen --no-global-shortcuts \
         --xwayland \
         -- env \
-            SPLITSCREEN_DEBUG_LOG="$LOG" \
-            MCSS_NESTED_SESSION=1 \
-            SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" \
+            $(mcss_exec_env_string MCSS_NESTED_SESSION=kwin TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) \
             SPLITSCREEN_STATE="$SPLITSCREEN_STATE" \
-            SPLITSCREEN_TEST_OBSERVE_DELAY_S="${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}" \
-            TEST_NUMBER="${TEST_NUMBER:-all}" \
+            SPLITSCREEN_FIFO="$SPLITSCREEN_FIFO" \
+            SPLITSCREEN_DEBUG_LOG="$LOG" \
             _NESTED_X_BEFORE="$x_before" \
             bash "$self" _nestedSession
 }
@@ -1302,7 +1311,7 @@ case "${1:-}" in
         fi
         _td_cleanup() {
             [[ -n "${_PHASE_B_ORCH_PID:-}" ]] && { _kill_tree "$_PHASE_B_ORCH_PID" TERM; sleep 1; _kill_tree "$_PHASE_B_ORCH_PID" KILL; }
-            rm -f "${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}" 2>/dev/null || true
+            rm -f "$SPLITSCREEN_FIFO" 2>/dev/null || true
         }
         trap '_td_cleanup' EXIT
         _run_phase_b_session
@@ -1355,6 +1364,9 @@ case "${1:-}" in
         # inherited (stale) cookie so it can't cause a spurious rejection.
         unset XAUTHORITY
         export DISPLAY="$_ns_display" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+        # #45: single-writer for the nested X display — consumers (dex, launchSlot)
+        # read MCSS_DISPLAY at call time instead of capturing DISPLAY at source time.
+        mcss_set_display "$_ns_display"
         echo "[_nestedSession] nested display ready: $DISPLAY" >> "$LOG"
 
         # Give the nested compositor an IMMEDIATE full-screen background window.
@@ -1387,11 +1399,11 @@ r.lower(); r.mainloop()
         # main() -> docked_flow on WHATEVER display is currently active — that's exactly
         # how #42 happened (a Desktop-Mode .desktop shortcut with no LaunchOptions spawned
         # a live 4-player splitscreen outside gamescope). Only proceed if we're already
-        # confirmed inside our own nested session (MCSS_NESTED_SESSION=1, set by
+        # confirmed inside our own nested session (MCSS_NESTED_SESSION=plasma|kwin, set by
         # launchFromPlasma/testPlasma/nestedPlasma/launchNested before they re-invoke this
         # script) OR the OUTER context is gamescope itself (mcss_require_gamescope checks
         # XDG_CURRENT_DESKTOP/XDG_SESSION_DESKTOP, which is only meaningful pre-nesting).
-        if [[ "${MCSS_NESTED_SESSION:-0}" == "1" ]] || { declare -f mcss_require_gamescope >/dev/null 2>&1 && mcss_require_gamescope; }; then
+        if [[ "${MCSS_NESTED_SESSION:-0}" != "0" ]] || { declare -f mcss_require_gamescope >/dev/null 2>&1 && mcss_require_gamescope; }; then
             if declare -f main >/dev/null 2>&1; then
                 echo "[main] Phase B orchestrator available — starting main()" >> "$LOG"
                 main

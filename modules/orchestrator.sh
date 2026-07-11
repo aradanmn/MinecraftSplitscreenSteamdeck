@@ -24,8 +24,12 @@ set -euo pipefail
 #   window_manager.sh, watchdog.sh
 # =============================================================================
 
+# #45: slot count + screen dims are runtime_context-owned; sourcing it here is
+# idempotent (process-local sentinels) so standalone sourcing (unit tests)
+# behaves like the launcher prologue, which sources it first.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # ── Module-level constants ───────────────────────────────────────────────────
-readonly ORCHESTRATOR_MAX_SLOTS=4
 readonly ORCHESTRATOR_SPAWN_DELAY_S=3
 # FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
 readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
@@ -87,6 +91,11 @@ _get_mode() {
 _set_mode() {
     local mode="$1"
     local state="$SPLITSCREEN_STATE"
+    # #45: _set_mode is the SINGLE WRITER of both the exported in-shell mirror
+    # and the state-file .mode. MCSS_MODE retires ad-hoc mode inference for
+    # same-process readers (the state file stays authoritative cross-process;
+    # #62's sandbox work consumes this instead of js_node-emptiness inference).
+    export MCSS_MODE="$mode"
     # #40 (fixes a regression from the H3/L2 flock change, 2026-06-27): the flock version
     # below hard `exit 1`s (inside a `set -e` subshell) whenever the state file is missing
     # or unparseable — e.g. main() invoked without going through launchProdFromPlasma's
@@ -102,7 +111,15 @@ _set_mode() {
         flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
             echo "[orchestrator] _set_mode: state file missing/invalid at $state — initializing default" >&2
-            _atomic_write "$state" '{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}'
+            _atomic_write "$state" "$(jq -n --arg mode "${MCSS_MODE:-docked}" '{
+                mode: $mode,
+                slots: {
+                    "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
+                    "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
+                }
+            }')"
         fi
         local updated
         updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || { echo "[orchestrator] WARNING: _set_mode jq failed — leaving state untouched" >&2; exit 0; }
@@ -111,11 +128,11 @@ _set_mode() {
 }
 
 # =============================================================================
-# HELPER: find the first free slot (1–ORCHESTRATOR_MAX_SLOTS)
+# HELPER: find the first free slot (1–MCSS_MAX_PLAYERS)
 # Returns slot number on stdout, empty string if all slots full
 # =============================================================================
 _find_free_slot() {
-    for slot in $(seq 1 "$ORCHESTRATOR_MAX_SLOTS"); do
+    for slot in $(seq 1 "$MCSS_MAX_PLAYERS"); do
         if ! slot_is_active "$slot" 2>/dev/null; then
             echo "$slot"
             return 0
@@ -281,7 +298,7 @@ _handle_msg() {
             local slot
             slot=$(_find_free_slot)
             if [[ -z "$slot" ]]; then
-                echo "[orchestrator] All $ORCHESTRATOR_MAX_SLOTS slots full — ignoring controller add" >&2
+                echo "[orchestrator] All $MCSS_MAX_PLAYERS slots full — ignoring controller add" >&2
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_ADD → slot $slot (spawning instance)" >&2
@@ -430,6 +447,10 @@ _handle_msg() {
         DISPLAY_MODE_CHANGE)
             local new_mode="$msg_arg"
             echo "[orchestrator] DISPLAY_MODE_CHANGE → $new_mode" >&2
+            # #45: the display just changed — re-probe dimensions so subsequent
+            # reflows tile against the NEW output. Retains last-known-good if
+            # the probes transiently fail mid-transition.
+            mcss_resolve_screen --refresh
             case "$new_mode" in
                 docked)
                     echo "[orchestrator] Switching to docked mode (external display detected)" >&2
