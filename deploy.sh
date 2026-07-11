@@ -17,10 +17,10 @@
 #                          tests/hardware/run_all.sh does this automatically.
 #   ./deploy.sh --target D use D instead of ~/.local/share/PolyMC (both modes)
 #
-# What counts as "the runtime tree" is defined by the installer, not here:
-# the entry script is minecraftSplitscreen.sh and the module list is parsed
-# at runtime from install_runtime_modules() in modules/launcher_setup.sh —
-# deliberately NOT a fourth hand-maintained copy of that manifest (issue #49).
+# What counts as "the runtime tree" is defined once for everyone (#49):
+# the entry script is minecraftSplitscreen.sh and the module list is
+# modules/runtime_modules.list — the same manifest the launcher, the installer
+# entry, and launcher_setup.sh read. The manifest deploys with the tree.
 #
 # Version stamping: the installer replaces the launcher's __MCSS_VERSION__ /
 # __MCSS_COMMIT__ / __MCSS_BUILD_DATE__ placeholders at deploy time. This
@@ -51,20 +51,19 @@ LAUNCHER_SRC="$SCRIPT_DIR/minecraftSplitscreen.sh"
 LAUNCHER_DST="$TARGET_DIR/minecraftSplitscreen.sh"
 MODULES_SRC_DIR="$SCRIPT_DIR/modules"
 MODULES_DST_DIR="$TARGET_DIR/modules"
-MANIFEST_SOURCE="$MODULES_SRC_DIR/launcher_setup.sh"
+MANIFEST_SOURCE="$MODULES_SRC_DIR/runtime_modules.list"
 
-# --- Runtime module manifest, parsed from the installer (single source of truth) ---
-# Extracts the quoted filenames inside install_runtime_modules()'s
-# `local runtime_mods=( ... )` array.
+# --- Runtime module manifest (#49: the ONE manifest, shared with the launcher,
+# the installer entry, and launcher_setup.sh — no more parsing a bash array
+# out of launcher_setup with sed) ---
 runtime_module_list() {
-    sed -n '/^[[:space:]]*local runtime_mods=($/,/^[[:space:]]*)$/p' "$MANIFEST_SOURCE" \
-        | grep -o '"[^"]*\.sh"' | tr -d '"'
+    grep -vE '^[[:space:]]*(#|$)' "$MANIFEST_SOURCE" 2>/dev/null
 }
 
 mapfile -t RUNTIME_MODS < <(runtime_module_list)
 if [[ ${#RUNTIME_MODS[@]} -eq 0 ]]; then
-    echo "deploy.sh: could not parse runtime_mods from $MANIFEST_SOURCE" >&2
-    echo "           (has install_runtime_modules()'s array changed shape?)" >&2
+    echo "deploy.sh: could not read the runtime module manifest: $MANIFEST_SOURCE" >&2
+    echo "           (missing or empty — refusing to deploy an empty tree)" >&2
     exit 2
 fi
 
@@ -93,6 +92,8 @@ files_differ() {
 
 # --- Build the work list: "src|dst|label|normalize" ---
 WORK=("$LAUNCHER_SRC|$LAUNCHER_DST|minecraftSplitscreen.sh|normalize")
+# The manifest itself deploys too — the launcher reads it at startup.
+WORK+=("$MANIFEST_SOURCE|$MODULES_DST_DIR/runtime_modules.list|modules/runtime_modules.list|")
 for mod in "${RUNTIME_MODS[@]}"; do
     WORK+=("$MODULES_SRC_DIR/$mod|$MODULES_DST_DIR/$mod|modules/$mod|")
 done

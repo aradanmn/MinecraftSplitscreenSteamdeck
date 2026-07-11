@@ -10,25 +10,36 @@ ASSUME_YES=false
 KEEP_DATA=false
 MODE_EXPLICIT=false
 
+# --- Install roots (D16/#45 PR 3) --------------------------------------------
+# The uninstaller is standalone (curl|bash-able, no checkout) so it cannot
+# source runtime_context.sh — these PAIR with the installer entry's TARGET_DIR
+# and runtime_context.sh's launcher-root probe. Every deletion below derives
+# from them; env-overridable so a relocated install can be uninstalled
+# (TARGET_DIR=/path ./uninstall-minecraft-splitscreen.sh).
+TARGET_DIR="${TARGET_DIR:-$HOME/.local/share/PolyMC}"
+PRISM_DIR="${PRISM_DIR:-$HOME/.local/share/PrismLauncher}"
+DESKTOP_BASENAME="MinecraftSplitscreen.desktop"
+
 FULL_TARGETS=(
-    "$HOME/.local/share/PolyMC"
-    "$HOME/.local/share/PrismLauncher"
-    "$HOME/Desktop/MinecraftSplitscreen.desktop"
-    "$HOME/.local/share/applications/MinecraftSplitscreen.desktop"
+    "$TARGET_DIR"
+    "$PRISM_DIR"
+    "$HOME/Desktop/$DESKTOP_BASENAME"
+    "$HOME/.local/share/applications/$DESKTOP_BASENAME"
     # Legacy JDK dir from older installers (#41 — current installs keep Java
-    # under ~/.local/share/PolyMC/java, removed with the tree above)
+    # under $TARGET_DIR/java, removed with the tree above)
     "$HOME/.local/jdk"
 )
 
 KEEP_DATA_TARGETS=(
-    "$HOME/.local/share/PolyMC/PolyMC.AppImage"
-    "$HOME/.local/share/PolyMC/minecraftSplitscreen.sh"
-    "$HOME/.local/share/PolyMC/live.check"
-    "$HOME/.local/share/PolyMC/PolyMC-*.log"
-    "$HOME/.local/share/PrismLauncher/PrismLauncher.AppImage"
-    "$HOME/.local/share/PrismLauncher/minecraftSplitscreen.sh"
-    "$HOME/Desktop/MinecraftSplitscreen.desktop"
-    "$HOME/.local/share/applications/MinecraftSplitscreen.desktop"
+    "$TARGET_DIR/PolyMC.AppImage"
+    "$TARGET_DIR/minecraftSplitscreen.sh"
+    "$TARGET_DIR/live.check"
+    "$TARGET_DIR/PolyMC-*.log"
+    "$TARGET_DIR/minecraft-splitscreen-icons"
+    "$PRISM_DIR/PrismLauncher.AppImage"
+    "$PRISM_DIR/minecraftSplitscreen.sh"
+    "$HOME/Desktop/$DESKTOP_BASENAME"
+    "$HOME/.local/share/applications/$DESKTOP_BASENAME"
 )
 
 print_header() {
@@ -58,6 +69,10 @@ Options:
   --dry-run     Show what would be removed (does not delete anything)
   --keep-data   Keep worlds/saves/accounts, remove launcher files and shortcuts
   --help        Show this help message
+
+Environment:
+  TARGET_DIR    Install root to remove (default: \$HOME/.local/share/PolyMC)
+  PRISM_DIR     PrismLauncher root (default: \$HOME/.local/share/PrismLauncher)
 EOF
 }
 
@@ -115,7 +130,7 @@ fi
 echo ""
 
 if [[ "$KEEP_DATA" == true ]]; then
-    print_info "Data under ~/.local/share/PolyMC/instances and ~/.local/share/PolyMC/accounts.json will be preserved."
+    print_info "Data under $TARGET_DIR/instances and $TARGET_DIR/accounts.json will be preserved."
 else
     print_warning "This can remove your local instances, mods, and worlds in PolyMC/PrismLauncher."
 fi

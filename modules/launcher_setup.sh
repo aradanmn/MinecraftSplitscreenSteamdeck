@@ -59,6 +59,10 @@ configure_polymc_defaults() {
     fi
 
     local java_cfg_path="${JAVA_PATH:-java}"
+    # Heap policy home: modules/instance_creation.sh (MCSS_MAX/MIN_MEM_MB —
+    # 4×3072 MiB fits a 16 GB Deck; the 4096 previously hardcoded here was the
+    # exact drift the per-instance writer fixed). Sourced alongside this
+    # module by the installer entry, so the pair is set before any call.
     cat > "$cfg_path" <<EOF
 [General]
 ApplicationTheme=system
@@ -67,8 +71,8 @@ IconTheme=pe_colored
 JavaPath=${java_cfg_path}
 Language=en_US
 LastHostname=${current_hostname}
-MaxMemAlloc=4096
-MinMemAlloc=512
+MaxMemAlloc=${MCSS_MAX_MEM_MB}
+MinMemAlloc=${MCSS_MIN_MEM_MB}
 ToolbarsLocked=false
 EOF
 
@@ -83,7 +87,7 @@ setup_splitscreen_launcher_script() {
 
     local launcher_script="$TARGET_DIR/minecraftSplitscreen.sh"
     local local_script="${SCRIPT_DIR:-}/minecraftSplitscreen.sh"
-    local remote_script="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/minecraftSplitscreen.sh"
+    local remote_script="${MCSS_REPO_RAW_URL}/minecraftSplitscreen.sh"
 
     if [[ -f "$local_script" ]]; then
         cp "$local_script" "$launcher_script"
@@ -137,19 +141,41 @@ install_runtime_modules() {
     local dest_dir="$TARGET_DIR/modules"
     mkdir -p "$dest_dir"
 
-    local base_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/modules"
-    local runtime_mods=(
-        "preflight.sh"
-        "runtime_context.sh"
-        "dock_detection.sh"
-        "controller_monitor.sh"
-        "kwin_positioner.sh"
-        "window_manager.sh"
-        "instance_lifecycle.sh"
-        "watchdog.sh"
-        "orchestrator.sh"
-        "dex.sh"
-    )
+    local base_url="${MCSS_REPO_RAW_URL}/modules"
+
+    # #49: the module list comes from the ONE manifest (runtime_modules.list) —
+    # preferred from MODULES_DIR (the installer entry put it there), then the
+    # local repo checkout, then GitHub. Missing/empty is FATAL: silently
+    # deploying zero modules would brick the launcher.
+    local manifest="runtime_modules.list"
+    local manifest_src=""
+    if [[ -n "${MODULES_DIR:-}" && -s "$MODULES_DIR/$manifest" ]]; then
+        manifest_src="$MODULES_DIR/$manifest"
+    elif [[ -n "${SCRIPT_DIR:-}" && -s "$SCRIPT_DIR/modules/$manifest" ]]; then
+        manifest_src="$SCRIPT_DIR/modules/$manifest"
+    else
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$base_url/$manifest" -o "$dest_dir/$manifest" 2>/dev/null || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO "$dest_dir/$manifest" "$base_url/$manifest" 2>/dev/null || true
+        fi
+        [[ -s "$dest_dir/$manifest" ]] && manifest_src="$dest_dir/$manifest"
+    fi
+    if [[ -z "$manifest_src" ]]; then
+        print_error "$manifest not found (MODULES_DIR, repo checkout, or download) — cannot install runtime modules"
+        return 1
+    fi
+    local runtime_mods=()
+    mapfile -t runtime_mods < <(grep -vE '^[[:space:]]*(#|$)' "$manifest_src")
+    if [[ ${#runtime_mods[@]} -eq 0 ]]; then
+        print_error "$manifest is empty — refusing to deploy a launcher with no runtime modules"
+        return 1
+    fi
+    # Deploy the manifest itself alongside the modules: the launcher reads it
+    # at startup to know what to source.
+    if [[ "$manifest_src" != "$dest_dir/$manifest" ]]; then
+        cp "$manifest_src" "$dest_dir/$manifest"
+    fi
 
     local failed=0
     for mod in "${runtime_mods[@]}"; do

@@ -70,7 +70,10 @@ create_desktop_launcher() {
         # CUSTOM ICON DOWNLOAD: Get professional SteamGridDB icon for consistent branding
         # This provides the same visual identity as the Steam integration
         # SteamGridDB provides high-quality gaming artwork used by many Steam applications
-        local icon_dir="$PWD/minecraft-splitscreen-icons"
+        # Stored under TARGET_DIR (#41 home hygiene): the old $PWD dir dropped an icon
+        # folder wherever the installer happened to be run from, and the .desktop
+        # Icon= then pointed at that transient location.
+        local icon_dir="$TARGET_DIR/minecraft-splitscreen-icons"
         local icon_path="$icon_dir/minecraft-splitscreen-steamgriddb.ico"
         local icon_url="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
         
@@ -100,8 +103,8 @@ create_desktop_launcher() {
         if [[ -f "$icon_path" ]]; then
             icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
             print_info "   → Using custom SteamGridDB icon for consistent branding"
-        elif [[ -f "$TARGET_DIR/instances/latestUpdate-1/icon.png" ]]; then
-            icon_desktop="$TARGET_DIR/instances/latestUpdate-1/icon.png"  # Acceptable: PolyMC instance icon
+        elif [[ -f "$TARGET_DIR/instances/${MCSS_INSTANCE_PREFIX}1/icon.png" ]]; then
+            icon_desktop="$TARGET_DIR/instances/${MCSS_INSTANCE_PREFIX}1/icon.png"  # Acceptable: PolyMC instance icon
             print_info "   → Using PolyMC instance icon"
         else
             icon_desktop="application-x-executable"  # Fallback: Generic system executable icon

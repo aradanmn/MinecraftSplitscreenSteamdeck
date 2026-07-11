@@ -78,8 +78,21 @@ MODULES_DIR="$(mktemp -d -t minecraft-modules-XXXXXX)"
 # Exported so every sourced module's download URL uses the same ref.
 export REPO_REF="${REPO_REF:-main}"
 
+# Single home for the repo's raw-content URL (D15/#45 PR 3): every file the
+# installer chain fetches (modules, launcher, accounts.json, add-to-steam.py)
+# builds its URL from this instead of retyping the host/repo/ref triple.
+# Exported so sourced modules and child processes use the same ref.
+export MCSS_REPO_RAW_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}"
+
+# Mod-platform API bases (#45 PR 3): one home per service instead of retyped
+# hosts at every query site. mod_management.sh's sites migrate onto these in
+# the BYOK branch (wip/curseforge-byok), which rewrites that code anyway.
+export MODRINTH_API_BASE="${MODRINTH_API_BASE:-https://api.modrinth.com/v2}"
+export CURSEFORGE_API_BASE="${CURSEFORGE_API_BASE:-https://api.curseforge.com/v1}"
+export FABRIC_META_BASE="${FABRIC_META_BASE:-https://meta.fabricmc.net/v2}"
+
 # GitHub repository information (modify these URLs to match your actual repository)
-readonly REPO_BASE_URL="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF}/modules"
+readonly REPO_BASE_URL="${MCSS_REPO_RAW_URL}/modules"
 
 # Installer modules — sourced during installation to run the setup workflow.
 readonly INSTALLER_MODULE_FILES=(
@@ -96,22 +109,18 @@ readonly INSTALLER_MODULE_FILES=(
 )
 
 # Runtime orchestrator modules — deployed to TARGET_DIR/modules/ so the launcher
-# can source them at play time. NOT sourced by the installer.
-readonly RUNTIME_MODULE_FILES=(
-    "preflight.sh"
-    "runtime_context.sh"
-    "dock_detection.sh"
-    "controller_monitor.sh"
-    "kwin_positioner.sh"
-    "window_manager.sh"
-    "instance_lifecycle.sh"
-    "watchdog.sh"
-    "orchestrator.sh"
-    "dex.sh"
-)
+# can source them at play time. NOT sourced by the installer. Their list lives
+# in modules/runtime_modules.list (#49: ONE manifest — also read by the
+# launcher, launcher_setup.sh and deploy.sh); RUNTIME_MODULE_FILES and
+# MODULE_FILES are populated from it below, before the download and
+# presence-check steps that consume them.
+readonly RUNTIME_MANIFEST_NAME="runtime_modules.list"
+declare -a RUNTIME_MODULE_FILES=()
 
-# Combined list used by download_modules and the presence check below.
-readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
+# read_runtime_manifest FILE — print manifest entries, ignoring comments/blanks
+read_runtime_manifest() {
+    grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null
+}
 
 # Function to download modules if they don't exist
 download_modules() {
@@ -201,8 +210,9 @@ download_modules() {
     echo "ℹ️  Modules will be automatically cleaned up when script completes"
 }
 
-# Download modules if needed
-# First check if modules exist locally, if not try to download them
+# Acquire the runtime-module MANIFEST first — the download and presence steps
+# below derive from it. A local checkout's cp brings it along; a curl|bash
+# install fetches just the manifest, then downloads everything it names.
 if [[ -d "$SCRIPT_DIR/modules" ]]; then
     if [[ "$DEBUG_MODE" == true ]]; then
         echo "📁 Found local modules directory, copying to temporary location..."
@@ -213,6 +223,29 @@ if [[ -d "$SCRIPT_DIR/modules" ]]; then
         echo "✅ Copied local modules to temporary directory"
     fi
 else
+    _manifest_url="$REPO_BASE_URL/$RUNTIME_MANIFEST_NAME"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$_manifest_url" -o "$MODULES_DIR/$RUNTIME_MANIFEST_NAME" 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$_manifest_url" -O "$MODULES_DIR/$RUNTIME_MANIFEST_NAME" 2>/dev/null || true
+    fi
+fi
+
+mapfile -t RUNTIME_MODULE_FILES < <(read_runtime_manifest "$MODULES_DIR/$RUNTIME_MANIFEST_NAME")
+if [[ ${#RUNTIME_MODULE_FILES[@]} -eq 0 ]]; then
+    echo "❌ Error: could not load the runtime module manifest ($RUNTIME_MANIFEST_NAME)"
+    echo "   Expected in the local modules/ dir or at: $REPO_BASE_URL/$RUNTIME_MANIFEST_NAME"
+    echo "   Refusing to continue: an empty manifest would install a launcher with no runtime modules (#49)."
+    exit 1
+fi
+readonly RUNTIME_MODULE_FILES
+
+# Combined list used by download_modules and the presence check below.
+readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
+
+# In download mode the modules themselves are still missing — fetch them now
+# that the manifest says what to fetch.
+if [[ ! -d "$SCRIPT_DIR/modules" ]]; then
     download_modules
 fi
 
@@ -250,6 +283,17 @@ source "$MODULES_DIR/main_workflow.sh"
 
 # Script configuration paths
 readonly TARGET_DIR="$HOME/.local/share/PolyMC"
+
+# --- Installer-side constants (PAIRED with modules/runtime_context.sh) -------
+# The installer runs as a SEPARATE PROCESS from the launcher (often via
+# curl|bash with no checkout), so it cannot source runtime_context.sh. These
+# are the INSTALL-TIME home of constants whose PLAY-TIME home is
+# runtime_context.sh — when changing one, grep the same MCSS_ name there and
+# change both (#45 PR 3 / PLAN Part 4 "two homes, documented pairing").
+readonly MCSS_MAX_PLAYERS=4                    # pairs runtime_context.sh:MCSS_MAX_PLAYERS
+readonly MCSS_INSTANCE_PREFIX="latestUpdate-"  # pairs runtime_context.sh:MCSS_INSTANCE_PREFIX
+readonly MCSS_ACCOUNT_PREFIX="P"               # pairs runtime_context.sh:MCSS_ACCOUNT_PREFIX
+export MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX
 
 # Runtime variables (set during execution)
 JAVA_PATH=""
