@@ -345,11 +345,14 @@ mcss_resolve_screen() {
         #    enforced 'X11-only' by being xdpyinfo one-liners — this resolver
         #    must enforce it explicitly, for every context it can run in
         #    (review finding on PR #78: latent only because the Deck doesn't
-        #    ship wlr-randr). kscreen-doctor is D-Bus (not a Wayland client)
-        #    and fails harmlessly where no KWin is listening.
+        #    ship wlr-randr). kscreen-doctor is D-Bus (not a Wayland client),
+        #    but with no KWin session it BLOCKS forever waiting for the
+        #    org.kde.KScreen service instead of erroring (hung a Game Mode
+        #    launch, 2026-07-10) — so every probe runs under timeout(1) and a
+        #    hang falls through the cascade like a failure.
         local _out _line
         if [[ -z "$_w" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
-            _out=$(kscreen-doctor -o 2>/dev/null || true)
+            _out=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
             # Prefer the first EXTERNAL enabled output. The eDP filter must run
             # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
             # the internal panel when it is listed first, and grep -v then drops
@@ -360,12 +363,12 @@ mcss_resolve_screen() {
             [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
         if [[ -z "$_w" ]] && command -v xrandr >/dev/null 2>&1; then
-            _out=$(xrandr 2>/dev/null || true)
+            _out=$(timeout 3 xrandr 2>/dev/null || true)
             _line=$(echo "$_out" | grep -m1 '\*' || true)
             [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
         if [[ -z "$_w" ]] && command -v xdpyinfo >/dev/null 2>&1; then
-            _out=$(xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
+            _out=$(timeout 3 xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
             [[ "$_out" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
     fi
