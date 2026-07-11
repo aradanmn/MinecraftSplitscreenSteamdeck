@@ -73,18 +73,18 @@ test_t7_1() {
 # =============================================================================
 test_t7_2() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
-    # Count .sh entries across both INSTALLER_MODULE_FILES and RUNTIME_MODULE_FILES
+    # Installer modules are still a literal array in the entry; runtime modules
+    # come from the ONE manifest (#49: modules/runtime_modules.list).
     local installer_count runtime_count
     installer_count=$(grep -A 15 'readonly INSTALLER_MODULE_FILES=' "$installer" \
         | grep -c '\.sh"' || true)
-    runtime_count=$(grep -A 15 'readonly RUNTIME_MODULE_FILES=' "$installer" \
-        | grep -c '\.sh"' || true)
+    runtime_count=$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/modules/runtime_modules.list" || true)
     local total=$(( installer_count + runtime_count ))
 
     if (( total == 20 )); then
         _pass "T7.2 — MODULE_FILES contains 20 entries (10 installer + 10 runtime)"
     else
-        _fail "T7.2" "expected 20 total entries (INSTALLER_MODULE_FILES + RUNTIME_MODULE_FILES), found ${total} (${installer_count} + ${runtime_count})"
+        _fail "T7.2" "expected 20 total entries (INSTALLER_MODULE_FILES + runtime_modules.list), found ${total} (${installer_count} + ${runtime_count})"
     fi
 }
 
@@ -92,20 +92,20 @@ test_t7_2() {
 # T7.3 — RUNTIME_MODULE_FILES contains the orchestrator modules (incl. runtime_context.sh, #43)
 # =============================================================================
 test_t7_3() {
-    local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
+    local manifest="$REPO_ROOT/modules/runtime_modules.list"
     local expected=("dock_detection.sh" "controller_monitor.sh" "window_manager.sh" "instance_lifecycle.sh" "watchdog.sh" "runtime_context.sh")
     local missing=()
 
     for mod in "${expected[@]}"; do
-        if ! grep -q "\"$mod\"" "$installer"; then
+        if ! grep -qx "$mod" "$manifest"; then
             missing+=("$mod")
         fi
     done
 
     if (( ${#missing[@]} == 0 )); then
-        _pass "T7.3 — RUNTIME_MODULE_FILES contains all expected orchestrator modules"
+        _pass "T7.3 — runtime_modules.list contains all expected orchestrator modules"
     else
-        _fail "T7.3" "missing from installer: ${missing[*]}"
+        _fail "T7.3" "missing from runtime_modules.list: ${missing[*]}"
     fi
 }
 
@@ -170,6 +170,8 @@ test_t7_7() {
                 controller_monitor.sh kwin_positioner.sh window_manager.sh \
                 instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
         printf '#!/bin/bash\n# stub %s\n' "$mod" > "$src_modules/$mod"
+        # The manifest (#49) names each stub; install_runtime_modules reads it
+        echo "$mod" >> "$src_modules/runtime_modules.list"
     done
 
     # Source only the launcher_setup module, then call install_runtime_modules
@@ -195,7 +197,8 @@ test_t7_7() {
     local all_ok=1
     for mod in preflight.sh runtime_context.sh dock_detection.sh \
                 controller_monitor.sh kwin_positioner.sh window_manager.sh \
-                instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh; do
+                instance_lifecycle.sh watchdog.sh orchestrator.sh dex.sh \
+                runtime_modules.list; do
         if [[ ! -f "$target_dir/modules/$mod" ]]; then
             all_ok=0
             break
@@ -203,7 +206,7 @@ test_t7_7() {
     done
 
     if (( all_ok == 1 )); then
-        _pass "T7.7 — install_runtime_modules() deploys all 10 modules to TARGET_DIR/modules/"
+        _pass "T7.7 — install_runtime_modules() deploys all 10 modules + manifest to TARGET_DIR/modules/"
     else
         _fail "T7.7" "one or more runtime modules not found in $target_dir/modules/"
     fi

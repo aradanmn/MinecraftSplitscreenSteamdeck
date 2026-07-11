@@ -109,22 +109,18 @@ readonly INSTALLER_MODULE_FILES=(
 )
 
 # Runtime orchestrator modules — deployed to TARGET_DIR/modules/ so the launcher
-# can source them at play time. NOT sourced by the installer.
-readonly RUNTIME_MODULE_FILES=(
-    "preflight.sh"
-    "runtime_context.sh"
-    "dock_detection.sh"
-    "controller_monitor.sh"
-    "kwin_positioner.sh"
-    "window_manager.sh"
-    "instance_lifecycle.sh"
-    "watchdog.sh"
-    "orchestrator.sh"
-    "dex.sh"
-)
+# can source them at play time. NOT sourced by the installer. Their list lives
+# in modules/runtime_modules.list (#49: ONE manifest — also read by the
+# launcher, launcher_setup.sh and deploy.sh); RUNTIME_MODULE_FILES and
+# MODULE_FILES are populated from it below, before the download and
+# presence-check steps that consume them.
+readonly RUNTIME_MANIFEST_NAME="runtime_modules.list"
+declare -a RUNTIME_MODULE_FILES=()
 
-# Combined list used by download_modules and the presence check below.
-readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
+# read_runtime_manifest FILE — print manifest entries, ignoring comments/blanks
+read_runtime_manifest() {
+    grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null
+}
 
 # Function to download modules if they don't exist
 download_modules() {
@@ -214,8 +210,9 @@ download_modules() {
     echo "ℹ️  Modules will be automatically cleaned up when script completes"
 }
 
-# Download modules if needed
-# First check if modules exist locally, if not try to download them
+# Acquire the runtime-module MANIFEST first — the download and presence steps
+# below derive from it. A local checkout's cp brings it along; a curl|bash
+# install fetches just the manifest, then downloads everything it names.
 if [[ -d "$SCRIPT_DIR/modules" ]]; then
     if [[ "$DEBUG_MODE" == true ]]; then
         echo "📁 Found local modules directory, copying to temporary location..."
@@ -226,6 +223,29 @@ if [[ -d "$SCRIPT_DIR/modules" ]]; then
         echo "✅ Copied local modules to temporary directory"
     fi
 else
+    _manifest_url="$REPO_BASE_URL/$RUNTIME_MANIFEST_NAME"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$_manifest_url" -o "$MODULES_DIR/$RUNTIME_MANIFEST_NAME" 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$_manifest_url" -O "$MODULES_DIR/$RUNTIME_MANIFEST_NAME" 2>/dev/null || true
+    fi
+fi
+
+mapfile -t RUNTIME_MODULE_FILES < <(read_runtime_manifest "$MODULES_DIR/$RUNTIME_MANIFEST_NAME")
+if [[ ${#RUNTIME_MODULE_FILES[@]} -eq 0 ]]; then
+    echo "❌ Error: could not load the runtime module manifest ($RUNTIME_MANIFEST_NAME)"
+    echo "   Expected in the local modules/ dir or at: $REPO_BASE_URL/$RUNTIME_MANIFEST_NAME"
+    echo "   Refusing to continue: an empty manifest would install a launcher with no runtime modules (#49)."
+    exit 1
+fi
+readonly RUNTIME_MODULE_FILES
+
+# Combined list used by download_modules and the presence check below.
+readonly MODULE_FILES=("${INSTALLER_MODULE_FILES[@]}" "${RUNTIME_MODULE_FILES[@]}")
+
+# In download mode the modules themselves are still missing — fetch them now
+# that the manifest says what to fetch.
+if [[ ! -d "$SCRIPT_DIR/modules" ]]; then
     download_modules
 fi
 
