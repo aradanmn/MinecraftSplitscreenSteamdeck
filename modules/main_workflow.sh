@@ -115,7 +115,7 @@ main() {
         fi
     else
         print_success "✅ Offline splitscreen accounts configured successfully"
-        print_debug "P1, P2, P3, P4 player accounts ready for offline gameplay"
+        print_debug "${MCSS_ACCOUNT_PREFIX}1-${MCSS_ACCOUNT_PREFIX}${MCSS_MAX_PLAYERS} player accounts ready for offline gameplay"
     fi
 
     # #31/G6: one-instance install smoke test — a downloaded-but-corrupt/truncated
@@ -124,15 +124,16 @@ main() {
     # here. Validate it actually parses and has at least one profile before moving on.
     if command -v jq >/dev/null 2>&1; then
         # The launcher selects an account per slot via `-a P{slot}` (minecraftSplitscreen.sh
-        # launchSlot), matching accounts.json's .accounts[].profile.name — verify all four
-        # P1-P4 profiles are actually present, not just that the file is valid JSON.
-        local _missing_profiles
-        _missing_profiles=$(jq -r '
+        # launchSlot), matching accounts.json's .accounts[].profile.name — verify every
+        # ${MCSS_ACCOUNT_PREFIX}1..N profile is actually present, not just valid JSON.
+        local _expected_profiles _missing_profiles
+        _expected_profiles=$(seq 1 "$MCSS_MAX_PLAYERS" | jq -R --arg p "$MCSS_ACCOUNT_PREFIX" '$p + .' | jq -s .)
+        _missing_profiles=$(jq -r --argjson expected "$_expected_profiles" '
             [.accounts[]?.profile.name] as $names
-            | ["P1","P2","P3","P4"] - $names | join(", ")
+            | $expected - $names | join(", ")
         ' accounts.json 2>/dev/null)
         if [[ -z "$_missing_profiles" ]] && jq -e '.accounts | length > 0' accounts.json >/dev/null 2>&1; then
-            print_debug "accounts.json smoke test passed (P1-P4 profiles present)"
+            print_debug "accounts.json smoke test passed (${MCSS_ACCOUNT_PREFIX}1-${MCSS_ACCOUNT_PREFIX}${MCSS_MAX_PLAYERS} profiles present)"
         else
             print_error "❌ accounts.json exists but failed validation (not valid JSON, or missing player profile(s): ${_missing_profiles:-all}) — splitscreen launches will fail to select a player account."
             exit 1
@@ -151,7 +152,7 @@ main() {
     # =============================================================================
     
     
-    create_instances             # Create 4 splitscreen instances using manual configuration
+    create_instances             # Create MCSS_MAX_PLAYERS splitscreen instances using manual configuration
     # The launcher + runtime modules ARE the product — if they don't land, the install has
     # FAILED; stop here instead of printing "success" downstream. (A from-main install 404s
     # here until the branch is promoted; use REPO_REF=<branch> to install from a branch.)
@@ -197,7 +198,7 @@ main() {
     
     echo "✅ Installation successful"
     echo "Launcher: PolyMC"
-    echo "Instances: 4 (latestUpdate-1 to latestUpdate-4)"
+    echo "Instances: $MCSS_MAX_PLAYERS (${MCSS_INSTANCE_PREFIX}1 to ${MCSS_INSTANCE_PREFIX}${MCSS_MAX_PLAYERS})"
     echo ""
     echo "Run: $TARGET_DIR/minecraftSplitscreen.sh"
 
