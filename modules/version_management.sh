@@ -116,7 +116,7 @@ check_mod_version_compatibility() {
     
     if [[ "$platform" == "modrinth" ]]; then
         # Check Modrinth mod for version compatibility using same logic as check_modrinth_mod
-        local api_url="https://api.modrinth.com/v2/project/$mod_id/version"
+        local api_url="${MODRINTH_API_BASE}/project/$mod_id/version"
         local tmp_body
         tmp_body=$(mktemp)
         if [[ -z "$tmp_body" ]]; then
@@ -390,7 +390,7 @@ get_fabric_version() {
     print_progress "Detecting latest Fabric loader version..."
     
     # Query Fabric Meta API for the latest loader version
-    FABRIC_VERSION=$(curl -s "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version' 2>/dev/null)
+    FABRIC_VERSION=$(curl -s "${FABRIC_META_BASE}/versions/loader" | jq -r '.[0].version' 2>/dev/null)
     
     # Fallback to known stable version if API call fails
     if [[ -z "$FABRIC_VERSION" || "$FABRIC_VERSION" == "null" ]]; then

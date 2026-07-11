@@ -11,6 +11,7 @@
 import os
 import re
 import struct
+import sys
 import zlib
 import urllib.request
 
@@ -21,6 +22,17 @@ APPNAME  = "Minecraft Splitscreen"  # Name as it will appear in Steam
 # Detect PolyMC paths for splitscreen gameplay.
 def detect_launcher():
     """Detect PolyMC launcher for splitscreen gameplay."""
+    # Explicit root wins (D16/#45 PR 3): the installer knows its TARGET_DIR and
+    # passes it via env or argv instead of relying on this probe re-deriving it.
+    #   MCSS_TARGET_DIR=/path add-to-steam.py    or    add-to-steam.py /path
+    explicit_root = os.environ.get("MCSS_TARGET_DIR") or (sys.argv[1] if len(sys.argv) > 1 else None)
+    if explicit_root:
+        explicit_script = os.path.join(explicit_root, "minecraftSplitscreen.sh")
+        if os.path.exists(explicit_script):
+            return explicit_script, explicit_root, "PolyMC"
+        print(f"❌ Error: no minecraftSplitscreen.sh under the given root: {explicit_root}")
+        exit(1)
+
     # Check repo path first (development/SSH setup)
     repo_script = f"{HOME}/MinecraftSplitscreenSteamdeck/minecraftSplitscreen.sh"
     if os.path.exists(repo_script):
