@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_runtime_context.sh
 # =============================================================================
 
-readonly TEST_TOTAL=20
+readonly TEST_TOTAL=22
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,7 +25,8 @@ RC_MODULE="$REPO_ROOT/modules/runtime_context.sh"
 unset N_SLOTS INSTANCES_DIR LAUNCHER_EXEC SPLITSCREEN_SCREEN_W SPLITSCREEN_SCREEN_H \
       CONTROLLER_MONITOR_RAW_BINDING MCSS_LAUNCHER_ROOT MCSS_INSTANCES_DIR \
       MCSS_LAUNCHER_EXEC MCSS_SCREEN_W MCSS_SCREEN_H MCSS_MAX_PLAYERS \
-      MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID MCSS_RAW_BINDING 2>/dev/null || true
+      MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID MCSS_RAW_BINDING \
+      XDG_CURRENT_DESKTOP KDE_FULL_SESSION MCSS_NESTED_SESSION 2>/dev/null || true
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -175,6 +176,25 @@ if [[ "$out" != *"has"* && "$out" == *GOOD=1* ]]; then
 else
     assert_equals "$out" "(no BAD_VAL, GOOD=1 present)" "T20: word-unsafe extra refused; safe extras still emitted" || true
 fi
+
+# --- T21/T22: kscreen-doctor gated on a KDE session ------------------------
+# SteamOS ships Plasma, so the kscreen-doctor BINARY exists even in Game Mode
+# — but with no KWin session it blocks forever on the org.kde.KScreen D-Bus
+# service (hung a Game Mode launch, 2026-07-10). The cascade must consult the
+# session, not the PATH: outside KDE the probe is skipped entirely (xrandr
+# answers); inside KDE it runs and its per-output answer wins. Stub all three
+# probes with distinct resolutions so the winner identifies the path taken.
+mkdir -p "$_scratch/kbin"
+printf '#!/bin/bash\necho "Output: 1 eDP-1 enabled 1280x800@60"\necho "Output: 2 HDMI-A-1 enabled 3840x2160@60"\n' > "$_scratch/kbin/kscreen-doctor"
+printf '#!/bin/bash\necho "   1920x1080*+  60.00"\n' > "$_scratch/kbin/xrandr"
+printf '#!/bin/bash\necho "  dimensions:    1024x768 pixels"\n' > "$_scratch/kbin/xdpyinfo"
+chmod +x "$_scratch/kbin/kscreen-doctor" "$_scratch/kbin/xrandr" "$_scratch/kbin/xdpyinfo"
+
+out=$(env PATH="$_scratch/kbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_resolve_screen; echo \${MCSS_SCREEN_W}x\${MCSS_SCREEN_H}" 2>/dev/null)
+assert_equals "$out" "1920x1080" "T21: non-KDE session skips kscreen-doctor, xrandr answers" || true
+
+out=$(env PATH="$_scratch/kbin:$PATH" XDG_CURRENT_DESKTOP=KDE bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_resolve_screen; echo \${MCSS_SCREEN_W}x\${MCSS_SCREEN_H}" 2>/dev/null)
+assert_equals "$out" "3840x2160" "T22: KDE session probes kscreen-doctor, external output wins over eDP" || true
 
 # --- Summary ---
 echo ""

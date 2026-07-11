@@ -348,10 +348,18 @@ mcss_resolve_screen() {
         #    ship wlr-randr). kscreen-doctor is D-Bus (not a Wayland client),
         #    but with no KWin session it BLOCKS forever waiting for the
         #    org.kde.KScreen service instead of erroring (hung a Game Mode
-        #    launch, 2026-07-10) — so every probe runs under timeout(1) and a
-        #    hang falls through the cascade like a failure.
-        local _out _line
-        if [[ -z "$_w" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
+        #    launch, 2026-07-10). Two guards: it is only tried at all inside
+        #    a KDE session (host Plasma, or our nested plasma/kwin — the only
+        #    places a KWin answers AND the only places its per-output fidelity
+        #    beats xrandr's merged XWayland screen), and every probe runs
+        #    under timeout(1) so a hang falls through like a failure. The
+        #    binary existing is NOT a session signal — SteamOS ships Plasma,
+        #    so Game Mode has kscreen-doctor on PATH with nothing listening.
+        local _out _line _kde_session=0
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || -n "${KDE_FULL_SESSION:-}" || "${MCSS_NESTED_SESSION:-0}" != "0" ]]; then
+            _kde_session=1
+        fi
+        if [[ -z "$_w" && "$_kde_session" == "1" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
             _out=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
             # Prefer the first EXTERNAL enabled output. The eDP filter must run
             # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
