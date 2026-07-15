@@ -299,6 +299,115 @@ mcss_instance_dir() {
 # checked SPLITSCREEN_SCREEN_W/H only after all four probes, so a test
 # harness's forced dimensions lost to whatever the live display reported.
 #
+# --- mcss_query_displays ------------------------------------------------------
+# Normalized per-output display enumeration — THE parser for kscreen-doctor /
+# wlr-randr / xrandr text (Fix #51, D17: dock_detection and this file each
+# parsed the same CLI output; a kscreen-doctor format change already bit
+# dock_detection once, via H14).
+# Callers pass their tool cascade — probe POLICY stays at the call site
+# because it is context-sensitive: wlr-randr is a throwaway Wayland client
+# that gamescope kills the launcher over (mcss_resolve_screen must never run
+# it), while dock_detection's contexts tolerate it. kscreen-doctor is gated
+# here on a KDE session (with no KWin it BLOCKS forever waiting for the
+# org.kde.KScreen service — see mcss_resolve_screen's cascade notes) and
+# every tool runs under timeout(1).
+# Inputs:
+#   $@ — tools to try in order, any of: kscreen-doctor, wlr-randr, xrandr
+#        (default: kscreen-doctor xrandr)
+# Outputs:
+#   stdout — one line per output from the FIRST tool that produced any:
+#            "<name> <enabled|disabled> <WxH|->"
+#            WxH is the current/first-listed mode ("-" when unknown)
+#   return — 0 always (empty stdout when no tool answered)
+mcss_query_displays() {
+    local -a _tools=("$@")
+    (( ${#_tools[@]} )) || _tools=(kscreen-doctor xrandr)
+
+    local _kde_session=0
+    if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || -n "${KDE_FULL_SESSION:-}" \
+        || "${MCSS_NESTED_SESSION:-0}" != "0" ]]; then
+        _kde_session=1
+    fi
+
+    local _tool _raw _out
+    for _tool in "${_tools[@]}"; do
+        command -v "$_tool" >/dev/null 2>&1 || continue
+        _out=""
+        case "$_tool" in
+            kscreen-doctor)
+                (( _kde_session )) || continue
+                _raw=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
+                # "Output: 1 eDP-1 enabled ... Modes: 0:1280x800@60*! ..."
+                # H14: name is field 3 ($2 is the index). enabled matched
+                # un-anchored — kscreen-doctor wraps the word in ANSI color
+                # codes ("disabled" does not contain "enabled", so this is
+                # unambiguous). WxH: first mode on the line, matching the
+                # pre-D17 mcss_resolve_screen read.
+                _out=$(echo "$_raw" | awk '
+                    /^Output:/ {
+                        st = ($0 ~ /enabled/) ? "enabled" : "disabled"
+                        res = "-"
+                        if (match($0, /[0-9]+x[0-9]+/))
+                            res = substr($0, RSTART, RLENGTH)
+                        print $3, st, res
+                    }')
+                ;;
+            wlr-randr)
+                _raw=$(timeout 3 wlr-randr 2>/dev/null || true)
+                # Per-output blocks: non-indented "NAME ..." header, then
+                # indented "Enabled: yes" and "WxH px, ... (current)" lines.
+                _out=$(echo "$_raw" | awk '
+                    function emit() { print name, st, res }
+                    /^[^ \t]/ {
+                        if (name != "") emit()
+                        name = $1; st = "disabled"; res = "-"
+                    }
+                    /^[ \t]+Enabled:[ \t]*yes/ { st = "enabled" }
+                    /\(current\)/ {
+                        if (match($0, /[0-9]+x[0-9]+/))
+                            res = substr($0, RSTART, RLENGTH)
+                    }
+                    END { if (name != "") emit() }')
+                ;;
+            xrandr)
+                _raw=$(timeout 3 xrandr --query 2>/dev/null || true)
+                # "NAME connected [primary] WxH+X+Y ..." — the geometry is
+                # present only while the output is active. " disconnected"
+                # does NOT match / connected/ (no space before "connected").
+                # Sparse XWayland output (a bare mode table, no connector
+                # lines — gamescope) falls back to the *-marked current
+                # mode as a synthetic record, the pre-D17 read.
+                _out=$(echo "$_raw" | awk '
+                    / connected/ {
+                        st = "disabled"; res = "-"
+                        if (match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/)) {
+                            st = "enabled"
+                            res = substr($0, RSTART, RLENGTH)
+                            sub(/\+.*/, "", res)
+                        }
+                        print $1, st, res; n++
+                        next
+                    }
+                    / disconnected/ { print $1, "disabled", "-"; n++; next }
+                    /\*/ && star == "" {
+                        if (match($0, /[0-9]+x[0-9]+/))
+                            star = substr($0, RSTART, RLENGTH)
+                    }
+                    END {
+                        if (n == 0 && star != "")
+                            print "screen", "enabled", star
+                    }')
+                ;;
+            *) continue ;;
+        esac
+        if [[ -n "$_out" ]]; then
+            echo "$_out"
+            return 0
+        fi
+    done
+    return 0
+}
+
 # --no-probe: skip all probes (override or 1280x800 fallback only). For the
 # launchNested path — wlr-randr is a throwaway Wayland client and gamescope
 # kills those (see GAMESCOPE-WINDOWING.md).
@@ -355,26 +464,25 @@ mcss_resolve_screen() {
         #    under timeout(1) so a hang falls through like a failure. The
         #    binary existing is NOT a session signal — SteamOS ships Plasma,
         #    so Game Mode has kscreen-doctor on PATH with nothing listening.
-        local _out _line _kde_session=0
-        if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || -n "${KDE_FULL_SESSION:-}" || "${MCSS_NESTED_SESSION:-0}" != "0" ]]; then
-            _kde_session=1
+        # Fix #51 (D17): per-output parsing lives in mcss_query_displays
+        # (which also owns the KDE-session gate + timeout for kscreen-doctor).
+        # Prefer the first EXTERNAL enabled output; fall back to the first
+        # enabled one (the eDP-before-head ordering bug from the PR #78
+        # review is structural now — the filter runs on normalized records).
+        local _name _en _res _edp_res=""
+        while read -r _name _en _res; do
+            [[ "$_en" == "enabled" && "$_res" == *x* ]] || continue
+            if [[ "$_name" == *eDP* ]]; then
+                [[ -z "$_edp_res" ]] && _edp_res="$_res"
+            else
+                _w="${_res%x*}"; _h="${_res#*x}"
+                break
+            fi
+        done < <(mcss_query_displays kscreen-doctor xrandr)
+        if [[ -z "$_w" && -n "$_edp_res" ]]; then
+            _w="${_edp_res%x*}"; _h="${_edp_res#*x}"
         fi
-        if [[ -z "$_w" && "$_kde_session" == "1" ]] && command -v kscreen-doctor >/dev/null 2>&1; then
-            _out=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
-            # Prefer the first EXTERNAL enabled output. The eDP filter must run
-            # BEFORE the head -n1 — piping `grep -m1 enabled` first keeps only
-            # the internal panel when it is listed first, and grep -v then drops
-            # it to nothing, so a docked Deck fell back to the eDP resolution
-            # (review finding; window_manager.sh:90 has the same latent bug).
-            _line=$(echo "$_out" | grep 'enabled' | grep -v 'eDP' | head -n1 || true)
-            [[ -z "$_line" ]] && _line=$(echo "$_out" | grep -m1 'enabled' || true)
-            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
-        fi
-        if [[ -z "$_w" ]] && command -v xrandr >/dev/null 2>&1; then
-            _out=$(timeout 3 xrandr 2>/dev/null || true)
-            _line=$(echo "$_out" | grep -m1 '\*' || true)
-            [[ "$_line" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
-        fi
+        local _out
         if [[ -z "$_w" ]] && command -v xdpyinfo >/dev/null 2>&1; then
             _out=$(timeout 3 xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
             [[ "$_out" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
