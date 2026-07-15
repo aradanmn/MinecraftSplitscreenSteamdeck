@@ -106,7 +106,8 @@ main() {
     # to select with `-a P{slot}`), with nothing tying that failure back to this step.
     # PolyMC reads accounts.json straight from TARGET_DIR (its own data dir) — there's
     # no later per-instance copy step to catch this, so it must be validated HERE.
-    if ! wget -O accounts.json "${MCSS_REPO_RAW_URL}/accounts.json"; then
+    # Fix #51 (D14): fetch_url replaces the bare wget call.
+    if ! fetch_url "${MCSS_REPO_RAW_URL}/accounts.json" "accounts.json"; then
         print_warning "⚠️  Failed to download accounts.json from repository"
         print_info "   → Attempting to use local copy if available..."
         if [[ ! -f "accounts.json" ]]; then

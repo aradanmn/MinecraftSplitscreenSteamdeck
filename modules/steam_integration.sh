@@ -208,8 +208,10 @@ setup_steam_integration() {
                 print_info "   → Downloading Steam integration script..."
             fi
 
+            # Fix #51 (D14): fetch_url replaces the bare curl call.
             if [[ -s "$steam_script_temp" ]] || \
-               curl -sSL "${MCSS_REPO_RAW_URL}/add-to-steam.py" -o "$steam_script_temp" 2>/dev/null; then
+               fetch_url "${MCSS_REPO_RAW_URL}/add-to-steam.py" \
+                   "$steam_script_temp" 2>/dev/null; then
                 print_info "   → Executing Steam integration script..."
                 # Execute the downloaded script with proper error handling
                 if python3 "$steam_script_temp" 2>/dev/null; then
