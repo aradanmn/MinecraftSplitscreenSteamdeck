@@ -51,8 +51,9 @@ check_modrinth_mod() {
     
     # Fetch all version data for this mod from Modrinth API
     # Make HTTP request to Modrinth API and capture both response and status code
+    # Fix #51 (D14): fetch_url_status replaces the bare curl -w call.
     local http_code
-    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+    http_code=$(fetch_url_status "$api_url" "$tmp_body")
     local version_json
     version_json=$(cat "$tmp_body")
     rm "$tmp_body"
@@ -627,8 +628,9 @@ resolve_modrinth_dependencies() {
     fi
     
     # Fetch version data from Modrinth API
+    # Fix #51 (D14): fetch_url_status replaces the bare curl -w call.
     local http_code
-    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url" 2>/dev/null)
+    http_code=$(fetch_url_status "$api_url" "$tmp_body")
     local version_json
     version_json=$(cat "$tmp_body")
     rm "$tmp_body"
@@ -782,18 +784,11 @@ resolve_modrinth_dependencies_api() {
     # Get the latest version for the Minecraft version we're using with timeout
     local versions_url="https://api.modrinth.com/v2/project/$mod_id/version"
     
-    if command -v curl >/dev/null 2>&1; then
-        if ! curl -s -m 10 "$versions_url" -o "$tmp_file" 2>/dev/null; then
-            rm -f "$tmp_file"
-            echo ""
-            return 0
-        fi
-    elif command -v wget >/dev/null 2>&1; then
-        if ! wget -q -O "$tmp_file" --timeout=10 "$versions_url" 2>/dev/null; then
-            rm -f "$tmp_file"
-            echo ""
-            return 0
-        fi
+    # Fix #51 (D14): fetch_url replaces the curl/wget branches.
+    if ! fetch_url "$versions_url" "$tmp_file" 2>/dev/null; then
+        rm -f "$tmp_file"
+        echo ""
+        return 0
     fi
     
     # Check if we got valid JSON data
@@ -984,14 +979,9 @@ fetch_and_add_external_mod() {
             
             # Download to temp file without size restrictions
             local download_success=false
-            if command -v curl >/dev/null 2>&1; then
-                if curl -s -m 15 -o "$temp_file" "$api_url" 2>/dev/null; then
-                    download_success=true
-                fi
-            elif command -v wget >/dev/null 2>&1; then
-                if wget -q -O "$temp_file" --timeout=15 "$api_url" 2>/dev/null; then
-                    download_success=true
-                fi
+            # Fix #51 (D14): fetch_url replaces the curl/wget branches.
+            if fetch_url "$api_url" "$temp_file" 2>/dev/null; then
+                download_success=true
             fi
             
             if [[ "$download_success" == true && -s "$temp_file" ]]; then
@@ -1394,11 +1384,9 @@ get_custom_mod_display_name() {
         local tmp_file
         tmp_file=$(mktemp)
         if [[ -n "$tmp_file" ]]; then
-            if command -v curl >/dev/null 2>&1; then
-                curl -s -m 12 -o "$tmp_file" "$api_url" 2>/dev/null
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q -O "$tmp_file" --timeout=12 "$api_url" 2>/dev/null
-            fi
+            # Fix #51 (D14): fetch_url replaces the curl/wget branches;
+            # success is judged by the -s check below, not exit status.
+            fetch_url "$api_url" "$tmp_file" 2>/dev/null || true
 
             if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
                 local title
@@ -1466,11 +1454,9 @@ print_supported_versions_for_custom_mod() {
             return 1
         fi
 
-        if command -v curl >/dev/null 2>&1; then
-            curl -s -m 15 -o "$tmp_file" "$api_url" 2>/dev/null
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q -O "$tmp_file" --timeout=15 "$api_url" 2>/dev/null
-        fi
+        # Fix #51 (D14): fetch_url replaces the curl/wget branches;
+        # success is judged by the -s check below, not exit status.
+        fetch_url "$api_url" "$tmp_file" 2>/dev/null || true
 
         if [[ -s "$tmp_file" ]] && command -v jq >/dev/null 2>&1; then
             local versions
@@ -1550,8 +1536,9 @@ check_modrinth_mod_strict() {
         return 1
     fi
 
+    # Fix #51 (D14): fetch_url_status replaces the bare curl -w call.
     local http_code
-    http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+    http_code=$(fetch_url_status "$api_url" "$tmp_body")
     local version_json
     version_json=$(cat "$tmp_body")
     rm -f "$tmp_body"

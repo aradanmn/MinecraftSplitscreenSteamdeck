@@ -20,8 +20,12 @@ get_supported_minecraft_versions() {
     local -a all_versions=()
     
     # Get all Minecraft versions from Mojang API
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
     local mojang_versions
-    mojang_versions=$(curl -s "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" 2>/dev/null | jq -r '.versions[] | select(.type=="release") | .id' 2>/dev/null)
+    mojang_versions=$(fetch_url \
+        "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" - \
+        2>/dev/null \
+        | jq -r '.versions[] | select(.type=="release") | .id' 2>/dev/null)
     
     if [[ -z "$mojang_versions" ]]; then
         print_error "Could not fetch Minecraft versions from Mojang API" >&2
@@ -124,8 +128,9 @@ check_mod_version_compatibility() {
         fi
         
         # Fetch version data from Modrinth API
+        # Fix #51 (D14): fetch_url_status replaces the bare curl -w call.
         local http_code
-        http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" "$api_url")
+        http_code=$(fetch_url_status "$api_url" "$tmp_body")
         local version_json
         version_json=$(cat "$tmp_body")
         rm "$tmp_body"
@@ -390,7 +395,9 @@ get_fabric_version() {
     print_progress "Detecting latest Fabric loader version..."
     
     # Query Fabric Meta API for the latest loader version
-    FABRIC_VERSION=$(curl -s "${FABRIC_META_BASE}/versions/loader" | jq -r '.[0].version' 2>/dev/null)
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
+    FABRIC_VERSION=$(fetch_url "${FABRIC_META_BASE}/versions/loader" - \
+        | jq -r '.[0].version' 2>/dev/null)
     
     # Fallback to known stable version if API call fails
     if [[ -z "$FABRIC_VERSION" || "$FABRIC_VERSION" == "null" ]]; then

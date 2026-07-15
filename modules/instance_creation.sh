@@ -291,30 +291,21 @@ install_fabric_and_mods() {
             # Fetch all versions for this dependency
             local versions_url="${MODRINTH_API_BASE}/project/$mod_id/version"
             
-            if command -v curl >/dev/null 2>&1; then
-                print_debug "Trying curl for $mod_name"
-                if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
-                    if [[ -s "$temp_resolve_file" ]]; then
-                        resolve_data=$(cat "$temp_resolve_file")
-                        print_debug "curl succeeded, got $(wc -c < "$temp_resolve_file") bytes"
-                    else
-                        print_debug "curl returned empty file"
-                    fi
+            # Fix #51 (D14): fetch_url replaces the duplicated curl/wget
+            # branches; the debug logging structure is kept.
+            print_debug "Trying fetch_url for $mod_name"
+            if fetch_url "$versions_url" "$temp_resolve_file" \
+                2>/dev/null; then
+                if [[ -s "$temp_resolve_file" ]]; then
+                    resolve_data=$(cat "$temp_resolve_file")
+                    local resolve_bytes
+                    resolve_bytes=$(wc -c < "$temp_resolve_file")
+                    print_debug "fetch_url succeeded, got $resolve_bytes bytes"
                 else
-                    print_debug "curl failed"
+                    print_debug "fetch_url returned empty file"
                 fi
-            elif command -v wget >/dev/null 2>&1; then
-                print_debug "Trying wget for $mod_name"
-                if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
-                    if [[ -s "$temp_resolve_file" ]]; then
-                        resolve_data=$(cat "$temp_resolve_file")
-                        print_debug "wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
-                    else
-                        print_debug "wget returned empty file"
-                    fi
-                else
-                    print_debug "wget failed"
-                fi
+            else
+                print_debug "fetch_url failed"
             fi
             
             if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
@@ -438,11 +429,14 @@ install_fabric_and_mods() {
         
         # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
         # N12: sanitize the WHOLE filename to [A-Za-z0-9._-] (not just spaces) so a mod
-        # title containing '/' (or other separators) can't escape mods_dir via `wget -O`.
+        # title containing '/' (or other separators) can't escape mods_dir
+        # via the fetch_url output path.
         # Identical to the old space→underscore behavior for ordinary names.
         local safe_name="${mod_name//[^A-Za-z0-9._-]/_}"
         local mod_file="$mods_dir/${safe_name}.jar"
-        if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
+        # Fix #51 (D14): fetch_url replaces bare wget; timeout 0 — mod
+        # jars are bulk artifacts and must not be cut off mid-download.
+        if fetch_url "$mod_url" "$mod_file" 0 >/dev/null 2>&1; then
             print_success "Success: $mod_name"
         else
             print_warning "Failed: $mod_name"
