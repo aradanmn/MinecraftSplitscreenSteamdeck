@@ -166,8 +166,9 @@ find_controller_pairs() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # launchSlot  slot js_dev ev_dev
-# Launches one PolyMC/PrismLauncher instance inside a bwrap controller sandbox.
-# Records the bwrap PID in SLOT_PIDS[slot].  Returns 1 if bwrap dies immediately.
+# Launches one PolyMC/PrismLauncher instance via the instance_lifecycle
+# builders (#51/D10: same sandbox as production spawn_instance).
+# Records the launch PID in SLOT_PIDS[slot]. Returns 1 if it dies immediately.
 # ─────────────────────────────────────────────────────────────────────────────
 launchSlot() {
     local slot="$1" js_dev="$2" ev_dev="$3"
@@ -180,56 +181,45 @@ launchSlot() {
         return 1
     fi
 
-    # Per-slot isolated XDG_RUNTIME_DIR so PolyMC's SingleApplication QLocalServer
-    # sockets don't find each other.  Without this, slots 2-4 detect slot 1 running,
-    # route their -l command to it, and exit — only one Minecraft actually launches.
-    # QT_QPA_PLATFORM=xcb forces PolyMC's Qt GUI to X11 so it doesn't need the
-    # Wayland socket (which lives in the now-isolated XDG_RUNTIME_DIR).
-    local slot_runtime="/tmp/polymc-runtime-slot${slot}"
-    mkdir -p "$slot_runtime"
+    # Fix #51 (D10): build through the module builders instead of a private
+    # bwrap config pinned to commit d5f060c of instance_lifecycle.sh — the
+    # module builder has since gained udev blanking, steam.pipe masking, and
+    # the per-slot SDL flags, so this static test path was validating a
+    # DIFFERENT sandbox than production. Routing rule matches
+    # spawn_instance: no js bound → direct launch (handheld semantics), js
+    # bound → bwrap sandbox (its --tmpfs /tmp replaces the old per-slot
+    # XDG_RUNTIME_DIR trick for qtsingleapp-socket de-collision).
+    local launch_cmd
+    if [[ -z "$js_dev" ]]; then
+        launch_cmd=$(_build_direct_command "$slot")
+    else
+        launch_cmd=$(_build_bwrap_command "$slot" "$ev_dev" "$js_dev")
+    fi
 
-    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
-    # --dev /dev overlays an empty devtmpfs, wiping the device nodes that
-    # --dev-bind / / provided.  Re-bind the GPU (required by Qt xcb / LWJGL),
-    # X11 socket, shared memory, and FUSE back in, matching the known-working
-    # bwrap configuration from commit d5f060c (modules/instance_lifecycle.sh).
-    [[ -d /dev/dri ]]       && bwrap_cmd+=(--dev-bind /dev/dri /dev/dri)
-    [[ -e /dev/fuse ]]      && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
-    [[ -d /dev/shm ]]       && bwrap_cmd+=(--dev-bind /dev/shm /dev/shm)
-    [[ -d /tmp/.X11-unix ]] && bwrap_cmd+=(--dev-bind /tmp/.X11-unix /tmp/.X11-unix)
-    bwrap_cmd+=(
-        --setenv APPIMAGE_EXTRACT_AND_RUN 1
-        --setenv XDG_RUNTIME_DIR "$slot_runtime"
-        --setenv QT_QPA_PLATFORM xcb
-        --setenv DISPLAY "${MCSS_DISPLAY:-${DISPLAY:-:2}}"
-        # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
-        # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
-        # leaving every instance silent. Point PULSE_SERVER at the real host socket
-        # by absolute path so each instance gets audio. The socket is already inside
-        # the sandbox via --dev-bind / /.
-        --setenv PULSE_SERVER "$MCSS_PULSE_SERVER"
-    )
-    [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
-    [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
-
+    # kde-inhibit (static-path extra; production has no equivalent) wraps
+    # OUTSIDE the sandbox — quitSlot signals the wrapper AND its children
+    # (pkill -P), so teardown still reaches bwrap/the launcher directly.
     if command -v kde-inhibit >/dev/null 2>&1; then
-        "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
+        launch_cmd="kde-inhibit --power --screenSaver --colorCorrect \
+--notifications $launch_cmd"
     else
         logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
-        "${bwrap_cmd[@]}" $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     fi
+
+    # The builders leave DISPLAY to the environment; pin the nested X display
+    # here exactly as the old inline --setenv did (#45 single-writer).
+    DISPLAY="${MCSS_DISPLAY:-${DISPLAY:-:2}}" setsid bash -c "$launch_cmd" &
 
     local pid=$!
     SLOT_PIDS[$slot]=$pid
 
     sleep 2
     if ! kill -0 "$pid" 2>/dev/null; then
-        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and MCSS_LAUNCHER_EXEC=$MCSS_LAUNCHER_EXEC"
+        logMsg "$slot" ERROR "launch PID=$pid exited immediately — check instance config and MCSS_LAUNCHER_EXEC=$MCSS_LAUNCHER_EXEC"
         return 1
     fi
 
-    logMsg "$slot" INFO "bwrap PID=$pid alive"
+    logMsg "$slot" INFO "launch PID=$pid alive"
     return 0
 }
 

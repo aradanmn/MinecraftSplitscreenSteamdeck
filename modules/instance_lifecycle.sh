@@ -195,6 +195,55 @@ _vendor_of_js_node() {
     return 0
 }
 
+# _detect_xauthority: Resolve the X authority cookie for launcher children.
+# Fix #51 (D10): factored from _build_direct_command/_build_bwrap_command —
+# the two inline copies had drifted (one verified the file exists, one only
+# checked non-empty; the stricter check survives, so a stale $XAUTHORITY
+# pointing at a deleted file no longer wins). SSH sessions don't carry the
+# cookie; the kwin_wayland cmdline names the actual file regardless of login
+# session or boot path.
+# Inputs:
+#   Globals: XAUTHORITY (read, optional)
+# Outputs:
+#   stdout — xauthority path, or empty when undetectable
+_detect_xauthority() {
+    if [[ -n "${XAUTHORITY:-}" && -e "${XAUTHORITY:-}" ]]; then
+        echo "$XAUTHORITY"
+        return 0
+    fi
+    ps -C kwin_wayland -o args= 2>/dev/null \
+        | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1
+}
+
+# _launcher_env_core: Env assignments shared by BOTH launch builders.
+# Fix #51 (D10): one home for the common core; the per-mode SDL isolation
+# vars stay with their builder.
+#   APPIMAGE_EXTRACT_AND_RUN=1: the AppImage cannot FUSE-mount inside the
+#     sandbox (no fusermount on PATH → "Cannot mount AppImage");
+#     extract-and-run sidesteps FUSE entirely.
+#   QT_QPA_PLATFORM=xcb: force the launcher's Qt GUI onto X11 — the nested
+#     KDE session exports QT_QPA_PLATFORM=wayland, which it would inherit.
+#   PULSE_SERVER: absolute path to the host socket so audio works regardless
+#     of XDG_RUNTIME_DIR.
+#   DISABLE_GAMESCOPE_WSI=1 + RADV_SYS_MEM_LIMIT=50: DRAFT 2026-06-27
+#     (research, UNTESTED) — gamescope WSI layer off (the layer keys on the
+#     var's PRESENCE; ENABLE_GAMESCOPE_WSI=0 does NOT disable it) + cap
+#     RADV's claim on the 16GB unified APU RAM. See
+#     docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
+# Inputs:
+#   $1 — name of the caller's env array (appended to via nameref)
+#   Globals: MCSS_PULSE_SERVER (read)
+_launcher_env_core() {
+    local -n _core_out="$1"
+    _core_out+=(
+        APPIMAGE_EXTRACT_AND_RUN=1
+        QT_QPA_PLATFORM=xcb
+        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+        DISABLE_GAMESCOPE_WSI=1
+        RADV_SYS_MEM_LIMIT=50
+    )
+}
+
 # _build_direct_command: HANDHELD launch — NO bwrap, full system access. Handheld is one
 # player on the Deck's built-in controls; there is NOTHING to isolate, and the sandbox
 # actively BREAKS the built-in: `--dev /dev` leaves an empty /dev/input, so the built-in's
@@ -211,31 +260,18 @@ _build_direct_command() {
     launcher_exec="$MCSS_LAUNCHER_EXEC"
 
     # Reach the nested session's XWayland the same way the sandbox path does.
-    local _xauth=""
-    if [[ -n "${XAUTHORITY:-}" && -e "${XAUTHORITY:-}" ]]; then
-        _xauth="$XAUTHORITY"
-    else
-        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
-            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
-    fi
+    local _xauth
+    _xauth=$(_detect_xauthority)
 
-    local -a _env=(
-        APPIMAGE_EXTRACT_AND_RUN=1
-        QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+    # Fix #51 (D10): shared core via _launcher_env_core.
+    local -a _env=()
+    _launcher_env_core _env
+    _env+=(
         # Full controller access — the built-in reaches the game as a Steam 28de:11ff
         # virtual, so allow Steam virtual gamepads. Deliberately NO isolation hints
         # (DISABLE_UDEV / udev tmpfs / pipe mask): we WANT normal udev + Steam discovery so
         # the built-in is actually found.
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
-        # DRAFT 2026-06-27 (research, UNTESTED): disable the gamescope Vulkan WSI layer — the
-        # GL game never uses it, and in Game Mode its abort()-on-no-dialog path is a suspected
-        # crash source. DISABLE_GAMESCOPE_WSI=1 is the correct off-switch (the layer keys on
-        # the var's PRESENCE; ENABLE_GAMESCOPE_WSI=0 does NOT disable it). RADV_SYS_MEM_LIMIT
-        # caps RADV's claim on the 16GB unified APU RAM, leaving headroom for JVM heaps.
-        # (Mainly matters for docked 4-instance; harmless for a single handheld instance.)
-        DISABLE_GAMESCOPE_WSI=1
-        RADV_SYS_MEM_LIMIT=50
     )
     [[ -n "$_xauth" ]] && _env+=("XAUTHORITY=$_xauth")
 
@@ -385,38 +421,20 @@ _build_bwrap_command() {
     #     Forces classic joystick driver path, ensuring SDL_JOYSTICK_DEVICE
     #     pinning is honoured on Linux. Required for compatibility with the
     #     older Controllable mod's bundled SDL and some gamescope builds.
-    # AppImage / Qt / audio env — must match the known-working launchSlot config.
-    #   APPIMAGE_EXTRACT_AND_RUN=1: the AppImage cannot FUSE-mount inside the
-    #     sandbox (no fusermount on PATH → "Cannot mount AppImage"); extract-and-run
-    #     sidesteps FUSE entirely. THIS is what was killing every spawn_instance.
-    #   QT_QPA_PLATFORM=xcb: force PolyMC's Qt GUI onto X11 — the nested KDE session
-    #     exports QT_QPA_PLATFORM=wayland, which PolyMC would otherwise inherit.
-    #   PULSE_SERVER: absolute path to the host socket so audio works regardless of
-    #     XDG_RUNTIME_DIR (the socket is inside the sandbox via --dev-bind / /).
-    # XAUTHORITY: bwrap inherits env but SSH sessions don't have the cookie set.
-    # Auto-detect from the kwin_wayland_wrapper --xwayland-xauthority flag, which
-    # names the actual file regardless of login session or boot path.
-    local _xauth="${XAUTHORITY:-}"
-    if [[ -z "$_xauth" ]]; then
-        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
-            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
-    fi
+    # XAUTHORITY: bwrap inherits env but SSH sessions don't have the cookie
+    # set — _detect_xauthority (D10) falls back to the kwin_wayland cmdline.
+    local _xauth
+    _xauth=$(_detect_xauthority)
 
-    local -a _env_vars=(
-        APPIMAGE_EXTRACT_AND_RUN=1
-        QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+    # Fix #51 (D10): shared core (AppImage/Qt/audio/WSI) via
+    # _launcher_env_core; the SDL isolation vars below are sandbox-specific.
+    local -a _env_vars=()
+    _launcher_env_core _env_vars
+    _env_vars+=(
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=${_allow}
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
-        # DRAFT 2026-06-27 (research, UNTESTED): gamescope WSI layer off (the GL game doesn't
-        # use it; its abort()-on-no-dialog path is a suspected 4-instance crash source —
-        # DISABLE_GAMESCOPE_WSI=1 is the correct switch, NOT ENABLE=0) + cap RADV's claim on
-        # the 16GB unified APU RAM (the 4-instance reset is JVM-heap memory pressure, not
-        # swapchain memory). See docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
-        DISABLE_GAMESCOPE_WSI=1
-        RADV_SYS_MEM_LIMIT=50
     )
     # SDL_JOYSTICK_DISABLE_UDEV=1 — THE key strict-isolation hint, but set ONLY in
     # strict/docked mode. SDL does NOT detect a plain bwrap sandbox as a container, so by
