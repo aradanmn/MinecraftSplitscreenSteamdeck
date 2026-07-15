@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # instance_lifecycle calls window_manager functions (compute_grid_mode, apply_layout, _kill_placeholder)
+# Fix #51 (D13): _vendor_of_js_node consumes controller_monitor's
+# parse_input_device_blocks — source it first, same relative order as
+# runtime_modules.list.
+source "$REPO_ROOT/modules/controller_monitor.sh"
 source "$REPO_ROOT/modules/window_manager.sh"
 source "$REPO_ROOT/modules/instance_lifecycle.sh"
 

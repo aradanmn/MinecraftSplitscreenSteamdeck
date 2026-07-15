@@ -164,38 +164,22 @@ _vendor_of_js_node() {
     want=$(basename "$js_path")            # e.g. "js1"
     [[ -z "$want" ]] && return 0
 
-    local proc_path="${PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
-    [[ -f "$proc_path" ]] || return 0
-
-    local in_block=0 vendor="" handlers="" line _h
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )); then
-                for _h in $handlers; do
-                    if [[ "$_h" == "$want" ]]; then
-                        echo "$vendor"
-                        return 0
-                    fi
-                done
-            fi
-            in_block=0; vendor=""; handlers=""
-            continue
-        fi
-        in_block=1
-        case "$line" in
-            I:*) [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] && vendor="${BASH_REMATCH[1],,}" ;;
-            H:*) handlers="${line#H: Handlers=}" ;;
-        esac
-    done < "$proc_path"
-    # Last block (file may not end with a blank line).
-    if (( in_block == 1 )); then
+    # Fix #51 (D13): block capture via controller_monitor's
+    # parse_input_device_blocks (sourced before this module per
+    # runtime_modules.list). Keying stays here: exact handler-token equality
+    # (never substring, so "js1" != "js10").
+    local vendor product name handlers sysfs phys keybits _h
+    # shellcheck disable=SC2034  # fixed-width record: only vendor+handlers used
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits; do
         for _h in $handlers; do
             if [[ "$_h" == "$want" ]]; then
                 echo "$vendor"
                 return 0
             fi
         done
-    fi
+    done < <(parse_input_device_blocks \
+        "${PROC_INPUT_DEVICES:-/proc/bus/input/devices}" 2>/dev/null || true)
     return 0
 }
 
