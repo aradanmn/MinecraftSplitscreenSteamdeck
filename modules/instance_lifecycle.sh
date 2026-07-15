@@ -24,6 +24,8 @@ set -euo pipefail
 #   get_bwrap_pid(slot)           — stdout: PID or empty
 #   get_java_pid(slot)            — stdout: PID or empty
 #   get_window_id(slot)           — stdout: X11 WID or empty
+#   _get_slot_field(slot, field, [jq_default]) — generic getter; the ONE
+#                                   encoding of .slots[$slot].<field> (#51/D11)
 #
 # Environment overrides (for testing):
 #   BWRAP_CMD                     — override bwrap path
@@ -112,7 +114,9 @@ _ensure_state_file() {
     # wid field holds the X11 window ID (hex integer) so apply_layout can locate
     # the Minecraft window without relying on xdotool name-search (which fails in
     # gamescope's XWayland where xdotool set_window --name doesn't persist).
-    jq -n --arg mode "$mode" '{
+    # Fix #51 (D11): atomic write — lock-free readers rely on mv atomicity,
+    # and _set_mode's initializer (which now delegates here) wrote atomically.
+    _atomic_write "$state_file" "$(jq -n --arg mode "$mode" '{
         mode: $mode,
         slots: {
             "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
@@ -120,7 +124,7 @@ _ensure_state_file() {
             "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
             "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
         }
-    }' > "$state_file"
+    }')"
     echo "[instance_lifecycle] Reset state file: $state_file" >&2
 }
 
@@ -634,6 +638,30 @@ update_slot_state() {
     ) 9>"$lock_file"
 }
 
+# _get_slot_field: Generic per-slot field getter — the ONE encoding of
+# ".slots[$slot].<field>" (Fix #51, D11: watchdog and window_manager carried
+# their own raw jq copies of the schema). Lock-free like every getter:
+# read consistency comes from _atomic_write's atomic mv.
+# Inputs:
+#   $1 — slot (1-4)
+#   $2 — field name (active | pid | bwrap_pid | wid | event_node | js_node)
+#   $3 — jq default expression for absent/null (default: empty)
+# Outputs:
+#   stdout — field value, or "" when the state file is missing/invalid
+_get_slot_field() {
+    local slot="$1" field="$2" default="${3:-empty}"
+    local state
+    state=$(read_state)
+
+    if [[ "$state" == "null" ]]; then
+        echo ""
+        return 0
+    fi
+
+    jq -r --arg s "$slot" --arg f "$field" \
+        ".slots[\$s][\$f] // $default" <<< "$state" 2>/dev/null
+}
+
 # Return active slot numbers as a space-separated string (ascending order).
 get_active_slots() {
     local state
@@ -649,45 +677,19 @@ get_active_slots() {
 
 # Return the bwrap PID for a slot.
 get_bwrap_pid() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].bwrap_pid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" bwrap_pid
 }
 
-# Return the Java PID for a slot.
+# Return the Java PID for a slot. (Schema note: the Java PID is stored under
+# the state key "pid".)
 get_java_pid() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].pid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" pid
 }
 
 # Return the X11 window ID (WID) for a slot, or empty if not known.
 # Used by apply_layout to find the Minecraft window without xdotool name-search.
 get_window_id() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].wid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" wid
 }
 
 # --- Public API ---
@@ -986,20 +988,5 @@ teardown_all_instances() {
 # Return 0 if the given slot has an active running instance, 1 otherwise.
 # $1 = slot
 slot_is_active() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        return 1
-    fi
-
-    local is_active
-    is_active=$(jq -r --arg s "$slot" '.slots[$s].active // false' <<< "$state" 2>/dev/null)
-
-    if [[ "$is_active" == "true" ]]; then
-        return 0
-    else
-        return 1
-    fi
+    [[ "$(_get_slot_field "$1" active false)" == "true" ]]
 }

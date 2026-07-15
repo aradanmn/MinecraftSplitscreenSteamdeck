@@ -18,6 +18,10 @@ set -euo pipefail
 # and skips when it can't tell (no wid yet / dex unavailable) so it never kills a
 # launching or unverifiable instance.
 #
+# Dependencies (sourced earlier per runtime_modules.list):
+#   instance_lifecycle.sh — state accessors (_get_slot_field, get_bwrap_pid,
+#   get_java_pid, get_window_id); #51/D11 retired this module's raw jq copies.
+#
 # Public API:
 #   start_watchdog()  — blocks; polls state file, writes SLOT_DIED to FIFO
 #
@@ -82,14 +86,16 @@ start_watchdog() {
 
         local slot
         for slot in $(seq 1 "$WATCHDOG_MAX_SLOT"); do
+            # Fix #51 (D11): consume the instance_lifecycle accessors instead
+            # of private raw-jq copies of the state schema.
             local active
-            active=$(jq -r ".slots[\"$slot\"].active // false" "$state_file" 2>/dev/null || echo "false")
+            active=$(_get_slot_field "$slot" active false || echo "false")
 
             if [[ "$active" == "true" ]]; then
                 local bwrap_pid
-                bwrap_pid=$(jq -r ".slots[\"$slot\"].bwrap_pid // empty" "$state_file" 2>/dev/null || true)
+                bwrap_pid=$(get_bwrap_pid "$slot" || true)
                 local java_pid
-                java_pid=$(jq -r ".slots[\"$slot\"].pid // empty" "$state_file" 2>/dev/null || true)
+                java_pid=$(get_java_pid "$slot" || true)
 
                 local dead=false
                 local reason=""
@@ -111,7 +117,7 @@ start_watchdog() {
                 # Debounced; skips while wid is null (mid-spawn) or unverifiable.
                 if ! $dead; then
                     local wid
-                    wid=$(jq -r ".slots[\"$slot\"].wid // empty" "$state_file" 2>/dev/null || true)
+                    wid=$(get_window_id "$slot" || true)
                     if [[ -n "$wid" ]]; then
                         local wp=0
                         _watchdog_window_present "$wid" || wp=$?

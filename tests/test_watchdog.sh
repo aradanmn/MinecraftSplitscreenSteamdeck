@@ -14,6 +14,9 @@ readonly TEST_TOTAL=10
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Fix #51 (D11): watchdog consumes the instance_lifecycle state accessors
+# now — source it first, same relative order as runtime_modules.list.
+source "$REPO_ROOT/modules/instance_lifecycle.sh"
 source "$REPO_ROOT/modules/watchdog.sh"
 
 TESTS_PASSED=0
