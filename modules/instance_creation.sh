@@ -21,6 +21,73 @@
 : "${MCSS_MAX_MEM_MB:=3072}"
 : "${MCSS_MIN_MEM_MB:=512}"
 
+# write_mmc_pack_json: Write the PolyMC component stack for one instance.
+# Fix #51 (D8): single writer — this heredoc was copy-pasted x3
+# (create/install/update), a split-brain waiting to happen on upgrade.
+# Component order matters: LWJGL3 → Minecraft → Intermediary Mappings →
+# Fabric Loader.
+# Inputs:
+#   $1 — target path (…/mmc-pack.json)
+#   Globals: MC_VERSION, LWJGL_VERSION, FABRIC_VERSION (read)
+# Outputs:
+#   return — 0 on success, non-zero if the write failed
+write_mmc_pack_json() {
+    local target_path="$1"
+    cat > "$target_path" <<EOF
+{
+    "components": [
+        {
+            "cachedName": "LWJGL 3",
+            "cachedVersion": "$LWJGL_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "org.lwjgl3",
+            "version": "$LWJGL_VERSION"
+        },
+        {
+            "cachedName": "Minecraft",
+            "cachedRequires": [
+                {
+                    "suggests": "$LWJGL_VERSION",
+                    "uid": "org.lwjgl3"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "important": true,
+            "uid": "net.minecraft",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Intermediary Mappings",
+            "cachedRequires": [
+                {
+                    "equals": "$MC_VERSION",
+                    "uid": "net.minecraft"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "net.fabricmc.intermediary",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Fabric Loader",
+            "cachedRequires": [
+                {
+                    "uid": "net.fabricmc.intermediary"
+                }
+            ],
+            "cachedVersion": "$FABRIC_VERSION",
+            "uid": "net.fabricmc.fabric-loader",
+            "version": "$FABRIC_VERSION"
+        }
+    ],
+    "formatVersion": 1
+}
+EOF
+}
+
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
 # Each instance gets the same mods but separate configurations for splitscreen
@@ -127,61 +194,8 @@ EOF
             continue
         fi
 
-        cat > "$instance_dir/mmc-pack.json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
-
-        if [[ $? -ne 0 ]]; then
+        # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+        if ! write_mmc_pack_json "$instance_dir/mmc-pack.json"; then
             print_error "Failed to create mmc-pack.json for $instance_name"
             continue
         fi
@@ -243,61 +257,8 @@ install_fabric_and_mods() {
     if [[ ! -f "$pack_json" ]] || ! grep -q "net.fabricmc.fabric-loader" "$pack_json" 2>/dev/null; then
         print_progress "Adding Fabric loader to $instance_name..."
         
-        # Create complete component stack with proper dependency chain
-        # Order matters: LWJGL3 → Minecraft → Intermediary Mappings → Fabric Loader
-        cat > "$pack_json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
+        # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+        write_mmc_pack_json "$pack_json"
         print_success "Fabric loader v$FABRIC_VERSION installed"
     fi
     
@@ -777,61 +738,10 @@ handle_instance_update() {
         print_info "✅ Restored user's options.txt settings"
     fi
     
-    # Update mmc-pack.json with new component versions
-    cat > "$instance_dir/mmc-pack.json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
-    
+    # Update mmc-pack.json with new component versions.
+    # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+    write_mmc_pack_json "$instance_dir/mmc-pack.json"
+
     print_success "✅ Instance update preparation complete for $instance_name"
     print_info "   → Mods cleared and ready for new installation"
     print_info "   → User settings preserved"
