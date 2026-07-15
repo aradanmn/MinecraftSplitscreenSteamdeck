@@ -20,7 +20,6 @@
 #   dex_set_root_atom <atom_name> <value> — set property on root window
 #   dex_get_wm_name <wid>            — stdout: window title
 #   dex_list_windows                 — stdout: WID+name pairs for all windows
-#   dex_wid_from_state <slot>        — stdout: WID from splitscreen_state.json
 #   dex_find_minecraft_windows       — stdout: "WID SLOT" for each SplitscreenP{N}
 #
 # Environment:
@@ -586,14 +585,9 @@ dex_get_wm_name() { _dex_run get_wm_name "$1"; }
 dex_list_windows() { _dex_run list; }
 dex_find_minecraft_windows() { _dex_run find_minecraft; }
 
-dex_wid_from_state() {
-    local slot="$1"
-    local sf="$SPLITSCREEN_STATE"
-    if [[ -f "$sf" ]] && command -v jq >/dev/null 2>&1; then
-        # L3: --arg instead of string-interpolating $slot into the filter.
-        jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true
-    fi
-}
+# (dex_wid_from_state deleted — Fix #51 (D12): it was a fallback-less copy of
+# window_manager's _get_wid_from_state with zero callers; the state read now
+# lives in instance_lifecycle's get_window_id accessor.)
 
 # Cleanup helper for the generated backend script.
 # NOTE: deliberately NOT auto-trapped on EXIT. dex.sh is sourced as a library by
