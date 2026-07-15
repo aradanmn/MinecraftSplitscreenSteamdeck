@@ -97,6 +97,7 @@ Units in names (`_TIMEOUT_S`, `_INTERVAL_S`); ALL-CAPS mnemonic heredoc delimite
 8. `shellcheck -x` clean on every touched file; suppressions need `# shellcheck disable=SCxxxx  # reason`.
 9. Traps for cleanup in anything spawning processes/temp files; atomic writes via `tmp + mv`.
 10. Output discipline recap: modules → stderr with `[module_name] ` prefix; installer UX → `print_*` helpers from `utilities.sh` (emoji live inside the helpers — don't double them); stdout → machine-readable data only.
+11. Max line length 80 characters. Longer lines get split: continue commands with a trailing `\` (indented one level on the continuation), break long pipelines after the `|`, break `&&`/`||` chains after the operator, and split long strings/heredoc content across lines. Applies to code and comments alike.
 
 ## 8. Pre-commit checklist (solo + AI workflow)
 
