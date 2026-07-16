@@ -108,10 +108,11 @@ _verify_window_geometry() {
 # Output: WID on stdout, or empty string on failure.
 _get_wid_from_state() {
     local slot="$1"
-    local sf="$SPLITSCREEN_STATE"
     local wid=""
-    # L3: --arg instead of string-interpolating $slot into the filter.
-    [[ -f "$sf" ]] && wid=$(jq -r --arg slot "$slot" '.slots[$slot].wid // empty' "$sf" 2>/dev/null || true)
+    # Fix #51 (D11/D12): the state read goes through the instance_lifecycle
+    # accessor (dex.sh's fallback-less copy of this lookup is deleted); the
+    # dex window-name search stays as this module's fallback.
+    wid=$(get_window_id "$slot" 2>/dev/null || true)
     [[ -z "$wid" ]] && wid=$(dex_search --name "${MCSS_WINDOW_TITLE_PREFIX}${slot}" 2>/dev/null || true)
     echo "$wid"
 }
@@ -121,10 +122,8 @@ _get_wid_from_state() {
 # The KWin positioner matches windows by PID (window.windowId is undefined in
 # KWin 6.x), so this is the primary identifier for Path-B positioning.
 _get_pid_from_state() {
-    local slot="$1"
-    local sf="$SPLITSCREEN_STATE"
-    # L3: --arg instead of string-interpolating $slot into the filter.
-    [[ -f "$sf" ]] && jq -r --arg slot "$slot" '.slots[$slot].pid // empty' "$sf" 2>/dev/null || true
+    # Fix #51 (D11): thin alias over the instance_lifecycle accessor.
+    get_java_pid "$1" 2>/dev/null || true
 }
 
 # _position_slot: Position a slot's window to an exact cell.

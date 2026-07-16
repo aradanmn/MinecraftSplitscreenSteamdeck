@@ -24,6 +24,8 @@ set -euo pipefail
 #   get_bwrap_pid(slot)           — stdout: PID or empty
 #   get_java_pid(slot)            — stdout: PID or empty
 #   get_window_id(slot)           — stdout: X11 WID or empty
+#   _get_slot_field(slot, field, [jq_default]) — generic getter; the ONE
+#                                   encoding of .slots[$slot].<field> (#51/D11)
 #
 # Environment overrides (for testing):
 #   BWRAP_CMD                     — override bwrap path
@@ -112,7 +114,9 @@ _ensure_state_file() {
     # wid field holds the X11 window ID (hex integer) so apply_layout can locate
     # the Minecraft window without relying on xdotool name-search (which fails in
     # gamescope's XWayland where xdotool set_window --name doesn't persist).
-    jq -n --arg mode "$mode" '{
+    # Fix #51 (D11): atomic write — lock-free readers rely on mv atomicity,
+    # and _set_mode's initializer (which now delegates here) wrote atomically.
+    _atomic_write "$state_file" "$(jq -n --arg mode "$mode" '{
         mode: $mode,
         slots: {
             "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
@@ -120,7 +124,7 @@ _ensure_state_file() {
             "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
             "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
         }
-    }' > "$state_file"
+    }')"
     echo "[instance_lifecycle] Reset state file: $state_file" >&2
 }
 
@@ -160,39 +164,72 @@ _vendor_of_js_node() {
     want=$(basename "$js_path")            # e.g. "js1"
     [[ -z "$want" ]] && return 0
 
-    local proc_path="${PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
-    [[ -f "$proc_path" ]] || return 0
-
-    local in_block=0 vendor="" handlers="" line _h
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )); then
-                for _h in $handlers; do
-                    if [[ "$_h" == "$want" ]]; then
-                        echo "$vendor"
-                        return 0
-                    fi
-                done
-            fi
-            in_block=0; vendor=""; handlers=""
-            continue
-        fi
-        in_block=1
-        case "$line" in
-            I:*) [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] && vendor="${BASH_REMATCH[1],,}" ;;
-            H:*) handlers="${line#H: Handlers=}" ;;
-        esac
-    done < "$proc_path"
-    # Last block (file may not end with a blank line).
-    if (( in_block == 1 )); then
+    # Fix #51 (D13): block capture via controller_monitor's
+    # parse_input_device_blocks (sourced before this module per
+    # runtime_modules.list). Keying stays here: exact handler-token equality
+    # (never substring, so "js1" != "js10").
+    local vendor product name handlers sysfs phys keybits _h
+    # shellcheck disable=SC2034  # fixed-width record: only vendor+handlers used
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits; do
         for _h in $handlers; do
             if [[ "$_h" == "$want" ]]; then
                 echo "$vendor"
                 return 0
             fi
         done
-    fi
+    done < <(parse_input_device_blocks \
+        "${PROC_INPUT_DEVICES:-/proc/bus/input/devices}" 2>/dev/null || true)
     return 0
+}
+
+# _detect_xauthority: Resolve the X authority cookie for launcher children.
+# Fix #51 (D10): factored from _build_direct_command/_build_bwrap_command —
+# the two inline copies had drifted (one verified the file exists, one only
+# checked non-empty; the stricter check survives, so a stale $XAUTHORITY
+# pointing at a deleted file no longer wins). SSH sessions don't carry the
+# cookie; the kwin_wayland cmdline names the actual file regardless of login
+# session or boot path.
+# Inputs:
+#   Globals: XAUTHORITY (read, optional)
+# Outputs:
+#   stdout — xauthority path, or empty when undetectable
+_detect_xauthority() {
+    if [[ -n "${XAUTHORITY:-}" && -e "${XAUTHORITY:-}" ]]; then
+        echo "$XAUTHORITY"
+        return 0
+    fi
+    ps -C kwin_wayland -o args= 2>/dev/null \
+        | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1
+}
+
+# _launcher_env_core: Env assignments shared by BOTH launch builders.
+# Fix #51 (D10): one home for the common core; the per-mode SDL isolation
+# vars stay with their builder.
+#   APPIMAGE_EXTRACT_AND_RUN=1: the AppImage cannot FUSE-mount inside the
+#     sandbox (no fusermount on PATH → "Cannot mount AppImage");
+#     extract-and-run sidesteps FUSE entirely.
+#   QT_QPA_PLATFORM=xcb: force the launcher's Qt GUI onto X11 — the nested
+#     KDE session exports QT_QPA_PLATFORM=wayland, which it would inherit.
+#   PULSE_SERVER: absolute path to the host socket so audio works regardless
+#     of XDG_RUNTIME_DIR.
+#   DISABLE_GAMESCOPE_WSI=1 + RADV_SYS_MEM_LIMIT=50: DRAFT 2026-06-27
+#     (research, UNTESTED) — gamescope WSI layer off (the layer keys on the
+#     var's PRESENCE; ENABLE_GAMESCOPE_WSI=0 does NOT disable it) + cap
+#     RADV's claim on the 16GB unified APU RAM. See
+#     docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
+# Inputs:
+#   $1 — name of the caller's env array (appended to via nameref)
+#   Globals: MCSS_PULSE_SERVER (read)
+_launcher_env_core() {
+    local -n _core_out="$1"
+    _core_out+=(
+        APPIMAGE_EXTRACT_AND_RUN=1
+        QT_QPA_PLATFORM=xcb
+        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+        DISABLE_GAMESCOPE_WSI=1
+        RADV_SYS_MEM_LIMIT=50
+    )
 }
 
 # _build_direct_command: HANDHELD launch — NO bwrap, full system access. Handheld is one
@@ -211,31 +248,18 @@ _build_direct_command() {
     launcher_exec="$MCSS_LAUNCHER_EXEC"
 
     # Reach the nested session's XWayland the same way the sandbox path does.
-    local _xauth=""
-    if [[ -n "${XAUTHORITY:-}" && -e "${XAUTHORITY:-}" ]]; then
-        _xauth="$XAUTHORITY"
-    else
-        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
-            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
-    fi
+    local _xauth
+    _xauth=$(_detect_xauthority)
 
-    local -a _env=(
-        APPIMAGE_EXTRACT_AND_RUN=1
-        QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+    # Fix #51 (D10): shared core via _launcher_env_core.
+    local -a _env=()
+    _launcher_env_core _env
+    _env+=(
         # Full controller access — the built-in reaches the game as a Steam 28de:11ff
         # virtual, so allow Steam virtual gamepads. Deliberately NO isolation hints
         # (DISABLE_UDEV / udev tmpfs / pipe mask): we WANT normal udev + Steam discovery so
         # the built-in is actually found.
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1
-        # DRAFT 2026-06-27 (research, UNTESTED): disable the gamescope Vulkan WSI layer — the
-        # GL game never uses it, and in Game Mode its abort()-on-no-dialog path is a suspected
-        # crash source. DISABLE_GAMESCOPE_WSI=1 is the correct off-switch (the layer keys on
-        # the var's PRESENCE; ENABLE_GAMESCOPE_WSI=0 does NOT disable it). RADV_SYS_MEM_LIMIT
-        # caps RADV's claim on the 16GB unified APU RAM, leaving headroom for JVM heaps.
-        # (Mainly matters for docked 4-instance; harmless for a single handheld instance.)
-        DISABLE_GAMESCOPE_WSI=1
-        RADV_SYS_MEM_LIMIT=50
     )
     [[ -n "$_xauth" ]] && _env+=("XAUTHORITY=$_xauth")
 
@@ -385,38 +409,20 @@ _build_bwrap_command() {
     #     Forces classic joystick driver path, ensuring SDL_JOYSTICK_DEVICE
     #     pinning is honoured on Linux. Required for compatibility with the
     #     older Controllable mod's bundled SDL and some gamescope builds.
-    # AppImage / Qt / audio env — must match the known-working launchSlot config.
-    #   APPIMAGE_EXTRACT_AND_RUN=1: the AppImage cannot FUSE-mount inside the
-    #     sandbox (no fusermount on PATH → "Cannot mount AppImage"); extract-and-run
-    #     sidesteps FUSE entirely. THIS is what was killing every spawn_instance.
-    #   QT_QPA_PLATFORM=xcb: force PolyMC's Qt GUI onto X11 — the nested KDE session
-    #     exports QT_QPA_PLATFORM=wayland, which PolyMC would otherwise inherit.
-    #   PULSE_SERVER: absolute path to the host socket so audio works regardless of
-    #     XDG_RUNTIME_DIR (the socket is inside the sandbox via --dev-bind / /).
-    # XAUTHORITY: bwrap inherits env but SSH sessions don't have the cookie set.
-    # Auto-detect from the kwin_wayland_wrapper --xwayland-xauthority flag, which
-    # names the actual file regardless of login session or boot path.
-    local _xauth="${XAUTHORITY:-}"
-    if [[ -z "$_xauth" ]]; then
-        _xauth=$(ps -C kwin_wayland -o args= 2>/dev/null \
-            | grep -oP '(?<=--xwayland-xauthority )\S+' | head -1)
-    fi
+    # XAUTHORITY: bwrap inherits env but SSH sessions don't have the cookie
+    # set — _detect_xauthority (D10) falls back to the kwin_wayland cmdline.
+    local _xauth
+    _xauth=$(_detect_xauthority)
 
-    local -a _env_vars=(
-        APPIMAGE_EXTRACT_AND_RUN=1
-        QT_QPA_PLATFORM=xcb
-        "PULSE_SERVER=$MCSS_PULSE_SERVER"
+    # Fix #51 (D10): shared core (AppImage/Qt/audio/WSI) via
+    # _launcher_env_core; the SDL isolation vars below are sandbox-specific.
+    local -a _env_vars=()
+    _launcher_env_core _env_vars
+    _env_vars+=(
         SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=${_allow}
         SDL_GAMECONTROLLER_IGNORE_DEVICES=
         SDL_JOYSTICK_HIDAPI=0
         SDL_LINUX_JOYSTICK_CLASSIC=1
-        # DRAFT 2026-06-27 (research, UNTESTED): gamescope WSI layer off (the GL game doesn't
-        # use it; its abort()-on-no-dialog path is a suspected 4-instance crash source —
-        # DISABLE_GAMESCOPE_WSI=1 is the correct switch, NOT ENABLE=0) + cap RADV's claim on
-        # the 16GB unified APU RAM (the 4-instance reset is JVM-heap memory pressure, not
-        # swapchain memory). See docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
-        DISABLE_GAMESCOPE_WSI=1
-        RADV_SYS_MEM_LIMIT=50
     )
     # SDL_JOYSTICK_DISABLE_UDEV=1 — THE key strict-isolation hint, but set ONLY in
     # strict/docked mode. SDL does NOT detect a plain bwrap sandbox as a container, so by
@@ -616,6 +622,30 @@ update_slot_state() {
     ) 9>"$lock_file"
 }
 
+# _get_slot_field: Generic per-slot field getter — the ONE encoding of
+# ".slots[$slot].<field>" (Fix #51, D11: watchdog and window_manager carried
+# their own raw jq copies of the schema). Lock-free like every getter:
+# read consistency comes from _atomic_write's atomic mv.
+# Inputs:
+#   $1 — slot (1-4)
+#   $2 — field name (active | pid | bwrap_pid | wid | event_node | js_node)
+#   $3 — jq default expression for absent/null (default: empty)
+# Outputs:
+#   stdout — field value, or "" when the state file is missing/invalid
+_get_slot_field() {
+    local slot="$1" field="$2" default="${3:-empty}"
+    local state
+    state=$(read_state)
+
+    if [[ "$state" == "null" ]]; then
+        echo ""
+        return 0
+    fi
+
+    jq -r --arg s "$slot" --arg f "$field" \
+        ".slots[\$s][\$f] // $default" <<< "$state" 2>/dev/null
+}
+
 # Return active slot numbers as a space-separated string (ascending order).
 get_active_slots() {
     local state
@@ -631,45 +661,19 @@ get_active_slots() {
 
 # Return the bwrap PID for a slot.
 get_bwrap_pid() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].bwrap_pid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" bwrap_pid
 }
 
-# Return the Java PID for a slot.
+# Return the Java PID for a slot. (Schema note: the Java PID is stored under
+# the state key "pid".)
 get_java_pid() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].pid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" pid
 }
 
 # Return the X11 window ID (WID) for a slot, or empty if not known.
 # Used by apply_layout to find the Minecraft window without xdotool name-search.
 get_window_id() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        echo ""
-        return 0
-    fi
-
-    jq -r --arg s "$slot" '.slots[$s].wid // empty' <<< "$state" 2>/dev/null
+    _get_slot_field "$1" wid
 }
 
 # --- Public API ---
@@ -968,20 +972,5 @@ teardown_all_instances() {
 # Return 0 if the given slot has an active running instance, 1 otherwise.
 # $1 = slot
 slot_is_active() {
-    local slot="$1"
-    local state
-    state=$(read_state)
-
-    if [[ "$state" == "null" ]]; then
-        return 1
-    fi
-
-    local is_active
-    is_active=$(jq -r --arg s "$slot" '.slots[$s].active // false' <<< "$state" 2>/dev/null)
-
-    if [[ "$is_active" == "true" ]]; then
-        return 0
-    else
-        return 1
-    fi
+    [[ "$(_get_slot_field "$1" active false)" == "true" ]]
 }

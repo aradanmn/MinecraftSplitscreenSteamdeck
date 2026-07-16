@@ -208,11 +208,18 @@ setup_steam_integration() {
                 print_info "   → Downloading Steam integration script..."
             fi
 
+            # Fix #51 (D14): fetch_url replaces the bare curl call.
             if [[ -s "$steam_script_temp" ]] || \
-               curl -sSL "${MCSS_REPO_RAW_URL}/add-to-steam.py" -o "$steam_script_temp" 2>/dev/null; then
+               fetch_url "${MCSS_REPO_RAW_URL}/add-to-steam.py" \
+                   "$steam_script_temp" 2>/dev/null; then
                 print_info "   → Executing Steam integration script..."
-                # Execute the downloaded script with proper error handling
-                if python3 "$steam_script_temp" 2>/dev/null; then
+                # Execute the downloaded script with proper error handling.
+                # #45/D16 residual (#51 sweep): the script's explicit-root
+                # override existed but no caller passed it — a relocated
+                # TARGET_DIR install always fell through to the script's
+                # hardcoded $HOME probes. Hand it the real root.
+                if MCSS_TARGET_DIR="$TARGET_DIR" \
+                    python3 "$steam_script_temp" 2>/dev/null; then
                     print_success "✅ Minecraft Splitscreen successfully added to Steam library"
                     print_info "   → Custom artwork downloaded and applied"
                     print_info "   → Shortcut configured with proper launch parameters"

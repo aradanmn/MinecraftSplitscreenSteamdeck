@@ -111,15 +111,9 @@ _set_mode() {
         flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
             echo "[orchestrator] _set_mode: state file missing/invalid at $state — initializing default" >&2
-            _atomic_write "$state" "$(jq -n --arg mode "${MCSS_MODE:-docked}" '{
-                mode: $mode,
-                slots: {
-                    "1": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
-                    "2": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
-                    "3": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null},
-                    "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
-                }
-            }')"
+            # Fix #51 (D11): _ensure_state_file is the ONE initializer (#46);
+            # this inline copy of the default doc was the last holdout.
+            _ensure_state_file "$mode"
         fi
         local updated
         updated=$(jq --arg mode "$mode" '.mode = $mode' "$state" 2>/dev/null) || { echo "[orchestrator] WARNING: _set_mode jq failed — leaving state untouched" >&2; exit 0; }

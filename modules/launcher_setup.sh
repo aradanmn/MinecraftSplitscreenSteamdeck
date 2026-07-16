@@ -19,7 +19,9 @@ download_prism_launcher() {
     # Query GitHub API to get the latest release download URL
     # We specifically look for AppImage files in the release assets
     local prism_url
-    prism_url=$(curl -s https://api.github.com/repos/PolyMC/PolyMC/releases/latest | \
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
+    prism_url=$(fetch_url \
+        "https://api.github.com/repos/PolyMC/PolyMC/releases/latest" - | \
         jq -r '.assets[]
             | select(
                 (.name | ascii_downcase | endswith("appimage"))
@@ -91,13 +93,12 @@ setup_splitscreen_launcher_script() {
 
     if [[ -f "$local_script" ]]; then
         cp "$local_script" "$launcher_script"
-    elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$remote_script" -o "$launcher_script"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$launcher_script" "$remote_script"
     else
-        print_error "Neither curl nor wget is available to fetch minecraftSplitscreen.sh"
-        return 1
+        # Fix #51 (D14): fetch_url replaces the curl/wget/neither chain.
+        # It prints its own error when no downloader is installed; any
+        # fetch failure falls through to the -s/shebang check below,
+        # which reports the detailed fatal error.
+        fetch_url "$remote_script" "$launcher_script" || true
     fi
 
     # The launcher IS the product — fail loudly if the fetch didn't produce a real script
@@ -154,11 +155,9 @@ install_runtime_modules() {
     elif [[ -n "${SCRIPT_DIR:-}" && -s "$SCRIPT_DIR/modules/$manifest" ]]; then
         manifest_src="$SCRIPT_DIR/modules/$manifest"
     else
-        if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "$base_url/$manifest" -o "$dest_dir/$manifest" 2>/dev/null || true
-        elif command -v wget >/dev/null 2>&1; then
-            wget -qO "$dest_dir/$manifest" "$base_url/$manifest" 2>/dev/null || true
-        fi
+        # Fix #51 (D14): fetch_url replaces the curl/wget branches.
+        fetch_url "$base_url/$manifest" "$dest_dir/$manifest" \
+            2>/dev/null || true
         [[ -s "$dest_dir/$manifest" ]] && manifest_src="$dest_dir/$manifest"
     fi
     if [[ -z "$manifest_src" ]]; then
@@ -187,20 +186,10 @@ install_runtime_modules() {
         elif [[ -n "${SCRIPT_DIR:-}" && -f "$SCRIPT_DIR/modules/$mod" ]]; then
             cp "$SCRIPT_DIR/modules/$mod" "$dest"
         # 3. Download from GitHub
-        elif command -v curl >/dev/null 2>&1; then
-            if ! curl -fsSL "$base_url/$mod" -o "$dest" 2>/dev/null; then
-                print_error "Failed to download runtime module: $mod"
-                (( failed++ )) || true
-                continue
-            fi
-        elif command -v wget >/dev/null 2>&1; then
-            if ! wget -qO "$dest" "$base_url/$mod" 2>/dev/null; then
-                print_error "Failed to download runtime module: $mod"
-                (( failed++ )) || true
-                continue
-            fi
-        else
-            print_error "Cannot deploy $mod: no curl/wget and not in local modules dir"
+        # Fix #51 (D14): fetch_url replaces the curl/wget/neither
+        # branches (its no-downloader case also lands here as a failure).
+        elif ! fetch_url "$base_url/$mod" "$dest" 2>/dev/null; then
+            print_error "Failed to download runtime module: $mod"
             (( failed++ )) || true
             continue
         fi
