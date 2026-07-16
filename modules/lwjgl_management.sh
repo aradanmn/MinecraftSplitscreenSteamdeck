@@ -16,23 +16,13 @@ get_lwjgl_version() {
     local fabric_game_url="${FABRIC_META_BASE}/versions/game"
     local temp_file="/tmp/fabric_versions_$$.json"
     
-    if command -v wget >/dev/null 2>&1; then
-        if wget -q -O "$temp_file" "$fabric_game_url" 2>/dev/null; then
-            if command -v jq >/dev/null 2>&1 && [[ -s "$temp_file" ]]; then
-                # Try to find LWJGL version for our Minecraft version
-                LWJGL_VERSION=$(jq -r --arg mc_ver "$MC_VERSION" '
-                    .[] | select(.version == $mc_ver) | .lwjgl // empty
-                ' "$temp_file" 2>/dev/null)
-            fi
-        fi
-    elif command -v curl >/dev/null 2>&1; then
-        if curl -s -o "$temp_file" "$fabric_game_url" 2>/dev/null; then
-            if command -v jq >/dev/null 2>&1 && [[ -s "$temp_file" ]]; then
-                # Try to find LWJGL version for our Minecraft version
-                LWJGL_VERSION=$(jq -r --arg mc_ver "$MC_VERSION" '
-                    .[] | select(.version == $mc_ver) | .lwjgl // empty
-                ' "$temp_file" 2>/dev/null)
-            fi
+    # Fix #51 (D14): fetch_url replaces the duplicated wget/curl branches.
+    if fetch_url "$fabric_game_url" "$temp_file" 2>/dev/null; then
+        if command -v jq >/dev/null 2>&1 && [[ -s "$temp_file" ]]; then
+            # Try to find LWJGL version for our Minecraft version
+            LWJGL_VERSION=$(jq -r --arg mc_ver "$MC_VERSION" '
+                .[] | select(.version == $mc_ver) | .lwjgl // empty
+            ' "$temp_file" 2>/dev/null)
         fi
     fi
     

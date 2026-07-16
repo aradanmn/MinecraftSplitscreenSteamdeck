@@ -166,8 +166,9 @@ find_controller_pairs() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # launchSlot  slot js_dev ev_dev
-# Launches one PolyMC/PrismLauncher instance inside a bwrap controller sandbox.
-# Records the bwrap PID in SLOT_PIDS[slot].  Returns 1 if bwrap dies immediately.
+# Launches one PolyMC/PrismLauncher instance via the instance_lifecycle
+# builders (#51/D10: same sandbox as production spawn_instance).
+# Records the launch PID in SLOT_PIDS[slot]. Returns 1 if it dies immediately.
 # ─────────────────────────────────────────────────────────────────────────────
 launchSlot() {
     local slot="$1" js_dev="$2" ev_dev="$3"
@@ -180,56 +181,45 @@ launchSlot() {
         return 1
     fi
 
-    # Per-slot isolated XDG_RUNTIME_DIR so PolyMC's SingleApplication QLocalServer
-    # sockets don't find each other.  Without this, slots 2-4 detect slot 1 running,
-    # route their -l command to it, and exit — only one Minecraft actually launches.
-    # QT_QPA_PLATFORM=xcb forces PolyMC's Qt GUI to X11 so it doesn't need the
-    # Wayland socket (which lives in the now-isolated XDG_RUNTIME_DIR).
-    local slot_runtime="/tmp/polymc-runtime-slot${slot}"
-    mkdir -p "$slot_runtime"
+    # Fix #51 (D10): build through the module builders instead of a private
+    # bwrap config pinned to commit d5f060c of instance_lifecycle.sh — the
+    # module builder has since gained udev blanking, steam.pipe masking, and
+    # the per-slot SDL flags, so this static test path was validating a
+    # DIFFERENT sandbox than production. Routing rule matches
+    # spawn_instance: no js bound → direct launch (handheld semantics), js
+    # bound → bwrap sandbox (its --tmpfs /tmp replaces the old per-slot
+    # XDG_RUNTIME_DIR trick for qtsingleapp-socket de-collision).
+    local launch_cmd
+    if [[ -z "$js_dev" ]]; then
+        launch_cmd=$(_build_direct_command "$slot")
+    else
+        launch_cmd=$(_build_bwrap_command "$slot" "$ev_dev" "$js_dev")
+    fi
 
-    local -a bwrap_cmd=(bwrap --dev-bind / / --dev /dev --proc /proc)
-    # --dev /dev overlays an empty devtmpfs, wiping the device nodes that
-    # --dev-bind / / provided.  Re-bind the GPU (required by Qt xcb / LWJGL),
-    # X11 socket, shared memory, and FUSE back in, matching the known-working
-    # bwrap configuration from commit d5f060c (modules/instance_lifecycle.sh).
-    [[ -d /dev/dri ]]       && bwrap_cmd+=(--dev-bind /dev/dri /dev/dri)
-    [[ -e /dev/fuse ]]      && bwrap_cmd+=(--dev-bind /dev/fuse /dev/fuse)
-    [[ -d /dev/shm ]]       && bwrap_cmd+=(--dev-bind /dev/shm /dev/shm)
-    [[ -d /tmp/.X11-unix ]] && bwrap_cmd+=(--dev-bind /tmp/.X11-unix /tmp/.X11-unix)
-    bwrap_cmd+=(
-        --setenv APPIMAGE_EXTRACT_AND_RUN 1
-        --setenv XDG_RUNTIME_DIR "$slot_runtime"
-        --setenv QT_QPA_PLATFORM xcb
-        --setenv DISPLAY "${MCSS_DISPLAY:-${DISPLAY:-:2}}"
-        # XDG_RUNTIME_DIR is repointed at the isolated per-slot dir above, which
-        # breaks PulseAudio/PipeWire client discovery ($XDG_RUNTIME_DIR/pulse/native),
-        # leaving every instance silent. Point PULSE_SERVER at the real host socket
-        # by absolute path so each instance gets audio. The socket is already inside
-        # the sandbox via --dev-bind / /.
-        --setenv PULSE_SERVER "$MCSS_PULSE_SERVER"
-    )
-    [[ -n "$js_dev" ]] && bwrap_cmd+=(--dev-bind "$js_dev" "$js_dev")
-    [[ -n "$ev_dev" ]] && bwrap_cmd+=(--dev-bind "$ev_dev" "$ev_dev")
-
+    # kde-inhibit (static-path extra; production has no equivalent) wraps
+    # OUTSIDE the sandbox — quitSlot signals the wrapper AND its children
+    # (pkill -P), so teardown still reaches bwrap/the launcher directly.
     if command -v kde-inhibit >/dev/null 2>&1; then
-        "${bwrap_cmd[@]}" kde-inhibit --power --screenSaver --colorCorrect --notifications \
-            $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
+        launch_cmd="kde-inhibit --power --screenSaver --colorCorrect \
+--notifications $launch_cmd"
     else
         logMsg "$slot" WARN "kde-inhibit not found — launching without power inhibition"
-        "${bwrap_cmd[@]}" $MCSS_LAUNCHER_EXEC -l "$instance_id" -a "${MCSS_ACCOUNT_PREFIX}${slot}" &
     fi
+
+    # The builders leave DISPLAY to the environment; pin the nested X display
+    # here exactly as the old inline --setenv did (#45 single-writer).
+    DISPLAY="${MCSS_DISPLAY:-${DISPLAY:-:2}}" setsid bash -c "$launch_cmd" &
 
     local pid=$!
     SLOT_PIDS[$slot]=$pid
 
     sleep 2
     if ! kill -0 "$pid" 2>/dev/null; then
-        logMsg "$slot" ERROR "bwrap PID=$pid exited immediately — check instance config and MCSS_LAUNCHER_EXEC=$MCSS_LAUNCHER_EXEC"
+        logMsg "$slot" ERROR "launch PID=$pid exited immediately — check instance config and MCSS_LAUNCHER_EXEC=$MCSS_LAUNCHER_EXEC"
         return 1
     fi
 
-    logMsg "$slot" INFO "bwrap PID=$pid alive"
+    logMsg "$slot" INFO "launch PID=$pid alive"
     return 0
 }
 
@@ -384,27 +374,45 @@ _restore_session_env() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# nestedPlasma
-# Starts a nested KDE Plasma Wayland session inside gamescope.
-# Writes an autostart .desktop so this script is re-invoked as launchWindowTest
-# once the KDE session is up.
-# ─────────────────────────────────────────────────────────────────────────────
-nestedPlasma() {
-    echo "[nestedPlasma] start" >> "$LOG"
-    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
+# _start_nested_plasma
+# Shared scaffolding for entering a nested Plasma session. Fix #51 (D9): was
+# copy-pasted across nestedPlasma / testPlasma / launchFromPlasma ("DRY in a
+# later cleanup" — this is that cleanup). Unsets the session-env leakage vars,
+# writes the KWin wrapper shim at the resolved screen size, writes the
+# autostart .desktop that re-invokes this script inside the session, snapshots
+# session env, then starts `dbus-run-session startplasma-wayland`.
+# Inputs:
+#   $1 — log tag (caller name, for $LOG lines)
+#   $2 — autostart .desktop filename (under $MCSS_AUTOSTART_DIR)
+#   $3 — .desktop Name= value
+#   $4 — re-invoke argument appended after the script path ("" for none)
+#   $5 — launch mode: "exec" (never returns) or "background" (supervised)
+#   $6… — extra NAME=VALUE pairs for the Exec= env list (after the standard
+#         MCSS_NESTED_SESSION=plasma)
+#   Globals: MCSS_KWIN_WRAPPER_PATH, MCSS_HELPER_DIR, MCSS_AUTOSTART_DIR,
+#            MCSS_SCREEN_W/H via mcss_resolve_screen, LOG (read)
+# Outputs:
+#   side effects — writes the wrapper shim + autostart .desktop, prepends
+#   $MCSS_HELPER_DIR to PATH, snapshots session env.
+#   "background" mode sets _NESTED_SESSION_PID; "exec" mode does not return.
+_start_nested_plasma() {
+    local tag="$1" desktop_file="$2" desktop_name="$3" reinvoke_arg="$4"
+    local launch_mode="$5"
+    shift 5
+
+    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH \
+        || true
 
     local W H
-    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
-    # fallback) — replaces this site's private xdpyinfo one-liner.
+    # #45/D7: canonical screen resolution (env-override-first cascade,
+    # 1280x800 fallback).
     mcss_resolve_screen
     W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
-    echo "[nestedPlasma] W=$W H=$H" >> "$LOG"
+    echo "[$tag] W=$W H=$H" >> "$LOG"
 
-    kwriteconfig6 --file kwinrc --group Tiling --key EnableTilingByDefault false 2>/dev/null || true
-
-    # KWin wrapper with correct resolution
     # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
-    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
+    # world-writable /tmp — it is injected into PATH and EXECUTED by
+    # startplasma.
     cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
 #!/bin/bash
 /usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
@@ -412,20 +420,46 @@ WEOF
     chmod +x "$MCSS_KWIN_WRAPPER_PATH"
     export PATH="$MCSS_HELPER_DIR:$PATH"
 
-    # Autostart re-invokes this script once KDE session is running
-    local SCRIPT_PATH
+    # Autostart re-invokes this script once the KDE session is running (a
+    # fresh process — env does NOT carry over; mcss_exec_env_string is the
+    # one Exec-line env writer, so per-caller extras ride through "$@").
+    local SCRIPT_PATH _exec_env
     SCRIPT_PATH="$(readlink -f "$0")"
+    _exec_env="$(mcss_exec_env_string MCSS_NESTED_SESSION=plasma "$@")"
     mkdir -p "$MCSS_AUTOSTART_DIR"
-    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
+    cat > "$MCSS_AUTOSTART_DIR/$desktop_file" <<DEOF
 [Desktop Entry]
-Name=Splitscreen Test
-Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH}
+Name=$desktop_name
+Exec=env ${_exec_env} ${SCRIPT_PATH}${reinvoke_arg:+ $reinvoke_arg}
 Type=Application
 X-KDE-AutostartScript=true
 DEOF
     _snapshot_session_env
-    echo "[nestedPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
-    exec dbus-run-session startplasma-wayland
+
+    if [[ "$launch_mode" == "exec" ]]; then
+        echo "[$tag] autostart written, exec-ing startplasma-wayland" \
+            >> "$LOG"
+        exec dbus-run-session startplasma-wayland
+    fi
+    echo "[$tag] autostart written (→ ${reinvoke_arg:-re-exec}), launching" \
+        "nested session (supervised, non-exec)" >> "$LOG"
+    dbus-run-session startplasma-wayland &
+    _NESTED_SESSION_PID=$!
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# nestedPlasma
+# Starts a nested KDE Plasma Wayland session inside gamescope.
+# Writes an autostart .desktop so this script is re-invoked as launchWindowTest
+# once the KDE session is up.
+# ─────────────────────────────────────────────────────────────────────────────
+nestedPlasma() {
+    echo "[nestedPlasma] start" >> "$LOG"
+    kwriteconfig6 --file kwinrc --group Tiling \
+        --key EnableTilingByDefault false 2>/dev/null || true
+    # Fix #51 (D9): shared scaffolding (wrapper shim, autostart, exec).
+    _start_nested_plasma nestedPlasma "$MCSS_AUTOSTART_TEST_DESKTOP" \
+        "Splitscreen Test" "" exec
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -580,41 +614,13 @@ launchWindowTest() {
 # ─────────────────────────────────────────────────────────────────────────────
 testPlasma() {
     echo "[testPlasma] start" >> "$LOG"
-    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
-
-    local W H
-    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
-    # fallback) — replaces this site's private xdpyinfo one-liner.
-    mcss_resolve_screen
-    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
-    echo "[testPlasma] W=$W H=$H" >> "$LOG"
-
-    # KWin wrapper with correct resolution
-    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
-    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
-    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
-#!/bin/bash
-/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
-WEOF
-    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
-    export PATH="$MCSS_HELPER_DIR:$PATH"
-
-    # Autostart calls launchTestFromPlasma
-    local SCRIPT_PATH
-    SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p "$MCSS_AUTOSTART_DIR"
-    # Propagate the chosen test number + observation delay into the nested session
-    # (the autostart re-invocation is a fresh process — env does not carry over).
-    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_TEST_DESKTOP" <<DEOF
-[Desktop Entry]
-Name=Splitscreen Test
-Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma TEST_NUMBER=${TEST_NUMBER:-all} SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}) ${SCRIPT_PATH} testFromPlasma
-Type=Application
-X-KDE-AutostartScript=true
-DEOF
-    _snapshot_session_env
-    echo "[testPlasma] autostart written, exec-ing startplasma-wayland" >> "$LOG"
-    exec dbus-run-session startplasma-wayland
+    # Fix #51 (D9): shared scaffolding. The chosen test number + observation
+    # delay ride the Exec= env list into the nested session (the autostart
+    # re-invocation is a fresh process — env does not carry over).
+    _start_nested_plasma testPlasma "$MCSS_AUTOSTART_TEST_DESKTOP" \
+        "Splitscreen Test" testFromPlasma exec \
+        "TEST_NUMBER=${TEST_NUMBER:-all}" \
+        "SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
 }
 
 # #58: PIDs matching $1 (pgrep -f pattern) that belong to OUR nested-session tree,
@@ -662,12 +668,11 @@ _mcss_stale_tree_pids() {
 # orchestrator) instead of the test harness. A1 (2026-06-23): without this case the
 # Steam shortcut fell through to a bare main() with NO nested compositor / no tiling,
 # so a real user got no splitscreen — the working windowing lived only in `test`.
-# NOTE: kept parallel to testPlasma (not refactored into a shared helper) to avoid
-# regressing the validated test path; DRY in a later cleanup.
+# Fix #51 (D9): the scaffolding tail is now the shared _start_nested_plasma
+# (the "DRY in a later cleanup" this header used to promise).
 # ─────────────────────────────────────────────────────────────────────────────
 launchFromPlasma() {
     echo "[launchFromPlasma] start (production)" >> "$LOG"
-    unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR XDG_SEAT_PATH XDG_SESSION_PATH || true
 
     # STARTUP GUARD (2026-06-27): reap any LEFTOVER nested session + MC instances BEFORE
     # starting a new one. A prior gamescope reset or failed launch can orphan a
@@ -734,34 +739,6 @@ launchFromPlasma() {
         systemctl --user stop 'app-MinecraftSplitscreen@*' 2>/dev/null || true
     fi
 
-    local W H
-    # #45/D7: canonical screen resolution (env-override-first cascade, 1280x800
-    # fallback) — replaces this site's private xdpyinfo one-liner.
-    mcss_resolve_screen
-    W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
-    echo "[launchFromPlasma] W=$W H=$H" >> "$LOG"
-
-    # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
-    # world-writable /tmp — it is injected into PATH and EXECUTED by startplasma.
-    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
-#!/bin/bash
-/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
-WEOF
-    chmod +x "$MCSS_KWIN_WRAPPER_PATH"
-    export PATH="$MCSS_HELPER_DIR:$PATH"
-
-    local SCRIPT_PATH
-    SCRIPT_PATH="$(readlink -f "$0")"
-    mkdir -p "$MCSS_AUTOSTART_DIR"
-    cat > "$MCSS_AUTOSTART_DIR/$MCSS_AUTOSTART_PROD_DESKTOP" <<DEOF
-[Desktop Entry]
-Name=Splitscreen
-Exec=env $(mcss_exec_env_string MCSS_NESTED_SESSION=plasma) ${SCRIPT_PATH} prodFromPlasma
-Type=Application
-X-KDE-AutostartScript=true
-DEOF
-    _snapshot_session_env
-
     # #15/D6 (UNTESTED 2026-06-27 diagnosis → fix 2026-07-01, no Deck access this
     # session): do NOT `exec` into the nested session. `exec` replaces THIS process, so
     # once inside, only code running FROM WITHIN the dying session (launchProdFromPlasma's
@@ -780,9 +757,10 @@ DEOF
     # THIS pid (the one it launched); we don't return until the reap loop confirms the
     # tree is actually gone, instead of exiting the instant the nested session's own logout
     # completes.
-    echo "[launchFromPlasma] autostart written (→ prodFromPlasma), launching nested session (supervised, non-exec)" >> "$LOG"
-    dbus-run-session startplasma-wayland &
-    local _session_pid=$!
+    # Fix #51 (D9): shared scaffolding, background (supervised) mode.
+    _start_nested_plasma launchFromPlasma "$MCSS_AUTOSTART_PROD_DESKTOP" \
+        "Splitscreen" prodFromPlasma background
+    local _session_pid="$_NESTED_SESSION_PID"
 
     # #60 follow-up (2026-07-05): the original wait here was a FLAT 60s budget from
     # session start — written for the post-game teardown but placed at launch, it

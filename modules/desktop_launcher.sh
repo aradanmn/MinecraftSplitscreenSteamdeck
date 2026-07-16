@@ -84,7 +84,8 @@ create_desktop_launcher() {
         # This provides a professional-looking icon that matches Steam integration
         if [[ ! -f "$icon_path" ]]; then
             print_progress "Downloading custom icon from SteamGridDB..."
-            if wget -O "$icon_path" "$icon_url" >/dev/null 2>&1; then
+            # Fix #51 (D14): fetch_url replaces the bare wget call.
+            if fetch_url "$icon_url" "$icon_path" >/dev/null 2>&1; then
                 print_success "✅ Custom icon downloaded successfully"
             else
                 print_warning "⚠️  Custom icon download failed - will use fallback icons"

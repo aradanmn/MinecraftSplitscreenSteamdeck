@@ -21,6 +21,73 @@
 : "${MCSS_MAX_MEM_MB:=3072}"
 : "${MCSS_MIN_MEM_MB:=512}"
 
+# write_mmc_pack_json: Write the PolyMC component stack for one instance.
+# Fix #51 (D8): single writer — this heredoc was copy-pasted x3
+# (create/install/update), a split-brain waiting to happen on upgrade.
+# Component order matters: LWJGL3 → Minecraft → Intermediary Mappings →
+# Fabric Loader.
+# Inputs:
+#   $1 — target path (…/mmc-pack.json)
+#   Globals: MC_VERSION, LWJGL_VERSION, FABRIC_VERSION (read)
+# Outputs:
+#   return — 0 on success, non-zero if the write failed
+write_mmc_pack_json() {
+    local target_path="$1"
+    cat > "$target_path" <<EOF
+{
+    "components": [
+        {
+            "cachedName": "LWJGL 3",
+            "cachedVersion": "$LWJGL_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "org.lwjgl3",
+            "version": "$LWJGL_VERSION"
+        },
+        {
+            "cachedName": "Minecraft",
+            "cachedRequires": [
+                {
+                    "suggests": "$LWJGL_VERSION",
+                    "uid": "org.lwjgl3"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "important": true,
+            "uid": "net.minecraft",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Intermediary Mappings",
+            "cachedRequires": [
+                {
+                    "equals": "$MC_VERSION",
+                    "uid": "net.minecraft"
+                }
+            ],
+            "cachedVersion": "$MC_VERSION",
+            "cachedVolatile": true,
+            "dependencyOnly": true,
+            "uid": "net.fabricmc.intermediary",
+            "version": "$MC_VERSION"
+        },
+        {
+            "cachedName": "Fabric Loader",
+            "cachedRequires": [
+                {
+                    "uid": "net.fabricmc.intermediary"
+                }
+            ],
+            "cachedVersion": "$FABRIC_VERSION",
+            "uid": "net.fabricmc.fabric-loader",
+            "version": "$FABRIC_VERSION"
+        }
+    ],
+    "formatVersion": 1
+}
+EOF
+}
+
 # create_instances: Create 4 identical Minecraft instances for splitscreen play
 # Uses manual instance creation for reliability
 # Each instance gets the same mods but separate configurations for splitscreen
@@ -127,61 +194,8 @@ EOF
             continue
         fi
 
-        cat > "$instance_dir/mmc-pack.json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
-
-        if [[ $? -ne 0 ]]; then
+        # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+        if ! write_mmc_pack_json "$instance_dir/mmc-pack.json"; then
             print_error "Failed to create mmc-pack.json for $instance_name"
             continue
         fi
@@ -243,61 +257,8 @@ install_fabric_and_mods() {
     if [[ ! -f "$pack_json" ]] || ! grep -q "net.fabricmc.fabric-loader" "$pack_json" 2>/dev/null; then
         print_progress "Adding Fabric loader to $instance_name..."
         
-        # Create complete component stack with proper dependency chain
-        # Order matters: LWJGL3 → Minecraft → Intermediary Mappings → Fabric Loader
-        cat > "$pack_json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
+        # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+        write_mmc_pack_json "$pack_json"
         print_success "Fabric loader v$FABRIC_VERSION installed"
     fi
     
@@ -330,30 +291,21 @@ EOF
             # Fetch all versions for this dependency
             local versions_url="${MODRINTH_API_BASE}/project/$mod_id/version"
             
-            if command -v curl >/dev/null 2>&1; then
-                print_debug "Trying curl for $mod_name"
-                if curl -s -m 15 -o "$temp_resolve_file" "$versions_url" 2>/dev/null; then
-                    if [[ -s "$temp_resolve_file" ]]; then
-                        resolve_data=$(cat "$temp_resolve_file")
-                        print_debug "curl succeeded, got $(wc -c < "$temp_resolve_file") bytes"
-                    else
-                        print_debug "curl returned empty file"
-                    fi
+            # Fix #51 (D14): fetch_url replaces the duplicated curl/wget
+            # branches; the debug logging structure is kept.
+            print_debug "Trying fetch_url for $mod_name"
+            if fetch_url "$versions_url" "$temp_resolve_file" \
+                2>/dev/null; then
+                if [[ -s "$temp_resolve_file" ]]; then
+                    resolve_data=$(cat "$temp_resolve_file")
+                    local resolve_bytes
+                    resolve_bytes=$(wc -c < "$temp_resolve_file")
+                    print_debug "fetch_url succeeded, got $resolve_bytes bytes"
                 else
-                    print_debug "curl failed"
+                    print_debug "fetch_url returned empty file"
                 fi
-            elif command -v wget >/dev/null 2>&1; then
-                print_debug "Trying wget for $mod_name"
-                if wget -q -O "$temp_resolve_file" --timeout=15 "$versions_url" 2>/dev/null; then
-                    if [[ -s "$temp_resolve_file" ]]; then
-                        resolve_data=$(cat "$temp_resolve_file")
-                        print_debug "wget succeeded, got $(wc -c < "$temp_resolve_file") bytes"
-                    else
-                        print_debug "wget returned empty file"
-                    fi
-                else
-                    print_debug "wget failed"
-                fi
+            else
+                print_debug "fetch_url failed"
             fi
             
             if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
@@ -477,11 +429,14 @@ EOF
         
         # DOWNLOAD MOD FILE: Attempt to download the mod .jar file
         # N12: sanitize the WHOLE filename to [A-Za-z0-9._-] (not just spaces) so a mod
-        # title containing '/' (or other separators) can't escape mods_dir via `wget -O`.
+        # title containing '/' (or other separators) can't escape mods_dir
+        # via the fetch_url output path.
         # Identical to the old space→underscore behavior for ordinary names.
         local safe_name="${mod_name//[^A-Za-z0-9._-]/_}"
         local mod_file="$mods_dir/${safe_name}.jar"
-        if wget -O "$mod_file" "$mod_url" >/dev/null 2>&1; then
+        # Fix #51 (D14): fetch_url replaces bare wget; timeout 0 — mod
+        # jars are bulk artifacts and must not be cut off mid-download.
+        if fetch_url "$mod_url" "$mod_file" 0 >/dev/null 2>&1; then
             print_success "Success: $mod_name"
         else
             print_warning "Failed: $mod_name"
@@ -777,61 +732,10 @@ handle_instance_update() {
         print_info "✅ Restored user's options.txt settings"
     fi
     
-    # Update mmc-pack.json with new component versions
-    cat > "$instance_dir/mmc-pack.json" <<EOF
-{
-    "components": [
-        {
-            "cachedName": "LWJGL 3",
-            "cachedVersion": "$LWJGL_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "org.lwjgl3",
-            "version": "$LWJGL_VERSION"
-        },
-        {
-            "cachedName": "Minecraft",
-            "cachedRequires": [
-                {
-                    "suggests": "$LWJGL_VERSION",
-                    "uid": "org.lwjgl3"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "important": true,
-            "uid": "net.minecraft",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Intermediary Mappings",
-            "cachedRequires": [
-                {
-                    "equals": "$MC_VERSION",
-                    "uid": "net.minecraft"
-                }
-            ],
-            "cachedVersion": "$MC_VERSION",
-            "cachedVolatile": true,
-            "dependencyOnly": true,
-            "uid": "net.fabricmc.intermediary",
-            "version": "$MC_VERSION"
-        },
-        {
-            "cachedName": "Fabric Loader",
-            "cachedRequires": [
-                {
-                    "uid": "net.fabricmc.intermediary"
-                }
-            ],
-            "cachedVersion": "$FABRIC_VERSION",
-            "uid": "net.fabricmc.fabric-loader",
-            "version": "$FABRIC_VERSION"
-        }
-    ],
-    "formatVersion": 1
-}
-EOF
-    
+    # Update mmc-pack.json with new component versions.
+    # Fix #51 (D8): single writer replaces the copy-pasted heredoc.
+    write_mmc_pack_json "$instance_dir/mmc-pack.json"
+
     print_success "✅ Instance update preparation complete for $instance_name"
     print_info "   → Mods cleared and ready for new installation"
     print_info "   → User settings preserved"

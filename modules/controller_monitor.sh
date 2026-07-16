@@ -77,6 +77,66 @@ _get_proc_input_path() {
     echo "${PROC_INPUT_DEVICES:-$CONTROLLER_MONITOR_DEFAULT_PROC_PATH}"
 }
 
+# parse_input_device_blocks: THE /proc/bus/input/devices block parser.
+# Fix #51 (D13): five hand-rolled copies of the blank-line block splitter
+# (each duplicating the "file may not end in a blank line" tail) collapse
+# into this one reader. Public API — instance_lifecycle's _vendor_of_js_node
+# consumes it too (controller_monitor sources first per runtime_modules.list).
+# Keying/filtering stays with each caller: this only captures blocks.
+# Inputs:
+#   $1 — proc file path (default: _get_proc_input_path)
+# Outputs:
+#   stdout — one line per device block, fields separated by the ASCII unit
+#     separator \x1f (NOT tab/space: those are IFS whitespace, so empty
+#     fields would collapse and shift columns on read):
+#     vendor, product, name, handlers, sysfs, phys, keybits
+#     vendor/product: 4-hex lowercase or empty if unparsed; name/handlers/
+#     sysfs/phys: the raw N:/H:/S:/P: values (may be empty); keybits: the
+#     "B: KEY=" bitmap only (other B: lines ignored). Consume with:
+#     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+#         keybits; do ...
+#   return — 1 if the proc file is missing/unreadable
+parse_input_device_blocks() {
+    local proc_path="${1:-$(_get_proc_input_path)}"
+    [[ -r "$proc_path" ]] || return 1
+
+    local in_block=0 line
+    local vendor="" product="" name="" handlers="" sysfs="" phys="" keybits=""
+    _emit_block() {
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$vendor" \
+            "$product" "$name" "$handlers" "$sysfs" "$phys" "$keybits"
+    }
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            (( in_block )) && _emit_block
+            in_block=0
+            vendor=""; product=""; name=""; handlers=""; sysfs=""; phys=""
+            keybits=""
+            continue
+        fi
+        in_block=1
+        case "$line" in
+            I:*)
+                [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] \
+                    && vendor="${BASH_REMATCH[1],,}"
+                [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]] \
+                    && product="${BASH_REMATCH[1],,}"
+                ;;
+            N:*) name="${line#N: Name=}" ;;
+            H:*) handlers="${line#H: Handlers=}" ;;
+            S:*) sysfs="${line#S: Sysfs=}" ;;
+            P:*) phys="${line#P: Phys=}" ;;
+            B:*)
+                # Only the KEY bitmap matters; ignore ABS=/REL=/MSC= etc.
+                [[ "$line" == "B: KEY="* ]] && keybits="${line#B: KEY=}"
+                ;;
+        esac
+    done < "$proc_path"
+    (( in_block )) && _emit_block
+    unset -f _emit_block
+    return 0
+}
+
 # _parse_steam_virtual_devices: Extract all 28de:11ff devices with jsN handlers.
 # Reads from the path returned by _get_proc_input_path.
 # Output: one line per device: "<eventN> <jsN>"
@@ -90,55 +150,14 @@ _parse_steam_virtual_devices() {
         return 1
     fi
 
-    local in_block=0
-    local vendor="" product=""
-    local handlers=""
-
-    local line
-    while IFS= read -r line; do
-        # Blank line terminates a block
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )) && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]]; then
-                local eventN=""
-                local jsN=""
-                # Parse handlers: "event29 js1" → extract eventN and jsN
-                for _h in $handlers; do
-                    case "$_h" in
-                        event*) eventN="${_h#event}" ;;
-                        js*)    jsN="${_h#js}" ;;
-                    esac
-                done
-                if [[ -n "$eventN" && -n "$jsN" ]]; then
-                    echo "$eventN $jsN"
-                fi
-            fi
-            in_block=0
-            vendor=""
-            product=""
-            handlers=""
-            continue
-        fi
-
-        in_block=1
-
-        case "$line" in
-            I:*)
-                # Parse Vendor=XXXX Product=XXXX
-                if [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]]; then
-                    vendor="${BASH_REMATCH[1],,}"  # lowercase
-                fi
-                if [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]]; then
-                    product="${BASH_REMATCH[1],,}"  # lowercase
-                fi
-                ;;
-            H:*)
-                handlers="${line#H: Handlers=}"
-                ;;
-        esac
-    done < "$proc_path"
-
-    # Handle the last block (if file doesn't end with blank line)
-    if (( in_block == 1 )) && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]]; then
+    # Fix #51 (D13): block capture via parse_input_device_blocks; this
+    # function keeps only its own keying (28de:11ff filter, LAST event/js
+    # token — no break, matching the original).
+    local vendor product name handlers sysfs phys keybits _h
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits; do
+        [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] || continue
+        [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]] || continue
         local eventN="" jsN=""
         for _h in $handlers; do
             case "$_h" in
@@ -149,7 +168,8 @@ _parse_steam_virtual_devices() {
         if [[ -n "$eventN" && -n "$jsN" ]]; then
             echo "$eventN $jsN"
         fi
-    fi
+    done < <(parse_input_device_blocks "$proc_path")
+    return 0
 }
 
 # _parse_all_gamepad_devices: Extract ALL devices with jsN handlers (any VID:PID).
@@ -164,119 +184,34 @@ _parse_all_gamepad_devices() {
         return 1
     fi
 
-    local in_block=0
-    local vendor="" product=""
-    local handlers="" sysfs="" phys=""
-
-    local line
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )); then
-                local jsN=""
-                for _h in $handlers; do
-                    case "$_h" in
-                        js*) jsN="${_h#js}" ; break ;;
-                    esac
-                done
-                if [[ -n "$jsN" ]]; then
-                    local eventN=""
-                    for _h in $handlers; do
-                        case "$_h" in
-                            event*) eventN="${_h#event}" ; break ;;
-                        esac
-                    done
-                    echo "$eventN $jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}"
-                fi
-            fi
-            in_block=0
-            vendor=""; product=""; handlers=""; sysfs=""; phys=""
-            continue
-        fi
-
-        in_block=1
-
-        case "$line" in
-            I:*)
-                if [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]]; then
-                    vendor="${BASH_REMATCH[1],,}"
-                fi
-                if [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]]; then
-                    product="${BASH_REMATCH[1],,}"
-                fi
-                ;;
-            H:*)
-                handlers="${line#H: Handlers=}"
-                ;;
-            S:*)
-                sysfs="${line#S: Sysfs=}"
-                ;;
-            P:*)
-                phys="${line#P: Phys=}"
-                ;;
-        esac
-    done < "$proc_path"
-
-    # Last block
-    if (( in_block == 1 )); then
+    # Fix #51 (D13): block capture via parse_input_device_blocks; this
+    # function keeps only its own keying (any block with a js handler,
+    # FIRST event/js token — break, matching the original).
+    local vendor product name handlers sysfs phys keybits _h
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits; do
         local jsN=""
         for _h in $handlers; do
             case "$_h" in
                 js*) jsN="${_h#js}" ; break ;;
             esac
         done
-        if [[ -n "$jsN" ]]; then
-            local eventN=""
-            for _h in $handlers; do
-                case "$_h" in
-                    event*) eventN="${_h#event}" ; break ;;
-                esac
-            done
-            echo "$eventN $jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}"
-        fi
-    fi
+        [[ -n "$jsN" ]] || continue
+        local eventN=""
+        for _h in $handlers; do
+            case "$_h" in
+                event*) eventN="${_h#event}" ; break ;;
+            esac
+        done
+        echo "$eventN $jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}"
+    done < <(parse_input_device_blocks "$proc_path")
+    return 0
 }
 
-# _find_internal_by_pad_name: Scan /proc/bus/input/devices for the 28de:11ff
-# entry whose Name line contains "pad 0" — Steam always names the built-in Deck
-# control "Microsoft X-Box 360 pad 0" regardless of enumeration order.
-# Returns the raw eventN number (no /dev/input/ prefix) or empty + return 1 on failure.
-_find_internal_by_pad_name() {
-    local proc_path
-    proc_path=$(_get_proc_input_path)
-    [[ ! -f "$proc_path" ]] && return 1
-
-    local in_block=0 vendor="" product="" devname="" handlers=""
-    local line
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )) \
-               && [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] \
-               && [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]] \
-               && [[ "$devname" == *"pad 0"* ]]; then
-                local eventN="" _h
-                for _h in $handlers; do
-                    case "$_h" in event*) eventN="${_h#event}"; break ;; esac
-                done
-                if [[ -n "$eventN" ]]; then
-                    echo "$eventN"
-                    return 0
-                fi
-            fi
-            in_block=0; vendor=""; product=""; devname=""; handlers=""
-            continue
-        fi
-        in_block=1
-        case "$line" in
-            I:*)
-                [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]] && vendor="${BASH_REMATCH[1],,}"
-                [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]] && product="${BASH_REMATCH[1],,}"
-                ;;
-            N:*) devname="${line#N: Name=}" ;;
-            H:*) handlers="${line#H: Handlers=}" ;;
-        esac
-    done < "$proc_path"
-    return 1
-}
+# (_find_internal_by_pad_name deleted — Fix #51 (D13): the legacy
+# "pad 0"-name-scan heuristic had zero callers, superseded by
+# _map_external_player_virtuals' inputN creation-order mapping. Name-keyed
+# scans, if ever needed again, ride parse_input_device_blocks' name field.)
 
 # _eventN_to_virtual_idx: Convert eventN to 1-based position in the sorted
 # virtual device list. Returns the index (1-based) or 1 on failure.
@@ -508,51 +443,15 @@ _list_raw_external_pads() {
         records+=("$_inputn $_eventN $_jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}")
     }
 
-    local in_block=0
-    local vendor="" product=""
-    local handlers="" sysfs="" phys="" keybits=""
-    local line
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            if (( in_block == 1 )); then
-                _consider
-            fi
-            in_block=0
-            vendor=""; product=""; handlers=""; sysfs=""; phys=""; keybits=""
-            continue
-        fi
-
-        in_block=1
-
-        case "$line" in
-            I:*)
-                if [[ "$line" =~ Vendor=([0-9a-fA-F]{4}) ]]; then
-                    vendor="${BASH_REMATCH[1],,}"
-                fi
-                if [[ "$line" =~ Product=([0-9a-fA-F]{4}) ]]; then
-                    product="${BASH_REMATCH[1],,}"
-                fi
-                ;;
-            H:*)
-                handlers="${line#H: Handlers=}"
-                ;;
-            S:*)
-                sysfs="${line#S: Sysfs=}"
-                ;;
-            P:*)
-                phys="${line#P: Phys=}"
-                ;;
-            B:*)
-                # Only the KEY bitmap matters; ignore ABS=/REL=/MSC= etc.
-                [[ "$line" == "B: KEY="* ]] && keybits="${line#B: KEY=}"
-                ;;
-        esac
-    done < "$proc_path"
-
-    # Last block (file may not end with a blank line).
-    if (( in_block == 1 )); then
+    # Fix #51 (D13): block capture via parse_input_device_blocks — the read
+    # vars keep their names so _consider's dynamic-scope reads are unchanged.
+    # Process substitution (not a pipe): _consider appends to `records` and
+    # must run in THIS shell (see the subshell-trap note at the top).
+    local vendor product name handlers sysfs phys keybits
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits; do
         _consider
-    fi
+    done < <(parse_input_device_blocks "$proc_path")
     unset -f _consider
 
     # step 6: SHARED-PARENT DEDUP — keep the lowest jsN per parent device.

@@ -59,8 +59,9 @@ get_required_java_version() {
     
     # Get version manifest from Mojang API (silent)
     local manifest_url="https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
     local manifest_json
-    manifest_json=$(curl -s "$manifest_url" 2>/dev/null)
+    manifest_json=$(fetch_url "$manifest_url" - 2>/dev/null)
     
     if [[ -z "$manifest_json" ]]; then
         # Fallback logic based on known Minecraft Java requirements
@@ -79,8 +80,9 @@ get_required_java_version() {
     fi
     
     # Fetch the specific version manifest (silent)
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
     local version_json
-    version_json=$(curl -s "$version_url" 2>/dev/null)
+    version_json=$(fetch_url "$version_url" - 2>/dev/null)
     
     if [[ -z "$version_json" ]]; then
         # Fallback logic
@@ -120,8 +122,11 @@ download_and_install_jdk() {
 
     print_progress "Querying Eclipse Temurin API for JDK $required_version..."
 
+    # Fix #51 (D14): fetch_url replaces the bare curl call.
     local api_response
-    api_response=$(curl -fsS "${adoptium_api}?os=linux&architecture=${arch}&image_type=jdk" 2>/dev/null)
+    api_response=$(fetch_url \
+        "${adoptium_api}?os=linux&architecture=${arch}&image_type=jdk" - \
+        2>/dev/null)
 
     if [[ -z "$api_response" ]]; then
         print_error "Failed to reach Adoptium API. Check your internet connection."

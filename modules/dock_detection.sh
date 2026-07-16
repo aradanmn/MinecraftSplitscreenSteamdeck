@@ -18,6 +18,12 @@ set -euo pipefail
 #   DOCK_DETECTION_DRM_PATH  — override /sys/class/drm path (for testing)
 # =============================================================================
 
+# #51/D17: the display-query fallback rides runtime_context's
+# mcss_query_displays. Sourcing it here is idempotent (process-local
+# sentinels) and makes standalone sourcing (unit tests) behave like the
+# launcher prologue, which sources it first.
+source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
+
 # --- Module-level constants ---
 readonly DOCK_DETECTION_DEFAULT_DRM_PATH="/sys/class/drm"
 readonly DOCK_DETECTION_POLL_INTERVAL_S=3
@@ -74,89 +80,38 @@ _detect_via_drm() {
     return 0
 }
 
-# _detect_via_wlr_randr: Use wlr-randr if available.
-# Returns: "docked" if external display is connected, else "handheld".
-_detect_via_wlr_randr() {
-    echo "[dock_detection] Trying wlr-randr fallback..." >&2
+# _detect_via_display_query: docked iff any ENABLED non-eDP output exists.
+# Fix #51 (D17): the wlr-randr and kscreen-doctor parsers that lived here as
+# two near-copies now ride runtime_context's mcss_query_displays (which also
+# owns the kscreen-doctor KDE-session gate + timeout — this fallback used to
+# call it bare and could hang a Game Mode launch the same way #78's probe
+# cascade did). Bonus fix: the old wlr-randr copy matched "(current)" on
+# per-mode lines, which never name a connector — the INTERNAL panel's own
+# mode line could therefore read as docked; normalized per-output records
+# make the eDP filter structural.
+# Returns: "docked"/"handheld" on stdout, or exit 1 if no tool answered.
+_detect_via_display_query() {
+    echo "[dock_detection] Trying display-query fallback (wlr-randr/kscreen-doctor)..." >&2
 
-    if ! command -v wlr-randr >/dev/null 2>&1; then
-        echo "[dock_detection] wlr-randr not available" >&2
-        return 1
-    fi
-
-    local output
-    output=$(wlr-randr 2>/dev/null || true)
-
-    if [[ -z "$output" ]]; then
-        echo "[dock_detection] wlr-randr produced no output" >&2
-        return 1
-    fi
-
-    # Look for any non-eDP display that is enabled / current
-    # wlr-randr output lines look like: "HDMI-A-1 ... 1920x1080 ... (current)"
-    local line
-    while IFS= read -r line; do
-        # Skip eDP lines
-        if [[ "$line" == *eDP* ]]; then
-            continue
-        fi
-        # Check for "current" or "enabled" indicator
-        if [[ "$line" == *"current"* || "$line" == *"enabled"* ]]; then
-            # Extract display name (first word)
-            local name
-            name=$(echo "$line" | awk '{print $1}')
-            echo "[dock_detection] Found active non-eDP output via wlr-randr: $name → docked" >&2
+    local name enabled res saw_any=0
+    while read -r name enabled res; do
+        [[ -n "$name" ]] || continue
+        saw_any=1
+        [[ "$name" == *eDP* ]] && continue
+        if [[ "$enabled" == "enabled" ]]; then
+            echo "[dock_detection] Found active non-eDP output: $name (${res}) → docked" >&2
             echo "docked"
             return 0
         fi
-    done <<< "$output"
+    done < <(mcss_query_displays wlr-randr kscreen-doctor)
 
-    echo "[dock_detection] No active non-eDP outputs via wlr-randr → handheld" >&2
-    echo "handheld"
-    return 0
-}
-
-# _detect_via_kscreen_doctor: Use kscreen-doctor if available (KDE-specific).
-# Returns: "docked" if external display is enabled, else "handheld".
-_detect_via_kscreen_doctor() {
-    echo "[dock_detection] Trying kscreen-doctor fallback..." >&2
-
-    if ! command -v kscreen-doctor >/dev/null 2>&1; then
-        echo "[dock_detection] kscreen-doctor not available" >&2
-        return 1
+    if (( saw_any )); then
+        echo "[dock_detection] No active non-eDP outputs → handheld" >&2
+        echo "handheld"
+        return 0
     fi
-
-    local output
-    output=$(kscreen-doctor -o 2>/dev/null || true)
-
-    if [[ -z "$output" ]]; then
-        echo "[dock_detection] kscreen-doctor produced no output" >&2
-        return 1
-    fi
-
-    # Parse kscreen-doctor output. Lines look like:
-    # Output: 1 eDP-1 enabled ...
-    # Output: 2 HDMI-A-1 enabled ...
-    local line
-    while IFS= read -r line; do
-        # Skip eDP lines
-        if [[ "$line" == *eDP* ]]; then
-            continue
-        fi
-        if [[ "$line" == *"enabled"* ]]; then
-            # H14: "Output: <index> <name> enabled …" → name is field 3, not 2 ($2 is
-            # the output index). Only used in the log line, but get it right.
-            local name
-            name=$(echo "$line" | awk '{print $3}')
-            echo "[dock_detection] Found enabled non-eDP output via kscreen-doctor: $name → docked" >&2
-            echo "docked"
-            return 0
-        fi
-    done <<< "$output"
-
-    echo "[dock_detection] No enabled non-eDP outputs via kscreen-doctor → handheld" >&2
-    echo "handheld"
-    return 0
+    echo "[dock_detection] display-query tools unavailable or silent" >&2
+    return 1
 }
 
 # --- Public API ---
@@ -183,14 +138,9 @@ get_display_mode() {
         return 0
     fi
 
-    # Method 2: wlr-randr fallback
-    if result=$(_detect_via_wlr_randr); then
-        echo "$result"
-        return 0
-    fi
-
-    # Method 3: kscreen-doctor fallback
-    if result=$(_detect_via_kscreen_doctor); then
+    # Method 2: normalized display query (wlr-randr, then kscreen-doctor —
+    # same tool order the old per-tool fallbacks tried). Fix #51 (D17).
+    if result=$(_detect_via_display_query); then
         echo "$result"
         return 0
     fi
