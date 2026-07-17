@@ -5,6 +5,19 @@
 # PolyMC setup functions
 # PolyMC is used as the primary launcher for splitscreen gameplay
 
+# --- Module-level constants ---
+# Fix #87: canonical home is install-minecraft-splitscreen.sh's constants
+# block (near MCSS_MAX_PLAYERS); this module's own := guard exists so
+# configure_polymc_defaults() never writes an empty MaxMemAlloc/MinMemAlloc
+# if this module is ever sourced without instance_creation.sh (already true
+# of tests/test_installer.sh, which sources this file standalone) — the
+# previous version had NO fallback here at all and relied entirely on
+# instance_creation.sh's source order.
+# PAIRED WITH install-minecraft-splitscreen.sh (same values there and in
+# modules/instance_creation.sh).
+: "${MCSS_MAX_MEM_MB:=3072}"
+: "${MCSS_MIN_MEM_MB:=512}"
+
 # download_prism_launcher: Download the latest PolyMC AppImage
 # We download it to the target directory for splitscreen launcher usage
 download_prism_launcher() {
