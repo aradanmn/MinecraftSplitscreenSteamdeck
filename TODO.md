@@ -26,6 +26,22 @@ BYPASS them, plus missing placement rules for new code.
 - **Suggested order (audit §7):** #86 → #85+#87 → #47+#88 together → #90 (own
   deletions-only PR, stage1 smoke + one prod launch) → #89/#91 (merge BEFORE the
   #52 retrofit so we don't retrofit files about to disappear).
+- **[CODE] Fix batch implemented + adversarially verified — 2026-07-17, NOT
+  Deck-validated.** Six commits on this branch (Sonnet implemented, Fable
+  verified): #86 (1ae42c0), #85 (0920e93 — `mcss_resolve_screen --refresh`
+  post-mode-change), #87 (026f165), #47+#88 (82bf2aa — token helper in
+  utilities.sh; canonical ladders `match_modrinth_version`/
+  `match_curseforge_version`; three pre-existing divergences preserved by
+  parameter, documented at each site), #90 (1c138fd launcher −461 lines,
+  dead fallbacks now hard-error; 345a469 dex −8 unused wrappers+actions,
+  3 kept as annotated test-only). Verification caught and fixed one real
+  bug pre-push: 17 API URLs with in-string line continuations embedding
+  whitespace (would have broken every Modrinth/CurseForge call; amended
+  into 82bf2aa). test_installer baseline 10/10→9/9 (T7.6 asserted the
+  deleted `ensure_bwrap_installed` shim existed — CI unaffected, suite is
+  informational there). All gated suites at baseline; `--version` smoke OK.
+  **NEXT: Deck-validate (stage1 smoke + one prod launch + one mod-check
+  install run), then close #85/#86/#87/#47/#88/#90. #89/#91 not started.**
 - Supersedes the stale "Module boundary cleanup — dex.sh vs window_manager.sh"
   section below: TinyWM/gamescope_windowing items there are already done;
   the still-live dex items are folded into #90.
