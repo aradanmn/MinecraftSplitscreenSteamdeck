@@ -37,7 +37,13 @@ scripts may duplicate only with a `# PAIRED WITH` comment. Fix ordering in audit
 BEFORE the #52 retrofit.
 
 **Status:** docs + TODO/MEMORY on `claude/script-diagram-refactor-9f3qw6`; issues
-live. No code changed — every fix goes through its issue per the normal flow.
+live. Same-day follow-up: #85/#86/#87/#47/#88/#90 implemented on this branch in
+six commits (implementer/verifier split: Sonnet wrote, Fable adversarially
+verified before every push — the verify pass caught 17 malformed API URLs from
+in-string line continuations before they ever hit origin). All [CODE], NOT
+Deck-validated; #89/#91 (structural merges) deliberately not started — they
+reshape the installer module layout and deserve their own pass after this
+batch validates on hardware.
 
 ---
 
