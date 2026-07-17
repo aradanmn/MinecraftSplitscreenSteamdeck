@@ -45,6 +45,32 @@ Deck-validated; #89/#91 (structural merges) deliberately not started — they
 reshape the installer module layout and deserve their own pass after this
 batch validates on hardware.
 
+## 2026-07-17 — A/B benchmark harness for the mod-set/JVM-flags change
+
+**What:** New `tests/benchmark/` tooling to Deck-validate the standard-mod-set +
+JVM-flags change with numbers instead of vibes: `sampler.sh` (background /proc+sysfs
+metrics sampler — CPU, RAM, swap, PSI, GPU busy/VRAM, APU temp, per-slot java
+CPU/RSS/IO via the state file), `summarize.sh` (per-segment stats + A/B delta
+tables), `mangohud-wrapper.sh`/`mangohud-ctl.sh` (probe-gated objective FPS via
+PolyMC WrapperCommand, fail-open to F3-only), `RUNBOOK.md` (the full protocol:
+baseline 1P→4P on the existing install → checklist-gated full torch → fresh install
+from the branch → identical re-run → hard/soft merge gates), `RESULTS-TEMPLATE.md`.
+
+**Why:** The 2026-07-17 mod/flags entries below are NOT Deck-validated; maintainer
+wants a measured before/after (and the SPEC §3a D6 "no OOM at 4P / RAM budget" check
+formally closed) before merging to main.
+
+**Decision:** Zero module changes — MangoHud rides `OverrideCommands=true` +
+`WrapperCommand` in instance.cfg (survives spawn's JvmArgs rewrite; logs must live
+under $HOME because each slot's /tmp is a private tmpfs). Execution model: a driver
+Claude session on the Deck runs the runbook, the human plays; sampler CSVs stay on
+the Deck, summary tables get committed as `docs/BENCH-AB-<date>.md`.
+
+**Status:** tooling smoke-tested off-Deck (synthetic CSV math verified); benchmark
+itself not yet run.
+
+---
+
 ## 2026-07-17 — Standard performance mod set (all [CODE], NOT Deck-validated)
 
 **What:** Replaced `mods.conf`'s optional Sodium-extras/QoL mods (Sodium Options
