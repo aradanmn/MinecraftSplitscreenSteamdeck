@@ -37,6 +37,19 @@
 # - Creates backup before modifications
 # - Uses official Steam binary format handling
 # - Handles multiple Steam installation types (native, Flatpak)
+
+# --- Module-level constants ---
+# Fix #86: named literals for the shutdown wait/poll sequence (#86 item e).
+# Grace period after `steam -shutdown` before force-closing the client.
+readonly STEAM_INTEGRATION_GRACEFUL_SHUTDOWN_WAIT_S=3
+# Settle time after `pkill -x steam` before the exit-poll loop starts.
+readonly STEAM_INTEGRATION_FORCE_CLOSE_WAIT_S=2
+# Poll interval while waiting for Steam to fully exit.
+readonly STEAM_INTEGRATION_SHUTDOWN_POLL_INTERVAL_S=1
+# Max poll iterations (~10s at the interval above) before giving up and
+# proceeding anyway.
+readonly STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS=10
+
 setup_steam_integration() {
     print_header "🎯 STEAM INTEGRATION SETUP"
     
@@ -94,13 +107,13 @@ setup_steam_integration() {
                 # Steam Deck-aware shutdown approach
                 print_info "   → Attempting graceful Steam shutdown..."
                 steam -shutdown 2>/dev/null || true
-                sleep 3
+                sleep "$STEAM_INTEGRATION_GRACEFUL_SHUTDOWN_WAIT_S"
 
                 # Only force close the actual Steam client process, avoiding SteamOS components
                 print_info "   → Force closing Steam client process (preserving SteamOS)..."
                 # Use exact process name matching to avoid killing SteamOS processes
                 pkill -x "steam" 2>/dev/null || true
-                sleep 2
+                sleep "$STEAM_INTEGRATION_FORCE_CLOSE_WAIT_S"
             else
                 print_info "   → Steam is not running - shortcuts database is safe to edit"
             fi
@@ -112,7 +125,7 @@ setup_steam_integration() {
             # Check for Steam processes and wait until Steam fully exits
             # This prevents corruption of the shortcuts database during modification
             local shutdown_attempts=0
-            local max_attempts=10
+            local max_attempts="$STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS"
             
             while [[ $shutdown_attempts -lt $max_attempts ]]; do
                 # Check for Steam client processes (Steam Deck-safe approach)
@@ -139,7 +152,7 @@ setup_steam_integration() {
                     break
                 fi
                 
-                sleep 1
+                sleep "$STEAM_INTEGRATION_SHUTDOWN_POLL_INTERVAL_S"
                 shutdown_attempts=$((shutdown_attempts + 1))
             done
             

@@ -108,7 +108,12 @@ _set_mode() {
     # after modules load, and the lock must follow the file actually locked).
     local lock_file="${state}.lock"
     (
-        flock -w 5 9 || { echo "[orchestrator] WARNING: state lock timeout in _set_mode — skipping" >&2; exit 0; }
+        # Fix #86: named timeout instead of a bare literal (#86 item a).
+        flock -w "${MCSS_STATE_LOCK_TIMEOUT_S:-5}" 9 || {
+            echo "[orchestrator] WARNING: state lock timeout in" \
+                 "_set_mode — skipping" >&2
+            exit 0
+        }
         if [[ ! -f "$state" ]] || ! jq -e . "$state" >/dev/null 2>&1; then
             echo "[orchestrator] _set_mode: state file missing/invalid at $state — initializing default" >&2
             # Fix #51 (D11): _ensure_state_file is the ONE initializer (#46);
