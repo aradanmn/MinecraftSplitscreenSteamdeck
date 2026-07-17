@@ -233,7 +233,9 @@ test_t7_8() {
 }
 
 # =============================================================================
-# T7.9 — load_mods_config() populates MOD_DEPS_BY_NAME from mods.conf
+# T7.9 — mods.conf standard performance set: ModernFix uses the mVUS fork
+# (not the original, which stopped cutting Fabric builds for current MC
+# versions) and Starlight (archived, capped at 1.20.4) stays out.
 # =============================================================================
 test_t7_9() {
     local conf="$REPO_ROOT/mods.conf"
@@ -242,18 +244,22 @@ test_t7_9() {
         return
     fi
 
-    # Parse the deps field ourselves and check a known entry.
-    # "Reese's Sodium Options" should declare "Sodium,Sodium Options API"
-    local deps_line
-    deps_line=$(grep "Reese's Sodium Options" "$conf" | head -1)
-    local deps_field
-    deps_field=$(echo "$deps_line" | cut -d'|' -f5)
+    local modernfix_line
+    modernfix_line=$(grep -E '^required\|ModernFix\|' "$conf" | head -1)
 
-    if [[ "$deps_field" == *"Sodium"* ]]; then
-        _pass "T7.9 — mods.conf deps field for Reese's Sodium Options contains Sodium"
+    if [[ "$modernfix_line" == *"TjSm1wrD"* ]]; then
+        : # expected — mVUS fork
     else
-        _fail "T7.9" "expected deps field to contain 'Sodium', got: '${deps_field}'"
+        _fail "T7.9" "expected required ModernFix line to use mVUS id TjSm1wrD, got: '${modernfix_line}'"
+        return
     fi
+
+    if grep -qi '^[^#]*|Starlight|' "$conf"; then
+        _fail "T7.9" "Starlight must not be re-added — Fabric port is archived and capped at MC 1.20.4"
+        return
+    fi
+
+    _pass "T7.9 — mods.conf uses ModernFix-mVUS (TjSm1wrD) and excludes Starlight"
 }
 
 # =============================================================================
