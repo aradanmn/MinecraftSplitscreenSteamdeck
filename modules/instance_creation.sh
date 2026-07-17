@@ -26,6 +26,15 @@
 : "${MCSS_MAX_MEM_MB:=3072}"
 : "${MCSS_MIN_MEM_MB:=512}"
 
+# Per-instance JVM GC flags (Aikar's flags, tuned for a ~3G heap). Written into
+# each instance.cfg as JvmArgs with OverrideJavaArgs=true. Heap sizing (-Xms/-Xmx)
+# is deliberately NOT here — PolyMC injects it from Min/MaxMemAlloc above; adding
+# it to JvmArgs too would duplicate the option on the java command line.
+# spawn_instance (instance_lifecycle.sh) appends the per-slot window-title
+# property to these at launch — it must merge, not overwrite (see #2.5 there).
+# Override via MCSS_JVM_GC_FLAGS.
+: "${MCSS_JVM_GC_FLAGS:=-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1}"
+
 # write_mmc_pack_json: Write the PolyMC component stack for one instance.
 # Fix #51 (D8): single writer — this heredoc was copy-pasted x3
 # (create/install/update), a split-brain waiting to happen on upgrade.
@@ -182,13 +191,14 @@ name=Player $i
 OverrideCommands=false
 OverrideConsole=false
 OverrideGameTime=false
-OverrideJavaArgs=false
+OverrideJavaArgs=true
 OverrideJavaLocation=true
 OverrideMCLaunchMethod=false
 OverrideMemory=true
 OverrideNativeWorkarounds=false
 OverrideWindow=false
 JavaPath=$JAVA_PATH
+JvmArgs=${MCSS_JVM_GC_FLAGS}
 MinMemAlloc=${MCSS_MIN_MEM_MB}
 MaxMemAlloc=${MCSS_MAX_MEM_MB}
 IntendedVersion=$MC_VERSION
