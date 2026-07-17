@@ -22,7 +22,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
-readonly WINDOW_MANAGER_WINDOW_WAIT_TIMEOUT_S=30
+# Fix #86: WINDOW_MANAGER_WINDOW_WAIT_TIMEOUT_S deleted — zero references
+# repo-wide (dead constant, #86 item c).
 
 # --- Internal functions ---
 

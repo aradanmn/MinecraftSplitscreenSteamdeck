@@ -44,7 +44,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 # --- Module-level constants ---
 readonly INSTANCE_LIFECYCLE_POLL_INTERVAL_S=0.5
 readonly INSTANCE_LIFECYCLE_POLL_TIMEOUT_S=60
-readonly INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S=30
+# Fix #86: INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S deleted — zero references
+# repo-wide (dead constant, #86 item c).
 readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
 # Title-keeper: after the window is found, Minecraft's own startup overwrites the
 # caption (SplitscreenP<slot> → "Minecraft* <ver>" — the flash). Re-assert our name
@@ -607,8 +608,10 @@ update_slot_state() {
     # #50: use-time derivation from the single-resolved state path (see orchestrator).
     local lock_file="${state_file}.lock"
     (
-        flock -w 5 9 || {
-            echo "[instance_lifecycle] WARNING: state-file lock timeout updating slot $slot" >&2
+        # Fix #86: named timeout instead of a bare literal (#86 item a).
+        flock -w "${MCSS_STATE_LOCK_TIMEOUT_S:-5}" 9 || {
+            echo "[instance_lifecycle] WARNING: state-file lock" \
+                 "timeout updating slot $slot" >&2
             exit 1
         }
         local updated

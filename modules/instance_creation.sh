@@ -229,7 +229,9 @@ EOF
     
     # Re-enable strict error handling after instance creation
     set -e
-    print_success "Instance creation completed - all 4 instances created successfully"
+    # Fix #86: log string uses $MCSS_MAX_PLAYERS, not a bare "4" (#86 item d).
+    print_success "Instance creation completed - all \
+$MCSS_MAX_PLAYERS instances created successfully"
 }
 
 # Install Fabric mod loader and download all selected mods for an instance

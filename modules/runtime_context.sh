@@ -165,10 +165,14 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     # enumeration and sandbox masking diverge.
     export MCSS_RAW_BINDING="${CONTROLLER_MONITOR_RAW_BINDING:-${MCSS_RAW_BINDING:-1}}"
     export MCSS_STATE_LOCK_TIMEOUT_S="${MCSS_STATE_LOCK_TIMEOUT_S:-5}"
+    # Fix #86: name the display-probe timeout (#86 item b) — was a bare
+    # `timeout 3` at each of the four probe sites below.
+    export MCSS_DISPLAY_PROBE_TIMEOUT_S="${MCSS_DISPLAY_PROBE_TIMEOUT_S:-3}"
 
     readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
              MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
-             MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S
+             MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S \
+             MCSS_DISPLAY_PROBE_TIMEOUT_S
     _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
 fi
 
@@ -336,7 +340,9 @@ mcss_query_displays() {
         case "$_tool" in
             kscreen-doctor)
                 (( _kde_session )) || continue
-                _raw=$(timeout 3 kscreen-doctor -o 2>/dev/null || true)
+                # Fix #86: named probe timeout (#86 item b).
+                _raw=$(timeout "$MCSS_DISPLAY_PROBE_TIMEOUT_S" \
+                    kscreen-doctor -o 2>/dev/null || true)
                 # "Output: 1 eDP-1 enabled ... Modes: 0:1280x800@60*! ..."
                 # H14: name is field 3 ($2 is the index). enabled matched
                 # un-anchored — kscreen-doctor wraps the word in ANSI color
@@ -353,7 +359,9 @@ mcss_query_displays() {
                     }')
                 ;;
             wlr-randr)
-                _raw=$(timeout 3 wlr-randr 2>/dev/null || true)
+                # Fix #86: named probe timeout (#86 item b).
+                _raw=$(timeout "$MCSS_DISPLAY_PROBE_TIMEOUT_S" \
+                    wlr-randr 2>/dev/null || true)
                 # Per-output blocks: non-indented "NAME ..." header, then
                 # indented "Enabled: yes" and "WxH px, ... (current)" lines.
                 _out=$(echo "$_raw" | awk '
@@ -370,7 +378,9 @@ mcss_query_displays() {
                     END { if (name != "") emit() }')
                 ;;
             xrandr)
-                _raw=$(timeout 3 xrandr --query 2>/dev/null || true)
+                # Fix #86: named probe timeout (#86 item b).
+                _raw=$(timeout "$MCSS_DISPLAY_PROBE_TIMEOUT_S" \
+                    xrandr --query 2>/dev/null || true)
                 # "NAME connected [primary] WxH+X+Y ..." — the geometry is
                 # present only while the output is active. " disconnected"
                 # does NOT match / connected/ (no space before "connected").
@@ -484,7 +494,9 @@ mcss_resolve_screen() {
         fi
         local _out
         if [[ -z "$_w" ]] && command -v xdpyinfo >/dev/null 2>&1; then
-            _out=$(timeout 3 xdpyinfo 2>/dev/null | grep 'dimensions:' || true)
+            # Fix #86: named probe timeout (#86 item b).
+            _out=$(timeout "$MCSS_DISPLAY_PROBE_TIMEOUT_S" xdpyinfo \
+                2>/dev/null | grep 'dimensions:' || true)
             [[ "$_out" =~ ([0-9]+)x([0-9]+) ]] && { _w="${BASH_REMATCH[1]}"; _h="${BASH_REMATCH[2]}"; }
         fi
     fi
