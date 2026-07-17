@@ -57,9 +57,9 @@ knowing about slots).
 | Controller enumeration/identity | `controller_monitor.sh` | `/proc/bus/input` parsing lives here only |
 | Display topology change detection | `dock_detection.sh` | DRM sysfs + inotify; probing goes through `mcss_query_displays` |
 | Slot death detection | `watchdog.sh` | reads state via accessors; emits `SLOT_DIED`; fixes nothing itself |
-| Network transport (installer) | `utilities.sh` `fetch_url`/`fetch_url_status` | raw curl/wget allowed ONLY in the pre-utilities bootstrap (`download_modules`) — nowhere else (#47/#88 debt) |
+| Network transport (installer) | `utilities.sh` `fetch_url`/`fetch_url_status`/`get_curseforge_api_token` | raw curl/wget allowed ONLY in the pre-utilities bootstrap (`download_modules`) — nowhere else. Fix #47 moved the CurseForge token fetch+decrypt here too (transport-layer concern, same reasoning as fetch_url) — mod_management.sh and version_management.sh call in, no more per-site copies. |
 | Installer UX output | `utilities.sh` `print_*` | modules log to stderr with `[module] ` prefix (STYLE-GUIDE golden rule) |
-| Mod platform APIs (Modrinth/CurseForge) | `mod_management.sh` | version-match policy + token handling live here ONCE; version_management calls in, doesn't re-implement (#88) |
+| Mod platform APIs (Modrinth/CurseForge) | `mod_management.sh` | version-match policy lives here ONCE (`match_modrinth_version`/`match_curseforge_version`/`_version_fallback_allowed`, Fix #88); token *handling* (fetch+decrypt) lives in utilities.sh instead — see the Network transport row; mod_management.sh only consumes `get_curseforge_api_token`. version_management.sh calls both, doesn't re-implement. |
 | Tool-version resolution (MC→Java/LWJGL/Fabric) | `version_management.sh` | target home after the #91 merge |
 | Steam/desktop registration | `steam_integration.sh`/`desktop_launcher.sh` (→ one module per #91) | Python gets values via env (`MCSS_*`), never re-derives paths |
 
