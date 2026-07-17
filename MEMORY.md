@@ -63,11 +63,26 @@ whether 6 more required mods will actually resolve for the offered MC version.
 on a 16GB Deck; wanted its recommended perf mod set adopted as the default and
 the unrelated optional QoL mods dropped.
 
+**What (2):** Adopted the doc's Aikar-style JVM GC flags as
+`MCSS_JVM_GC_FLAGS` (`instance_creation.sh`) — written into every instance.cfg
+as `JvmArgs` with `OverrideJavaArgs=true`, minus `-Xms/-Xmx` which PolyMC
+injects from `Min/MaxMemAlloc`. Doing so exposed two runtime bugs in
+`instance_lifecycle.sh` §2.5: (a) `setInstanceCfgValue` was a "preserved
+function" of the pre-modular launcher that never made it into any module, so
+spawn_instance's calls to it died with exit 127 under `set -e` — defined it;
+(b) the spawn-time JvmArgs write clobbered the whole value with just the
+window-title property — factored `_set_jvm_window_title` which merges the title
+into the existing flags (and strips stale title tokens on re-spawn). Tests:
+T4.13, plus T7.9 regression on the mods.conf decisions. Research doc archived
+at `docs/RESEARCH-4X-INSTANCE-PERF-2026-07-17.md`.
+
 **Decision:** Left Starlight out — its Fabric port is archived, capped at MC
 1.20.4, and would never resolve against the recent versions this installer
 targets; confirmed with the user before dropping it. The existing per-instance
 JVM heap sizing (`instance_creation.sh`: `MCSS_MAX_MEM_MB=3072`, 4×3G ≈ 12GiB
-on 16GB) already matches the doc's memory-budget guidance, so left untouched.
+on 16GB) already matches the doc's memory-budget guidance, so left untouched;
+kept `MCSS_MIN_MEM_MB=512` over the doc's `-Xms2G` because `-XX:+AlwaysPreTouch`
+would commit 4×2G = 8GiB at launch.
 
 **Status:** pushed to `claude/standard-install-mods-yfox41`, awaiting Deck
 validation per this project's standing rule (SPEC §3a/§3b).

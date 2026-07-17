@@ -679,6 +679,42 @@ get_window_id() {
     _get_slot_field "$1" wid
 }
 
+# Set (or replace) a key=value line in a PolyMC instance.cfg.
+# Was a "preserved function" of the pre-modular launcher that never made it into
+# a module — spawn_instance has been calling it since the split, so on the Deck
+# the call died with exit 127 under set -e. Values must not contain newlines;
+# '&', '|' and '\' are escaped for the sed replacement (JVM flags contain none,
+# but don't let a future value corrupt the cfg).
+# $1 = cfg path, $2 = key, $3 = value
+setInstanceCfgValue() {
+    local cfg="$1" key="$2" value="$3"
+    local escaped
+    escaped=$(printf '%s' "$value" | sed -e 's/[\\&|]/\\&/g')
+    if grep -q "^${key}=" "$cfg" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${escaped}|" "$cfg"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$cfg"
+    fi
+}
+
+# Merge the per-slot window-title property into an instance.cfg's JvmArgs,
+# preserving whatever flags are already there — the installer writes the
+# standard GC flag set (instance_creation.sh:MCSS_JVM_GC_FLAGS) and a plain
+# overwrite would strip it on every spawn. Any previous title token is removed
+# first so re-spawns don't accumulate stale titles.
+# $1 = cfg path, $2 = slot
+_set_jvm_window_title() {
+    local cfg_path="$1" slot="$2"
+    local existing_jvm_args
+    existing_jvm_args=$(grep -m1 '^JvmArgs=' "$cfg_path" 2>/dev/null | cut -d= -f2- || true)
+    existing_jvm_args=$(printf '%s' "$existing_jvm_args" \
+        | sed -E 's/(^| )-Dorg\.lwjgl\.opengl\.Window\.title=[^ ]*//g' \
+        | sed -E 's/^ +| +$//g; s/ +/ /g')
+    setInstanceCfgValue "$cfg_path" "OverrideJavaArgs" "true"
+    setInstanceCfgValue "$cfg_path" "JvmArgs" \
+        "${existing_jvm_args:+${existing_jvm_args} }-Dorg.lwjgl.opengl.Window.title=${MCSS_WINDOW_TITLE_PREFIX}${slot}"
+}
+
 # --- Public API ---
 
 # Spawn a Minecraft instance in the given slot.
@@ -763,12 +799,12 @@ spawn_instance() {
         fi
     fi
 
-    # 2.5 Set window title via instance.cfg JvmArgs
+    # 2.5 Set window title via instance.cfg JvmArgs (merged with the installer's
+    # GC flags — see _set_jvm_window_title)
     local cfg_path="${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/instance.cfg"
     if [[ -f "$cfg_path" ]]; then
-        setInstanceCfgValue "$cfg_path" "OverrideJavaArgs" "true"
-        setInstanceCfgValue "$cfg_path" "JvmArgs" "-Dorg.lwjgl.opengl.Window.title=${MCSS_WINDOW_TITLE_PREFIX}${slot}"
-        echo "[spawn_instance] Set window title ${MCSS_WINDOW_TITLE_PREFIX}${slot} via instance.cfg" >&2
+        _set_jvm_window_title "$cfg_path" "$slot"
+        echo "[spawn_instance] Set window title ${MCSS_WINDOW_TITLE_PREFIX}${slot} via instance.cfg (GC flags preserved)" >&2
     fi
 
     # 3. Build the launch command string.
