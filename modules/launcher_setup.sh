@@ -222,11 +222,7 @@ install_runtime_modules() {
     return 0
 }
 
-# ensure_bwrap_installed: report whether bubblewrap is available. We do NOT try to install
-# it — stock SteamOS is read-only, so `sudo pacman` isn't a viable path. The install-time
-# preflight hard-stop (preflight.sh, run before anything else) already REQUIRES bwrap and
-# prints distro-aware guidance if it's missing, so by the time this could run bwrap is
-# guaranteed present. Kept as a simple availability check; never installs.
-ensure_bwrap_installed() {
-    command -v bwrap >/dev/null 2>&1
-}
+# Fix #90: ensure_bwrap_installed deleted — vestigial, zero real callers.
+# preflight.sh already hard-requires bwrap (with distro-aware guidance) before
+# anything else runs, so by the time any installer code executes bwrap is
+# guaranteed present; this was a redundant re-check.
