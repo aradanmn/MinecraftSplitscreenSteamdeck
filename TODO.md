@@ -1,5 +1,35 @@
 # TODO
 
+## ☐ Architecture audit + placement law — 2026-07-17 (docs + issues only, no code changed)
+
+Full script-interaction audit (3-agent: runtime map / installer map / cross-cutting
+sweep) answering "why is duplication still appearing after the D-sweeps?" Answer:
+the canonical homes exist (#43/#45/#50/#51 worked) — the residue is sites that
+BYPASS them, plus missing placement rules for new code.
+
+- **[NEW] docs/AUDIT-ARCHITECTURE-2026-07-17.md** — block diagrams (module graph,
+  install flow, runtime FIFO flow) + full findings: 5 constant-bypass clusters,
+  12 duplication clusters, dead-code inventory, merge candidates.
+- **[NEW] docs/ARCHITECTURE.md** — the placement law: domain-ownership table
+  (which module owns what), globals decision ladder (runtime_context vs installer
+  block vs PAIRED vs module-local), sourcing rules, standalone-script duplication
+  budget, pre-commit placement checklist. Companion to STYLE-GUIDE.md (#52):
+  style guide = how code looks, ARCHITECTURE.md = where code goes.
+- **Issues filed:** #85 (_reflow_layout bypasses mcss_resolve_screen + 1280/800
+  hardcode — wrong-screen risk per #83's two-X-servers finding), #86 (constants
+  hygiene batch: flock -w 5 ×2, timeout-3 ×4, 2 dead constants, WATCHDOG_MAX_SLOT
+  third "4", Steam-shutdown literals), #87 (JVM mem defaults source-order
+  coupling), #88 (version-match ladder ×4 — sibling of #47), #89 (manifest parse
+  ×4 + stamp sed ×2), #90 (delete legacy prototype path + unused dex API +
+  setSplitscreenModeForPlayer + shims), #91 (installer merges: lwjgl→version_mgmt,
+  desktop_launcher+steam_integration, launcher_setup split).
+- **Suggested order (audit §7):** #86 → #85+#87 → #47+#88 together → #90 (own
+  deletions-only PR, stage1 smoke + one prod launch) → #89/#91 (merge BEFORE the
+  #52 retrofit so we don't retrofit files about to disappear).
+- Supersedes the stale "Module boundary cleanup — dex.sh vs window_manager.sh"
+  section below: TinyWM/gamescope_windowing items there are already done;
+  the still-live dex items are folded into #90.
+
 ## ☐ Codebase review + v1.1 fix batch — 2026-07-01 (ALL [CODE], NOT Deck-validated)
 
 Full-codebase review + GitHub issue triage, followed by a same-session fix pass across
