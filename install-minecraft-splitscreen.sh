@@ -295,6 +295,18 @@ readonly MCSS_INSTANCE_PREFIX="latestUpdate-"  # pairs runtime_context.sh:MCSS_I
 readonly MCSS_ACCOUNT_PREFIX="P"               # pairs runtime_context.sh:MCSS_ACCOUNT_PREFIX
 export MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX
 
+# Fix #87: JVM heap defaults — canonical home. Previously defaulted ONLY in
+# instance_creation.sh and consumed by launcher_setup.sh's
+# configure_polymc_defaults() with no fallback of its own (source-order
+# coupling: a launcher_setup.sh sourced/called without instance_creation.sh
+# having run first silently wrote an empty MaxMemAlloc/MinMemAlloc). Both
+# modules/instance_creation.sh and modules/launcher_setup.sh keep their own
+# `: "${...:=...}"` guard too (PAIRED WITH this block) —
+# tests/test_installer.sh sources launcher_setup.sh standalone, so a single
+# define-once site can't cover every sourcing path. Same values everywhere.
+: "${MCSS_MAX_MEM_MB:=3072}"
+: "${MCSS_MIN_MEM_MB:=512}"
+
 # Runtime variables (set during execution)
 JAVA_PATH=""
 MC_VERSION=""
