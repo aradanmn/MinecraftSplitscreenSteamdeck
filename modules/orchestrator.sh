@@ -182,16 +182,17 @@ _reflow_layout() {
     active=$(get_active_slots)
     [[ -z "$active" ]] && return 0
 
-    # M4: robust dimension parse. The old `awk $2 | cut` chain returned empty (not the
-    # fallback) when xdpyinfo was missing or its format differed, because the pipe's
-    # exit status came from `cut` succeeding on empty input. Parse with sed, then
-    # validate each is an integer and fall back otherwise.
-    local ruleW ruleH dims
-    dims=$(xdpyinfo 2>/dev/null | sed -n 's/.*dimensions:[[:space:]]*\([0-9]\+x[0-9]\+\).*/\1/p' | head -1)
-    ruleW="${dims%x*}"
-    ruleH="${dims#*x}"
-    [[ "$ruleW" =~ ^[0-9]+$ ]] || ruleW=1280
-    [[ "$ruleH" =~ ^[0-9]+$ ]] || ruleH=800
+    # Fix #85: route through the idempotent resolver instead of a private
+    # xdpyinfo probe with its own hardcoded 1280x800 fallback (#85 — the
+    # worst of the fallback-bypass sites per the audit). --refresh forces
+    # a fresh probe on every call: _reflow_layout runs after
+    # DISPLAY_MODE_CHANGE (dock/undock), so reusing a stale cached
+    # resolution would size/position windows for the WRONG screen. The
+    # resolver's own cascade (kscreen-doctor/xrandr/xdpyinfo, then
+    # last-known-good, then 1280x800) is the same tolerance the old probe
+    # here reimplemented ad hoc.
+    mcss_resolve_screen --refresh
+    local ruleW="${MCSS_SCREEN_W:-1280}" ruleH="${MCSS_SCREEN_H:-800}"
 
     # Reflow via the window manager.
     # NOTE: stderr is intentionally NOT suppressed (was `2>/dev/null`).  The
