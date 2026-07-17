@@ -18,6 +18,11 @@
 # a 16 GB Steam Deck. 4 × 3072 ≈ 12 GiB leaves headroom; the previous 4 × 4096 =
 # 16 GiB would OOM at 3–4 players. Single/two-player sessions are unaffected (3 GiB
 # is ample for vanilla + Sodium). Override via MCSS_MAX_MEM_MB / MCSS_MIN_MEM_MB.
+# Fix #87: canonical home is install-minecraft-splitscreen.sh's constants
+# block; this := guard stays here too (PAIRED WITH
+# install-minecraft-splitscreen.sh) because tests/test_installer.sh sources
+# modules/launcher_setup.sh standalone, and this module is itself sourced
+# standalone in places — same value everywhere, no source-order dependency.
 : "${MCSS_MAX_MEM_MB:=3072}"
 : "${MCSS_MIN_MEM_MB:=512}"
 
@@ -229,7 +234,9 @@ EOF
     
     # Re-enable strict error handling after instance creation
     set -e
-    print_success "Instance creation completed - all 4 instances created successfully"
+    # Fix #86: log string uses $MCSS_MAX_PLAYERS, not a bare "4" (#86 item d).
+    print_success "Instance creation completed - all \
+$MCSS_MAX_PLAYERS instances created successfully"
 }
 
 # Install Fabric mod loader and download all selected mods for an instance

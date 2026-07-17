@@ -140,158 +140,76 @@ check_mod_version_compatibility() {
             return 1
         fi
         
-        # Use the same multi-stage version matching logic as check_modrinth_mod
+        # Fix #88: canonical Modrinth ladder from mod_management.sh (which
+        # owns the version-match policy — ARCHITECTURE.md §2) instead of
+        # reimplementing it. check_standalone=0: this call site computed a
+        # has_standalone_major_minor value in the pre-dedup copy but never
+        # actually used it to block fallback (a dead variable) — passing 0
+        # reproduces that exact (weaker) guard rather than silently
+        # tightening it as part of this cleanup. strict_mode still means
+        # "exact match only, no ladder", same as before.
         local file_url=""
-        
-        # STAGE 1: Try exact version match with Fabric loader requirement
-        file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_version" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-        
-        # STAGE 2: Fallback matching if exact match failed (disabled in strict mode)
-        if [[ "$strict_mode" != "true" ]] && [[ -z "$file_url" || "$file_url" == "null" ]]; then
-            local mc_major_minor
-            mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
-            local requested_patch
-            requested_patch=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+\.([0-9]+)' | grep -oE '[0-9]+$')
-            
-            # Get all available game versions for this mod to validate fallback logic
-            local all_game_versions
-            all_game_versions=$(printf "%s" "$version_json" | jq -r '.[] | select(.loaders[] == "fabric") | .game_versions[]' 2>/dev/null | sort -u)
-            
-            # Check if any patch versions or standalone major.minor exist for this series
-            local has_patch_versions=false
-            local has_standalone_major_minor=false
-            local highest_patch_version=0
-            
-            while IFS= read -r version; do
-                if [[ "$version" =~ ^${mc_major_minor//./\.}\.([0-9]+)$ ]]; then
-                    has_patch_versions=true
-                    local patch_num="${BASH_REMATCH[1]}"
-                    if [[ $patch_num -gt $highest_patch_version ]]; then
-                        highest_patch_version=$patch_num
-                    fi
-                elif [[ "$version" == "$mc_major_minor" ]]; then
-                    has_standalone_major_minor=true
-                fi
-            done <<< "$all_game_versions"
-            
-            # Apply strict fallback rules:
-            # 1. If we have patch versions AND the requested patch > highest available patch, block fallback
-            # 2. Only allow fallback to major.minor if no patch versions exist OR standalone major.minor exists
-            local allow_fallback=true
-            
-            if [[ $has_patch_versions == true && -n "$requested_patch" ]]; then
-                if [[ $requested_patch -gt $highest_patch_version ]]; then
-                    allow_fallback=false
-                fi
-            fi
-            
-            # Only proceed with fallback if allowed
-            if [[ $allow_fallback == true ]]; then
-                # Try exact major.minor (e.g., "1.21" or "26.1")
-                file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-                
-                # Try wildcard version format (e.g., "1.21.x" or "26.1.x")
-                if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-                    local mc_major_minor_x="$mc_major_minor.x"
-                    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_x" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-                fi
-                
-                # Try zero-padded patch (e.g., "1.21.0" or "26.1.0"); harmless no-op for
-                # the new yearly scheme where base releases have no patch component.
-                if [[ -z "$file_url" || "$file_url" == "null" ]]; then
-                    local mc_major_minor_0="$mc_major_minor.0"
-                    file_url=$(printf "%s" "$version_json" | jq -r --arg v "$mc_major_minor_0" '.[] | select(.game_versions[] == $v and (.loaders[] == "fabric")) | .files[] | select(.primary == true) | .url' 2>/dev/null | head -n1)
-                fi
+        if [[ "$strict_mode" == "true" ]]; then
+            file_url=$(_modrinth_tier_match "$version_json" "$mc_version")
+            file_url="${file_url%%$'\t'*}"
+        else
+            local match
+            if match=$(match_modrinth_version "$version_json" \
+                "$mc_version" 0); then
+                file_url="${match%%$'\t'*}"
             fi
         fi
-        
+
         # Return success if we found a compatible version
         if [[ -n "$file_url" && "$file_url" != "null" ]]; then
             return 0  # Compatible
         fi
-        
+
     elif [[ "$platform" == "curseforge" ]]; then
-        # Check CurseForge mod for version compatibility using same logic as check_curseforge_mod
-        # First get the encrypted API token
-        local token_url="https://raw.githubusercontent.com/aradanmn/MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
-        local encrypted_token_file=$(mktemp)
-        
-        if command -v curl >/dev/null 2>&1; then
-            curl -s -L -o "$encrypted_token_file" "$token_url" 2>/dev/null
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q -O "$encrypted_token_file" "$token_url" 2>/dev/null
-        else
-            rm -f "$encrypted_token_file"
-            return 1
-        fi
-        
-        # Decrypt the API token
-        local fixed_passphrase="MinecraftSplitscreenSteamDeck2025"
+        # Fix #47: single canonical token fetch+decrypt (was a 7x-copied
+        # download+openssl-decrypt block).
         local cf_api_key
-        cf_api_key=$(openssl enc -aes-256-cbc -d -a -pbkdf2 -pass pass:"$fixed_passphrase" -in "$encrypted_token_file" 2>/dev/null)
-        rm -f "$encrypted_token_file"
-        
-        if [[ -z "$cf_api_key" ]]; then
+        if ! cf_api_key=$(get_curseforge_api_token 2>/dev/null) \
+            || [[ -z "$cf_api_key" ]]; then
             return 1  # Can't get API key
         fi
-        
+
         # Query CurseForge API with Fabric loader filter
-        local cf_api_url="https://api.curseforge.com/v1/mods/$mod_id/files?modLoaderType=4"
+        local cf_api_url="${CURSEFORGE_API_BASE:-https://api.curseforge.com/v1}"
+        cf_api_url="${cf_api_url}/mods/$mod_id/files?modLoaderType=4"
         local tmp_body
         tmp_body=$(mktemp)
         if [[ -z "$tmp_body" ]]; then
             return 1
         fi
-        
+
         # Make authenticated API request
         local http_code
         http_code=$(curl -s -L -w "%{http_code}" -o "$tmp_body" -H "x-api-key: $cf_api_key" "$cf_api_url")
         local version_json
         version_json=$(cat "$tmp_body")
         rm "$tmp_body"
-        
+
         # Validate API response
         if [[ "$http_code" != "200" ]] || ! printf "%s" "$version_json" | jq -e . > /dev/null 2>&1; then
             return 1
         fi
-        
-        # Version compatibility checking using same logic as check_curseforge_mod
-        local mc_major_minor
-        mc_major_minor=$(echo "$mc_version" | grep -oE '^[0-9]+\.[0-9]+')
-        local mc_major_minor_x="$mc_major_minor.x"
-        local mc_major_minor_0="$mc_major_minor.0"
-        
-        # CurseForge-specific jq filter for version matching
-        local jq_filter
-        if [[ "$strict_mode" == "true" ]]; then
-            jq_filter='
-                .data[]
-                | select(.gameVersions[] == $mc_version)
-                | .downloadUrl
-            '
-        else
-            jq_filter='
-                .data[]
-                | select(
-                    ((.gameVersions[] == $mc_version) or
-                    (.gameVersions[] == $mc_major_minor) or
-                    (.gameVersions[] == $mc_major_minor_x) or
-                    (.gameVersions[] == $mc_major_minor_0))
-                  )
-                | .downloadUrl
-            '
-        fi
-        
-        local jq_result
-        jq_result=$(printf "%s" "$version_json" | jq -r \
-            --arg mc_version "$mc_version" \
-            --arg mc_major_minor "$mc_major_minor" \
-            --arg mc_major_minor_x "$mc_major_minor_x" \
-            --arg mc_major_minor_0 "$mc_major_minor_0" \
-            "$jq_filter" 2>/dev/null | head -n1)
-        
-        # Return success if we found a compatible version
-        if [[ -n "$jq_result" && "$jq_result" != "null" ]]; then
+
+        # Fix #88: canonical CurseForge ladder from mod_management.sh
+        # (which owns the version-match policy — ARCHITECTURE.md §2).
+        # allow_fallback mirrors strict_mode exactly: with allow_fallback
+        # "0" the shared jq filter degrades to the same exact-only match
+        # the pre-dedup copy's separate strict jq_filter performed. NOTE
+        # this call site's non-strict guard never gated the fallback on
+        # patch-safety at all (unlike check_curseforge_mod's guard, which
+        # DOES) — a pre-existing divergence, preserved here by always
+        # passing "1" when not strict rather than silently tightening it
+        # as part of this cleanup.
+        local allow_fallback="1"
+        [[ "$strict_mode" == "true" ]] && allow_fallback="0"
+        local match
+        if match=$(match_curseforge_version "$version_json" "$mc_version" \
+            "$allow_fallback") && [[ -n "$match" ]]; then
             return 0  # Compatible
         fi
     fi

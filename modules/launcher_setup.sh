@@ -5,6 +5,19 @@
 # PolyMC setup functions
 # PolyMC is used as the primary launcher for splitscreen gameplay
 
+# --- Module-level constants ---
+# Fix #87: canonical home is install-minecraft-splitscreen.sh's constants
+# block (near MCSS_MAX_PLAYERS); this module's own := guard exists so
+# configure_polymc_defaults() never writes an empty MaxMemAlloc/MinMemAlloc
+# if this module is ever sourced without instance_creation.sh (already true
+# of tests/test_installer.sh, which sources this file standalone) — the
+# previous version had NO fallback here at all and relied entirely on
+# instance_creation.sh's source order.
+# PAIRED WITH install-minecraft-splitscreen.sh (same values there and in
+# modules/instance_creation.sh).
+: "${MCSS_MAX_MEM_MB:=3072}"
+: "${MCSS_MIN_MEM_MB:=512}"
+
 # download_prism_launcher: Download the latest PolyMC AppImage
 # We download it to the target directory for splitscreen launcher usage
 download_prism_launcher() {
@@ -209,11 +222,7 @@ install_runtime_modules() {
     return 0
 }
 
-# ensure_bwrap_installed: report whether bubblewrap is available. We do NOT try to install
-# it — stock SteamOS is read-only, so `sudo pacman` isn't a viable path. The install-time
-# preflight hard-stop (preflight.sh, run before anything else) already REQUIRES bwrap and
-# prints distro-aware guidance if it's missing, so by the time this could run bwrap is
-# guaranteed present. Kept as a simple availability check; never installs.
-ensure_bwrap_installed() {
-    command -v bwrap >/dev/null 2>&1
-}
+# Fix #90: ensure_bwrap_installed deleted — vestigial, zero real callers.
+# preflight.sh already hard-requires bwrap (with distro-aware guidance) before
+# anything else runs, so by the time any installer code executes bwrap is
+# guaranteed present; this was a redundant re-check.
