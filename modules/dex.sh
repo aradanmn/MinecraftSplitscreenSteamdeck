@@ -9,18 +9,20 @@
 #   dex_search --name <pattern>       — stdout: window IDs (one per line)
 #   dex_search --pid <pid>            — stdout: window IDs (one per line)
 #   dex_getgeometry <wid>             — stdout: "x y w h"
-#   dex_move <wid> <x> <y>           — move window to (x,y)
-#   dex_resize <wid> <w> <h>         — resize window to w×h
-#   dex_move_resize <wid> <x> <y> <w> <h> — move and resize atomically
-#   dex_raise <wid>                   — raise window
+#   dex_move_resize_remap <wid> <x> <y> <w> <h> — unmap/reparent/remap move,
+#                                        stdout: "x y w h" readback
 #   dex_set_name <wid> <name>        — set _NET_WM_NAME
-#   dex_set_override_redirect <wid> <0|1> — set override-redirect flag
-#   dex_get_root_wid                 — stdout: root window ID
-#   dex_get_active_wid               — stdout: active window ID (_NET_ACTIVE_WINDOW)
-#   dex_set_root_atom <atom_name> <value> — set property on root window
-#   dex_get_wm_name <wid>            — stdout: window title
+#   dex_set_decorations <wid> <0|1>  — toggle WM decorations
+#   dex_is_viewable <wid>            — stdout: viewable|unmapped|gone
+#   dex_map_raise <wid>              — map + raise, no unmap/reparent cycle
 #   dex_list_windows                 — stdout: WID+name pairs for all windows
-#   dex_find_minecraft_windows       — stdout: "WID SLOT" for each SplitscreenP{N}
+#
+# Fix #90: dex_move/dex_resize/dex_raise/dex_get_root_wid/dex_get_active_wid/
+# dex_set_root_atom/dex_get_wm_name/dex_find_minecraft_windows deleted — zero
+# references in runtime modules or tests/ (verified by repo-wide grep before
+# deleting). dex_move_resize/dex_move_resize_force/dex_set_override_redirect
+# are test-only (gamescope-*-test.sh) — kept, not part of the runtime API
+# above, see each wrapper's comment near its definition.
 #
 # Environment:
 #   DEX_DISPLAY — override DISPLAY (default: $MCSS_DISPLAY, then $DISPLAY, then :0)
@@ -56,13 +58,12 @@ _dex_generate_backend() {
 #!/usr/bin/env python3
 """DEX Backend — X11 window manipulation via ctypes Xlib.
 Usage: dex_backend.py <action> [args...]
-Actions: root_wid, list, get_wm_name <wid>, search_name <pattern>,
-         search_pid <pid>, getgeometry <wid>, move <wid> <x> <y>,
-         resize <wid> <w> <h>, move_resize <wid> <x> <y> <w> <h>,
-         raise <wid>, set_name <wid> <name>,
-         set_override_redirect <wid> <0|1>,
-         set_root_atom <name> <value>, get_active_wid,
-         find_minecraft
+Actions: list, search_name <pattern>, search_pid <pid>, getgeometry <wid>,
+         move_resize_remap <wid> <x> <y> <w> <h>, set_name <wid> <name>,
+         set_decorations <wid> <0|1>, is_viewable <wid>, map_raise <wid>.
+         move_resize <wid> <x> <y> <w> <h>, move_resize_force <wid> <x> <y>
+         <w> <h>, and set_override_redirect <wid> <0|1> also exist but are
+         test-only (see gamescope-*-test.sh) — not part of the runtime API.
 """
 import ctypes, ctypes.util, sys, os, struct, signal
 
@@ -224,9 +225,9 @@ def get_pid(wid):
     return None
 
 # ---- Actions ----
-def action_root_wid(args=None):
-    print(root)
-
+# Fix #90: action_root_wid/action_get_wm_name removed (backed dex_get_root_wid
+# /dex_get_wm_name, both zero-reference). The plain get_wm_name() helper stays
+# — action_list/action_search_name still use it.
 def action_list(args=None):
     def recurse(w, depth=0):
         name = get_wm_name(w)
@@ -234,9 +235,6 @@ def action_list(args=None):
         for c in query_tree(w):
             recurse(c, depth+1)
     recurse(root)
-
-def action_get_wm_name(args):
-    print(get_wm_name(int(args[0])))
 
 def action_search_name(args):
     pattern = args[0]
@@ -263,20 +261,9 @@ def action_getgeometry(args):
     _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(attrs))
     print(f"{attrs.x} {attrs.y} {attrs.width} {attrs.height}")
 
-def action_move(args):
-    wid, x, y = int(args[0]), int(args[1]), int(args[2])
-    ch = XWindowChanges(x=x, y=y)
-    _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(CWX | CWY), ctypes.byref(ch))
-    _lib.XFlush(dpy)
-
-def action_resize(args):
-    wid, w, h = int(args[0]), int(args[1]), int(args[2])
-    attrs = XWindowAttributes()
-    _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(attrs))
-    ch = XWindowChanges(width=w, height=h)
-    _lib.XConfigureWindow(dpy, Window(wid), ctypes.c_uint(CWWidth | CWHeight), ctypes.byref(ch))
-    _lib.XFlush(dpy)
-
+# Fix #90: action_move/action_resize removed (backed dex_move/dex_resize,
+# both zero-reference). action_move_resize stays — test-only, see the
+# dex_move_resize wrapper comment below.
 def action_move_resize(args):
     wid, x, y, w, h = int(args[0]), int(args[1]), int(args[2]), int(args[3]), int(args[4])
     ch = XWindowChanges(x=x, y=y, width=w, height=h, border_width=0)
@@ -397,11 +384,7 @@ def action_move_resize_remap(args):
     if _lib.XGetWindowAttributes(dpy, Window(wid), ctypes.byref(a)) != 0:
         print(f"{a.x} {a.y} {a.width} {a.height}")
 
-def action_raise_win(args):
-    wid = int(args[0])
-    _lib.XRaiseWindow(dpy, Window(wid))
-    _lib.XFlush(dpy)
-
+# Fix #90: action_raise_win removed (backed dex_raise, zero-reference).
 def action_set_name(args):
     wid, name = int(args[0]), args[1]
     change_prop8(wid, '_NET_WM_NAME', name)
@@ -414,36 +397,9 @@ def action_set_override_redirect(args):
     _lib.XChangeWindowAttributes(dpy, Window(wid), ctypes.c_ulong(CWOverrideRedirect), ctypes.byref(attrs))
     _lib.XFlush(dpy)
 
-def action_set_root_atom(args):
-    name, value = args[0], int(args[1])
-    change_prop32(root, name, [value])
-    _lib.XFlush(dpy)
-
-def action_get_active_wid(args):
-    prop = get_prop(root, '_NET_ACTIVE_WINDOW')
-    # Match the byte count to the format: <I reads 4, <Q reads 8. The old check
-    # required >=4 but unpacked prop[:8] with <Q → struct.error on a short prop (H3).
-    fmt = '<I' if ctypes.sizeof(ctypes.c_ulong) == 4 else '<Q'
-    need = 4 if fmt == '<I' else 8
-    if prop and len(prop) >= need:
-        wid = struct.unpack(fmt, prop[:need])[0]
-        if wid:
-            print(wid)
-
-def action_find_minecraft(args):
-    # #45: slot count + title prefix come from the environment (exported by
-    # runtime_context.sh — Python can't source bash); hardcoded fallbacks keep
-    # standalone invocations working.
-    max_players = int(os.environ.get('MCSS_MAX_PLAYERS', '4'))
-    title_prefix = os.environ.get('MCSS_WINDOW_TITLE_PREFIX', 'SplitscreenP')
-    def recurse(w):
-        name = get_wm_name(w)
-        for slot in range(1, max_players + 1):
-            if f'{title_prefix}{slot}' in name:
-                print(f"{w} {slot}")
-        for c in query_tree(w):
-            recurse(c)
-    recurse(root)
+# Fix #90: action_set_root_atom/action_get_active_wid/action_find_minecraft
+# removed (backed dex_set_root_atom/dex_get_active_wid/
+# dex_find_minecraft_windows, all zero-reference).
 
 def action_set_decorations(args):
     """Toggle WM decorations (title bar/border) via _MOTIF_WM_HINTS.
@@ -489,25 +445,22 @@ def action_map_raise(args):
     _lib.XSync(dpy, 0)
 
 # ---- Dispatch ----
+# Fix #90: root_wid/get_wm_name/move/resize/raise/set_root_atom/
+# get_active_wid/find_minecraft removed — their dex_* shell wrappers had
+# zero references anywhere in the repo. move_resize/move_resize_force/
+# set_override_redirect stay (test-only, see the dex_* wrapper comments
+# below); everything else here backs a runtime-used dex_* function.
 ACTIONS = {
-    'root_wid': action_root_wid,
     'list': action_list,
-    'get_wm_name': action_get_wm_name,
     'search_name': action_search_name,
     'search_pid': action_search_pid,
     'getgeometry': action_getgeometry,
-    'move': action_move,
-    'resize': action_resize,
     'move_resize': action_move_resize,
     'move_resize_force': action_move_resize_force,
     'move_resize_remap': action_move_resize_remap,
-    'raise': action_raise_win,
     'set_name': action_set_name,
     'set_override_redirect': action_set_override_redirect,
     'set_decorations': action_set_decorations,
-    'set_root_atom': action_set_root_atom,
-    'get_active_wid': action_get_active_wid,
-    'find_minecraft': action_find_minecraft,
     'is_viewable': action_is_viewable,
     'map_raise': action_map_raise,
 }
@@ -566,24 +519,27 @@ dex_search() {
 }
 
 dex_getgeometry() { _dex_run getgeometry "$1"; }
-dex_move()       { _dex_run move "$1" "$2" "$3"; }
-dex_resize()     { _dex_run resize "$1" "$2" "$3"; }
+# Fix #90: dex_move/dex_resize/dex_raise/dex_get_root_wid/dex_get_active_wid/
+# dex_set_root_atom/dex_get_wm_name/dex_find_minecraft_windows deleted —
+# zero references anywhere in the repo (runtime modules or tests/), verified
+# by grep before deleting. Their python backend actions are deleted below too.
+#
+# test-only (see tests/gamescope-override-redirect-test.sh,
+# tests/gamescope-dex-test.sh); not part of the runtime surface (#90).
 dex_move_resize(){ _dex_run move_resize "$1" "$2" "$3" "$4" "$5"; }
+# test-only (see tests/gamescope-dex-test.sh); not part of the runtime
+# surface (#90).
 dex_move_resize_force(){ _dex_run move_resize_force "$1" "$2" "$3" "$4" "$5"; }
 dex_move_resize_remap(){ _dex_run move_resize_remap "$1" "$2" "$3" "$4" "$5"; }
 # Fix #57: is-mapped probe + gentle map/raise for the map-keeper.
 dex_is_viewable() { _dex_run is_viewable "$1"; }
 dex_map_raise()   { _dex_run map_raise "$1"; }
-dex_raise()      { _dex_run raise "$1"; }
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
+# test-only (see tests/gamescope-override-redirect-test.sh); not part of the
+# runtime surface (#90).
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
 dex_set_decorations() { _dex_run set_decorations "$1" "${2:-0}"; }
-dex_get_root_wid() { _dex_run root_wid; }
-dex_get_active_wid() { _dex_run get_active_wid; }
-dex_set_root_atom() { _dex_run set_root_atom "$1" "$2"; }
-dex_get_wm_name() { _dex_run get_wm_name "$1"; }
 dex_list_windows() { _dex_run list; }
-dex_find_minecraft_windows() { _dex_run find_minecraft; }
 
 # (dex_wid_from_state deleted — Fix #51 (D12): it was a fallback-less copy of
 # window_manager's _get_wid_from_state with zero callers; the state read now
@@ -604,7 +560,7 @@ _dex_cleanup() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "DEX — Display EXecutive (xdotool replacement)"
     echo "Source this file: source modules/dex.sh"
-    echo "Then use: dex_search, dex_move, dex_resize, dex_move_resize, etc."
+    echo "Then use: dex_search, dex_getgeometry, dex_move_resize_remap, etc."
     echo ""
     echo "For direct backend access: DEX_DISPLAY=:0 python3 \$XDG_RUNTIME_DIR/dex_backend_\$UID.py <action> [args...]"
 fi

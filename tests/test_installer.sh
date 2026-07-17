@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_installer.sh
 # =============================================================================
 
-readonly TEST_TOTAL=10
+readonly TEST_TOTAL=9
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -139,16 +139,10 @@ test_t7_5() {
     fi
 }
 
-# =============================================================================
-# T7.6 — ensure_bwrap_installed() is defined in launcher_setup.sh
-# =============================================================================
-test_t7_6() {
-    if grep -q '^ensure_bwrap_installed()' "$REPO_ROOT/modules/launcher_setup.sh"; then
-        _pass "T7.6 — ensure_bwrap_installed() is defined in launcher_setup.sh"
-    else
-        _fail "T7.6" "ensure_bwrap_installed() not found in launcher_setup.sh"
-    fi
-}
+# Fix #90: T7.6 (ensure_bwrap_installed() is defined) removed — the function
+# itself was deleted as a vestigial shim (zero real callers; preflight.sh
+# already hard-requires bwrap). Testing for a deleted function's existence no
+# longer makes sense.
 
 # =============================================================================
 # T7.7 — install_runtime_modules() copies files to TARGET_DIR/modules/
@@ -340,7 +334,6 @@ test_t7_2
 test_t7_3
 test_t7_4
 test_t7_5
-test_t7_6
 test_t7_7
 test_t7_8
 test_t7_9

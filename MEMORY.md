@@ -7,6 +7,46 @@ files.
 
 ---
 
+## 2026-07-17 — Architecture audit + placement law (docs + issues, no code)
+
+**What:** Three-agent audit of all 27 scripts (~12k lines): full interaction map
+(installer chain, runtime FIFO architecture, standalone tools), magic-number sweep,
+duplication sweep. Produced `docs/AUDIT-ARCHITECTURE-2026-07-17.md` (mermaid block
+diagrams + findings) and `docs/ARCHITECTURE.md` (the placement law: domain
+ownership per module, globals decision ladder, sourcing rules, duplication budget
+for standalone scripts). Filed #85–#91; deliberately did NOT duplicate #47 (token
+×7) or #27.
+
+**Why:** Maintainer question: duplication was "supposed to be stamped out already"
+by the D1–D17 kill-list — why is it back? Audit's answer: it never fully left. The
+consolidations built the right homes (runtime_context, fetch_url, the manifest,
+mcss_query_displays), but (a) specific sites were never migrated (flock -w 5,
+_reflow_layout's private probe, launcher_setup's fallback-less mem reads), (b) the
+data was consolidated without the code (one manifest, four parsers), and (c) there
+was no written rule telling new code where functions/globals GO — STYLE-GUIDE.md
+covers naming/format only.
+
+**Decision:** Yes to an architecture document (maintainer asked). ARCHITECTURE.md
+is the living law, the audit doc is the point-in-time record. Key rules: MCSS_*
+only in a constants root; "a constant's existence obligates its use" (naming a
+value + leaving the literal elsewhere is worse than no constant); consumer-side
+`:-fallback` re-embedding of literals is the drift pattern to reject; standalone
+scripts may duplicate only with a `# PAIRED WITH` comment. Fix ordering in audit
+§7: mechanical (#86) → correctness-adjacent (#85/#87) → mod-pipeline dedup
+(#47+#88) → prototype-path deletion (#90) → structural merges (#89/#91), merges
+BEFORE the #52 retrofit.
+
+**Status:** docs + TODO/MEMORY on `claude/script-diagram-refactor-9f3qw6`; issues
+live. Same-day follow-up: #85/#86/#87/#47/#88/#90 implemented on this branch in
+six commits (implementer/verifier split: Sonnet wrote, Fable adversarially
+verified before every push — the verify pass caught 17 malformed API URLs from
+in-string line continuations before they ever hit origin). All [CODE], NOT
+Deck-validated; #89/#91 (structural merges) deliberately not started — they
+reshape the installer module layout and deserve their own pass after this
+batch validates on hardware.
+
+---
+
 ## 2026-07-01 — Codebase review + v1.1 fix batch (all [CODE], NOT Deck-validated)
 
 **What:** A full codebase + open-issue review, followed by a fix pass in the same

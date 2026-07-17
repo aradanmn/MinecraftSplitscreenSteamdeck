@@ -4,6 +4,11 @@
 # =============================================================================
 # Progress and status reporting functions and general utilities
 # These functions provide consistent, colored output for better user experience
+#
+# Network transport (fetch_url/fetch_url_status) and — per Fix #47 — the
+# CurseForge API token fetch+decrypt also live here: both are transport-layer
+# concerns (download + auth material), while the version-match POLICY that
+# consumes the token stays in mod_management.sh (ARCHITECTURE.md §2).
 
 # get_prism_executable: Get the correct path to PolyMC executable
 # Handles both AppImage and extracted versions (for FUSE issues)
@@ -78,6 +83,55 @@ fetch_url_status() {
         "$url" 2>/dev/null) || code="000"
     echo "${code:-000}"
     return 0
+}
+
+# get_curseforge_api_token: Download and decrypt the CurseForge API token.
+# Fix #47: canonical home. Was copy-pasted at 7 sites across
+# mod_management.sh/version_management.sh — same download + openssl AES
+# decrypt + hardcoded passphrase + cleanup, each with its own ad hoc
+# curl/wget branching and a drifted timeout. All other sites now call this.
+# Inputs:
+#   Globals: REPO_REF (read, optional) — token.enc branch, default "main"
+# Outputs:
+#   stdout — the decrypted token, or empty on failure
+#   return — 1 if the token file couldn't be fetched at all; 0 otherwise
+#            (openssl-missing/decrypt-failure falls through with empty
+#            stdout and return 0 — the pre-existing contract every caller
+#            already double-checks via `[[ -z "$api_token" ]]`, not just
+#            the exit status; preserved as-is, not tightened, per #47/#88's
+#            no-behavior-change mandate)
+get_curseforge_api_token() {
+    local token_url="https://raw.githubusercontent.com/aradanmn/\
+MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
+    local encrypted_token_file
+    encrypted_token_file=$(mktemp)
+
+    if [[ -z "$encrypted_token_file" ]]; then
+        echo ""
+        return 1
+    fi
+
+    # Fix #47: fetch_url replaces the per-site curl/wget branching. Timeout
+    # 0 (unbounded) is the most tolerant of the drifted copies — 5 of the 6
+    # duplicates had no timeout at all, only one wrapped `timeout 10` — per
+    # the #51/D14 tolerance fix, which this must not re-tighten.
+    if ! fetch_url "$token_url" "$encrypted_token_file" 0 \
+        || [[ ! -s "$encrypted_token_file" ]]; then
+        rm -f "$encrypted_token_file"
+        echo ""
+        return 1
+    fi
+
+    local api_token=""
+    if command -v openssl >/dev/null 2>&1; then
+        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 \
+            -in "$encrypted_token_file" \
+            -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null \
+            | tr -d '\n\r' | sed 's/[[:space:]]*$//')
+    fi
+
+    rm -f "$encrypted_token_file"
+    echo "$api_token"
 }
 
 # print_header: Display a section header with visual separation
