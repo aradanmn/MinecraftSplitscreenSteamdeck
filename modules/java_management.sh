@@ -201,11 +201,6 @@ download_and_install_jdk() {
     return 0
 }
 
-# Keep the old name as a thin alias so any external callers are not broken.
-download_and_run_jdk_installer() {
-    download_and_install_jdk "$@"
-}
-
 # find_java_installation: Find a Java installation of the specified version
 # Searches both system locations and the automatic installer location
 # Parameters:
@@ -338,7 +333,9 @@ detect_and_install_java() {
     print_info "  • Leaves your shell profile untouched"
     
     # Attempt automatic installation
-    if download_and_run_jdk_installer "$required_java_version"; then
+    # Fix #90: download_and_run_jdk_installer was a thin alias with no other
+    # callers — call the real function directly.
+    if download_and_install_jdk "$required_java_version"; then
         # Source the updated profile to load new environment variables
         [[ -f ~/.profile ]] && source ~/.profile 2>/dev/null || true
         
