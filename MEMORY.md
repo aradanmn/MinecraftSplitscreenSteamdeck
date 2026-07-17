@@ -45,6 +45,33 @@ Deck-validated; #89/#91 (structural merges) deliberately not started — they
 reshape the installer module layout and deserve their own pass after this
 batch validates on hardware.
 
+## 2026-07-17 — Standard performance mod set (all [CODE], NOT Deck-validated)
+
+**What:** Replaced `mods.conf`'s optional Sodium-extras/QoL mods (Sodium Options
+API, Reese's Sodium Options, Sodium Extra, Sodium Extras, Sodium Dynamic Lights,
+Better Name Visibility, Full Brightness Toggle, In-Game Account Switcher, Just
+Zoom, Mod Menu, Old Combat Mod) with a required performance baseline: Sodium,
+Lithium, FerriteCore, ModernFix (via the `ModernFix-mVUS` fork, project
+`TjSm1wrD` — the original `nmDcB62a` stopped cutting Fabric builds for current
+MC versions), Entity Culling, and ImmediatelyFast. mods.conf now has no
+`optional` entries left. Also fixed `get_supported_minecraft_versions()`
+(`version_management.sh`) to gate on *every* required mod's compatibility
+instead of a hardcoded Controlify-only check, since that check now decides
+whether 6 more required mods will actually resolve for the offered MC version.
+
+**Why:** User-provided research doc on running 4 concurrent Minecraft sessions
+on a 16GB Deck; wanted its recommended perf mod set adopted as the default and
+the unrelated optional QoL mods dropped.
+
+**Decision:** Left Starlight out — its Fabric port is archived, capped at MC
+1.20.4, and would never resolve against the recent versions this installer
+targets; confirmed with the user before dropping it. The existing per-instance
+JVM heap sizing (`instance_creation.sh`: `MCSS_MAX_MEM_MB=3072`, 4×3G ≈ 12GiB
+on 16GB) already matches the doc's memory-budget guidance, so left untouched.
+
+**Status:** pushed to `claude/standard-install-mods-yfox41`, awaiting Deck
+validation per this project's standing rule (SPEC §3a/§3b).
+
 ---
 
 ## 2026-07-01 — Codebase review + v1.1 fix batch (all [CODE], NOT Deck-validated)
