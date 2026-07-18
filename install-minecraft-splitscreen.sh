@@ -292,7 +292,7 @@ readonly TARGET_DIR="$HOME/.local/share/PolyMC"
 # change both (#45 PR 3 / PLAN Part 4 "two homes, documented pairing").
 readonly MCSS_MAX_PLAYERS=4                    # pairs runtime_context.sh:MCSS_MAX_PLAYERS
 readonly MCSS_INSTANCE_PREFIX="latestUpdate-"  # pairs runtime_context.sh:MCSS_INSTANCE_PREFIX
-readonly MCSS_ACCOUNT_PREFIX="Player"               # pairs runtime_context.sh:MCSS_ACCOUNT_PREFIX
+readonly MCSS_ACCOUNT_PREFIX="Player"          # pairs runtime_context.sh:MCSS_ACCOUNT_PREFIX
 export MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX
 
 # Fix #87: JVM heap defaults — canonical home. Previously defaulted ONLY in
