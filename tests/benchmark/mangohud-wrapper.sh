@@ -19,9 +19,11 @@
 # =============================================================================
 
 export MANGOHUD_DLSYM=1
-# horizontal: the log-active red dot sits BESIDE the fps number instead of on
-# top of it (operator couldn't read the counter during the 2026-07-17 run).
-export MANGOHUD_CONFIG="${MCSS_BENCH_MANGOHUD_CONFIG:-fps_only=1,horizontal,position=top-right,output_folder=$HOME/mcss-benchmark/mangohud,log_interval=100,autostart_log=15,log_duration=1200}"
+# Custom layout: the log-active red dot anchors at the overlay's corner and
+# obscured the fps digits in both fps_only layouts (2026-07-17/18 runs). With
+# legacy_layout=false the first element renders at the corner — a sacrificial
+# BENCH label absorbs the dot and the fps row below it stays readable.
+export MANGOHUD_CONFIG="${MCSS_BENCH_MANGOHUD_CONFIG:-legacy_layout=false,custom_text=BENCH,fps,position=top-right,font_size=24,output_folder=$HOME/mcss-benchmark/mangohud,log_interval=100,autostart_log=15,log_duration=1200}"
 
 mkdir -p "$HOME/mcss-benchmark/mangohud" 2>/dev/null || true
 
