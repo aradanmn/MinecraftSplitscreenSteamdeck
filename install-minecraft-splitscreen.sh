@@ -316,6 +316,7 @@ LWJGL_VERSION=""
 # Mod configuration arrays — populated by load_mods_config() below.
 declare -a REQUIRED_SPLITSCREEN_MODS=()
 declare -a REQUIRED_SPLITSCREEN_IDS=()
+declare -a REQUIRED_SPLITSCREEN_PLATFORMS=()
 declare -a MODS=()
 # Dependency map: mod name → comma-separated names of mods it requires.
 # Used by resolve_conf_dependencies() in mod_management.sh.
@@ -330,31 +331,21 @@ load_mods_config() {
     if [[ ! -f "$conf" ]]; then
         echo "[mods] mods.conf not found at ${conf} — using built-in defaults" >&2
         # NOTE: the "Splitscreen Support" mod (yJgqfSDR) is NO LONGER installed — window
-        # tiling is done by KWin, not the mod (2026-06-23). Only Controlify is required.
-        REQUIRED_SPLITSCREEN_MODS=("Controlify")
-        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm")
+        # tiling is done by KWin, not the mod (2026-06-23).
+        # Standard performance set as of 2026-07-17 — see mods.conf for rationale.
+        REQUIRED_SPLITSCREEN_MODS=("Controlify" "Sodium" "Lithium" "FerriteCore" "ModernFix" "Entity Culling" "ImmediatelyFast")
+        REQUIRED_SPLITSCREEN_IDS=("DOUdJVEm" "AANobbMI" "gvQqBUqZ" "uXXizFIs" "TjSm1wrD" "NNAgCjsB" "5ZwdcRci")
+        REQUIRED_SPLITSCREEN_PLATFORMS=("modrinth" "modrinth" "modrinth" "modrinth" "modrinth" "modrinth" "modrinth")
         MODS=(
             "Controlify|modrinth|DOUdJVEm"
             "Sodium|modrinth|AANobbMI"
-            "Sodium Options API|modrinth|Es5v4eyq"
-            "Reese's Sodium Options|modrinth|Bh37bMuy"
-            "Sodium Extra|modrinth|PtjYWJkn"
-            "Sodium Extras|modrinth|vqqx0QiE"
-            "Sodium Dynamic Lights|modrinth|PxQSWIcD"
-            "Better Name Visibility|modrinth|pSfNeCCY"
-            "Full Brightness Toggle|modrinth|aEK1KhsC"
-            "In-Game Account Switcher|modrinth|cudtvDnd"
-            "Just Zoom|modrinth|iAiqcykM"
-            "Mod Menu|modrinth|mOgUt4GM"
-            "Old Combat Mod|modrinth|dZ1APLkO"
+            "Lithium|modrinth|gvQqBUqZ"
+            "FerriteCore|modrinth|uXXizFIs"
+            "ModernFix|modrinth|TjSm1wrD"
+            "Entity Culling|modrinth|NNAgCjsB"
+            "ImmediatelyFast|modrinth|5ZwdcRci"
         )
-        MOD_DEPS_BY_NAME=(
-            ["Sodium Options API"]="Sodium"
-            ["Reese's Sodium Options"]="Sodium,Sodium Options API"
-            ["Sodium Extra"]="Sodium"
-            ["Sodium Extras"]="Sodium"
-            ["Sodium Dynamic Lights"]="Sodium"
-        )
+        MOD_DEPS_BY_NAME=()
         return 0
     fi
 
@@ -379,6 +370,7 @@ load_mods_config() {
         if [[ "$type" == "required" ]]; then
             REQUIRED_SPLITSCREEN_MODS+=("$name")
             REQUIRED_SPLITSCREEN_IDS+=("$id")
+            REQUIRED_SPLITSCREEN_PLATFORMS+=("$platform")
         fi
 
         if [[ -n "$deps" ]]; then

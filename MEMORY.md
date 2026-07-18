@@ -45,6 +45,74 @@ Deck-validated; #89/#91 (structural merges) deliberately not started — they
 reshape the installer module layout and deserve their own pass after this
 batch validates on hardware.
 
+## 2026-07-17 — A/B benchmark harness for the mod-set/JVM-flags change
+
+**What:** New `tests/benchmark/` tooling to Deck-validate the standard-mod-set +
+JVM-flags change with numbers instead of vibes: `sampler.sh` (background /proc+sysfs
+metrics sampler — CPU, RAM, swap, PSI, GPU busy/VRAM, APU temp, per-slot java
+CPU/RSS/IO via the state file), `summarize.sh` (per-segment stats + A/B delta
+tables), `mangohud-wrapper.sh`/`mangohud-ctl.sh` (probe-gated objective FPS via
+PolyMC WrapperCommand, fail-open to F3-only), `RUNBOOK.md` (the full protocol:
+baseline 1P→4P on the existing install → checklist-gated full torch → fresh install
+from the branch → identical re-run → hard/soft merge gates), `RESULTS-TEMPLATE.md`.
+
+**Why:** The 2026-07-17 mod/flags entries below are NOT Deck-validated; maintainer
+wants a measured before/after (and the SPEC §3a D6 "no OOM at 4P / RAM budget" check
+formally closed) before merging to main.
+
+**Decision:** Zero module changes — MangoHud rides `OverrideCommands=true` +
+`WrapperCommand` in instance.cfg (survives spawn's JvmArgs rewrite; logs must live
+under $HOME because each slot's /tmp is a private tmpfs). Execution model: a driver
+Claude session on the Deck runs the runbook, the human plays; sampler CSVs stay on
+the Deck, summary tables get committed as `docs/BENCH-AB-<date>.md`.
+
+**Status:** tooling smoke-tested off-Deck (synthetic CSV math verified); benchmark
+itself not yet run.
+
+---
+
+## 2026-07-17 — Standard performance mod set (all [CODE], NOT Deck-validated)
+
+**What:** Replaced `mods.conf`'s optional Sodium-extras/QoL mods (Sodium Options
+API, Reese's Sodium Options, Sodium Extra, Sodium Extras, Sodium Dynamic Lights,
+Better Name Visibility, Full Brightness Toggle, In-Game Account Switcher, Just
+Zoom, Mod Menu, Old Combat Mod) with a required performance baseline: Sodium,
+Lithium, FerriteCore, ModernFix (via the `ModernFix-mVUS` fork, project
+`TjSm1wrD` — the original `nmDcB62a` stopped cutting Fabric builds for current
+MC versions), Entity Culling, and ImmediatelyFast. mods.conf now has no
+`optional` entries left. Also fixed `get_supported_minecraft_versions()`
+(`version_management.sh`) to gate on *every* required mod's compatibility
+instead of a hardcoded Controlify-only check, since that check now decides
+whether 6 more required mods will actually resolve for the offered MC version.
+
+**Why:** User-provided research doc on running 4 concurrent Minecraft sessions
+on a 16GB Deck; wanted its recommended perf mod set adopted as the default and
+the unrelated optional QoL mods dropped.
+
+**What (2):** Adopted the doc's Aikar-style JVM GC flags as
+`MCSS_JVM_GC_FLAGS` (`instance_creation.sh`) — written into every instance.cfg
+as `JvmArgs` with `OverrideJavaArgs=true`, minus `-Xms/-Xmx` which PolyMC
+injects from `Min/MaxMemAlloc`. Doing so exposed two runtime bugs in
+`instance_lifecycle.sh` §2.5: (a) `setInstanceCfgValue` was a "preserved
+function" of the pre-modular launcher that never made it into any module, so
+spawn_instance's calls to it died with exit 127 under `set -e` — defined it;
+(b) the spawn-time JvmArgs write clobbered the whole value with just the
+window-title property — factored `_set_jvm_window_title` which merges the title
+into the existing flags (and strips stale title tokens on re-spawn). Tests:
+T4.13, plus T7.9 regression on the mods.conf decisions. Research doc archived
+at `docs/RESEARCH-4X-INSTANCE-PERF-2026-07-17.md`.
+
+**Decision:** Left Starlight out — its Fabric port is archived, capped at MC
+1.20.4, and would never resolve against the recent versions this installer
+targets; confirmed with the user before dropping it. The existing per-instance
+JVM heap sizing (`instance_creation.sh`: `MCSS_MAX_MEM_MB=3072`, 4×3G ≈ 12GiB
+on 16GB) already matches the doc's memory-budget guidance, so left untouched;
+kept `MCSS_MIN_MEM_MB=512` over the doc's `-Xms2G` because `-XX:+AlwaysPreTouch`
+would commit 4×2G = 8GiB at launch.
+
+**Status:** pushed to `claude/standard-install-mods-yfox41`, awaiting Deck
+validation per this project's standing rule (SPEC §3a/§3b).
+
 ---
 
 ## 2026-07-01 — Codebase review + v1.1 fix batch (all [CODE], NOT Deck-validated)
