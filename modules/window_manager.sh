@@ -12,8 +12,28 @@ set -euo pipefail
 #   compute_slot_geometry(slot, grid, W, H)  — stdout: "x y w h"
 #   apply_layout(active_slots, W, H)         — repositions active windows (KWin scripting)
 #
+# Globals CONSUMED (from runtime_context.sh unless noted): MCSS_SCREEN_W,
+#   MCSS_SCREEN_H, MCSS_MAX_PLAYERS, MCSS_WINDOW_TITLE_PREFIX, MCSS_GEOM_DIR.
+#   Legacy override: SPLITSCREEN_SCREEN_W/H. Tuning overrides:
+#   MCSS_REASSERT, MCSS_REASSERT_DELAY_S, MCSS_SKIP_UNCHANGED (and their
+#   WINDOW_MANAGER_-prefixed aliases, checked first — see apply_layout).
+#
+# Inputs:  state JSON via instance_lifecycle accessors (get_window_id,
+#          get_java_pid), KWin scripting via kwin_positioner.sh.
+# Outputs: repositioned windows (dex/KWin), per-slot geom cache files under
+#          MCSS_GEOM_DIR, stderr `[window_manager]` prefix.
+#
 # Environment overrides:
 #   SPLITSCREEN_SCREEN_W, SPLITSCREEN_SCREEN_H — force screen dimensions
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-17  Fix #86: dead-constant cleanup; #51/D11 state accessors
+#   v1.3 2026-07-09  #45/#53: screen/prefix/geom-dir globals via
+#                    runtime_context.sh
+#   v1.2 2026-07-05  Fix #57 (UNTESTED): settle+re-assert covers full mode too
+#   v1.1 2026-06-27  Override_redirect cycle restored as PRIMARY path
+#                    (repaints occluded tiles)
+#   v1.0 2026-06-13  Initial extraction: KWin-scripting geometry + layout
 # =============================================================================
 
 # #45: window-title prefix, slot count, and geom dir are owned by
@@ -33,8 +53,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 # setting override_redirect between them makes it unmanaged so gamescope's WM
 # won't intercept the MapRequest and force its own geometry.
 #
-# Arguments: $1 = WID (decimal or hex), $2 = x, $3 = y, $4 = w, $5 = h
-# Returns: 0 if the cycle succeeded (verified by post-check), 1 if it failed.
+# Inputs:
+#   $1 — WID (decimal or hex), $2 — x, $3 — y, $4 — w, $5 — h
+# Outputs:
+#   return — 0 if the cycle succeeded (verified by post-check), 1 if it
+#     failed (dex.sh not sourced, or the remap readback was empty)
+#   side effects — stderr readback/failure diagnostics, `[window_manager]`
+#     prefix
 _apply_override_redirect_cycle() {
     local wid="$1" x="$2" y="$3" w="$4" h="$5"
 
@@ -78,8 +103,12 @@ _apply_override_redirect_cycle() {
 
 # _verify_window_geometry: After applying positioning, query the actual
 # position/size via ctypes and log it.
-# $1 = slot label (e.g. "1"), $2 = window WID, $3 = expected_x, $4 = expected_y,
-# $5 = expected_w, $6 = expected_h
+# Inputs:
+#   $1 — slot label (e.g. "1"), $2 — window WID
+#   $3 — expected_x, $4 — expected_y, $5 — expected_w, $6 — expected_h
+# Outputs:
+#   side effects — WARNING/OK line to stderr; no return-code contract (always
+#     returns 0, this is a diagnostic-only check)
 _verify_window_geometry() {
     local slot="$1" wid="$2"
     local ex="$3" ey="$4" ew="$5" eh="$6"
@@ -105,8 +134,11 @@ _verify_window_geometry() {
 
 # _get_wid_from_state: Read a slot's WID from the state JSON file, or fall back
 # to dex window-name search if missing.
-# $1 = slot (1-4)
-# Output: WID on stdout, or empty string on failure.
+# Inputs:
+#   $1 — slot (1-4)
+#   Globals: MCSS_WINDOW_TITLE_PREFIX (read)
+# Outputs:
+#   stdout — WID, or empty string on failure
 _get_wid_from_state() {
     local slot="$1"
     local wid=""
@@ -119,9 +151,10 @@ _get_wid_from_state() {
 }
 
 # _get_pid_from_state: Read a slot's Minecraft (java) PID from the state JSON.
-# $1 = slot (1-4).  Output: PID on stdout, or empty string.
 # The KWin positioner matches windows by PID (window.windowId is undefined in
 # KWin 6.x), so this is the primary identifier for Path-B positioning.
+# Inputs: $1 — slot (1-4)
+# Outputs: stdout — PID, or empty string
 _get_pid_from_state() {
     # Fix #51 (D11): thin alias over the instance_lifecycle accessor.
     get_java_pid "$1" 2>/dev/null || true
@@ -133,7 +166,13 @@ _get_pid_from_state() {
 # XWayland (X11) windows KWin has synchronous geometry authority, so this is
 # reliable (deep-research 2026-06-22). Falls back to the legacy override_redirect
 # cycle only if KWin scripting is unreachable. See [[windowing-solution-confirmed]].
-# $1=slot $2=x $3=y $4=w $5=h
+# Inputs:
+#   $1 — slot, $2 — x, $3 — y, $4 — w, $5 — h
+# Outputs:
+#   return — 0 on success, 1 if no wid/pid was available to position (or the
+#     chosen positioning path itself failed)
+#   side effects — repositions the window (dex or KWin scripting), stderr
+#     PATH-CAPTURE diagnostic line
 _position_slot() {
     local slot="$1" x="$2" y="$3" w="$4" h="$5"
     local pid wid
@@ -166,12 +205,16 @@ _position_slot() {
 
 # --- Public API ---
 
-# Determine grid mode from the COUNT of active slots (NOT the highest slot number).
-# Arguments: $1 = space-separated list of active slot numbers, e.g. "2 4"
-# Output: "full" (1), "half" (2), or "quad" (3-4) on stdout. Empty → "full".
+# compute_grid_mode: Determine grid mode from the COUNT of active slots (NOT
+# the highest slot number).
 # Count-based so the layout collapses correctly on scale-down: e.g. 2 players in
 # slots {2,4} → "half" (two halves), 1 player in slot 4 → "full" (fullscreen).
 # (Was highest-slot-based, which left {2,4} as "quad" and a lone slot-4 in a corner.)
+# Inputs:
+#   $1 — space-separated list of active slot numbers, e.g. "2 4"
+#   Globals: MCSS_MAX_PLAYERS (read)
+# Outputs:
+#   stdout — "full" (1 active), "half" (2), or "quad" (3-4); empty → "full"
 compute_grid_mode() {
     local active_slots="${1:-}"
     active_slots=$(echo "$active_slots" | tr -s ' ' | sed 's/^ //;s/ $//')
@@ -192,10 +235,16 @@ compute_grid_mode() {
     fi
 }
 
-# Compute geometry for a CELL INDEX (1-based position in the grid) in a grid mode.
-# Arguments: $1=cell(1-4), $2=grid_mode(full|half|quad), $3=screen_w, $4=screen_h
-# Output: "x y w h" on stdout. Callers pass the slot's ORDER among active slots (not the
-# slot number), so active slots fill cells top-to-bottom / left-to-right.
+# compute_slot_geometry: Compute geometry for a CELL INDEX (1-based position
+# in the grid) in a grid mode. Callers pass the slot's ORDER among active
+# slots (not the slot number), so active slots fill cells top-to-bottom /
+# left-to-right.
+# Inputs:
+#   $1 — cell (1-4), $2 — grid_mode (full|half|quad)
+#   $3 — screen_w, $4 — screen_h
+# Outputs:
+#   stdout — "x y w h"
+#   return — 1 on an unknown grid_mode (still emits a full-screen fallback)
 compute_slot_geometry() {
     local slot="${1:-1}"
     local grid_mode="${2:-full}"
@@ -233,10 +282,16 @@ compute_slot_geometry() {
     esac
 }
 
-# Apply the full layout for the current active slots.
-# Arguments: $1=active_slots (space-separated), $2=screen_w, $3=screen_h
-# Effects: repositions the active Minecraft windows via KWin scripting. Grid mode is by
-# active COUNT; active slots fill cells by order (so scale-down collapses correctly).
+# apply_layout: Apply the full layout for the current active slots. Grid mode
+# is by active COUNT; active slots fill cells by order (so scale-down
+# collapses correctly).
+# Inputs:
+#   $1 — active_slots (space-separated), $2 — screen_w, $3 — screen_h
+#   Globals: MCSS_MAX_PLAYERS, MCSS_GEOM_DIR, MCSS_WINDOW_TITLE_PREFIX (read)
+# Outputs:
+#   side effects — repositions the active Minecraft windows (dex/KWin
+#     scripting), writes per-slot geom cache files, stderr
+#     `[window_manager]`/`[orchestrator]` diagnostic lines
 apply_layout() {
     local active_slots="${1:-}"
     local screen_w="${2:-}"
@@ -336,7 +391,7 @@ apply_layout() {
 # sync_apply_layout: thin wrapper around apply_layout, kept so existing callers
 # don't need to change. (It used to branch to the gamescope-windowing approach,
 # now removed — window positioning is always done by apply_layout on nested KWin.)
-# Arguments: same as apply_layout — active_slots, screen_w, screen_h
+# Inputs: same as apply_layout — $1=active_slots, $2=screen_w, $3=screen_h
 sync_apply_layout() {
     apply_layout "${1:-}" "${2:-}" "${3:-}"
 }

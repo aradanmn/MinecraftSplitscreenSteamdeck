@@ -2,6 +2,32 @@
 # =============================================================================
 # Minecraft Splitscreen Steam Deck & Linux Uninstaller
 # =============================================================================
+# Standalone, curl|bash-able uninstaller — it cannot source runtime_context.sh
+# (there may be no checkout at all), so its install-root defaults below are a
+# deliberate, hand-kept PAIR with the installer entry's TARGET_DIR and
+# runtime_context.sh's launcher-root probe (see the "Install roots" block).
+# Removes the launcher tree (or just the launcher + shortcuts in --keep-data
+# mode), with an optional dry run and a yes/no confirmation prompt.
+#
+# Usage: uninstall-minecraft-splitscreen.sh [--yes] [--dry-run] [--keep-data]
+#                                           [--help]
+#   --yes         Skip confirmation prompts
+#   --dry-run     Show what would be removed; deletes nothing
+#   --keep-data   Keep worlds/saves/accounts; remove launcher + shortcuts only
+#   --help        Show usage and exit
+#
+# Env CONSUMED: TARGET_DIR (default $HOME/.local/share/PolyMC), PRISM_DIR
+#               (default $HOME/.local/share/PrismLauncher) — overrides for a
+#               relocated install.
+# Inputs:  the install tree under TARGET_DIR/PRISM_DIR.
+# Outputs: removes files/dirs (FULL_TARGETS or KEEP_DATA_TARGETS), print_*
+#          stderr-free UX (all print_* helpers write to stdout).
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-07-10  D16/#45 PR3: deletion list derives from resolved roots
+#   v1.1 2026-07-07  #41: clean legacy JAVA_*_HOME litter from older installs
+#   v1.0 2026-04-24  Initial standalone uninstaller (full + --keep-data modes)
+# =============================================================================
 
 set -euo pipefail
 
@@ -42,24 +68,29 @@ KEEP_DATA_TARGETS=(
     "$HOME/.local/share/applications/$DESKTOP_BASENAME"
 )
 
+# print_header: Print a banner-boxed title line ($1).
 print_header() {
     echo "=========================================="
     echo "$1"
     echo "=========================================="
 }
 
+# print_info: Print an info-tagged UX line ($1).
 print_info() {
     echo "ℹ️  $1"
 }
 
+# print_success: Print a success-tagged UX line ($1).
 print_success() {
     echo "✅ $1"
 }
 
+# print_warning: Print a warning-tagged UX line ($1).
 print_warning() {
     echo "⚠️  $1"
 }
 
+# usage: Print the CLI usage/options/env-vars help text to stdout.
 usage() {
     cat <<EOF
 Usage: $0 [options]
@@ -149,6 +180,11 @@ fi
 removed_count=0
 missing_count=0
 
+# remove_path: Remove a single target path, or every match of a glob target.
+# Inputs: $1 — a path, or a glob pattern (matched via compgen -G)
+#         Globals: DRY_RUN (read); removed_count/missing_count (incremented)
+# Outputs: side effects — rm -rf per match (real run) or a "[dry-run]" log
+#          line (DRY_RUN=true); print_* UX to stdout
 remove_path() {
     local path="$1"
     if [[ "$path" == *"*"* ]]; then
@@ -199,9 +235,14 @@ else
     done
 fi
 
-# Clean stale JAVA_<ver>_HOME exports that older installers appended to
-# ~/.profile (#41 — current installs never touch the profile). Only lines
-# pointing at directories this project managed are removed.
+# clean_profile_java_exports: Clean stale JAVA_<ver>_HOME exports that older
+# installers appended to ~/.profile (#41 — current installs never touch the
+# profile). Only lines pointing at directories this project managed are
+# removed.
+# Inputs: Globals: DRY_RUN (read); removed_count (incremented)
+# Outputs: side effects — sed -i deletes matching lines (real run) or a
+#          "[dry-run]" count log line; return — always 0 (no profile is a
+#          no-op, not an error)
 clean_profile_java_exports() {
     local profile="$HOME/.profile"
     [[ -f "$profile" ]] || return 0

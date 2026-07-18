@@ -27,6 +27,11 @@
 # script does the same (marking dirty checkouts as <commit>+dirty), and the
 # --check diff normalizes those three lines on both sides so a stamp from an
 # older deploy of IDENTICAL code is not reported as drift.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-07-10  #45 PR3/#49: runtime_modules.list is the one manifest
+#   v1.1 2026-07-07  Refresh launcher stamp on module-only redeploys too
+#   v1.0 2026-07-07  Initial deploy/--check tool (issue #54)
 # =============================================================================
 
 set -euo pipefail
@@ -56,6 +61,9 @@ MANIFEST_SOURCE="$MODULES_SRC_DIR/runtime_modules.list"
 # --- Runtime module manifest (#49: the ONE manifest, shared with the launcher,
 # the installer entry, and launcher_setup.sh — no more parsing a bash array
 # out of launcher_setup with sed) ---
+# runtime_module_list: List the runtime module filenames from the manifest,
+# skipping blank/comment lines.
+# Outputs: stdout — one module filename per line (data only)
 runtime_module_list() {
     grep -vE '^[[:space:]]*(#|$)' "$MANIFEST_SOURCE" 2>/dev/null
 }
@@ -68,9 +76,12 @@ if [[ ${#RUNTIME_MODS[@]} -eq 0 ]]; then
 fi
 
 # --- Stamp normalization for the launcher diff ---
-# Rewrites the three stamp assignments to their placeholder form so a deployed
-# (stamped) launcher and the checkout (placeholder) launcher compare equal when
-# the rest of the file is identical. Applied to BOTH sides for symmetry.
+# normalize_stamps: Rewrite the three stamp assignments to their placeholder
+# form so a deployed (stamped) launcher and the checkout (placeholder)
+# launcher compare equal when the rest of the file is identical. Applied to
+# BOTH sides for symmetry.
+# Inputs: $1 — path to the file to normalize
+# Outputs: stdout — the file's contents with stamps replaced by placeholders
 normalize_stamps() {
     sed -E \
         -e 's/^(MCSS_VERSION=).*/\1"__MCSS_VERSION__"/' \
@@ -79,7 +90,11 @@ normalize_stamps() {
         "$1"
 }
 
-# files_differ SRC DST [normalize] → 0 if DST is missing or differs from SRC
+# files_differ: Check whether DST is missing or differs from SRC.
+# Inputs:
+#   $1 — src path, $2 — dst path
+#   $3 — "normalize" to compare via normalize_stamps instead of raw bytes
+# Outputs: return — 0 if DST is missing or differs from SRC, 1 if identical
 files_differ() {
     local src="$1" dst="$2" normalize="${3:-}"
     [[ -f "$dst" ]] || return 0

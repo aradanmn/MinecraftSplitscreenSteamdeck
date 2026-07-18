@@ -27,12 +27,38 @@ set -euo pipefail
 #   _get_slot_field(slot, field, [jq_default]) — generic getter; the ONE
 #                                   encoding of .slots[$slot].<field> (#51/D11)
 #
+# Globals PROVIDED: none cross-module of note (this module owns the state
+#   JSON file, not any global variable).
+#
+# Globals CONSUMED (from runtime_context.sh unless noted):
+#   MCSS_ACCOUNT_PREFIX, MCSS_INSTANCE_PREFIX, MCSS_WINDOW_TITLE_PREFIX,
+#   MCSS_RAW_BINDING, MCSS_LAUNCHER_EXEC (legacy LAUNCHER_EXEC),
+#   MCSS_LAUNCHER_ROOT, MCSS_GEOM_DIR, MCSS_PULSE_SERVER,
+#   MCSS_STATE_LOCK_TIMEOUT_S, SPLITSCREEN_STATE, LOG (launcher entry script).
+#   CONTROLLER_MONITOR_STEAM_VENDOR — legacy alias for MCSS_STEAM_VENDOR_ID,
+#   still read by _build_bwrap_command's vendor comparison.
+#   Test-only overrides: SPLITSCREEN_MOCK_SPAWN, BWRAP_CMD.
+#
+# Inputs:  SPLITSCREEN_STATE JSON, /proc pid trees (pgrep-based), js/event
+#          device nodes under /dev/input.
+# Outputs: atomic writes to the state JSON (tmp+mv via _atomic_write), spawns
+#          bwrap+JVM processes, stderr lines prefixed `[instance_lifecycle]`
+#          (and per-function prefixes like `[spawn_instance]`).
+#
 # Environment overrides (for testing):
 #   BWRAP_CMD                     — override bwrap path
 #   MCSS_LAUNCHER_EXEC            — override PolyMC executable path (legacy name
 #                                     LAUNCHER_EXEC still works via mcss_resolve_paths)
 #   SPLITSCREEN_STATE             — override state file path
 #   MCSS_LAUNCHER_ROOT — override launcher base dir (resolved by runtime_context.sh)
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-17  Standard JVM GC flags per instance; setInstanceCfgValue fix
+#   v1.4 2026-07-15  #51/D11,D13: state accessors + shared /proc parser unified
+#   v1.3 2026-07-09  #45: constants/paths sourced from runtime_context.sh
+#   v1.2 2026-07-05  Fix #57 (UNTESTED): map-keeper re-shows late-unmapped win
+#   v1.1 2026-07-01  v1.1 batch: env guard, state-file H3 race fix, 14 audits
+#   v1.0 2026-06-13  Initial extraction: bwrap sandbox + atomic JSON state
 # =============================================================================
 
 # #45: instance prefix, account prefix, window-title prefix, slot count, and
@@ -275,10 +301,17 @@ _build_direct_command() {
     printf '%q ' "${cmd[@]}"
 }
 
-# _build_bwrap_command: Construct a bwrap command string with printf '%q' quoting.
-# $1 = slot, $2 = event_node, $3 = js_node
-# $4+ = pairs of (mask_event, mask_js) for other controllers to mask
-# Output: a single command string (printf '%q' quoted) ready for eval.
+# _build_bwrap_command: Construct a bwrap command string with printf '%q'
+# quoting — the DOCKED/multi-player launch path (see _build_direct_command
+# for the handheld/no-sandbox path).
+# Inputs:
+#   $1 — slot, $2 — event_node, $3 — js_node
+#   $4+ — pairs of (mask_event, mask_js) for other controllers to mask
+#   Globals: MCSS_RAW_BINDING, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX,
+#     MCSS_PULSE_SERVER (read via _launcher_env_core),
+#     CONTROLLER_MONITOR_STEAM_VENDOR (read, legacy alias)
+# Outputs:
+#   stdout — a single command string (printf '%q' quoted) ready for eval
 _build_bwrap_command() {
     local slot="$1"
     local event_node="$2"
@@ -455,9 +488,15 @@ _build_bwrap_command() {
     printf '%q ' "${cmd[@]}"
 }
 
-# _poll_for_java: Poll for the Java process PID.
-# $1 = slot
-# Returns PID on stdout, empty string if not found within timeout.
+# _poll_for_java: Poll for the Java process PID by matching the slot's
+# natives-dir pattern in the process table.
+# Inputs:
+#   $1 — slot
+#   Globals: MCSS_LAUNCHER_ROOT, MCSS_INSTANCE_PREFIX (read),
+#     INSTANCE_LIFECYCLE_JAVA_POLL_ITERS, INSTANCE_LIFECYCLE_POLL_INTERVAL_S
+# Outputs:
+#   stdout — PID, or empty string if not found within the poll timeout
+#   return — 0 if found, 1 on timeout (WARNING logged to stderr)
 _poll_for_java() {
     local slot="$1"
     local launcher_dir
@@ -514,8 +553,13 @@ _emit_pid_tree() {
 }
 
 # _poll_for_window: Wait for the Minecraft window to appear.
-# $1 = slot
-# Returns window ID on stdout, empty string if timeout.
+# Inputs:
+#   $1 — slot
+#   Globals: MCSS_WINDOW_TITLE_PREFIX (read),
+#     INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS, INSTANCE_LIFECYCLE_POLL_INTERVAL_S
+# Outputs:
+#   stdout — window ID, or empty string if not found within the poll timeout
+#   return — 0 if found, 1 on timeout (WARNING logged to stderr)
 # Strategy (via dex — the single X11 layer):
 #   1. dex_search --name "SplitscreenP<slot>" — works only with LWJGL 2 (the title
 #      property is ignored by LWJGL 3 / GLFW, and modern MC overwrites the caption to
@@ -576,7 +620,8 @@ _poll_for_window() {
 
 # --- State file management ---
 
-# Read the current state file. Returns "null" on stdout if file doesn't exist.
+# read_state: Return the current state file as compact JSON, or "null" if the
+# file doesn't exist/parse.
 read_state() {
     local state_file
     state_file=$(_get_state_file)
@@ -584,9 +629,16 @@ read_state() {
     jq -c '.' "$state_file" 2>/dev/null || echo "null"
 }
 
-# Update a single slot's fields by merging the provided JSON object.
-# $1 = slot (1-4), $2 = JSON object to merge into the slot's data
-# The provided object is recursively merged with the existing slot data via jq's * operator.
+# update_slot_state: Merge a JSON object into one slot's state, atomically.
+# The provided object is recursively merged with the existing slot data via
+# jq's * operator; lock-serialized so concurrent spawns can't lose a field.
+# Inputs:
+#   $1 — slot (1-4)
+#   $2 — JSON object to merge into .slots[$1]
+#   Globals: MCSS_STATE_LOCK_TIMEOUT_S (read)
+# Outputs:
+#   return — 0 on success; 1 on lock timeout or jq failure (logged to stderr)
+#   side effects — atomic write to the state file (tmp+mv, flock-guarded)
 update_slot_state() {
     local slot="$1"
     local merge_json="$2"
@@ -649,7 +701,8 @@ _get_slot_field() {
         ".slots[\$s][\$f] // $default" <<< "$state" 2>/dev/null
 }
 
-# Return active slot numbers as a space-separated string (ascending order).
+# get_active_slots: Return active slot numbers as a space-separated string
+# (ascending order).
 get_active_slots() {
     local state
     state=$(read_state)
@@ -662,30 +715,33 @@ get_active_slots() {
     jq -r '[.slots | to_entries[] | select(.value.active == true) | .key | tonumber] | sort | join(" ")' <<< "$state" 2>/dev/null
 }
 
-# Return the bwrap PID for a slot.
+# get_bwrap_pid: Return the bwrap PID for a slot.
 get_bwrap_pid() {
     _get_slot_field "$1" bwrap_pid
 }
 
-# Return the Java PID for a slot. (Schema note: the Java PID is stored under
-# the state key "pid".)
+# get_java_pid: Return the Java PID for a slot. (Schema note: the Java PID is
+# stored under the state key "pid".)
 get_java_pid() {
     _get_slot_field "$1" pid
 }
 
-# Return the X11 window ID (WID) for a slot, or empty if not known.
-# Used by apply_layout to find the Minecraft window without xdotool name-search.
+# get_window_id: Return the X11 window ID (WID) for a slot, or empty if not
+# known. Used by apply_layout to find the Minecraft window without an
+# xdotool name-search.
 get_window_id() {
     _get_slot_field "$1" wid
 }
 
-# Set (or replace) a key=value line in a PolyMC instance.cfg.
+# setInstanceCfgValue: Set (or replace) a key=value line in a PolyMC
+# instance.cfg.
 # Was a "preserved function" of the pre-modular launcher that never made it into
 # a module — spawn_instance has been calling it since the split, so on the Deck
 # the call died with exit 127 under set -e. Values must not contain newlines;
 # '&', '|' and '\' are escaped for the sed replacement (JVM flags contain none,
 # but don't let a future value corrupt the cfg).
-# $1 = cfg path, $2 = key, $3 = value
+# Inputs:
+#   $1 — cfg path, $2 — key, $3 — value
 setInstanceCfgValue() {
     local cfg="$1" key="$2" value="$3"
     local escaped
@@ -697,12 +753,14 @@ setInstanceCfgValue() {
     fi
 }
 
-# Merge the per-slot window-title property into an instance.cfg's JvmArgs,
-# preserving whatever flags are already there — the installer writes the
-# standard GC flag set (instance_creation.sh:MCSS_JVM_GC_FLAGS) and a plain
-# overwrite would strip it on every spawn. Any previous title token is removed
-# first so re-spawns don't accumulate stale titles.
-# $1 = cfg path, $2 = slot
+# _set_jvm_window_title: Merge the per-slot window-title property into an
+# instance.cfg's JvmArgs, preserving whatever flags are already there — the
+# installer writes the standard GC flag set (instance_creation.sh:
+# MCSS_JVM_GC_FLAGS) and a plain overwrite would strip it on every spawn. Any
+# previous title token is removed first so re-spawns don't accumulate stale
+# titles.
+# Inputs:
+#   $1 — cfg path, $2 — slot
 _set_jvm_window_title() {
     local cfg_path="$1" slot="$2"
     local existing_jvm_args
@@ -717,10 +775,20 @@ _set_jvm_window_title() {
 
 # --- Public API ---
 
-# Spawn a Minecraft instance in the given slot.
-# $1 = slot (1-4)
-# $2 = event_node (e.g. /dev/input/event4)
-# $3 = js_node (e.g. /dev/input/js1)
+# spawn_instance: Spawn a Minecraft instance in the given slot.
+# Inputs:
+#   $1 — slot (1-4)
+#   $2 — event_node (e.g. /dev/input/event4), may be empty
+#   $3 — js_node (e.g. /dev/input/js1), may be empty
+#   $4+ — pairs of (mask_event, mask_js) for other controllers to mask
+#   Globals: MCSS_LAUNCHER_ROOT, MCSS_INSTANCE_PREFIX, MCSS_WINDOW_TITLE_PREFIX,
+#     MCSS_GEOM_DIR, LOG (read); SPLITSCREEN_MOCK_SPAWN (test override)
+# Outputs:
+#   return — 0 on launch (or successful mock/pre-reserved path), 1 on bwrap
+#     missing/failure, 2 if the slot is already active with a running bwrap
+#   side effects — updates state JSON (active/pid/bwrap_pid/wid), spawns
+#     bwrap+JVM (or a direct launch in handheld mode), applies window layout,
+#     stderr `[spawn_instance]` prefix
 spawn_instance() {
     local slot="${1:-}"
     local event_node="${2:-}"
@@ -930,8 +998,15 @@ spawn_instance() {
     fi
 }
 
-# Tear down the instance in the given slot.
-# $1 = slot
+# teardown_instance: Tear down the instance in the given slot.
+# Inputs:
+#   $1 — slot
+#   Globals: MCSS_GEOM_DIR (read)
+# Outputs:
+#   return — 0 (no-op if the slot wasn't active, or after teardown completes)
+#   side effects — SIGTERM then SIGKILL to the bwrap process group (and the
+#     tracked java_pid as a fallback), marks the slot inactive in state JSON,
+#     clears the slot's cached geom file, stderr `[teardown_instance]` prefix
 teardown_instance() {
     local slot="$1"
 
@@ -995,7 +1070,7 @@ teardown_instance() {
     # here would hang if the window is already dead (X11 BadWindow → no response).
 }
 
-# Tear down all active instances.
+# teardown_all_instances: Tear down every currently active slot.
 teardown_all_instances() {
     echo "[teardown_all_instances] Tearing down all instances" >&2
 
@@ -1008,8 +1083,9 @@ teardown_all_instances() {
     done
 }
 
-# Return 0 if the given slot has an active running instance, 1 otherwise.
-# $1 = slot
+# slot_is_active: Return 0 if the given slot has an active running instance,
+# 1 otherwise.
+# Inputs: $1 — slot
 slot_is_active() {
     [[ "$(_get_slot_field "$1" active false)" == "true" ]]
 }

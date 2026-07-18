@@ -30,6 +30,25 @@
 #   kwin_positioner_available            -> 0 if KWin scripting is reachable
 #   kwin_place_windows "PID X Y W H" ... -> place each (pid -> cell) via frameGeometry
 #   kwin_set_noborder <pid>              -> strip title bar/border once (at spawn)
+#
+# Globals CONSUMED: MCSS_HELPER_DIR (from runtime_context.sh's
+#   mcss_resolve_paths — the 0700 dir generated placement/noborder scripts are
+#   written to); DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR (imported from a
+#   nested-session process by _kwin_import_session_env when the ambient bus
+#   doesn't already reach org.kde.KWin).
+#
+# Inputs:  org.kde.KWin over D-Bus (via qdbus6/qdbus), /proc/<pid>/environ of
+#          candidate kwin_wayland/plasma_session processes.
+# Outputs: repositioned/re-decorated KWin-managed windows, generated one-shot
+#          .js files under MCSS_HELPER_DIR (loaded, run, then deleted), stderr
+#          `[kwin_positioner]` prefix.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-09  #45: generated scripts move to $MCSS_HELPER_DIR (N6/N7)
+#   v1.2 2026-07-01  v1.1 batch: env guard, nested-session teardown, audits
+#   v1.1 2026-06-27  Tried raise/jiggle/minimize-toggle repaints; all
+#                    reverted — frameGeometry-only placement
+#   v1.0 2026-06-22  Initial extraction: KWin-scripting one-shot placement
 # =============================================================================
 
 # #45: generated-script dir (MCSS_HELPER_DIR) is runtime_context-owned; sourcing
@@ -37,20 +56,30 @@
 # like the launcher prologue.
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
-# qdbus wrapper — prefer the Qt6 build (Plasma 6).
+# kwin_qdbus: qdbus wrapper — prefer the Qt6 build (Plasma 6).
+# Inputs: $@ — forwarded verbatim to qdbus6/qdbus
+# Outputs:
+#   stdout — whatever the underlying qdbus call prints
+#   return — 127 if neither qdbus6 nor qdbus is on PATH
 kwin_qdbus() {
     if command -v qdbus6 >/dev/null 2>&1; then qdbus6 "$@"
     elif command -v qdbus >/dev/null 2>&1; then qdbus "$@"
     else return 127; fi
 }
 
-# Ensure org.kde.KWin is reachable. In-session this is a no-op (the ambient bus
-# IS the nested Plasma session bus). Externally (test harness over SSH) we import
-# DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR from a nested-session process so qdbus
-# talks to the SAME bus KWin is on. We try every candidate process and VERIFY each
-# address actually reaches org.kde.KWin before committing — the process tree is
-# kwin_wayland_wrapper -> kwin_wayland and `pgrep -x` on the bare comm is flaky, so
-# match cmdlines and probe.
+# _kwin_import_session_env: Ensure org.kde.KWin is reachable. In-session this
+# is a no-op (the ambient bus IS the nested Plasma session bus). Externally
+# (test harness over SSH) we import DBUS_SESSION_BUS_ADDRESS + XDG_RUNTIME_DIR
+# from a nested-session process so qdbus talks to the SAME bus KWin is on. We
+# try every candidate process and VERIFY each address actually reaches
+# org.kde.KWin before committing — the process tree is kwin_wayland_wrapper ->
+# kwin_wayland and `pgrep -x` on the bare comm is flaky, so match cmdlines and
+# probe.
+# Outputs:
+#   return — 0 once a working bus is confirmed (already reachable, or a
+#     candidate's env verified and exported), 1 if none worked
+#   side effects — exports DBUS_SESSION_BUS_ADDRESS (and XDG_RUNTIME_DIR when
+#     found) on success
 _kwin_import_session_env() {
     if kwin_qdbus org.kde.KWin >/dev/null 2>&1; then return 0; fi
 
@@ -70,15 +99,27 @@ _kwin_import_session_env() {
     return 1
 }
 
+# kwin_positioner_available: Check that a qdbus binary exists AND that KWin
+# scripting is actually reachable on the (possibly imported) session bus.
+# Outputs: return — 0 if reachable, 1 otherwise
 kwin_positioner_available() {
     command -v qdbus6 >/dev/null 2>&1 || command -v qdbus >/dev/null 2>&1 || return 1
     _kwin_import_session_env
 }
 
-# kwin_place_windows "PID X Y W H" ["PID X Y W H" ...]
-# Generates a one-shot KWin script that places each matched window and prints a
-# per-target report (placed / NOMATCH) to the KWin journal. Returns 0 if the
-# script loaded+ran, 1 otherwise. Geometry is verified separately (wintree).
+# kwin_place_windows: Generate a one-shot KWin script that places each
+# matched window and prints a per-target report (placed / NOMATCH) to the
+# KWin journal. Geometry is verified separately (by the caller, e.g.
+# window_manager.sh's _verify_window_geometry).
+# Inputs:
+#   $@ — one or more "PID X Y W H" strings (space-separated integers; a
+#     malformed spec is skipped with a stderr WARNING, not fatal)
+#   Globals: MCSS_HELPER_DIR (read, via mcss_resolve_paths)
+# Outputs:
+#   return — 0 if the script loaded+ran (or there was nothing to place), 1 if
+#     KWin is unreachable or loadScript failed
+#   side effects — writes+deletes a generated .js file under MCSS_HELPER_DIR,
+#     stderr `[kwin_positioner]` prefix
 kwin_place_windows() {
     if ! _kwin_import_session_env; then
         echo "[kwin_positioner] ERROR: org.kde.KWin not reachable (Plasma 6 session up?)" >&2
@@ -210,12 +251,19 @@ KWINJS
     return 0
 }
 
-# kwin_set_noborder <pid>: strip the title bar/border from the window(s) owned by <pid>
+# kwin_set_noborder: strip the title bar/border from window(s) owned by <pid>
 # via KWin scripting (w.noBorder = true), ONCE. Setting noBorder makes KWin recreate the
 # decoration (a brief reparent), so call this exactly once when the window first appears —
 # NOT per reflow (repeated recreates unmap/clobber geometry). Replaces the at-map "No
 # titlebar and frame" window rule, which is unreliable because Minecraft sets its caption/
 # WM_CLASS only AFTER mapping, so the rule has nothing to match at evaluation time.
+# Inputs:
+#   $1 — pid
+#   Globals: MCSS_HELPER_DIR (read, via mcss_resolve_paths)
+# Outputs:
+#   return — 0 on success, 1 if pid is empty, KWin is unreachable, or
+#     loadScript failed
+#   side effects — writes+deletes a generated .js file under MCSS_HELPER_DIR
 kwin_set_noborder() {
     local pid="$1"
     [[ -z "$pid" ]] && return 1
