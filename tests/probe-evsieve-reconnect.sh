@@ -103,6 +103,14 @@ readonly RESULTS
 # Module-private mutable array: every evsieve PID launched, tracked here.
 # The EXIT/INT/TERM trap kills exactly these -- never pkill/killall.
 declare -a _SPAWNED_EVSIEVE_PIDS=()
+# Module-private mutable array: every background watcher PID launched
+# (node-existence sampler, udevadm monitor), tracked here. Same
+# tracked-PID-only kill discipline as _SPAWNED_EVSIEVE_PIDS -- never
+# pkill/killall.
+declare -a _SPAWNED_WATCHER_PIDS=()
+# Set once _start_udev_watcher actually starts a udevadm monitor, so the
+# wrap-up banner only claims a udev log exists when one really does.
+_UDEV_WATCHER_STARTED=0
 
 # --- Cleanup ---
 
@@ -115,13 +123,15 @@ declare -a _SPAWNED_EVSIEVE_PIDS=()
 #   side effects — kills PIDs, removes LINK_DIR; stderr status lines
 cleanup() {
     local pid alive=0
-    for pid in "${_SPAWNED_EVSIEVE_PIDS[@]:-}"; do
+    for pid in "${_SPAWNED_EVSIEVE_PIDS[@]:-}" "${_SPAWNED_WATCHER_PIDS[@]:-}"
+    do
         [[ -n "$pid" ]] || continue
-        kill "$pid" 2>/dev/null || true      # only OUR evsieve PIDs
+        kill "$pid" 2>/dev/null || true      # only OUR tracked PIDs
     done
     sleep 0.3
     # Report any survivor -- evidence the Deck is left clean.
-    for pid in "${_SPAWNED_EVSIEVE_PIDS[@]:-}"; do
+    for pid in "${_SPAWNED_EVSIEVE_PIDS[@]:-}" "${_SPAWNED_WATCHER_PIDS[@]:-}"
+    do
         [[ -n "$pid" ]] || continue
         if kill -0 "$pid" 2>/dev/null; then
             kill -9 "$pid" 2>/dev/null || true
@@ -129,8 +139,9 @@ cleanup() {
         fi
     done
     [[ -n "${LINK_DIR:-}" && -d "$LINK_DIR" ]] && rm -rf "$LINK_DIR"
-    (( alive )) && echo "[probe] WARN: force-killed a lingering evsieve" >&2
-    echo "[probe] cleanup done; no tracked evsieve left running" >&2
+    (( alive )) && echo "[probe] WARN: force-killed a lingering tracked" \
+        "process" >&2
+    echo "[probe] cleanup done; no tracked evsieve/watcher left running" >&2
 }
 trap cleanup EXIT INT TERM
 
@@ -266,32 +277,63 @@ _assert_not_steam_vendor() {
     done < <(_parse_all_gamepad_devices 2>/dev/null)
 }
 
+# _evsieve_logfile: Compute the persistent, timestamped log path for a
+# given evsieve instance name. Lives next to $RESULTS (NOT in the mktemp
+# LINK_DIR, which is rm -rf'd on exit) so operators can inspect evsieve's
+# own stdout+stderr -- including "disconnected"/"reconnected" lines and
+# this branch's new [<epoch>] persist: diagnostics -- after the session.
+# Inputs: $1 — NAME (e.g. MCSS-probe-slotA)
+#   Globals: RESULTS (read)
+# Outputs: stdout — the log file path
+_evsieve_logfile() {
+    echo "${RESULTS%.txt}-evsieve-$1.log"
+}
+
+# _timestamp_stream: Filter stdin, prefixing each line with a wall-clock
+# HH:MM:SS timestamp. Uses bash's printf builtin (no gawk dependency --
+# stock SteamOS awk may not support strftime()) so it stays a cheap,
+# dependency-free per-line stamp for a live evsieve stream.
+# Inputs: stdin
+# Outputs: stdout — "HH:MM:SS <original line>"
+_timestamp_stream() {
+    local line
+    while IFS= read -r line; do
+        printf '%(%H:%M:%S)T %s\n' -1 "$line"
+    done
+}
+
 # start_evsieve: Launch evsieve forwarding EV_NODE to a persistent
-# create-link virtual, in the background, with stderr captured for later
-# grep (P0's uinput-permission check).
+# create-link virtual, in the background. Its combined stdout+stderr is
+# timestamped line-by-line into a persistent log next to $RESULTS (see
+# _evsieve_logfile) -- the evidence trail for P0's uinput-permission
+# check and for A/B's disconnected/reconnected counts.
 # Inputs:
 #   $1 — GRAB: "grab" or "" (empty = no grab, needed for Probe B's dual
 #        read of physical + virtual at once)
 #   $2 — LINKPATH create-link target (must live under LINK_DIR)
 #   $3 — DEVNAME advertised output name= value
 #   $4 — EV_NODE the DS4's own physical evdev node
-#   Globals: EVSIEVE_BIN (read), LINK_DIR (read),
+#   Globals: EVSIEVE_BIN (read), LINK_DIR (read), RESULTS (read),
 #            _SPAWNED_EVSIEVE_PIDS (read/write)
 # Outputs:
-#   side effects — spawns a background evsieve; $! appended to
-#     _SPAWNED_EVSIEVE_PIDS; stderr goes to "$LINK_DIR/evsieve-<name>.err"
+#   side effects — spawns a background evsieve; $! (evsieve's OWN pid,
+#     not the log-filter's -- the `> >(...)` reader is a separate,
+#     un-backgrounded process substitution) appended to
+#     _SPAWNED_EVSIEVE_PIDS; combined stdout+stderr streams into
+#     "$(_evsieve_logfile DEVNAME)"
 start_evsieve() {
     local grab_flag="$1" linkpath="$2" devname="$3" ev_node="$4"
-    local errfile="$LINK_DIR/evsieve-${devname}.err"
+    local logfile
+    logfile=$(_evsieve_logfile "$devname")
     [[ -n "$grab_flag" ]] && _assert_not_steam_vendor "$ev_node"
     if [[ -n "$grab_flag" ]]; then
         "$EVSIEVE_BIN" --input "$ev_node" grab persist=reopen \
             --output create-link="$linkpath" name="$devname" \
-            >/dev/null 2>"$errfile" &
+            > >(_timestamp_stream >> "$logfile") 2>&1 &
     else
         "$EVSIEVE_BIN" --input "$ev_node" persist=reopen \
             --output create-link="$linkpath" name="$devname" \
-            >/dev/null 2>"$errfile" &
+            > >(_timestamp_stream >> "$logfile") 2>&1 &
     fi
     _SPAWNED_EVSIEVE_PIDS+=("$!")
 }
@@ -305,6 +347,124 @@ _stop_last_evsieve() {
     local pid="${_SPAWNED_EVSIEVE_PIDS[$((n - 1))]}"
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+}
+
+# --- Physical-node lifecycle watchers (nodewatch + udevadm) ---
+#
+# These run alongside Probes A and B so a power-cycle's exact
+# disappear/reappear timestamps -- and the new inode a reconnect gets --
+# can be correlated against evsieve's own "disconnected"/"reconnected"
+# lines. Both are tracked PIDs, killed only by cleanup()/_stop_watchers,
+# never pkill. inotifywait is NOT assumed present (not guaranteed on
+# stock SteamOS); this is a plain stat(1) poll loop instead.
+
+# _start_node_watcher: Background loop sampling NODE's existence + inode
+# every 0.5s, appending one line per sample to a persistent log next to
+# $RESULTS. Watches the ORIGINAL physical path found at the start of
+# Probe A for the rest of the session -- that is the same path evsieve
+# itself watches under persist=reopen, so the two logs describe the same
+# timeline from two independent vantage points.
+# Inputs: $1 — NODE evdev path to watch
+#   Globals: RESULTS (read), _SPAWNED_WATCHER_PIDS (read/write)
+# Outputs:
+#   side effects — spawns a tracked background loop; appends to
+#     "$(_nodewatch_logfile)"; $! appended to _SPAWNED_WATCHER_PIDS
+_nodewatch_logfile() {
+    echo "${RESULTS%.txt}-nodewatch.log"
+}
+_start_node_watcher() {
+    local node="$1" logfile
+    logfile=$(_nodewatch_logfile)
+    (
+        while true; do
+            local ts exists=0 inode="NONE"
+            ts=$(_get_epoch_ms)
+            if [[ -e "$node" ]]; then
+                exists=1
+                inode=$(stat -c '%i' "$node" 2>/dev/null || echo "NONE")
+            fi
+            echo "t=${ts} node=${node} exists=${exists} inode=${inode}"
+            sleep 0.5
+        done
+    ) >> "$logfile" &
+    _SPAWNED_WATCHER_PIDS+=("$!")
+}
+
+# _start_udev_watcher: Background `udevadm monitor --kernel --udev`,
+# appending raw udev/kernel events to a persistent log next to $RESULTS.
+# Guarded by `command -v udevadm` -- not guaranteed present, and never
+# required for the probe's verdicts, only supplementary evidence.
+# Inputs: none
+#   Globals: RESULTS (read), _SPAWNED_WATCHER_PIDS (read/write),
+#            _UDEV_WATCHER_STARTED (write)
+# Outputs:
+#   side effects — spawns a tracked background udevadm monitor (if
+#     available); appends to "$(_udev_logfile)"; $! appended to
+#     _SPAWNED_WATCHER_PIDS
+_udev_logfile() {
+    echo "${RESULTS%.txt}-udev.log"
+}
+_start_udev_watcher() {
+    command -v udevadm >/dev/null 2>&1 || return 0
+    local logfile
+    logfile=$(_udev_logfile)
+    udevadm monitor --kernel --udev >> "$logfile" 2>&1 &
+    _SPAWNED_WATCHER_PIDS+=("$!")
+    _UDEV_WATCHER_STARTED=1
+}
+
+# _stop_watchers: Kill (and reap) every tracked watcher PID. Called once
+# near the end of the main flow so the wrap-up banner reports quiesced
+# logs; the EXIT trap re-verifies (and is the only thing that runs at
+# all if the operator Ctrl-C's mid-probe).
+# Inputs: Globals: _SPAWNED_WATCHER_PIDS (read)
+_stop_watchers() {
+    local pid
+    for pid in "${_SPAWNED_WATCHER_PIDS[@]:-}"; do
+        [[ -n "$pid" ]] || continue
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+}
+
+# _count_matches: Case-insensitive count of PATTERN's occurrences in
+# LOGFILE (0 if the file is missing or has none). Used to tally
+# evsieve's own "disconnected"/"reconnected" lines for A/B evidence.
+# Inputs: $1 — PATTERN, $2 — LOGFILE
+# Outputs: stdout — integer count
+_count_matches() {
+    local pattern="$1" logfile="$2" n
+    [[ -f "$logfile" ]] || { echo 0; return 0; }
+    n=$(grep -ic "$pattern" "$logfile" 2>/dev/null)
+    echo "${n:-0}"
+}
+
+# _last_reappear_ts: Scan a nodewatch log for the LAST exists=0 -> 1
+# transition (i.e. the most recent moment the physical node came back
+# after having been gone) and print its t= epoch-ms timestamp. Because
+# the nodewatch log spans the whole session, the LAST such transition at
+# the time this is called is the one from whichever probe just ran --
+# this lets Probe B's evidence cite the exact ms its own reconnect was
+# first observed, to line up against evsieve's disconnected/reconnected
+# timestamps.
+# Inputs: $1 — nodewatch LOGFILE path
+# Outputs: stdout — epoch-ms timestamp, or "NONE" if undeterminable
+_last_reappear_ts() {
+    local logfile="$1" line exists ts last_gone=1 result="NONE"
+    [[ -f "$logfile" ]] || { echo "NONE"; return 0; }
+    while IFS= read -r line; do
+        exists=$(_extract_field exists "$line")
+        if [[ "$exists" == "0" ]]; then
+            last_gone=1
+        elif [[ "$exists" == "1" ]]; then
+            if [[ "$last_gone" == "1" ]]; then
+                ts=$(_extract_field t "$line")
+                [[ -n "$ts" ]] && result="$ts"
+            fi
+            last_gone=0
+        fi
+    done < "$logfile"
+    echo "$result"
 }
 
 # _write_capture_reader: Write the python3 evdev tally reader once into
@@ -600,7 +760,8 @@ _run_p0_gate() {
     start_evsieve grab "$link" "MCSS-probe-p0" "$ev_node"
     sleep 2
 
-    local errfile="$LINK_DIR/evsieve-MCSS-probe-p0.err"
+    local errfile
+    errfile=$(_evsieve_logfile "MCSS-probe-p0")
     local node_created="none" uinput_err="none"
     if [[ -e "$link" ]]; then
         node_created=$(readlink -f "$link" 2>/dev/null || echo "$link")
@@ -696,6 +857,12 @@ _run_probe_a() {
     fi
     ev_node="${ds4%% *}"
 
+    # Watchers: an independent, evsieve-external timeline of the SAME
+    # physical path (nodewatch) plus raw udev/kernel events, both for
+    # correlating against evsieve's own disconnected/reconnected lines.
+    _start_node_watcher "$ev_node"
+    _start_udev_watcher
+
     local link_a="$LINK_DIR/slotA"
     start_evsieve grab "$link_a" "MCSS-probe-slotA" "$ev_node"
     sleep 2
@@ -765,12 +932,18 @@ _run_probe_a() {
         verdict="CHANGED"
     fi
 
+    local a_logfile disc_n recon_n
+    a_logfile=$(_evsieve_logfile "MCSS-probe-slotA")
+    disc_n=$(_count_matches disconnected "$a_logfile")
+    recon_n=$(_count_matches reconnected "$a_logfile")
+
     local evidence
     evidence="mode=persist=reopen; pre[${pre}]; gap_survived=${survived};"
     evidence+=" post[${post}]; production-wants=persist=full"
     evidence+=" (start-before-connect, cache-primed) -- NOT in evsieve"
     evidence+=" 1.4.0 CLI (persist=none|reopen|exit only), needs a"
-    evidence+=" source-branch check"
+    evidence+=" source-branch check; evsieve_log=${a_logfile}"
+    evidence+=" disconnected_count=${disc_n} reconnected_count=${recon_n}"
     emit_verdict A_NODE_STABILITY "$verdict" "$evidence"
 
     _stop_last_evsieve
@@ -799,6 +972,11 @@ _run_probe_b() {
         return 1
     fi
     ev_node="${ds4%% *}"
+
+    # Watcher: same nodewatch mechanism as Probe A (harmless if Probe A
+    # already has one running on the same path -- see _start_node_watcher).
+    _start_node_watcher "$ev_node"
+    _start_udev_watcher
 
     local link_b="$LINK_DIR/slotB"
     start_evsieve "" "$link_b" "MCSS-probe-slotB" "$ev_node"
@@ -878,10 +1056,21 @@ _run_probe_b() {
         ok="DEGRADED"
     fi
 
+    local b_logfile disc_n recon_n nodewatch_log reappear_ts
+    b_logfile=$(_evsieve_logfile "MCSS-probe-slotB")
+    disc_n=$(_count_matches disconnected "$b_logfile")
+    recon_n=$(_count_matches reconnected "$b_logfile")
+    nodewatch_log=$(_nodewatch_logfile)
+    reappear_ts=$(_last_reappear_ts "$nodewatch_log")
+
     local evidence
     evidence="pre phys[${phys_pre}] virt[${virt_pre}];"
     evidence+=" post phys[${phys_post}] virt[${virt_post}];"
-    evidence+=" phys_path=${path_verdict}; tool=${tool}"
+    evidence+=" phys_path=${path_verdict}; tool=${tool};"
+    evidence+=" evsieve_log=${b_logfile} disconnected_count=${disc_n}"
+    evidence+=" reconnected_count=${recon_n};"
+    evidence+=" nodewatch_reappear_t=${reappear_ts} (correlate against"
+    evidence+=" this log's disconnected/reconnected timestamps)"
     emit_verdict B_STREAM_FIDELITY "$ok" "$evidence"
 
     _stop_last_evsieve
@@ -903,8 +1092,20 @@ _run_p0_gate
 _run_probe_a
 _run_probe_b
 
+_stop_watchers
+
 echo
 echo "=============================================================="
 echo " Results file: ${RESULTS}"
+echo " evsieve logs (stdout+stderr, timestamped):"
+echo "   P0:    $(_evsieve_logfile MCSS-probe-p0)"
+echo "   A:     $(_evsieve_logfile MCSS-probe-slotA)"
+echo "   B:     $(_evsieve_logfile MCSS-probe-slotB)"
+echo " Physical-node watcher log: $(_nodewatch_logfile)"
+if (( _UDEV_WATCHER_STARTED )); then
+    echo " udevadm monitor log:       $(_udev_logfile)"
+else
+    echo " udevadm monitor log:       (udevadm not found, not started)"
+fi
 echo " Paste the VERDICT lines above into issue #38."
 echo "=============================================================="
