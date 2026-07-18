@@ -79,6 +79,14 @@ for _required_fn in _parse_all_gamepad_devices _map_external_player_virtuals \
 done
 unset _required_fn
 
+# controller_monitor.sh runs `set -euo pipefail` when sourced, silently
+# turning errexit ON for this probe (2026-07-18: killed the script at
+# Probe A's trailing `[[ -e ]] &&` WARN, so Probe B never ran). This is
+# an operator-interactive probe: soft failures must reach their verdict
+# lines, never abort the session. Re-assert our own mode.
+set +e
+set -uo pipefail
+
 # --- Constants ---
 readonly EVSIEVE_BIN="${MCSS_EVSIEVE_BIN:-$HOME/evsieve-src/target/release/\
 evsieve}"
@@ -475,7 +483,10 @@ wait_for_ds4() {
 # Outputs: return — 0 on Enter, 1 if the operator types 'skip' (or stdin
 #   is closed, treated as skip)
 prompt_operator() {
-    local message="$1" response
+    # "$*": call sites split long prompts across several quoted args to
+    # hold the 80-char rule — join them (2026-07-18: "$1" truncated every
+    # multi-arg prompt mid-sentence on the Deck).
+    local message="$*" response
     echo "" >&2
     echo ">>> OPERATOR ACTION REQUIRED <<<" >&2
     echo ">>> ${message}" >&2
@@ -745,7 +756,10 @@ _run_probe_a() {
     emit_verdict A_NODE_STABILITY "$verdict" "$evidence"
 
     _stop_last_evsieve
-    [[ -e "$link_a" ]] && echo "[probe] WARN: ${link_a} still present" >&2
+    if [[ -e "$link_a" ]]; then
+        echo "[probe] WARN: ${link_a} still present" >&2
+    fi
+    return 0
 }
 
 # --- Probe B: STREAM_FIDELITY ---
