@@ -28,6 +28,23 @@
 #   DEX_DISPLAY — override DISPLAY (default: $MCSS_DISPLAY, then $DISPLAY, then :0)
 #   DEX_PY_SCRIPT — path to generated Python script
 #                   (default: $XDG_RUNTIME_DIR/dex_$$.py, falling back to /tmp/dex_$$.py)
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   MCSS_DISPLAY   — from mcss_set_display (runtime_context.sh), call-time
+#   DEX_DISPLAY, DEX_PY_SCRIPT — env overrides, documented above
+#
+# Inputs:  libX11.so.6 via python3+ctypes, the X11 display.
+# Outputs: window IDs / geometry to stdout; usage/arg errors to stderr
+#          UNPREFIXED (no `[dex] ` tag — deviates from the §7.10 module
+#          logging convention; comments-only scope, flagged, not fixed here);
+#          the generated Python script under $XDG_RUNTIME_DIR (or /tmp).
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-17  Fix #90: API trim — 8 zero-reference dex_* wrappers gone
+#   v1.3 2026-07-09  #45: no source-time DISPLAY capture; helper off /tmp
+#   v1.2 2026-07-06  #19/#28: backend temp-file lifecycle; Java-25/MC-26.x
+#   v1.1 2026-06-23  Windowing fixes: reparent-to-root move, borderless toggle
+#   v1.0 2026-06-17  Initial ctypes X11 backend (xdotool replacement)
 # =============================================================================
 
 set -euo pipefail
@@ -46,10 +63,14 @@ set -euo pipefail
 # atomically, regenerated on every source and on demand if a cleanup removed it.
 DEX_PY_SCRIPT="${DEX_PY_SCRIPT:-${XDG_RUNTIME_DIR:-/tmp}/dex_backend_${UID}.py}"
 
-# ============================================================
-# Generate the Python backend script once, then call it for each op.
-# This avoids heredoc expansion issues and is more efficient.
-# ============================================================
+# _dex_generate_backend: (Re)write the generated Python backend script once,
+# so each dex_* call just invokes it — avoids heredoc-expansion issues and is
+# more efficient than regenerating per-call.
+# NOTE: do NOT edit inside the DEXPYEOF heredoc below (runtime Python data).
+# Inputs: Globals: DEX_PY_SCRIPT (read/write — the destination path)
+# Outputs:
+#   return — 0 on success, 1 if mktemp fails
+#   side effects — atomically (mktemp+mv) (re)writes+chmods DEX_PY_SCRIPT
 _dex_generate_backend() {
     # #19: atomic — a concurrent _dex_run keeps reading the old inode.
     local _tmp
@@ -498,7 +519,13 @@ DEXPYEOF
 # is atomic (mktemp+mv in _dex_generate_backend), so concurrent sourcing is safe.
 _dex_generate_backend
 
-# ---- Run an action ----
+# _dex_run: Invoke the generated Python backend for one action, resolving
+# DISPLAY at CALL TIME (never source time — see the module header's #45 note).
+# Inputs:
+#   $@ — action name + its args, forwarded to dex_backend.py
+#   Globals: DEX_DISPLAY, MCSS_DISPLAY, DISPLAY (read, in override order)
+# Outputs: stdout/return — whatever the invoked action produces (see the
+#          module header's Public API table for each action's contract)
 _dex_run() {
     # #19: the per-UID backend is shared; another run's cleanup may have removed it.
     [[ -f "$DEX_PY_SCRIPT" ]] || _dex_generate_backend
@@ -509,6 +536,9 @@ _dex_run() {
 # Public API Functions
 # ============================================================
 
+# dex_search: Search windows by name substring or owning PID.
+# Inputs: $1 — "--name" or "--pid"; $2 — pattern or PID value
+# Outputs: stdout — matching window IDs, one per line; return 1 on bad usage
 dex_search() {
     local mode="$1" value="$2"
     case "$mode" in
@@ -518,34 +548,49 @@ dex_search() {
     esac
 }
 
+# dex_getgeometry: stdout — "$1"'s geometry as "x y w h".
 dex_getgeometry() { _dex_run getgeometry "$1"; }
 # Fix #90: dex_move/dex_resize/dex_raise/dex_get_root_wid/dex_get_active_wid/
 # dex_set_root_atom/dex_get_wm_name/dex_find_minecraft_windows deleted —
 # zero references anywhere in the repo (runtime modules or tests/), verified
 # by grep before deleting. Their python backend actions are deleted below too.
 #
+# dex_move_resize: Move+resize $1 to ($2,$3,$4,$5) via XConfigureWindow (no
+# unmap/reparent cycle). stdout: none.
 # test-only (see tests/gamescope-override-redirect-test.sh,
 # tests/gamescope-dex-test.sh); not part of the runtime surface (#90).
 dex_move_resize(){ _dex_run move_resize "$1" "$2" "$3" "$4" "$5"; }
+# dex_move_resize_force: Try 3 progressively more forceful strategies to move
+# $1 to ($2,$3,$4,$5). stdout: the strategy number that succeeded, or 0.
 # test-only (see tests/gamescope-dex-test.sh); not part of the runtime
 # surface (#90).
 dex_move_resize_force(){ _dex_run move_resize_force "$1" "$2" "$3" "$4" "$5"; }
+# dex_move_resize_remap: unmap/override_redirect/reparent-to-root/remap move
+# of $1 to ($2,$3,$4,$5) — see action_move_resize_remap for why. stdout:
+# post-move readback "x y w h".
 dex_move_resize_remap(){ _dex_run move_resize_remap "$1" "$2" "$3" "$4" "$5"; }
 # Fix #57: is-mapped probe + gentle map/raise for the map-keeper.
+# dex_is_viewable: stdout — "viewable"|"unmapped"|"gone" for $1.
 dex_is_viewable() { _dex_run is_viewable "$1"; }
+# dex_map_raise: Map + raise $1 (no unmap/reparent cycle). stdout: none.
 dex_map_raise()   { _dex_run map_raise "$1"; }
+# dex_set_name: Set $1's _NET_WM_NAME/WM_NAME to $2.
 dex_set_name()   { _dex_run set_name "$1" "$2"; }
+# dex_set_override_redirect: Set $1's override_redirect attribute to $2 (0|1).
 # test-only (see tests/gamescope-override-redirect-test.sh); not part of the
 # runtime surface (#90).
 dex_set_override_redirect() { _dex_run set_override_redirect "$1" "$2"; }
+# dex_set_decorations: Toggle WM decorations on $1 ($2: 0=borderless
+# default, 1=decorated) via _MOTIF_WM_HINTS.
 dex_set_decorations() { _dex_run set_decorations "$1" "${2:-0}"; }
+# dex_list_windows: stdout — "<wid>  <name>" pairs for every window.
 dex_list_windows() { _dex_run list; }
 
 # (dex_wid_from_state deleted — Fix #51 (D12): it was a fallback-less copy of
 # window_manager's _get_wid_from_state with zero callers; the state read now
 # lives in instance_lifecycle's get_window_id accessor.)
 
-# Cleanup helper for the generated backend script.
+# _dex_cleanup: Remove the generated backend script (DEX_PY_SCRIPT).
 # NOTE: deliberately NOT auto-trapped on EXIT. dex.sh is sourced as a library by
 # the orchestrator (minecraftSplitscreen.sh), and `trap ... EXIT` here would
 # REPLACE the sourcing script's own EXIT trap (kwin teardown + session-env

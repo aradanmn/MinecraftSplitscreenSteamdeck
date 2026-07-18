@@ -1,25 +1,38 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - MODULAR VERSION
+# MINECRAFT SPLITSCREEN INSTALLER — MODULAR ENTRY POINT
 # =============================================================================
-# 
-# This is the new, clean modular entry point for the Minecraft Splitscreen installer.
-# All functionality has been moved to organized modules for better maintainability.
-# Required modules are automatically downloaded as temporary files when the script runs.
+# Clean entry point: sources installer modules (from a local checkout or
+# downloaded to a temp dir, cleaned up on exit) and runs the full install —
+# Java + PolyMC setup, Fabric + mod install, instance creation, and optional
+# Steam/desktop integration. No manual setup required; just run this script.
 #
 # Features:
-# - Automatic temporary module downloading (modules are cleaned up after completion)
+# - Temporary module download + auto-cleanup when no local checkout exists
 # - Automatic Java detection and installation
-# - Complete Fabric dependency chain implementation
+# - Fabric dependency chain (loader + mappings + LWJGL) resolution
 # - API filtering for Fabric-compatible mods (Modrinth + CurseForge)
-# - Enhanced error handling with multiple fallback mechanisms
-# - User-friendly mod selection interface
-# - Steam Deck optimized installation
-# - Comprehensive Steam and desktop integration
+# - Steam Deck optimized installation; Steam + desktop integration
 #
-# No additional setup, Java installation, token files, or module downloads required - just run this script.
-# Modules are downloaded temporarily and automatically cleaned up when the script completes.
+# This file DEFINES the installer globals world (see the GLOBAL VARIABLES
+# block below). Globals PROVIDED: REPO_REF, MCSS_REPO_RAW_URL,
+# MODRINTH_API_BASE, CURSEFORGE_API_BASE, FABRIC_META_BASE,
+# MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX,
+# MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB, TARGET_DIR, and the
+# MODS/SUPPORTED_MODS/MOD_* arrays (populated by load_mods_config()).
 #
+# Note: installer modules are SOURCED (not executed standalone) and
+# intentionally omit `set -euo pipefail` of their own — this entry script's
+# strict mode governs the whole process. That is a deliberate code decision,
+# not an oversight.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-18  Account prefix "P" -> "Player" for MC account names
+#   v1.3 2026-07-17  Fix #87: canonical JVM heap-default home + paired guards
+#   v1.2 2026-07-10  Fix #45 PR3: API base constants, MCSS_REPO_RAW_URL home,
+#                    runtime_modules.list — one manifest, four readers (#49)
+#   v1.1 2026-07-06  Fix: curl|bash bootstrap survives unset BASH_SOURCE
+#   v1.0 2025-06-11  Initial monolith -> modular entry point
 # =============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -48,7 +61,12 @@ set -- "${FORWARDED_ARGS[@]}"
 # Global variable for modules directory (will be set later)
 MODULES_DIR=""
 
-# Cleanup function to remove temporary modules directory
+# cleanup: Remove the temporary modules directory. Registered via `trap ...
+# EXIT INT TERM` so it runs on normal exit or interruption alike.
+# Inputs:
+#   Globals: MODULES_DIR (read)
+# Outputs:
+#   side effects — rm -rf "$MODULES_DIR" if it was ever created
 cleanup() {
     if [[ -n "$MODULES_DIR" ]] && [[ -d "$MODULES_DIR" ]]; then
         echo "🧹 Cleaning up temporary modules..."
@@ -117,12 +135,21 @@ readonly INSTALLER_MODULE_FILES=(
 readonly RUNTIME_MANIFEST_NAME="runtime_modules.list"
 declare -a RUNTIME_MODULE_FILES=()
 
-# read_runtime_manifest FILE — print manifest entries, ignoring comments/blanks
+# read_runtime_manifest: Print manifest entries, ignoring comments/blanks.
+# Inputs:
+#   $1 — path to a runtime_modules.list-format manifest
+# Outputs:
+#   stdout — one module filename per line
 read_runtime_manifest() {
     grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null
 }
 
-# Function to download modules if they don't exist
+# download_modules: Download every module in MODULE_FILES to MODULES_DIR.
+# Inputs:
+#   Globals: MODULE_FILES, MODULES_DIR, REPO_BASE_URL, DEBUG_MODE (read)
+# Outputs:
+#   side effects — module files written + chmod +x under MODULES_DIR
+#   exit 1 — if any module fails to download, or neither curl nor wget exist
 download_modules() {
     echo "🔄 Downloading required modules to temporary directory..."
     if [[ "$DEBUG_MODE" == true ]]; then
