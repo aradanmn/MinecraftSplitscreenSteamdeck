@@ -22,6 +22,39 @@ set -euo pipefail
 # Dependencies:
 #   dock_detection.sh, controller_monitor.sh, instance_lifecycle.sh,
 #   window_manager.sh, watchdog.sh
+#
+# Globals PROVIDED (set here, read elsewhere):
+#   ORCHESTRATOR_SPAWN_DELAY_S            — readonly, post-spawn settle delay
+#   ORCHESTRATOR_FIFO_READ_TIMEOUT_S      — readonly, FIFO read timeout / H9
+#                                            reap cadence
+#   ORCHESTRATOR_EMPTY_EXIT_TICKS         — readonly, docked empty-session
+#                                            exit grace (ticks)
+#   ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S — readonly, docked startup
+#                                            controller acquisition window
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   MCSS_MODE, MCSS_MAX_PLAYERS, MCSS_SCREEN_W/H,
+#   MCSS_STATE_LOCK_TIMEOUT_S             — from runtime_context.sh
+#   SPLITSCREEN_FIFO, SPLITSCREEN_STATE    — from runtime_context.sh
+#   SPLITSCREEN_MODE                       — legacy override, read by main()
+#   CONTROLLER_MONITOR_RAW_BINDING,
+#   CONTROLLER_MONITOR_SKIP_INITIAL_EMIT   — passed through to
+#                                            controller_monitor.sh
+#   Mode AUTHORITY lives in SPLITSCREEN_STATE's `.mode`, written only by
+#   _set_mode; MCSS_MODE is its exported same-process mirror.
+#
+# Inputs:  SPLITSCREEN_FIFO messages (CONTROLLER_ADD/REMOVE, SLOT_DIED,
+#          DISPLAY_MODE_CHANGE), SPLITSCREEN_STATE JSON.
+# Outputs: spawns/tears down instances, applies layout, stderr with the
+#          `[orchestrator] ` prefix.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-17  Fix #86: named timeouts; #85 reflow via resolve_screen
+#   v1.4 2026-07-09  #45: single MCSS_MODE/DISPLAY writers; one screen cascade
+#   v1.3 2026-07-06  #50: single state-path/lock resolution; observe-delay fix
+#   v1.2 2026-06-26  H9 heartbeats + liveness reap; raw per-slot controller bind
+#   v1.1 2026-06-24  N1-N9 audit batch; controller-mask isolation; C1 fix
+#   v1.0 2026-06-19  Initial extraction: FIFO event loop, handheld/docked flows
 # =============================================================================
 
 # #45: slot count + screen dims are runtime_context-owned; sourcing it here is
@@ -54,11 +87,14 @@ _SPAWN_PIDS=()
 # H10: set by _reflow_layout on failure; the event loop retries while this is 1.
 _REFLOW_NEEDED=0
 
-# =============================================================================
-# HELPER: read a single message from the FIFO
-# Handles the named pipe in non-blocking mode with a timeout,
-# so we can also check PID aliveness in the loop.
-# =============================================================================
+# _read_fifo_msg: Read one message from SPLITSCREEN_FIFO with a timeout, so
+# the event loop can also check PID aliveness between reads.
+# Inputs:
+#   $1 — read timeout in seconds (default 5)
+#   Globals: SPLITSCREEN_FIFO (read)
+# Outputs:
+#   stdout — the message line (data only)
+#   return — 0 on a message read, 1 on timeout/no FIFO/not-a-FIFO
 _read_fifo_msg() {
     local fifo="${SPLITSCREEN_FIFO:-}"
     local timeout_s="${1:-5}"
@@ -77,17 +113,25 @@ _read_fifo_msg() {
     return 0
 }
 
-# =============================================================================
-# HELPER: get the current mode from SPLITSCREEN_STATE
-# =============================================================================
+# _get_mode: Return the current mode from SPLITSCREEN_STATE (stdout),
+# defaulting to "docked" when the state file is missing/unparseable.
 _get_mode() {
     local state="$SPLITSCREEN_STATE"
     jq -r '.mode // "docked"' "$state" 2>/dev/null || echo "docked"
 }
 
-# =============================================================================
-# HELPER: set the mode in SPLITSCREEN_STATE
-# =============================================================================
+# _set_mode: Single writer for the mode — sets the exported MCSS_MODE mirror
+# and updates SPLITSCREEN_STATE's `.mode` (the cross-process authority) under
+# an flock guard.
+# Inputs:
+#   $1 — mode string ("docked"|"handheld")
+#   Globals: SPLITSCREEN_STATE (read), MCSS_STATE_LOCK_TIMEOUT_S (read),
+#            MCSS_MODE (written/exported)
+# Outputs:
+#   side effects — exports MCSS_MODE; flock-guarded state-file update;
+#   initializes a default state file if missing/invalid instead of failing;
+#   logs a WARNING to stderr and returns without changing state on lock
+#   timeout or jq failure (never crashes the caller)
 _set_mode() {
     local mode="$1"
     local state="$SPLITSCREEN_STATE"
@@ -126,10 +170,11 @@ _set_mode() {
     ) 9>"$lock_file"
 }
 
-# =============================================================================
-# HELPER: find the first free slot (1–MCSS_MAX_PLAYERS)
-# Returns slot number on stdout, empty string if all slots full
-# =============================================================================
+# _find_free_slot: Find the first free slot in 1..MCSS_MAX_PLAYERS.
+# Inputs: Globals: MCSS_MAX_PLAYERS (read)
+# Outputs:
+#   stdout — the free slot number (data only)
+#   return — 0 with a slot on stdout, 1 if all slots are full
 _find_free_slot() {
     for slot in $(seq 1 "$MCSS_MAX_PLAYERS"); do
         if ! slot_is_active "$slot" 2>/dev/null; then
@@ -140,12 +185,16 @@ _find_free_slot() {
     return 1
 }
 
-# =============================================================================
-# HELPER: map a removed controller's event node back to the active slot it owns.
-# controller_monitor emits "CONTROLLER_REMOVE <event_node>" (a /dev/input/event*
-# path), so the remove handler must look the slot up by that node — it is NOT a
-# slot number. Returns the slot on stdout, empty if no active slot owns the node.
-# =============================================================================
+# _find_slot_by_event_node: Map a removed controller's event node back to the
+# active slot that owns it. controller_monitor emits "CONTROLLER_REMOVE
+# <event_node>" (a /dev/input/event* path) — NOT a slot number — so the
+# remove handler must resolve it via the state file.
+# Inputs:
+#   $1 — event node path (e.g. /dev/input/event7)
+#   Globals: SPLITSCREEN_STATE (read)
+# Outputs:
+#   stdout — the owning slot number, or empty if no active slot matches
+#   return — always 0 (empty stdout is the "not found" signal)
 _find_slot_by_event_node() {
     local node="$1"
     local state="$SPLITSCREEN_STATE"
@@ -155,13 +204,16 @@ _find_slot_by_event_node() {
         "$state" 2>/dev/null
 }
 
-# =============================================================================
-# HELPER: collect (event_node, js_node) pairs for every ACTIVE slot OTHER than
-# the given one, for bwrap controller masking. Emits one "<event> <js>" line per
-# such slot, using the literal "null" for an unset field. _build_bwrap_command's
-# `-e` guard skips non-existent / "null" paths, and always emitting BOTH fields
-# keeps the (event, js) pairing aligned for its 2-fields-at-a-time consumer.
-# =============================================================================
+# _collect_mask_pairs: Collect (event_node, js_node) pairs for every ACTIVE
+# slot OTHER than $1, for bwrap controller masking. Always emits both fields
+# (literal "null" for an unset one) so _build_bwrap_command's 2-fields-at-a-
+# time consumer stays aligned; its `-e` guard skips non-existent/"null" paths.
+# Inputs:
+#   $1 — slot number to exclude
+#   Globals: SPLITSCREEN_STATE (read)
+# Outputs:
+#   stdout — one "<event_node> <js_node>" line per other active slot
+#   return — always 0 (empty stdout when none)
 _collect_mask_pairs() {
     local current="$1"
     local state="$SPLITSCREEN_STATE"
@@ -173,10 +225,14 @@ _collect_mask_pairs() {
         "$state" 2>/dev/null
 }
 
-# =============================================================================
-# HELPER: compute and persist the reflowed layout for all active slots
-# Writes new kwinrulesrc and calls sync_apply_layout to reposition windows.
-# =============================================================================
+# _reflow_layout: Recompute and apply the tiled layout for all active slots.
+# Re-probes screen dimensions (--refresh) so a reflow after a display-mode
+# change tiles against the NEW output, then calls sync_apply_layout.
+# Inputs: Globals: MCSS_SCREEN_W/H (read, after the refresh probe)
+# Outputs:
+#   return — 0 on success, 1 on failure (also sets _REFLOW_NEEDED=1 so the
+#            event loop retries on the next iteration)
+#   side effects — writes kwinrulesrc, repositions windows, stderr on failure
 _reflow_layout() {
     local active
     active=$(get_active_slots)
@@ -214,16 +270,22 @@ _reflow_layout() {
     return 0
 }
 
-# =============================================================================
-# _check_monitor_heartbeats — H9. The watchdog/controller_monitor/dock_monitor
-# background PIDs feed the FIFO; previously, if one died silently (crash, unhandled
-# error) nothing noticed — the session just stopped reacting to that class of event
-# (e.g. controller_monitor dying means a newly-connected pad never spawns a player)
-# with no diagnostic and no recovery. Called once per event-loop iteration in BOTH
-# flows: log + best-effort restart any monitor whose PID we expect to be running but
-# isn't. Not rate-limited beyond the FIFO read-timeout cadence (~5s) — a monitor that
-# repeatedly dies immediately is a real bug worth being loud about, not silent.
-# =============================================================================
+# _check_monitor_heartbeats: H9 — detect and restart a dead background
+# monitor (watchdog/controller_monitor/dock_monitor). Previously, if one died
+# silently (crash, unhandled error) nothing noticed — the session just
+# stopped reacting to that whole class of event (e.g. controller_monitor
+# dying means a newly-connected pad never spawns a player), with no
+# diagnostic and no recovery. Called once per event-loop iteration in BOTH
+# flows; not rate-limited beyond the FIFO read-timeout cadence (~5s) — a
+# monitor that repeatedly dies immediately is a real bug worth being loud
+# about, not silent.
+# Inputs:
+#   Globals: _WATCHDOG_PID, _CONTROLLER_MONITOR_PID, _DOCK_MONITOR_PID
+#            (read/write); CONTROLLER_MONITOR_SKIP_INITIAL_EMIT (written,
+#            passed through to the restarted controller monitor)
+# Outputs:
+#   side effects — restarts any dead monitor, updates its PID global, logs
+#   a WARNING to stderr per restart
 _check_monitor_heartbeats() {
     if [[ -n "$_CONTROLLER_MONITOR_PID" ]] && ! kill -0 "$_CONTROLLER_MONITOR_PID" 2>/dev/null; then
         echo "[orchestrator] WARNING: controller monitor (PID $_CONTROLLER_MONITOR_PID) is dead — restarting" >&2
@@ -251,15 +313,16 @@ _check_monitor_heartbeats() {
     fi
 }
 
-# =============================================================================
-# _reap_dead_slots — orchestrator-side liveness safety net (H9).
-# The watchdog normally emits SLOT_DIED, but slot_is_active() only reads the state
-# flag, so if the watchdog dies the event loop would spin forever with slots marked
-# active long after their processes exited (gamescope stuck on the spinner, never
-# returning to Steam). Independently verify each active slot's process and tear down
-# any whose bwrap leader + java are both gone. Skips slots still launching (no
-# bwrap_pid recorded yet) so it never races spawn_instance.
-# =============================================================================
+# _reap_dead_slots: H9 — orchestrator-side liveness safety net. The watchdog
+# normally emits SLOT_DIED, but slot_is_active() only reads the state flag,
+# so a dead watchdog would leave slots marked active forever (gamescope stuck
+# on the spinner, never returning to Steam). Independently verifies each
+# active slot's bwrap leader + java are both gone before tearing it down.
+# Skips slots still launching (no bwrap_pid recorded yet) so it never races
+# spawn_instance.
+# Inputs: Globals: SPLITSCREEN_STATE (read, via get_active_slots/get_*_pid)
+# Outputs:
+#   side effects — tears down and reflows any slot found dead; stderr log
 _reap_dead_slots() {
     local active slot
     active=$(get_active_slots)
@@ -281,10 +344,18 @@ _reap_dead_slots() {
     done
 }
 
-# =============================================================================
-# DISPATCHER: handle a single FIFO message
-# Returns 0 if the event loop should continue, 1 if it should exit cleanly
-# =============================================================================
+# _handle_msg: Dispatch one FIFO message (CONTROLLER_ADD, CONTROLLER_REMOVE,
+# SLOT_DIED, DISPLAY_MODE_CHANGE) to its handler. Each case below carries its
+# own rationale comments (Fix #37, C1, H10, N1/N2, the docked→handheld
+# guard, …) — kept as-is.
+# Inputs:
+#   $1 — the raw FIFO message ("TYPE [arg…]")
+#   Globals: MCSS_MAX_PLAYERS, SPLITSCREEN_STATE (read); _SPAWN_PIDS,
+#            _REFLOW_NEEDED (written)
+# Outputs:
+#   return — 0: event loop should continue; 1: DISPLAY_MODE_CHANGE→handheld,
+#            caller must re-enter handheld_flow
+#   side effects — spawns/tears down instances, reflows layout, stderr log
 _handle_msg() {
     local msg="$1"
     [[ -z "$msg" ]] && return 0
@@ -492,14 +563,16 @@ _handle_msg() {
     return 0
 }
 
-# =============================================================================
-# handheld_flow
-# Event loop for handheld mode.
-# - 1 slot only (slot 1)
-# - Only the Deck's built-in controls (no external controllers)
-# - Spawns slot 1 on entry, exits when it dies
-# - On DISPLAY_MODE_CHANGE docked, switches to docked_flow
-# =============================================================================
+# handheld_flow: Event loop for handheld mode — 1 slot only (slot 1), only
+# the Deck's built-in controls (see the inline comment below for why no
+# controller monitor runs here), spawns slot 1 on entry, exits when it dies.
+# On DISPLAY_MODE_CHANGE docked, returns so the caller switches to
+# docked_flow.
+# Inputs: Globals: SPLITSCREEN_FIFO (read), ORCHESTRATOR_FIFO_READ_TIMEOUT_S
+# Outputs:
+#   return — 1 if SPLITSCREEN_FIFO is unset (fatal); otherwise runs
+#            cleanup() and returns 0 when slot 1 dies or the flow ends
+#   side effects — starts dock/watchdog monitors, spawns slot 1, stderr log
 handheld_flow() {
     set +e
     echo "[orchestrator] Starting handheld flow" >&2
@@ -569,14 +642,21 @@ handheld_flow() {
     cleanup
 }
 
-# =============================================================================
-# docked_flow
-# Event loop for docked mode (external display connected).
-# - Up to 4 slots (1 controller → 4 players max)
-# - Controllers mapped to individual slots via bwrap isolation
-# - Spawns instances as controllers connect, tears down as they disconnect
-# - On DISPLAY_MODE_CHANGE handheld (undock), tears down all and exits
-# =============================================================================
+# docked_flow: Event loop for docked mode (external display) — up to
+# MCSS_MAX_PLAYERS slots, controllers mapped to slots via bwrap isolation,
+# spawns/tears down instances as controllers connect/disconnect. See the
+# inline "Startup controller acquisition" and "Session-end latch" comments
+# below for the acquire/exit-grace bookends.
+# Inputs:
+#   Globals: SPLITSCREEN_FIFO, MCSS_MAX_PLAYERS (read);
+#            ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S,
+#            ORCHESTRATOR_FIFO_READ_TIMEOUT_S, ORCHESTRATOR_EMPTY_EXIT_TICKS
+# Outputs:
+#   return — 1 if SPLITSCREEN_FIFO is unset, or to request handheld
+#            re-entry (DISPLAY_MODE_CHANGE handheld); 0 after cleanup()
+#            once every joined player has quit
+#   side effects — starts controller/dock/watchdog monitors, spawns/tears
+#   down instances, reflows layout, stderr log
 docked_flow() {
     set +e
     echo "[orchestrator] Starting docked flow" >&2
@@ -710,9 +790,13 @@ docked_flow() {
     cleanup
 }
 
-# =============================================================================
-# main — Entry point: detect mode and run the correct flow
-# =============================================================================
+# main: Entry point — detect the display mode (handheld/docked) and run the
+# matching flow. NOTE (H4): the cleanup EXIT/signal trap is installed by the
+# LAUNCHER (launchProdFromPlasma), not here — see the inline comment below.
+# Inputs: Globals: SPLITSCREEN_FIFO, SPLITSCREEN_MODE (read/override)
+# Outputs:
+#   side effects — creates the FIFO if missing, runs handheld_flow/
+#   docked_flow (blocks until the session ends), stderr log
 main() {
     echo "[orchestrator] main() starting — PID=$$" >&2
     # NOTE (H4): the cleanup trap is installed by the LAUNCHER (launchProdFromPlasma in
@@ -777,9 +861,15 @@ main() {
     echo "[orchestrator] main() exiting" >&2
 }
 
-# =============================================================================
-# cleanup — Teardown everything and kill background processes
-# =============================================================================
+# cleanup: Tear down all instances and kill every background worker this
+# module started (watchdog, controller monitor, dock monitor, in-flight
+# spawn subshells), then restore panels. Re-entrancy-guarded (H4) — safe to
+# call from both the end-of-flow path and the launcher's EXIT/signal trap.
+# Inputs: Globals: _WATCHDOG_PID, _CONTROLLER_MONITOR_PID, _DOCK_MONITOR_PID,
+#         _SPAWN_PIDS, DEX_PY_SCRIPT (read)
+# Outputs:
+#   side effects — kills tracked PIDs (+ children), tears down instances,
+#   restores panels, removes DEX_PY_SCRIPT; stderr log
 cleanup() {
     # H4 (UNTESTED 2026-06-27): re-entrancy guard. cleanup() now runs from BOTH the
     # end-of-flow path AND the EXIT/signal trap (see main()); without this guard it would
