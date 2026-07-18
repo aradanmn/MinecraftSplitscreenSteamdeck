@@ -499,6 +499,23 @@ prompt_operator() {
     return 0
 }
 
+# announce_wiggle: Countdown then return — the CAPTURE runs right after,
+# so the operator wiggles DURING the window, not before it. (2026-07-18:
+# the prompt-then-capture ordering measured post-wiggle idle noise; every
+# tally showed center jitter, and BONUS_STEAM_GRAB=STARVED was an idle-
+# deadzone artifact — the operator's screen kept responding via hidraw.)
+# Inputs:
+#   $* — instruction text
+#   Globals: CAPTURE_SECONDS (read)
+announce_wiggle() {
+    echo "" >&2
+    echo ">>> ${*}" >&2
+    echo ">>> Starting in 3s... wiggle for the FULL" \
+         "${CAPTURE_SECONDS}s window." >&2
+    sleep 3
+    echo ">>> GO <<<" >&2
+}
+
 # --- Results-file header + CLI-surface confirmation ---
 
 # _confirm_cli_flags: CONFIRM-ON-DECK check that the built binary's --help
@@ -639,9 +656,10 @@ _run_bonus_steam_grab() {
         return 0
     fi
 
-    prompt_operator "Wiggle the DS4's stick for ~${CAPTURE_SECONDS}s so" \
-        " we can see whether Steam's virtual (event${steam_ev}) still" \
-        " emits while evsieve holds the grab." || true
+    announce_wiggle "Wiggle the DS4's stick — we watch whether Steam's" \
+        "virtual (event${steam_ev}) still emits under evsieve's grab." \
+        "NOTE: Steam also reads DS4s via hidraw, so screen response" \
+        "during the grab is expected either way."
 
     # READ-only observation of the DS4's matched Steam virtual -- never a
     # grab/write target, per the hard constraint.
@@ -800,9 +818,8 @@ _run_probe_b() {
         || { command -v evtest >/dev/null 2>&1 && tool="evtest"; } \
         || tool="none"
 
-    prompt_operator "Hold and wiggle the LEFT stick through its full" \
-        " range for ~${CAPTURE_SECONDS}s (pre-cycle capture starting" \
-        " now)." || true
+    announce_wiggle "Hold and wiggle the LEFT stick through its FULL" \
+        "range (pre-cycle capture)."
     local -a pre_lines=()
     mapfile -t pre_lines < <(_dual_capture "$ev_node" "$virt_node")
     local phys_pre="${pre_lines[0]:-}" virt_pre="${pre_lines[1]:-}"
@@ -831,11 +848,25 @@ _run_probe_b() {
     fi
     sleep 2
 
-    prompt_operator "Wiggle the LEFT stick again for" \
-        " ~${CAPTURE_SECONDS}s (post-cycle capture starting now)." \
-        || true
+    # Re-find the DS4 after the cycle: BT reconnects may re-enumerate to
+    # a NEW eventN. evsieve persist=reopen watches the ORIGINAL path, so
+    # old-vs-new is the decisive diagnostic when the virtual goes silent
+    # (2026-07-18 run: node STABLE but zero post-cycle forwarding).
+    local ds4_post ev_node_post path_verdict
+    if ds4_post=$(find_ds4_event_node); then
+        ev_node_post="${ds4_post%% *}"
+    else
+        ev_node_post="$ev_node"
+    fi
+    if [[ "$ev_node_post" == "$ev_node" ]]; then
+        path_verdict="same"
+    else
+        path_verdict="changed(${ev_node}->${ev_node_post})"
+    fi
+
+    announce_wiggle "Wiggle the LEFT stick again (post-cycle capture)."
     local -a post_lines=()
-    mapfile -t post_lines < <(_dual_capture "$ev_node" "$virt_node")
+    mapfile -t post_lines < <(_dual_capture "$ev_node_post" "$virt_node")
     local phys_post="${post_lines[0]:-}" virt_post="${post_lines[1]:-}"
 
     local ok
@@ -849,7 +880,8 @@ _run_probe_b() {
 
     local evidence
     evidence="pre phys[${phys_pre}] virt[${virt_pre}];"
-    evidence+=" post phys[${phys_post}] virt[${virt_post}]; tool=${tool}"
+    evidence+=" post phys[${phys_post}] virt[${virt_post}];"
+    evidence+=" phys_path=${path_verdict}; tool=${tool}"
     emit_verdict B_STREAM_FIDELITY "$ok" "$evidence"
 
     _stop_last_evsieve
