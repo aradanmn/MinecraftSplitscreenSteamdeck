@@ -25,8 +25,28 @@ set -euo pipefail
 # Public API:
 #   start_watchdog()  — blocks; polls state file, writes SLOT_DIED to FIFO
 #
+# Globals PROVIDED: WATCHDOG_DEFAULT_POLL_INTERVAL_S, WATCHDOG_MAX_SLOT,
+#   WATCHDOG_WINDOW_GONE_TICKS — readonly module constants.
+# Globals CONSUMED: SPLITSCREEN_STATE, SPLITSCREEN_FIFO, MCSS_MAX_PLAYERS
+#   (with a ${:-4} fallback — this module does NOT source runtime_context.sh
+#   itself; it relies on ambient sourcing by the launcher, so the fallback
+#   covers standalone use where that ambient sourcing didn't happen).
+#
+# Inputs:  state JSON + instance_lifecycle accessors (_get_slot_field,
+#          get_bwrap_pid, get_java_pid, get_window_id).
+# Outputs: SLOT_DIED <slot> to $SPLITSCREEN_FIFO, stderr `[watchdog]` prefix.
+#
 # Environment overrides:
 #   WATCHDOG_POLL_INTERVAL_S  — override poll interval (default: 2s)
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  Fix #86: WATCHDOG_MAX_SLOT named from MCSS_MAX_PLAYERS
+#   v1.2 2026-07-15  Fix #51 (D11): consume instance_lifecycle accessors,
+#                    not raw jq copies of the state schema
+#   v1.1 2026-06-25  Fix #37: window-gone death detection (player quit,
+#                    JVM hung in shutdown)
+#   v1.0 2026-06-13  Initial extraction: zombie-slot watchdog,
+#                    handheld/docked hot-swap
 # =============================================================================
 
 readonly WATCHDOG_DEFAULT_POLL_INTERVAL_S=2
@@ -43,12 +63,14 @@ declare -A _WATCHDOG_REPORTED
 # Window-gone debounce: key=slot, value=consecutive polls the window has been absent.
 declare -A _WATCHDOG_WINDOW_GONE_COUNT
 
-# _watchdog_window_present <wid>
-# Is window <wid> still in the live window tree?
-#   0 = present · 1 = CONFIRMED absent (window destroyed) · 2 = can't tell (skip, don't kill)
+# _watchdog_window_present: Is window <wid> still in the live window tree?
 # Uses dex_list_windows (a full recursive XQueryTree walk — sees override-redirect windows
 # too). Returns 2 (not 1) whenever the check itself is unavailable/empty, so an X hiccup or
 # a missing dex/DISPLAY never escalates to a teardown.
+# Inputs: $1 — wid
+# Outputs:
+#   return — 0 = present, 1 = CONFIRMED absent (window destroyed),
+#     2 = can't tell (skip, don't kill)
 _watchdog_window_present() {
     local wid="$1"
     [[ -z "$wid" || "$wid" == "null" ]] && return 2
@@ -60,6 +82,16 @@ _watchdog_window_present() {
     return 1
 }
 
+# start_watchdog: Poll the state file on a fixed interval; emit SLOT_DIED for
+# any active slot whose process or window has gone away (see module header).
+# Inputs:
+#   Globals: SPLITSCREEN_STATE, SPLITSCREEN_FIFO, WATCHDOG_MAX_SLOT,
+#     WATCHDOG_WINDOW_GONE_TICKS (read); WATCHDOG_POLL_INTERVAL_S (override)
+# Outputs:
+#   return — 1 if SPLITSCREEN_STATE or SPLITSCREEN_FIFO is not set (never
+#     returns otherwise — blocks forever in the poll loop)
+#   side effects — SLOT_DIED <slot> to $SPLITSCREEN_FIFO, stderr `[watchdog]`
+#     prefix
 start_watchdog() {
     local poll_interval="${WATCHDOG_POLL_INTERVAL_S:-$WATCHDOG_DEFAULT_POLL_INTERVAL_S}"
     local state_file="${SPLITSCREEN_STATE:-}"

@@ -13,9 +13,27 @@ set -euo pipefail
 #   is_docked()              — exit 0 if docked, 1 if handheld
 #   watch_display_mode()     — blocks; writes DISPLAY_MODE_CHANGE to FIFO
 #
+# Globals PROVIDED: DOCK_DETECTION_DEFAULT_DRM_PATH,
+#   DOCK_DETECTION_POLL_INTERVAL_S — readonly module constants.
+# Globals CONSUMED: SPLITSCREEN_FIFO (from runtime_context.sh's
+#   mcss_resolve_paths); SPLITSCREEN_MODE (override, see below); uses
+#   runtime_context's mcss_query_displays for the display-query fallback.
+#
+# Inputs:  /sys/class/drm sysfs, display-query CLI tools (wlr-randr,
+#          kscreen-doctor) via mcss_query_displays.
+# Outputs: "handheld"/"docked" on stdout, DISPLAY_MODE_CHANGE to
+#          $SPLITSCREEN_FIFO, stderr `[dock_detection]` prefix.
+#
 # Environment overrides:
 #   SPLITSCREEN_MODE         — "handheld" or "docked" (skips detection)
 #   DOCK_DETECTION_DRM_PATH  — override /sys/class/drm path (for testing)
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-07-15  Fix #51 (D17): mcss_query_displays shared display-query
+#                    parser (H14)
+#   v1.1 2026-07-01  v1.1 batch: FIFO broken-pipe tolerance, watchdog trap,
+#                    dock awk field fix
+#   v1.0 2026-06-13  Initial extraction: DRM sysfs detection module
 # =============================================================================
 
 # #51/D17: the display-query fallback rides runtime_context's
@@ -31,8 +49,12 @@ readonly DOCK_DETECTION_POLL_INTERVAL_S=3
 # --- Internal functions ---
 
 # _detect_via_drm: Scan DRM sysfs connectors for external displays.
-# Uses DOCK_DETECTION_DRM_PATH if set, otherwise /sys/class/drm.
-# Returns: "docked" if any non-eDP connector is connected, else "handheld".
+# Inputs:
+#   Globals: DOCK_DETECTION_DRM_PATH (override, read), else
+#     DOCK_DETECTION_DEFAULT_DRM_PATH
+# Outputs:
+#   stdout — "docked" if any non-eDP connector is connected, else "handheld"
+#   return — 1 if the DRM path doesn't exist
 _detect_via_drm() {
     local drm_path="${DOCK_DETECTION_DRM_PATH:-$DOCK_DETECTION_DEFAULT_DRM_PATH}"
 
@@ -89,7 +111,9 @@ _detect_via_drm() {
 # per-mode lines, which never name a connector — the INTERNAL panel's own
 # mode line could therefore read as docked; normalized per-output records
 # make the eDP filter structural.
-# Returns: "docked"/"handheld" on stdout, or exit 1 if no tool answered.
+# Outputs:
+#   stdout — "docked"/"handheld"
+#   return — 1 if no display-query tool answered
 _detect_via_display_query() {
     echo "[dock_detection] Trying display-query fallback (wlr-randr/kscreen-doctor)..." >&2
 
@@ -116,8 +140,13 @@ _detect_via_display_query() {
 
 # --- Public API ---
 
-# Return "handheld" or "docked" on stdout. Exit code always 0.
-# Checks SPLITSCREEN_MODE override first, then DRM sysfs, then fallbacks.
+# get_display_mode: Checks SPLITSCREEN_MODE override first, then DRM sysfs,
+# then the display-query fallback.
+# Inputs: Globals: SPLITSCREEN_MODE (override, read)
+# Outputs:
+#   stdout — "handheld" or "docked"
+#   return — always 0 (falls back to "handheld" if all methods fail); 1 only
+#     if SPLITSCREEN_MODE is set to an invalid value
 get_display_mode() {
     # Environment variable override
     if [[ -n "${SPLITSCREEN_MODE:-}" ]]; then
@@ -151,24 +180,29 @@ get_display_mode() {
     return 0
 }
 
-# Return exit code 0 if handheld, 1 if docked.
+# is_handheld: Return exit code 0 if handheld, 1 if docked.
 is_handheld() {
     local mode
     mode=$(get_display_mode)
     [[ "$mode" == "handheld" ]]
 }
 
-# Return exit code 0 if docked, 1 if handheld.
+# is_docked: Return exit code 0 if docked, 1 if handheld.
 is_docked() {
     local mode
     mode=$(get_display_mode)
     [[ "$mode" == "docked" ]]
 }
 
-# Watch for display mode changes. Blocks indefinitely.
+# watch_display_mode: Watch for display mode changes. Blocks indefinitely.
 # Uses inotifywait on the DRM path if available; otherwise polls.
-# On each change, writes a DISPLAY_MODE_CHANGE message to $SPLITSCREEN_FIFO.
 # Intended to be run as a background process by the orchestrator.
+# Inputs:
+#   Globals: DOCK_DETECTION_DRM_PATH (override), SPLITSCREEN_FIFO (read)
+# Outputs:
+#   return — 1 if SPLITSCREEN_FIFO is not set (never returns otherwise)
+#   side effects — DISPLAY_MODE_CHANGE <mode> to $SPLITSCREEN_FIFO on each
+#     detected change
 watch_display_mode() {
     local drm_path="${DOCK_DETECTION_DRM_PATH:-$DOCK_DETECTION_DEFAULT_DRM_PATH}"
     local fifo="${SPLITSCREEN_FIFO:-}"
