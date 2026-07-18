@@ -28,12 +28,48 @@ set -euo pipefail
 #   start_controller_monitor(mode)      — blocks; writes CONTROLLER_ADD/REMOVE to FIFO
 #   get_controller_by_index(index, mode) — stdout: "event_node js_node" or empty
 #
+# Globals PROVIDED:
+#   CONTROLLER_MONITOR_DEFAULT_PROC_PATH — readonly, default /proc path
+#   CONTROLLER_MONITOR_DEBOUNCE_MS       — readonly, add-event debounce window
+#   CONTROLLER_MONITOR_STEAM_VENDOR/PRODUCT — readonly legacy aliases for
+#     MCSS_STEAM_VENDOR_ID/PRODUCT_ID (one-release deprecation; see below)
+#
+# Globals CONSUMED: MCSS_MAX_PLAYERS, MCSS_RAW_BINDING, MCSS_STEAM_VENDOR_ID,
+#   MCSS_STEAM_PRODUCT_ID (from runtime_context.sh); SPLITSCREEN_FIFO (from
+#   runtime_context.sh's mcss_resolve_paths). Legacy aliases still referenced
+#   internally: CONTROLLER_MONITOR_STEAM_VENDOR/PRODUCT (this module's own
+#   readonly copies of the MCSS_* ids). Test-only overrides listed below in
+#   Environment overrides: CONTROLLER_MONITOR_UDEVADM_CMD,
+#   CONTROLLER_MONITOR_SKIP_INITIAL_EMIT, CONTROLLER_MONITOR_DEBOUNCE_MS,
+#   PROC_INPUT_DEVICES, INPUTPLUMBER_DBUS_AVAILABLE.
+#
+# Inputs:  /proc/bus/input/devices, `udevadm monitor` events, InputPlumber
+#          D-Bus (referenced by the env override name; not queried directly
+#          in this file's current enumeration paths).
+# Outputs: CONTROLLER_ADD/CONTROLLER_REMOVE lines to $SPLITSCREEN_FIFO,
+#          eligible-controller data to stdout (list_eligible_controllers,
+#          get_controller_by_index), stderr `[controller_monitor]` prefix.
+#
 # Environment overrides (for testing):
 #   PROC_INPUT_DEVICES              — override /proc/bus/input/devices path
 #   INPUTPLUMBER_DBUS_AVAILABLE     — set to "0" to force enumeration fallback
 #   CONTROLLER_MONITOR_UDEVADM_CMD  — override udevadm command
 #   CONTROLLER_MONITOR_RAW_BINDING  — "1"/unset (DEFAULT) = docked uses raw external js
 #                                     nodes; "0" = legacy virtual mapper (escape hatch)
+#   CONTROLLER_MONITOR_SKIP_INITIAL_EMIT — "1" = baseline already-connected
+#                                     pads without emitting CONTROLLER_ADD
+#   CONTROLLER_MONITOR_DEBOUNCE_MS  — override the add-event debounce window
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-15  Fix #51 (D13): parse_input_device_blocks (/proc parser)
+#   v1.3 2026-07-09  #45: vendor/product/slot/raw-binding globals via
+#                    runtime_context.sh
+#   v1.2 2026-07-06  dex backend temp lifecycle; Java-25/MC-26.x support
+#                    (#19, #28, #48)
+#   v1.1 2026-06-26  Raw external-js binding promoted to DEFAULT; VALIDATED
+#                    on a Deck with 4 DS4s
+#   v1.0 2026-06-13  Initial extraction: Steam-virtual enumeration + udevadm
+#                    monitor
 # =============================================================================
 
 # #45: slot count, Deck vendor/product ids, and the raw-binding flag are owned
@@ -137,10 +173,14 @@ parse_input_device_blocks() {
     return 0
 }
 
-# _parse_steam_virtual_devices: Extract all 28de:11ff devices with jsN handlers.
-# Reads from the path returned by _get_proc_input_path.
-# Output: one line per device: "<eventN> <jsN>"
-# Devices are output in order of appearance (ascending eventN on real systems).
+# _parse_steam_virtual_devices: Extract all 28de:11ff devices with jsN
+# handlers, in order of appearance (ascending eventN on real systems).
+# Inputs:
+#   Globals: MCSS_STEAM_VENDOR_ID, MCSS_STEAM_PRODUCT_ID (read); reads from
+#     the path returned by _get_proc_input_path
+# Outputs:
+#   stdout — one line per device: "<eventN> <jsN>"
+#   return — 1 if the proc path is missing
 _parse_steam_virtual_devices() {
     local proc_path
     proc_path=$(_get_proc_input_path)
@@ -172,9 +212,15 @@ _parse_steam_virtual_devices() {
     return 0
 }
 
-# _parse_all_gamepad_devices: Extract ALL devices with jsN handlers (any VID:PID).
-# Output: one line per device: "<eventN> <jsN> <vendor> <product> <sysfs> <phys>"
-# Used for handheld mode (accepts any gamepad) and physical source matching.
+# _parse_all_gamepad_devices: Extract ALL devices with jsN handlers (any
+# VID:PID). Used for handheld mode (accepts any gamepad) and physical source
+# matching.
+# Inputs:
+#   reads from the path returned by _get_proc_input_path
+# Outputs:
+#   stdout — one line per device:
+#     "<eventN> <jsN> <vendor> <product> <sysfs> <phys>"
+#   return — 1 if the proc path is missing
 _parse_all_gamepad_devices() {
     local proc_path
     proc_path=$(_get_proc_input_path)
@@ -214,7 +260,11 @@ _parse_all_gamepad_devices() {
 # scans, if ever needed again, ride parse_input_device_blocks' name field.)
 
 # _eventN_to_virtual_idx: Convert eventN to 1-based position in the sorted
-# virtual device list. Returns the index (1-based) or 1 on failure.
+# virtual device list.
+# Inputs: $1 — target eventN
+# Outputs:
+#   stdout — 1-based index on match
+#   return — 0 on match, 1 if not found (no stdout emitted on failure)
 _eventN_to_virtual_idx() {
     local target="$1" idx=1 vline
     while IFS= read -r vline; do
@@ -263,9 +313,17 @@ _eventN_to_virtual_idx() {
 # so two of them would collide. We match purely by inputN creation order + device nodes,
 # which stays correct even for same-MAC pads (each still gets its own inputN/event/js).
 #
-# Output: one line per claimed virtual: "<eventN> <jsN> <ext_vendor> <ext_product>"
-# (event/js are the VIRTUAL's; vendor/product are the matched external's). Capped at
-# MCSS_MAX_PLAYERS.
+# Inputs:
+#   Globals: MCSS_STEAM_VENDOR_ID, MCSS_STEAM_PRODUCT_ID, MCSS_MAX_PLAYERS
+#     (read)
+# Outputs:
+#   stdout — one line per claimed virtual:
+#     "<eventN> <jsN> <ext_vendor> <ext_product>" (event/js are the
+#     VIRTUAL's; vendor/product are the matched external's). Capped at
+#     MCSS_MAX_PLAYERS.
+#   side effects — diagnostic enumeration lines to stderr, plus a
+#     `[vpad-probe]` tagged line per claim (grep'd by
+#     tests/probe-controller-reconnect.sh)
 _map_external_player_virtuals() {
     local -a virtuals=()   # "inputN eventN jsN"
     local -a externals=()  # "inputN eventN jsN vendor product"
@@ -335,6 +393,7 @@ _map_external_player_virtuals() {
 }
 
 # _has_gamepad_buttons: inclusive bit-test of a `B: KEY=` bitmap (passed WHOLE as $1).
+# Inputs: $1 — the raw `B: KEY=` bitmap value (whitespace-delimited hex words)
 # ACCEPT (return 0) if BTN_SOUTH (0x130) OR BTN_JOYSTICK (0x120) is set, OR if the bitmap
 # is empty / has fewer than 5 whitespace-delimited words (FAIL-OPEN — never false-negative
 # a real pad). REJECT (return 1) only when the bitmap parses AND neither bit is set.
@@ -401,6 +460,11 @@ _has_gamepad_buttons() {
 #  10) EMIT "<eventN> <jsN> <vendor> <product>" — the pad's OWN raw nodes (the
 #      list_eligible_controllers docked branch prefixes /dev/input/event and /dev/input/js,
 #      preserving the 4-field public contract). keybits/sysfs/phys are NEVER emitted.
+# Inputs:
+#   Globals: MCSS_STEAM_VENDOR_ID, MCSS_MAX_PLAYERS (read)
+# Outputs:
+#   stdout — one line per surviving pad: "<eventN> <jsN> <vendor> <product>"
+#   return — 1 if the proc path is missing
 _list_raw_external_pads() {
     local proc_path
     proc_path=$(_get_proc_input_path)
@@ -513,9 +577,8 @@ _list_raw_external_pads() {
     done
 }
 
-# Write current eligible device list to stdout.
-# Each line: "<event_node> <js_node> <physical_vendor> <physical_product>"
-# $1 = mode ("handheld" or "docked")
+# list_eligible_controllers: Write the current eligible device list to
+# stdout.
 # In docked mode the SOURCE is flag-gated by CONTROLLER_MONITOR_RAW_BINDING:
 #   - unset/0 (DEFAULT): _map_external_player_virtuals — external pads mapped to their
 #     Steam virtual by inputN creation order (built-in + phantoms excluded; max 4).
@@ -523,6 +586,13 @@ _list_raw_external_pads() {
 #     gamepad+vendor gated, deduped, ordered by (inputN,eventN); built-in/28de excluded).
 # Either source emits the IDENTICAL 4-field contract; only the source differs.
 # In handheld mode: exactly one line — the first gamepad-capable device (any VID:PID).
+# Inputs:
+#   $1 — mode ("handheld" or "docked")
+#   Globals: MCSS_RAW_BINDING (read)
+# Outputs:
+#   stdout — one line per eligible device:
+#     "<event_node> <js_node> <physical_vendor> <physical_product>"
+#   return — 1 if mode is neither "handheld" nor "docked"
 list_eligible_controllers() {
     local mode="${1:-}"
     if [[ "$mode" != "handheld" && "$mode" != "docked" ]]; then
@@ -568,9 +638,13 @@ list_eligible_controllers() {
     done < <("$src")
 }
 
-# Return the event node and js node for the Nth eligible controller (1-based).
-# $1 = index (1-4), $2 = mode ("handheld" or "docked")
-# Output: "<event_node> <js_node>" on stdout, or empty string if not found.
+# get_controller_by_index: Return the event node and js node for the Nth
+# eligible controller (1-based).
+# Inputs:
+#   $1 — index (1-4), $2 — mode ("handheld" or "docked")
+# Outputs:
+#   stdout — "<event_node> <js_node>", or empty string if not found
+#   return — 1 if index is not a positive integer
 get_controller_by_index() {
     local index="${1:-1}"
     local mode="${2:-}"
@@ -600,8 +674,16 @@ get_controller_by_index() {
 # vanished between them, prev_nodes could be poisoned with a node that was never actually
 # diffed against, permanently hiding a real controller. Callers MUST now do
 # `prev_nodes=$(_check_devices_changed "$mode" "$prev_nodes")` instead of re-enumerating.
-# $1 = mode
-# $2 = space-separated list of previously seen event nodes (by path)
+# Inputs:
+#   $1 — mode
+#   $2 — space-separated list of previously seen event nodes (by path)
+#   Globals: SPLITSCREEN_FIFO (read), _CONTROLLER_MONITOR_DEBOUNCE_MAP
+#     (read/write)
+# Outputs:
+#   stdout — the authoritative current event-node set (space-separated) —
+#     the caller's next prev_nodes baseline (see N16/H1 above)
+#   return — 1 if SPLITSCREEN_FIFO is not set
+#   side effects — CONTROLLER_ADD/CONTROLLER_REMOVE lines to the FIFO
 _check_devices_changed() {
     local mode="$1"
     local prev_nodes="$2"
@@ -674,10 +756,16 @@ _check_devices_changed() {
     echo "${!current_nodes[*]}"
 }
 
-# Start monitoring. Blocks. Writes CONTROLLER_ADD / CONTROLLER_REMOVE
-# messages to the FIFO at $SPLITSCREEN_FIFO.
-# Must be run as a background process by the orchestrator.
-# $1 = mode ("handheld" or "docked")
+# start_controller_monitor: Start monitoring. Blocks. Must be run as a
+# background process by the orchestrator.
+# Inputs:
+#   $1 — mode ("handheld" or "docked")
+#   Globals: SPLITSCREEN_FIFO (read); CONTROLLER_MONITOR_UDEVADM_CMD,
+#     CONTROLLER_MONITOR_SKIP_INITIAL_EMIT (test overrides)
+# Outputs:
+#   return — 1 if mode is invalid or SPLITSCREEN_FIFO is not set (never
+#     returns otherwise — blocks forever in the monitor loop)
+#   side effects — CONTROLLER_ADD/CONTROLLER_REMOVE lines to the FIFO
 start_controller_monitor() {
     local mode="${1:-}"
     if [[ "$mode" != "handheld" && "$mode" != "docked" ]]; then
