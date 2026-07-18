@@ -1,16 +1,45 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Instance Creation Module
+# INSTANCE CREATION MODULE
 # =============================================================================
-# 
-# This module handles the creation of 4 separate Minecraft instances for splitscreen
-# gameplay. Each instance is configured identically with mods but will be launched
-# separately for multi-player splitscreen gaming.
+# Creates the MCSS_MAX_PLAYERS PolyMC instances (latestUpdate-1..N) for
+# splitscreen play: writes instance.cfg/mmc-pack.json, installs Fabric and
+# mods, and preserves user settings (options.txt) across re-installs.
 #
-# Functions provided:
-# - create_instances: Main function to create 4 splitscreen instances
-# - install_fabric_and_mods: Install Fabric loader and mods for an instance
+# Public API:
+#   create_instances()             — builds/updates latestUpdate-1..N;
+#                                     exit 1 if MC_VERSION/FABRIC_VERSION unset
+#   install_fabric_and_mods(instance_dir, instance_name, [preserve_options])
+#                                   — adds Fabric loader, downloads mods
+#   handle_instance_update(instance_dir, instance_name)
+#                                   — stdout: "true"/"false" (options.txt
+#                                     preserved); clears mods for reinstall
+#   write_mmc_pack_json(target_path) — writes one mmc-pack.json; return 0/1
 #
+# Globals PROVIDED (set here, read elsewhere):
+#   MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB — `: "${:=}"` guards, PAIRED WITH the
+#                                       install entry + launcher_setup.sh
+#   MCSS_JVM_GC_FLAGS                — Aikar's-flags default, same pairing
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX — installer entry constants
+#   MC_VERSION, LWJGL_VERSION, FABRIC_VERSION — version/lwjgl management
+#   MODS, SUPPORTED_MODS, MODRINTH_API_BASE   — installer entry / mod mgmt
+#   TARGET_DIR                                — installer entry
+#
+# Inputs:  mods.conf-derived arrays, Modrinth API, Fabric loader files.
+# Outputs: PolyMC instance dirs + mmc-pack.json/instance.cfg written under
+#          $TARGET_DIR/instances; print_* status to stderr.
+#
+# This module is sourced, not executed — no `set -euo pipefail` here by
+# design; callers run under the entry script's strict mode.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  Per-instance JVM GC flags; #87 heap-default canonical home
+#   v1.2 2026-07-15  Fix #51 D8/D14: single mmc-pack.json writer + fetch_url
+#   v1.1 2026-07-10  Fix #45 PR3: installer constants pairing + literal sweep
+#   v1.0 2025-06-27  Initial extraction: Fabric+mod install, options.txt
+#                    preserved across updates (2025-06-27..2025-07-28)
 # =============================================================================
 
 # Per-instance JVM heap (MiB). Up to four instances run concurrently for 4-player
@@ -102,9 +131,16 @@ write_mmc_pack_json() {
 EOF
 }
 
-# create_instances: Create 4 identical Minecraft instances for splitscreen play
-# Uses manual instance creation for reliability
-# Each instance gets the same mods but separate configurations for splitscreen
+# create_instances: Build/update latestUpdate-1..MCSS_MAX_PLAYERS instances.
+# Manual instance creation (writes instance.cfg/mmc-pack.json directly rather
+# than driving PolyMC) for reliability across PolyMC versions.
+# Inputs:
+#   Globals: MC_VERSION, FABRIC_VERSION, MCSS_MAX_PLAYERS,
+#            MCSS_INSTANCE_PREFIX, TARGET_DIR, FINAL_MOD_INDEXES (read)
+# Outputs:
+#   side effects — instance dirs + configs under $TARGET_DIR/instances;
+#     populates MISSING_MODS; print_* status to stderr
+#   exit 1 — if MC_VERSION or FABRIC_VERSION is unset
 create_instances() {
     print_header "🚀 CREATING MINECRAFT INSTANCES"
     
@@ -249,12 +285,19 @@ EOF
 $MCSS_MAX_PLAYERS instances created successfully"
 }
 
-# Install Fabric mod loader and download all selected mods for an instance
-# This function ensures each instance has the proper mod loader and all compatible mods
-# Parameters:
-#   $1 - instance_dir: Path to the PolyMC instance directory
-#   $2 - instance_name: Display name of the instance for logging
-#   $3 - preserve_options: Whether to preserve existing options.txt (true/false)
+# install_fabric_and_mods: Add Fabric loader + download/copy mods for an
+# instance. Instance 1 resolves and downloads each mod; instances 2-N copy
+# instance 1's mods dir (fastest path, same mod set for every player).
+# Inputs:
+#   $1 — instance_dir: path to the PolyMC instance directory
+#   $2 — instance_name: display name (also used to derive instance number)
+#   $3 — preserve_options: keep existing options.txt if true (default false)
+#   Globals: FINAL_MOD_INDEXES, MOD_URLS, SUPPORTED_MODS, MOD_IDS, MOD_TYPES,
+#            REQUIRED_SPLITSCREEN_MODS, MODRINTH_API_BASE, MC_VERSION,
+#            MCSS_INSTANCE_PREFIX, TARGET_DIR, DEBUG_MODE (read)
+# Outputs:
+#   side effects — mods dir populated, options.txt written/preserved,
+#     appends to MISSING_MODS on failed/skipped mods; print_* to stderr
 install_fabric_and_mods() {
     local instance_dir="$1"
     local instance_name="$2"
@@ -677,12 +720,18 @@ EOF
     fi
 }
 
-# handle_instance_update: Handle updating an existing instance
-# This function is called when an existing instance is detected during installation
-# It clears out old mods but preserves the user's options.txt configuration
-# Parameters:
-#   $1 - instance_dir: Path to the existing instance directory
-#   $2 - instance_name: Display name of the instance for logging
+# handle_instance_update: Refresh an existing instance for a version change.
+# Clears the old mods dir, updates instance.cfg (version/Java/memory), and
+# calls install_fabric_and_mods, preserving the user's options.txt via a
+# backup/restore around the reinstall.
+# Inputs:
+#   $1 — instance_dir: path to the existing instance directory
+#   $2 — instance_name: display name (for logging and version messages)
+#   Globals: MC_VERSION, FABRIC_VERSION, JAVA_PATH, MCSS_MIN_MEM_MB,
+#            MCSS_MAX_MEM_MB (read)
+# Outputs:
+#   stdout — "true" if an options.txt was found and preserved, else "false"
+#   side effects — rewrites instance.cfg/mmc-pack.json, reinstalls mods
 handle_instance_update() {
     local instance_dir="$1"
     local instance_name="$2"

@@ -9,9 +9,38 @@
 # CurseForge API token fetch+decrypt also live here: both are transport-layer
 # concerns (download + auth material), while the version-match POLICY that
 # consumes the token stays in mod_management.sh (ARCHITECTURE.md §2).
+#
+# Public API:
+#   get_prism_executable()        — stdout: PolyMC executable path; return 1
+#                                    if none found
+#   fetch_url(url, out, [timeout]) — download via curl/wget; "-" streams
+#                                    the body to stdout
+#   fetch_url_status(url, out, [timeout]) — stdout: HTTP status; return 0
+#   get_curseforge_api_token()    — stdout: decrypted token or empty
+#   print_header/success/warning/error/info/progress/debug(msg) — colored
+#                                    UX helpers (error to stderr; debug only
+#                                    when DEBUG_MODE=true)
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   TARGET_DIR — installer entry (get_prism_executable)
+#   REPO_REF   — installer entry, optional (get_curseforge_api_token)
+#
+# Inputs:  network (curl/wget), CurseForge token material.
+# Outputs: stdout body for fetch_url("-", ...); colored UX to stderr/stdout
+#          per the print_* helper.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  Fix #47/#88: one CurseForge token fetch + policy split
+#   v1.2 2026-07-16  Fix #51 D14: restore tolerance — a slow call must not
+#                    kill the whole version scan
+#   v1.1 2026-07-15  Fix #51 D14: fetch_url/fetch_url_status — one transport
+#   v1.0 2025-06-27  Initial extraction from monolith
+# =============================================================================
 
-# get_prism_executable: Get the correct path to PolyMC executable
-# Handles both AppImage and extracted versions (for FUSE issues)
+# get_prism_executable: Resolve the PolyMC executable path (AppImage,
+# FUSE-extracted squashfs-root, or the legacy PrismLauncher.AppImage name).
+# Outputs:
+#   stdout — the executable path; return 1 if none of the above exist
 get_prism_executable() {
     if [[ -x "$TARGET_DIR/squashfs-root/AppRun" ]]; then
         echo "$TARGET_DIR/squashfs-root/AppRun"

@@ -1,38 +1,47 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Main Workflow Module
+# MAIN WORKFLOW MODULE
 # =============================================================================
-# 
-# This module contains the main orchestration logic for the complete splitscreen
-# installation process. It coordinates all the other modules and provides
-# comprehensive status reporting and user guidance.
+# Orchestrates the complete splitscreen installation: preflight checks,
+# PolyMC + Java + version setup, offline accounts, mod selection/install,
+# instance creation, launcher deployment, and optional Steam/desktop
+# integration. PolyMC is the primary day-to-day launcher.
 #
-# Functions provided:
-# - main: Primary function that orchestrates the complete installation process
+# Public API:
+#   main([--debug])  — runs the full install; exit 1 on any unrecoverable
+#                       phase (preflight, accounts.json, launcher/runtime
+#                       module deploy); non-critical integration failures
+#                       (Steam, desktop launcher) do not halt the install
 #
+# Globals CONSUMED (set elsewhere, read here):
+#   MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX — installer
+#     entry constants
+#   MCSS_REPO_RAW_URL, MODS, REPO_REF, TARGET_DIR — installer entry
+#
+# Inputs:  user prompts; delegates to every other installer module.
+# Outputs: full install under TARGET_DIR; summary report to stdout/stderr
+#          via print_* and plain echo.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-07-15  Fix #51 D14: fetch_url replaces the bare wget call
+#   v1.1 2026-07-10  Fix #45 PR3/D15: MCSS_REPO_RAW_URL adopted for downloads
+#   v1.0 2026-06-14  Initial extraction: phased workflow, runtime modules,
+#                    install-time preflight hard-stop
 # =============================================================================
 
-# main: Primary function that orchestrates the complete splitscreen installation process
-#
-# INSTALLATION WORKFLOW:
-# 1. WORKSPACE SETUP: Create directories and initialize environment
-# 2. CORE SETUP: Java detection and PolyMC download
-# 3. VERSION DETECTION: Minecraft and Fabric version determination
-# 4. ACCOUNT SETUP: Download offline splitscreen player accounts
-# 5. MOD COMPATIBILITY: Query APIs and determine compatible mod versions
-# 6. USER SELECTION: Interactive mod selection interface
-# 7. INSTANCE CREATION: Create 4 splitscreen instances with manual configuration
-# 8. INTEGRATION: Optional Steam and desktop launcher integration
-# 9. COMPLETION: Summary report and usage instructions
-#
-# ERROR HANDLING STRATEGY:
-# - Each phase has fallback mechanisms to ensure installation can complete
-# - Non-critical integration failures don't halt the entire process
-# - Comprehensive error reporting helps users understand any issues
-# - Multiple validation checkpoints ensure data integrity
-#
-# LAUNCHER APPROACH:
-# The script uses PolyMC as the primary launcher for day-to-day splitscreen gameplay.
+# main: Run the 9-phase splitscreen install (workspace, core setup, version
+# detection, accounts, mods, instances, launcher deploy, integration,
+# completion report). Each phase has fallback/skip behavior where failure
+# isn't fatal to the overall install; the launcher + runtime modules and
+# accounts.json ARE required — their failure aborts here (see Outputs).
+# Inputs:
+#   $@ — forwarded CLI args; only --debug is inspected here
+#   Globals: TARGET_DIR, MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX,
+#            MCSS_ACCOUNT_PREFIX, DEBUG_MODE (read)
+# Outputs:
+#   side effects — full install; exit 1 if preflight fails, accounts.json
+#     can't be obtained/validated, or the launcher/runtime modules fail to
+#     deploy
 main() {
     # Support direct module testing calls with --debug.
     local arg

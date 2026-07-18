@@ -16,9 +16,22 @@
 #
 # Public API:
 #   _preflight_deps <install|launch>   -> 0 if OK, 1 (after printing) if a HARD STOP
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   LOG — launcher entry script; appended with a HARD STOP line if set
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-07-01  v1.1 batch: env-guard + audit fixes bundled with 14
+#                    other issues (no preflight-specific behavior change)
+#   v1.0 2026-06-23  Initial: distro-aware hints, dual install/launch gate
 # =============================================================================
 
-# Print a package-install hint tailored to the detected distro.
+# _mcss_distro_hint: Print a package-install hint tailored to the detected
+# distro (SteamOS/Holo, CachyOS/Arch, Bazzite/Fedora, else generic).
+# Inputs:
+#   $1 — space-separated list of missing package/tool names
+# Outputs:
+#   stdout — one or two hint lines
 _mcss_distro_hint() {
     local pkgs="$1" id=""
     [[ -r /etc/os-release ]] && id=$(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}")
@@ -39,8 +52,15 @@ _mcss_distro_hint() {
     esac
 }
 
-# _preflight_deps <context>: hard-stop if any critical dep / KDE-stack tool is missing.
-# context = "install" or "launch" (affects the message + a best-effort GUI popup).
+# _preflight_deps: Hard-stop if any critical dep / KDE-stack tool is missing.
+# Inputs:
+#   $1 — context: "install" or "launch" (default "launch"); affects the
+#        message wording and whether a best-effort GUI popup is attempted
+#   Globals: LOG (read, optional)
+# Outputs:
+#   stderr — diagnostic block on failure; a kdialog/zenity popup at launch
+#   side effects — appends a HARD STOP line to $LOG if set
+#   return — 0 if all deps present, 1 otherwise
 _preflight_deps() {
     local ctx="${1:-launch}"
     local -a missing=()
