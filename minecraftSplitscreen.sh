@@ -20,6 +20,29 @@
 # static-test prototype path — runStaticTest/launchSlot/launchWindowTest/
 # nestedPlasma and friends — is deleted; it duplicated what the orchestrator
 # modules now own and exercised a different sandbox than production.)
+#
+# LEGACY NAMING: functions in this file use camelCase (launchFromPlasma,
+# testPlasma, …) — frozen per the house style guide §6; do not rename.
+#
+# Env CONSUMED (legacy override inputs → runtime_context.sh resolvers, plus
+# a few read directly by this file):
+#   N_SLOTS, INSTANCES_DIR, LAUNCHER_EXEC, SPLITSCREEN_DEBUG_LOG,
+#   SPLITSCREEN_STATE, SPLITSCREEN_FIFO, SPLITSCREEN_SCREEN_W,
+#   SPLITSCREEN_TEST_OBSERVE_DELAY_S, MCSS_NESTED_SESSION, MCSS_DISPLAY,
+#   MCSS_SCREEN_W/H, MCSS_GEOM_DIR, MCSS_HELPER_DIR, MCSS_KWIN_WRAPPER_PATH,
+#   MCSS_SESSION_ENV_BAK, MCSS_AUTOSTART_*, MCSS_LAUNCHER_ROOT,
+#   MCSS_INSTANCE_PREFIX
+# Env PROVIDED: LOG / SPLITSCREEN_DEBUG_LOG (exported, shared across the
+#   gamescope→KDE re-exec), MCSS_VERSION/COMMIT/BUILD_DATE (stamped by the
+#   installer/deploy.sh)
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-17  Fix #90: delete Phase-A prototype path + vestigial shims
+#   v1.4 2026-07-10  #45 PR3: runtime_modules.list — one manifest, sourced
+#   v1.3 2026-07-01  v1.1 batch: #43/#42 env guard, #40 fix, #15 teardown
+#   v1.2 2026-06-23  A1: wire production launchFromPlasma to nested Plasma
+#   v1.1 2026-06-19  Phase B test-mode entry point (testPlasma, lifecycle test)
+#   v1.0 2025-06-11  Initial monolith launcher (145 commits — compressed hard)
 
 # ── Build provenance ─────────────────────────────────────────────────────────
 # Stamped by the installer at deploy time (setup_splitscreen_launcher_script does
@@ -97,6 +120,11 @@ done < "$_MOD_MANIFEST"
 # the session on restore). Path resolved by the prologue's mcss_resolve_paths.
 _SESSION_ENV_BAK="$MCSS_SESSION_ENV_BAK"
 
+# _snapshot_session_env: Record systemd --user's current WAYLAND_DISPLAY/
+# DISPLAY (the gamescope values) before going nested, so they can be
+# restored on the way out — see the "Session-env leak guard" block above.
+# Inputs: Globals: _SESSION_ENV_BAK (write path), LOG (read)
+# Outputs: side effects — writes $_SESSION_ENV_BAK, appends to $LOG
 _snapshot_session_env() {
     : > "$_SESSION_ENV_BAK" 2>/dev/null || true
     local v cur
@@ -114,6 +142,11 @@ _snapshot_session_env() {
     echo "[session-env] snapshot: $(tr '\n' ' ' < "$_SESSION_ENV_BAK" 2>/dev/null)" >> "$LOG"
 }
 
+# _restore_session_env: Push the snapshot from _snapshot_session_env back
+# into systemd --user (or unset it), then remove the snapshot file.
+# Inputs: Globals: _SESSION_ENV_BAK (read, then removed), LOG (read)
+# Outputs: return — always 0; side effects — systemctl --user set/unset-
+#          environment calls, appends to $LOG, removes $_SESSION_ENV_BAK
 _restore_session_env() {
     [[ -f "$_SESSION_ENV_BAK" ]] || return 0
     local line
@@ -128,13 +161,14 @@ _restore_session_env() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _start_nested_plasma
-# Shared scaffolding for entering a nested Plasma session. Fix #51 (D9): was
-# copy-pasted across testPlasma / launchFromPlasma ("DRY in a
-# later cleanup" — this is that cleanup). Unsets the session-env leakage vars,
-# writes the KWin wrapper shim at the resolved screen size, writes the
-# autostart .desktop that re-invokes this script inside the session, snapshots
-# session env, then starts `dbus-run-session startplasma-wayland`.
+# _start_nested_plasma: Shared scaffolding for entering a nested Plasma
+# session. Fix #51 (D9): was copy-pasted across testPlasma / launchFromPlasma
+# ("DRY in a later cleanup" — this is that cleanup). Unsets the session-env
+# leakage vars, writes the KWin wrapper shim at the resolved screen size,
+# writes the autostart .desktop that re-invokes this script inside the
+# session (documenting, per env var, which env each writes into that Exec
+# line — see the Inputs list below), snapshots session env, then starts
+# `dbus-run-session startplasma-wayland`.
 # Inputs:
 #   $1 — log tag (caller name, for $LOG lines)
 #   $2 — autostart .desktop filename (under $MCSS_AUTOSTART_DIR)
@@ -202,9 +236,13 @@ DEOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# testPlasma
-# Starts nested KDE session for Phase B automated lifecycle test.
-# Writes autostart .desktop that calls launchTestFromPlasma instead of main().
+# testPlasma: Outer entry — start a nested KDE session for the Phase B
+# automated lifecycle test. Writes an autostart .desktop that re-invokes
+# this script as testFromPlasma (→ launchTestFromPlasma) instead of main().
+# Inputs: Globals: TEST_NUMBER, SPLITSCREEN_TEST_OBSERVE_DELAY_S (read; ridden
+#         into the nested session's autostart Exec= env, since a fresh
+#         re-invoked process does not inherit exported env)
+# Outputs: side effects — see _start_nested_plasma ("exec" mode never returns)
 # ─────────────────────────────────────────────────────────────────────────────
 testPlasma() {
     echo "[testPlasma] start" >> "$LOG"
@@ -217,14 +255,18 @@ testPlasma() {
         "SPLITSCREEN_TEST_OBSERVE_DELAY_S=${SPLITSCREEN_TEST_OBSERVE_DELAY_S:-15}"
 }
 
-# #58: PIDs matching $1 (pgrep -f pattern) that belong to OUR nested-session tree,
-# identified by SPLITSCREEN_DEBUG_LOG= in the process environ — every invocation of
-# this script exports it (top of file), so a nested startplasma-wayland and all its
-# descendants (kwin, plasma_session, baloo, ...) carry it. The REAL Desktop-Mode
-# Plasma session does not, so a first launch right after Desktop → Game Mode (outgoing
-# desktop still tearing down) must never see its processes here. Leftovers from builds
-# predating the SPLITSCREEN_DEBUG_LOG export are invisible to this filter — accepted:
-# they predate this branch and a manual reap/reboot covers the upgrade edge.
+# _mcss_nested_pids: #58 — PIDs matching $1 (pgrep -f pattern) that belong to
+# OUR nested-session tree, identified by SPLITSCREEN_DEBUG_LOG= in the
+# process environ — every invocation of this script exports it (top of
+# file), so a nested startplasma-wayland and all its descendants (kwin,
+# plasma_session, baloo, ...) carry it. The REAL Desktop-Mode Plasma session
+# does not, so a first launch right after Desktop → Game Mode (outgoing
+# desktop still tearing down) must never see its processes here. Leftovers
+# from builds predating the SPLITSCREEN_DEBUG_LOG export are invisible to
+# this filter — accepted: they predate this branch and a manual reap/reboot
+# covers the upgrade edge.
+# Inputs: $1 — pgrep -f pattern
+# Outputs: stdout — one matching PID per line; return — always 0
 _mcss_nested_pids() {
     local _pat="$1" _pid
     for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
@@ -233,15 +275,19 @@ _mcss_nested_pids() {
     return 0
 }
 
-# #60: PIDs of STALE RUN TREES — marked processes running this script (a prior run's
-# orchestrator main loop, watchdog, controller monitor, supervisor, or Steam reaper),
-# excluding this process and its ancestors. They survive their session's death — no
-# session/instance name pattern matches a 'bash …/minecraftSplitscreen.sh …' cmdline —
-# and keep acting on the SHARED state file and FIFO. Confirmed on-Deck 2026-07-05: a
-# leftover run's teardown read the shared state and killed the instance a NEWER
-# session had just spawned (~25s after boot). They must die before a new run starts.
-# (The $(…) subshell evaluating this function can list itself; the subsequent kill is
-# a no-op on an already-gone pid.)
+# _mcss_stale_tree_pids: #60 — PIDs of STALE RUN TREES: marked processes
+# running this script (a prior run's orchestrator main loop, watchdog,
+# controller monitor, supervisor, or Steam reaper), excluding this process
+# and its ancestors. They survive their session's death — no session/
+# instance name pattern matches a 'bash …/minecraftSplitscreen.sh …'
+# cmdline — and keep acting on the SHARED state file and FIFO. Confirmed
+# on-Deck 2026-07-05: a leftover run's teardown read the shared state and
+# killed the instance a NEWER session had just spawned (~25s after boot).
+# They must die before a new run starts. (The $(…) subshell evaluating this
+# function can list itself; the subsequent kill is a no-op on an
+# already-gone pid.)
+# Inputs: none (uses $$/$PPID to build the ancestor-exclusion chain)
+# Outputs: stdout — one stale PID per line; return — always 0
 _mcss_stale_tree_pids() {
     local _chain=" $$ " _p="$PPID" _pid
     while [[ "$_p" =~ ^[0-9]+$ ]] && (( _p > 1 )); do
@@ -256,15 +302,24 @@ _mcss_stale_tree_pids() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# launchFromPlasma — PRODUCTION outer entry (this is the LaunchOptions the Steam
-# shortcut runs). Starts the nested KDE/Plasma session exactly like testPlasma, but
-# the autostart runs the PRODUCTION inner handler (prodFromPlasma → the real
-# orchestrator) instead of the test harness. A1 (2026-06-23): without this case the
-# Steam shortcut fell through to a bare main() with NO nested compositor / no tiling,
-# so a real user got no splitscreen — the working windowing lived only in `test`.
+# launchFromPlasma: PRODUCTION outer entry (this is the LaunchOptions the
+# Steam shortcut runs). Starts the nested KDE/Plasma session exactly like
+# testPlasma, but the autostart runs the PRODUCTION inner handler
+# (prodFromPlasma → the real orchestrator) instead of the test harness. A1
+# (2026-06-23): without this case the Steam shortcut fell through to a bare
+# main() with NO nested compositor / no tiling, so a real user got no
+# splitscreen — the working windowing lived only in `test`.
 # Fix #51 (D9): the scaffolding tail is now the shared _start_nested_plasma
-# (the "DRY in a later cleanup" this header used to promise).
-# ─────────────────────────────────────────────────────────────────────────────
+# (the "DRY in a later cleanup" this header used to promise). It writes the
+# autostart .desktop's Exec= line via mcss_exec_env_string with
+# MCSS_NESTED_SESSION=plasma (the re-invoked prodFromPlasma reads this to
+# know it's inside our nested session — see the `*)` dispatch guard).
+# Inputs: Globals: MCSS_LAUNCHER_ROOT, MCSS_INSTANCE_PREFIX, MCSS_GEOM_DIR
+#         (read, startup-guard reap patterns/paths)
+# Outputs: return — always falls through to completion (no early exit);
+#          side effects — reaps leftover nested sessions/instances, starts
+#          the nested session (background/supervised), blocks for the whole
+#          session lifetime, then supervises the final reap; stderr log
 launchFromPlasma() {
     echo "[launchFromPlasma] start (production)" >> "$LOG"
 
@@ -400,11 +455,19 @@ launchFromPlasma() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# launchProdFromPlasma — PRODUCTION inner handler (runs inside the nested Plasma
-# session, from launchFromPlasma's autostart). Same nested-session scaffolding as
-# launchTestFromPlasma (strip the panel for full real estate, clean full-session
-# teardown on exit) but runs the REAL orchestrator main() — the FIFO event loop +
-# controller monitor + spawn slot 1 + reflow — instead of the test harness.
+# launchProdFromPlasma: PRODUCTION inner handler (runs inside the nested
+# Plasma session — this is what launchFromPlasma's autostart Exec= line
+# re-invokes this script as, via MCSS_NESTED_SESSION=plasma + prodFromPlasma).
+# Same nested-session scaffolding as launchTestFromPlasma (strip the panel
+# for full real estate, clean full-session teardown on exit) but runs the
+# REAL orchestrator main() — the FIFO event loop + controller monitor +
+# spawn slot 1 + reflow — instead of the test harness.
+# Inputs: Globals: SPLITSCREEN_FIFO, SPLITSCREEN_STATE (read/initialized)
+# Outputs: return — 1 if orchestrator main() isn't available (modules not
+#          sourced); otherwise blocks until the session ends, then returns
+#          via _end_nested_session (which terminates the nested kwin/Plasma)
+#          side effects — traps EXIT/INT/TERM/HUP for teardown (cleanup(),
+#          _restore_session_env, panel-killer stop, _end_nested_session)
 # ─────────────────────────────────────────────────────────────────────────────
 launchProdFromPlasma() {
     echo "[launchProdFromPlasma] start" >> "$LOG"
@@ -467,6 +530,8 @@ launchProdFromPlasma() {
 # (#60, confirmed on-Deck 2026-07-05: a stale supervisor's bounded reap loop was
 # still running when the NEXT session launched, and the name-only pkills below
 # murdered the new session's compositor ~25s after boot.)
+# Inputs: $1 — pgrep -f pattern; Globals: LOG (read, this run's exact path)
+# Outputs: stdout — one matching PID per line; return — always 0
 _mcss_own_run_pids() {
     local _pat="$1" _pid
     for _pid in $(pgrep -f "$_pat" 2>/dev/null || true); do
@@ -489,6 +554,8 @@ _mcss_own_run_pids() {
 # env-inheritance (e.g. re-spawned by the systemd user manager) are invisible to
 # the scoping; those are handled by the plasma-workspace.target stop in
 # _supervise_reap_nested_session, not by widening the kill back to all-names.
+# Inputs: none. Outputs: side effects — TERM then KILL pass over this run's
+# own tracked service PIDs; no return-value contract (always 0).
 _end_nested_session() {
     local sig svc _pid
     for sig in TERM KILL; do
@@ -511,9 +578,11 @@ _end_nested_session() {
 # cancels Restart=on-failure for units bound to the target, unlike a raw pkill that
 # systemd just respawns against), then repeats the existing kill sweep in a BOUNDED RETRY
 # loop — exploiting systemd's own restart-burst limit (it gives up respawning a unit after
-# enough rapid failures in a short window) instead of a single one-shot pass. Returns 0
-# once no tracked process names remain, 1 if they survive every pass (logged, not fatal —
-# the caller still returns so Steam's reaper isn't blocked forever on a bug in this reap).
+# enough rapid failures in a short window) instead of a single one-shot pass.
+# Inputs: $1 — the nested session's top-level PID (dbus-run-session), if known
+# Outputs: return — 0 once no tracked process names remain, 1 if they survive
+#          every pass (logged, not fatal — the caller still returns so
+#          Steam's reaper isn't blocked forever on a bug in this reap)
 _supervise_reap_nested_session() {
     # #60 residual: this function was invoked (xtrace shows the call) yet none of
     # its own log lines ever appeared and the supervisor process vanished — cause
@@ -563,10 +632,14 @@ _supervise_reap_nested_session() {
 # 2026-06-23: it missed because Minecraft sets its caption/WM_CLASS only AFTER mapping, so
 # the rule had nothing to match at evaluation time, and it clobbered ~/.config/kwinrulesrc.)
 
-# launchTestFromPlasma
-# Called from KDE autostart inside the nested test session.
-# Starts docked_flow in background, runs the Phase B lifecycle test
-# script against the FIFO, then tears down.
+# launchTestFromPlasma: Called from KDE autostart inside the nested test
+# session (re-invoked as testFromPlasma|testPlasma via testPlasma's Exec=
+# line). Starts docked_flow in background, runs the Phase B lifecycle test
+# script (or the TEST 8 position sweep) against the FIFO, then tears down.
+# Inputs: Globals: TEST_NUMBER, SPLITSCREEN_TEST_OBSERVE_DELAY_S (read)
+# Outputs: return — 1 if docked_flow isn't available (modules not sourced);
+#          otherwise blocks for the whole test session, then returns after
+#          full teardown (_end_nested_session terminates the nested KWin)
 # ─────────────────────────────────────────────────────────────────────────────
 launchTestFromPlasma() {
     echo "[launchTestFromPlasma] start" >> "$LOG"
@@ -625,9 +698,12 @@ launchTestFromPlasma() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _kill_tree: recursively SIG a process and all of its descendants.
+# _kill_tree: Recursively signal a process and all of its descendants.
 # pkill -P reaps only DIRECT children; docked_flow spawns grandchildren (subshells,
-# spawn_instance, monitors) that otherwise orphan to init.  $1 = pid, $2 = signal.
+# spawn_instance, monitors) that otherwise orphan to init.
+# Inputs: $1 — pid, $2 — signal (default TERM)
+# Outputs: side effects — kill -SIG on the whole subtree, depth-first;
+#          return — always 0 (per-kill failures are swallowed)
 # ─────────────────────────────────────────────────────────────────────────────
 _kill_tree() {
     local pid="$1" sig="${2:-TERM}" child
@@ -645,6 +721,11 @@ _kill_tree() {
 # stays in scope), runs the lifecycle harness against the FIFO, then tears down
 # the whole orchestrator process tree.  Publishes the loop PID in the global
 # _PHASE_B_ORCH_PID so an outer EXIT trap can also reap it.
+# Inputs: Globals: SPLITSCREEN_FIFO, SPLITSCREEN_STATE, TEST_NUMBER (read)
+# Outputs: return — 1 if docked_flow isn't available; otherwise 0 after the
+#          harness completes (bounded by a 7200s timeout) and the
+#          orchestrator loop + FIFO are torn down
+#          side effects — sets _PHASE_B_ORCH_PID, initializes FIFO/state
 # ─────────────────────────────────────────────────────────────────────────────
 _run_phase_b_session() {
     if ! declare -f docked_flow >/dev/null 2>&1; then
@@ -680,7 +761,7 @@ _run_phase_b_session() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _run_position_sweep_session  (TEST 8 — single-instance position sweep)
+# _run_position_sweep_session: (TEST 8 — single-instance position sweep)
 # Spawn ONE instance (slot 1) and move it through every layout position in turn —
 # full, top half, bottom half, and all four quad cells — pausing at each so the
 # user can SEE whether the window actually moves on screen. Logs the geometry
@@ -693,6 +774,12 @@ _run_phase_b_session() {
 # won't STAY, the next step is to retry with the Splitscreen mod removed — it is
 # the one constant across every failed attempt and may be pinning each window to
 # its splitscreen.properties region.
+# Inputs: Globals: SPLITSCREEN_FIFO, SPLITSCREEN_STATE,
+#         SPLITSCREEN_TEST_OBSERVE_DELAY_S (read)
+# Outputs: return — 1 if slot 1's window never appears (aborts the sweep);
+#          otherwise 0 after the full 7-position sweep and teardown
+#          side effects — spawns/tears down slot 1, appends geometry
+#          snapshots to $LOG at each step
 # ─────────────────────────────────────────────────────────────────────────────
 _run_position_sweep_session() {
     local fifo="$SPLITSCREEN_FIFO"
@@ -764,6 +851,11 @@ _run_position_sweep_session() {
 # with NO Plasma shell/panel — so instances tile across the entire display and
 # nothing draws behind a menu bar.  Controller isolation is unaffected: only the
 # DISPLAY target changes; bwrap --dev-bind device isolation is untouched.
+# Inputs: $2 — optional TEST_NUMBER; Globals: WAYLAND_DISPLAY (read/detected)
+# Outputs: does not return — execs kwin_wayland, whose session command
+#          re-invokes this script as `_nestedSession` (env carried via
+#          mcss_exec_env_string + explicit NAME=VALUE pairs on the exec line;
+#          see the `_nestedSession)` case below for what it consumes)
 # ─────────────────────────────────────────────────────────────────────────────
 launchNested() {
     echo "[launchNested] start" >> "$LOG"

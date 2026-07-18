@@ -34,6 +34,34 @@
 #                                  time, exactly once (#50). Respects a value
 #                                  already set in the environment (test
 #                                  harnesses, nested-session Exec lines).
+#
+# Globals PROVIDED (this file is the OWNER of the MCSS_* world; a tight list —
+# see each block below for what every value means):
+#   Environment:  MCSS_ENV_CONTEXT, MCSS_LAUNCHED_BY_STEAM, MCSS_NESTED_SESSION
+#   Constants:    MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX,
+#                 MCSS_WINDOW_TITLE_PREFIX, MCSS_STEAM_VENDOR_ID/PRODUCT_ID,
+#                 MCSS_RAW_BINDING, MCSS_STATE_LOCK_TIMEOUT_S,
+#                 MCSS_DISPLAY_PROBE_TIMEOUT_S
+#   Paths:        MCSS_LAUNCHER_ROOT, MCSS_INSTANCES_DIR, MCSS_LAUNCHER_EXEC,
+#                 SPLITSCREEN_STATE, MCSS_STATE_LOCK, SPLITSCREEN_FIFO,
+#                 MCSS_GEOM_DIR, MCSS_RUNTIME_DIR, MCSS_PULSE_SERVER,
+#                 MCSS_HELPER_DIR, MCSS_KWIN_WRAPPER_PATH,
+#                 MCSS_SESSION_ENV_BAK, MCSS_AUTOSTART_*
+#   Screen:       MCSS_SCREEN_W/H
+#   Display:      MCSS_DISPLAY
+#
+# Globals CONSUMED (legacy override inputs — see the "Legacy override inputs"
+# note further down for the full list): N_SLOTS, INSTANCES_DIR, LAUNCHER_EXEC,
+# SPLITSCREEN_SCREEN_W/H, CONTROLLER_MONITOR_RAW_BINDING, LOG /
+# SPLITSCREEN_DEBUG_LOG.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-18  fix: MCSS_ACCOUNT_PREFIX default P → Player
+#   v1.4 2026-07-17  Fix #86: named MCSS_DISPLAY_PROBE_TIMEOUT_S constant
+#   v1.3 2026-07-15  #51/D17: mcss_query_displays — one display-output parser
+#   v1.2 2026-07-09  #45 PR2/PR3: paths+constants+screen resolvers, exec-env
+#   v1.1 2026-07-06  #50: SPLITSCREEN_STATE/lock resolved to a single home
+#   v1.0 2026-07-01  #43: environment resolver + gamescope-guard (#42)
 # =============================================================================
 
 # #50: the ONLY place the state-file default exists. Previously this fallback
