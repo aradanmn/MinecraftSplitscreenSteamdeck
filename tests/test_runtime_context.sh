@@ -55,7 +55,7 @@ trap 'rm -rf "$_scratch"' EXIT
 
 # --- T1: constant defaults ---
 out=$(rc_run 'echo "$MCSS_MAX_PLAYERS $MCSS_INSTANCE_PREFIX $MCSS_ACCOUNT_PREFIX $MCSS_WINDOW_TITLE_PREFIX"')
-assert_equals "$out" "4 latestUpdate- P SplitscreenP" "T1: constants default values" || true
+assert_equals "$out" "4 latestUpdate- Player SplitscreenP" "T1: constants default values" || true
 
 # --- T2: Steam Deck controller ids ---
 out=$(rc_run 'echo "$MCSS_STEAM_VENDOR_ID:$MCSS_STEAM_PRODUCT_ID"')
