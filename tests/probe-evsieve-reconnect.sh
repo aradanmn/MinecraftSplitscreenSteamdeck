@@ -182,27 +182,45 @@ emit_verdict() {
 # find_ds4_event_node: Positively identify the external DS4's OWN js-bearing
 # evdev node. NEVER returns a 28de node -- this is the guard that keeps
 # every grab target honest.
+#
+# 2026-07-18 false positive: with more than one 054c pad connected, this
+# used to WARN and silently grab "the first" one while the operator was
+# actually handling a DIFFERENT pad -- every downstream verdict then
+# measured the wrong device and still reported success. Multiple pads
+# must now BLOCK the probe (loop with the operator) until exactly one
+# remains, never guess.
 # Inputs:
-#   Globals: DS4_VENDOR (read); reads _parse_all_gamepad_devices
+#   Globals: DS4_VENDOR (read); reads _parse_all_gamepad_devices, calls
+#     prompt_operator when more than one pad is enumerated
 # Outputs:
 #   stdout — "/dev/input/eventN jsN" on success
-#   return — 1 (no stdout) if no 054c js-bearing pad is present
+#   return — 0 success; 1 (no stdout) if no 054c js-bearing pad is
+#     present; 2 if the operator typed 'skip' while more than one pad
+#     was still connected (caller should treat this as OPERATOR_ABORT)
 find_ds4_event_node() {
     local ev js vnd prd sysfs phys
     local -a matches=()
-    while IFS=' ' read -r ev js vnd prd sysfs phys; do
-        [[ -z "$ev" ]] && continue
-        [[ "$vnd" == "$DS4_VENDOR" ]] || continue
-        matches+=("$ev $js")
-    done < <(_parse_all_gamepad_devices 2>/dev/null)
+    while true; do
+        matches=()
+        while IFS=' ' read -r ev js vnd prd sysfs phys; do
+            [[ -z "$ev" ]] && continue
+            [[ "$vnd" == "$DS4_VENDOR" ]] || continue
+            matches+=("$ev $js")
+        done < <(_parse_all_gamepad_devices 2>/dev/null)
 
-    if (( ${#matches[@]} == 0 )); then
-        return 1
-    fi
-    if (( ${#matches[@]} > 1 )); then
-        echo "[probe] WARN: multiple ${DS4_VENDOR} pads found; using the" \
-             "first (operator was asked to connect exactly one)" >&2
-    fi
+        (( ${#matches[@]} == 0 )) && return 1
+        (( ${#matches[@]} == 1 )) && break
+
+        echo "[probe] BLOCK: ${#matches[@]} ${DS4_VENDOR} pads found;" \
+             "this probe can only measure ONE pad at a time" >&2
+        if ! prompt_operator "Power off or unplug all but ONE DS4," \
+            " then press Enter when exactly ONE remains, or type" \
+            " 'skip' and Enter to abort the probe."
+        then
+            return 2
+        fi
+    done
+
     local first_ev first_js
     first_ev="${matches[0]%% *}"
     first_js="${matches[0]#* }"
@@ -607,8 +625,17 @@ _dual_capture() {
 }
 
 # _fidelity_matches: Compare a physical and virtual capture_stream tally.
+#
+# 2026-07-18 false positive: two EMPTY captures (types= codes=0 abs=none
+# on BOTH sides -- nobody wiggled, or the reader never saw an event) are
+# byte-identical strings, so the equality check below "matched" them and
+# the probe reported fidelity OK from a comparison of nothing against
+# nothing. _run_probe_b now gates on CAPTURE_EMPTY before trusting this
+# result, but this function guards the vacuous case itself too (defense
+# in depth) so it can never be called and quietly return success again.
 # Inputs: $1 — phys tally, $2 — virt tally
-# Outputs: return — 0 if types/codes/abs all match, 1 otherwise
+# Outputs: return — 0 if types/codes/abs all match and at least one side
+#   captured a real event, 1 otherwise (including the double-empty case)
 _fidelity_matches() {
     local phys="$1" virt="$2"
     local p_types v_types p_codes v_codes p_abs v_abs
@@ -618,8 +645,30 @@ _fidelity_matches() {
     v_codes=$(_extract_field codes "$virt")
     p_abs=$(_extract_field abs "$phys")
     v_abs=$(_extract_field abs "$virt")
+
+    # Vacuous-match trap: don't let empty==empty count as a real match.
+    if [[ -z "$p_types" && ( -z "$p_codes" || "$p_codes" == "0" ) \
+        && -z "$v_types" && ( -z "$v_codes" || "$v_codes" == "0" ) ]]
+    then
+        return 1
+    fi
+
     [[ "$p_types" == "$v_types" && "$p_codes" == "$v_codes" \
         && "$p_abs" == "$v_abs" ]]
+}
+
+# _tally_is_empty: True if a capture_stream tally recorded nothing --
+# zero codes or no types -- regardless of whether the capture "succeeded"
+# by returning a well-formed string. See the 2026-07-18 note on
+# _fidelity_matches: an empty tally must never silently feed a
+# fidelity comparison.
+# Inputs: $1 — tally string (as produced by capture_stream)
+# Outputs: return — 0 if empty, 1 otherwise
+_tally_is_empty() {
+    local tally="$1" types codes
+    types=$(_extract_field types "$tally")
+    codes=$(_extract_field codes "$tally")
+    [[ -z "$types" || -z "$codes" || "$codes" == "0" ]]
 }
 
 # wait_for_ds4: Poll find_ds4_event_node until it reappears or TIMEOUT_S
@@ -748,8 +797,16 @@ _run_p0_gate() {
             " or Bluetooth) now, then press Enter." || true
     fi
 
-    local ds4 ev_node
-    if ! ds4=$(find_ds4_event_node); then
+    local ds4 ev_node rc
+    ds4=$(find_ds4_event_node)
+    rc=$?
+    if (( rc == 2 )); then
+        # 2026-07-18: an operator-skip on the multi-pad guard must abort
+        # cleanly, never fall through and grab whatever pad remains.
+        emit_verdict P0_UINPUT_OPEN OPERATOR_ABORT \
+            "operator skipped the multi-pad guard; aborting probe"
+        exit 1
+    elif (( rc != 0 )); then
         emit_verdict P0_UINPUT_OPEN FAIL \
             "no 054c js-bearing pad detected; cannot proceed"
         exit 1
@@ -849,8 +906,19 @@ _run_bonus_steam_grab() {
 
 _run_probe_a() {
     echo "[probe] Probe A: NODE_STABILITY (+ Bonus rides along)" >&2
-    local ds4 ev_node
-    if ! ds4=$(find_ds4_event_node); then
+    local ds4 ev_node rc
+    ds4=$(find_ds4_event_node)
+    rc=$?
+    if (( rc == 2 )); then
+        # 2026-07-18: operator-skip on the multi-pad guard means no
+        # single pad was ever confirmed -- report OPERATOR_ABORT, not a
+        # generic FAIL that would read like a detection problem.
+        emit_verdict A_NODE_STABILITY OPERATOR_ABORT \
+            "operator skipped the multi-pad guard before Probe A"
+        emit_verdict BONUS_STEAM_GRAB OPERATOR_ABORT \
+            "operator skipped the multi-pad guard before Probe A"
+        return 1
+    elif (( rc != 0 )); then
         emit_verdict A_NODE_STABILITY FAIL "DS4 not detected before Probe A"
         emit_verdict BONUS_STEAM_GRAB FAIL "DS4 not detected before Probe A"
         return 1
@@ -965,8 +1033,17 @@ _run_probe_b() {
         return 1
     fi
 
-    local ds4 ev_node
-    if ! ds4=$(find_ds4_event_node); then
+    local ds4 ev_node rc
+    ds4=$(find_ds4_event_node)
+    rc=$?
+    if (( rc == 2 )); then
+        # 2026-07-18: operator-skip on the multi-pad guard -- report
+        # OPERATOR_ABORT rather than CAPTURE_UNAVAILABLE, which would
+        # read like a tooling problem instead of a deliberate abort.
+        emit_verdict B_STREAM_FIDELITY OPERATOR_ABORT \
+            "operator skipped the multi-pad guard before Probe B"
+        return 1
+    elif (( rc != 0 )); then
         emit_verdict B_STREAM_FIDELITY CAPTURE_UNAVAILABLE \
             "DS4 not detected before Probe B"
         return 1
@@ -1047,8 +1124,23 @@ _run_probe_b() {
     mapfile -t post_lines < <(_dual_capture "$ev_node_post" "$virt_node")
     local phys_post="${post_lines[0]:-}" virt_post="${post_lines[1]:-}"
 
-    local ok
-    if _fidelity_matches "$phys_pre" "$virt_pre" \
+    # 2026-07-18 false positive: phys_pre/virt_pre/phys_post/virt_post
+    # were fed straight to _fidelity_matches even when one or more of
+    # them was an empty capture (types= codes=0 abs=none), so an
+    # empty-vs-empty pair "matched" and B_STREAM_FIDELITY=OK was emitted
+    # despite recording nothing. ANY empty tally must short-circuit to
+    # CAPTURE_EMPTY, never reach the OK/DEGRADED comparison, and the
+    # evidence must name exactly which tally(ies) were empty.
+    local ok empty_names=""
+    _tally_is_empty "$phys_pre"  && empty_names+="phys_pre,"
+    _tally_is_empty "$virt_pre"  && empty_names+="virt_pre,"
+    _tally_is_empty "$phys_post" && empty_names+="phys_post,"
+    _tally_is_empty "$virt_post" && empty_names+="virt_post,"
+    empty_names="${empty_names%,}"
+
+    if [[ -n "$empty_names" ]]; then
+        ok="CAPTURE_EMPTY"
+    elif _fidelity_matches "$phys_pre" "$virt_pre" \
         && _fidelity_matches "$phys_post" "$virt_post"
     then
         ok="OK"
@@ -1066,6 +1158,7 @@ _run_probe_b() {
     local evidence
     evidence="pre phys[${phys_pre}] virt[${virt_pre}];"
     evidence+=" post phys[${phys_post}] virt[${virt_post}];"
+    evidence+=" empty_tallies=${empty_names:-none};"
     evidence+=" phys_path=${path_verdict}; tool=${tool};"
     evidence+=" evsieve_log=${b_logfile} disconnected_count=${disc_n}"
     evidence+=" reconnected_count=${recon_n};"
