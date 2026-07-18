@@ -6,8 +6,10 @@
 # Intelligent version selection based on required mod compatibility
 
 # get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for Controlify to find compatible versions (splitscreen tiling is done
-# by KWin, not a mod, as of 2026-06-23 — Splitscreen Support is no longer installed)
+# Queries APIs for every mod in REQUIRED_SPLITSCREEN_MODS/IDS/PLATFORMS (loaded from
+# mods.conf's "required" entries — Controlify plus the standard performance set) to
+# find compatible versions. Splitscreen tiling is done by KWin, not a mod, as of
+# 2026-06-23 — Splitscreen Support is no longer installed/required.
 # Returns: Array of supported Minecraft versions in descending order (newest first)
 get_supported_minecraft_versions() {
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
@@ -51,17 +53,19 @@ get_supported_minecraft_versions() {
     # and optionally with an extra custom mod requirement.
     for mc_version in "${all_versions[@]}"; do
         print_progress "  Testing $mc_version..." >&2
-        
-        local controlify_compatible=false
 
-        # Check Controlify (Modrinth mod DOUdJVEm)
-        if check_mod_version_compatibility "DOUdJVEm" "modrinth" "$mc_version"; then
-            controlify_compatible=true
-        fi
-
-        # NOTE: the Splitscreen Support mod (yJgqfSDR) is no longer required — window
-        # tiling is done by KWin, not the mod (removed 2026-06-23). So MC versions no
-        # longer need to be Splitscreen-Support-compatible; only Controlify is required.
+        # Every required mod (Controlify + the standard performance set from
+        # mods.conf) must be available for this MC version, or the version is
+        # dropped — required mods that silently fail to install defeat the
+        # point of calling them "required".
+        local required_mods_compatible=true
+        local missing_required=""
+        for i in "${!REQUIRED_SPLITSCREEN_IDS[@]}"; do
+            if ! check_mod_version_compatibility "${REQUIRED_SPLITSCREEN_IDS[$i]}" "${REQUIRED_SPLITSCREEN_PLATFORMS[$i]}" "$mc_version"; then
+                required_mods_compatible=false
+                missing_required="${missing_required}${missing_required:+, }${REQUIRED_SPLITSCREEN_MODS[$i]:-${REQUIRED_SPLITSCREEN_IDS[$i]}}"
+            fi
+        done
 
         local extra_mod_compatible=true
         if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
@@ -70,20 +74,20 @@ get_supported_minecraft_versions() {
             fi
         fi
 
-        # Only include versions where core required mods are available,
+        # Only include versions where all required mods are available,
         # and custom required mod too when specified.
-        if [[ "$controlify_compatible" == true && "$extra_mod_compatible" == true ]]; then
+        if [[ "$required_mods_compatible" == true && "$extra_mod_compatible" == true ]]; then
             supported_versions+=("$mc_version")
             if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
-                print_success "    ✅ $mc_version - Core mods + $extra_mod_name compatible" >&2
+                print_success "    ✅ $mc_version - Required mods + $extra_mod_name compatible" >&2
             else
-                print_success "    ✅ $mc_version - Both core mods compatible" >&2
+                print_success "    ✅ $mc_version - All required mods compatible" >&2
             fi
         else
-            if [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
-                print_info "    ❌ $mc_version - Missing support for core mods or $extra_mod_name" >&2
-            else
-                print_info "    ❌ $mc_version - Missing essential core mod support" >&2
+            if [[ "$required_mods_compatible" != true ]]; then
+                print_info "    ❌ $mc_version - Missing required mod support: $missing_required" >&2
+            elif [[ -n "$extra_mod_id" && -n "$extra_mod_platform" ]]; then
+                print_info "    ❌ $mc_version - Missing support for $extra_mod_name" >&2
             fi
         fi
     done
@@ -236,7 +240,8 @@ fallback_dependencies() {
 }
 
 # get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support Controlify (window tiling is done by KWin, not a mod)
+# Only offers versions that support every required mod (window tiling is done by
+# KWin, not a mod)
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
     

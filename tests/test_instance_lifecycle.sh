@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_instance_lifecycle.sh
 # =============================================================================
 
-readonly TEST_TOTAL=11
+readonly TEST_TOTAL=12
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -405,6 +405,37 @@ test_t4_12() {
 }
 
 # =============================================================================
+# T4.13 — setInstanceCfgValue exists (was lost in modularization → exit 127 on
+# Deck) and _set_jvm_window_title merges the title into existing JvmArgs
+# instead of clobbering the installer's GC flags
+# =============================================================================
+test_t4_13() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local cfg="$tmpdir/instance.cfg"
+    local gc_flags="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+PerfDisableSharedMem"
+    printf 'OverrideJavaArgs=true\nJvmArgs=%s\nMaxMemAlloc=3072\n' "$gc_flags" > "$cfg"
+
+    if ! type setInstanceCfgValue >/dev/null 2>&1; then
+        _fail "T4.13" "setInstanceCfgValue is not defined"
+        return
+    fi
+
+    # First spawn as slot 2, then re-spawn as slot 3: flags must survive both,
+    # the old title must be replaced (not accumulated), one JvmArgs line total.
+    _set_jvm_window_title "$cfg" 2
+    _set_jvm_window_title "$cfg" 3
+    local args line_count
+    args=$(grep '^JvmArgs=' "$cfg" | cut -d= -f2-)
+    line_count=$(grep -c '^JvmArgs=' "$cfg")
+    local want="$gc_flags -Dorg.lwjgl.opengl.Window.title=${MCSS_WINDOW_TITLE_PREFIX}3"
+    if [[ "$args" == "$want" && "$line_count" -eq 1 ]]; then
+        _pass "T4.13 — _set_jvm_window_title keeps GC flags, replaces stale title"
+    else
+        _fail "T4.13" "expected '$want' (1 line), got '$args' ($line_count line(s))"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== instance_lifecycle test suite ==="
@@ -421,6 +452,7 @@ test_t4_9
 test_t4_10
 test_t4_11
 test_t4_12
+test_t4_13
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
