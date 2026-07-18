@@ -1,0 +1,115 @@
+diff --git a/src/io/input.rs b/src/io/input.rs
+index 9f2d6cd..787c80e 100644
+--- a/src/io/input.rs
++++ b/src/io/input.rs
+@@ -53,6 +53,7 @@ pub fn open_and_query_capabilities(pre_input_devices: Vec<PreInputDevice>)
+                                     pre_device,
+                                     capabilities,
+                                     name: None,
++                                    error_retries: 0,
+                                 });
+                             },
+                             // If they are not found, then the best thing we could either exit with an error, or assume
+@@ -67,7 +68,9 @@ pub fn open_and_query_capabilities(pre_input_devices: Vec<PreInputDevice>)
+                                     device_cache.location.display(),
+                                 );
+ 
+-                                blueprints.push(Blueprint { pre_device, capabilities: Capabilities::new(), name: None })
++                                blueprints.push(Blueprint {
++                                    pre_device, capabilities: Capabilities::new(), name: None, error_retries: 0,
++                                })
+                             },
+                             CachedCapabilities::Corrupted => {
+                                 eprintln!(
+@@ -76,7 +79,9 @@ pub fn open_and_query_capabilities(pre_input_devices: Vec<PreInputDevice>)
+                                     device_cache.location.display(),
+                                 );
+ 
+-                                blueprints.push(Blueprint { pre_device, capabilities: Capabilities::new(), name: None })
++                                blueprints.push(Blueprint {
++                                    pre_device, capabilities: Capabilities::new(), name: None, error_retries: 0,
++                                })
+                             },
+                         }
+                     },
+@@ -351,6 +356,7 @@ impl InputDevice {
+                 domain: self.domain,
+                 persist_state: self.persist_state,
+             },
++            error_retries: 0,
+         }
+     }
+ }
+diff --git a/src/persist/blueprint.rs b/src/persist/blueprint.rs
+index 91e5bbd..f33d43e 100644
+--- a/src/persist/blueprint.rs
++++ b/src/persist/blueprint.rs
+@@ -13,6 +13,9 @@ pub struct Blueprint {
+     /// if the input device ends up having a different name than specified here, it is just cause to issue
+     /// a warning to help find problematic setups.
+     pub name: Option<InputDeviceName>,
++    /// Counts how many times in a row try_open() has returned an Error for this blueprint. Used to
++    /// bound how long we keep retrying a device that keeps failing to open with a hard error.
++    pub error_retries: u32,
+ }
+ 
+ pub enum TryOpenBlueprintResult {
+@@ -27,6 +30,10 @@ pub enum TryOpenBlueprintResult {
+ impl Blueprint {
+     /// Tries to reopen the device from which this blueprint was generated.
+     pub fn try_open(self) -> TryOpenBlueprintResult {
++        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
++        eprintln!("[{:.3}] persist: try_open path={} exists={}",
++            now, self.pre_device.path.display(), self.pre_device.path.exists());
++
+         if ! self.pre_device.path.exists() {
+             return TryOpenBlueprintResult::NotOpened(self);
+         }
+@@ -37,6 +44,7 @@ impl Blueprint {
+                     pre_device,
+                     capabilities: self.capabilities,
+                     name: self.name,
++                    error_retries: self.error_retries,
+                 }, error);
+             },
+         };
+diff --git a/src/persist/subsystem.rs b/src/persist/subsystem.rs
+index dd1f16d..3b165bf 100644
+--- a/src/persist/subsystem.rs
++++ b/src/persist/subsystem.rs
+@@ -205,6 +205,9 @@ impl Daemon {
+     ///    successfully opened devices to just disappear if an error happened later.
+     fn try_open(&mut self) -> TryOpenResult {
+         const MAX_TRIES: usize = 5;
++        // Bounds how many times in a row a blueprint may fail to open with a hard Error before we
++        // give up on it entirely, so a truly broken device does not get retried forever.
++        const MAX_ERROR_RETRIES: u32 = 60;
+         let mut result = TryOpenResult {
+             opened_devices: Vec::new(),
+             broken_blueprints: Vec::new(),
+@@ -218,9 +221,22 @@ impl Daemon {
+                 match blueprint.try_open() {
+                     TryOpenBlueprintResult::Success(device) => result.opened_devices.push(device),
+                     TryOpenBlueprintResult::NotOpened(blueprint) => remaining_blueprints.push(blueprint),
+-                    TryOpenBlueprintResult::Error(blueprint, error) => {
+-                        error.print_err();
+-                        result.broken_blueprints.push(blueprint);
++                    TryOpenBlueprintResult::Error(mut blueprint, error) => {
++                        let now = std::time::SystemTime::now()
++                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
++                        eprintln!("[{:.3}] persist: error reopening blueprint: {}", now, error);
++
++                        // Treat this like NotOpened (retry later) instead of dropping immediately,
++                        // but bound the number of retries so a permanently broken device does not
++                        // get retried forever.
++                        blueprint.error_retries += 1;
++                        if blueprint.error_retries > MAX_ERROR_RETRIES {
++                            eprintln!("[{:.3}] persist: giving up on blueprint after {} error retries",
++                                now, blueprint.error_retries);
++                            result.broken_blueprints.push(blueprint);
++                        } else {
++                            remaining_blueprints.push(blueprint);
++                        }
+                     }
+                 }
+             }
