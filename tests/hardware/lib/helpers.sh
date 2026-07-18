@@ -265,24 +265,71 @@ hw_wait_for() {
 # ---------------------------------------------------------------------------
 
 # hw_nested_display: resolve the display the game windows actually live on.
-# The orchestrator runs INSIDE the nested plasma session, so its windows are on
-# the nested KWin's Xwayland — NOT on the ambient gamescope display this harness
-# runs under (found on-Deck 2026-07-05: every window assert failed on :1 while
-# the SplitscreenP1 window sat fullscreen on :2). The nested Xwayland is the one
-# started with an explicit '-auth <file>' (gamescope's own :0/:1 run authless).
+# The orchestrator runs INSIDE the nested session, so its windows are on the
+# nested KWin's Xwayland — NOT on the ambient gamescope display this harness
+# runs under (found on-Deck 2026-07-05: every window assert failed on :1
+# while the SplitscreenP1 window sat fullscreen on :2).
+# Fix #83: the old heuristic (last `pgrep -a Xwayland` line carrying
+# '-auth') resolved the OUTER gamescope Xwayland when both servers were up:
+# every geometry assert then measured the outer root (1920x1080 TV) while
+# the windows tiled on the nested 1280x720 root (2026-07-15 run; earlier
+# passes were coincidence — both roots happened to be 1280x720). Resolve
+# from the nested session's OWN record instead, mirroring the production
+# discrimination rather than process-list order:
+#   1. OUR nested kwin_wayland's cmdline --xwayland-display /
+#      --xwayland-xauthority ("ours" iff its environ carries
+#      SPLITSCREEN_DEBUG_LOG= — the #58 marker hw_reap_stale_session
+#      already scopes by; same cmdline source instance_lifecycle's
+#      _detect_xauthority uses for the cookie).
+#   2. The environ of a marked process INSIDE the nested session
+#      (MCSS_NESTED_SESSION non-0 — the runtime's own inside-the-session
+#      discriminator, set on every re-invoke Exec/env line): prefer its
+#      MCSS_DISPLAY (mcss_set_display's single-writer value), else the
+#      DISPLAY the nested kwin spawned it with. The bare-kwin testNested
+#      path needs this leg: kwin auto-picks the X display and ignores
+#      --xwayland-display (see launchNested).
 # Sets HW_XDO_DISPLAY / HW_XDO_XAUTH; falls back to ambient when no nested
 # session is up. Re-resolved per call (via hw_xdo) so a session restart
 # mid-stage picks up the fresh display/auth pair.
 hw_nested_display() {
-    local line
-    line=$(pgrep -a Xwayland 2>/dev/null | grep -- '-auth' | tail -1 || true)
-    if [[ -n "$line" ]]; then
-        HW_XDO_DISPLAY=$(echo "$line" | grep -oE ' :[0-9]+ ' | head -1 | tr -d ' ')
-        HW_XDO_XAUTH=$(echo "$line" | sed -n 's/.*-auth \([^ ]*\).*/\1/p')
-    else
-        HW_XDO_DISPLAY=""
-        HW_XDO_XAUTH=""
+    HW_XDO_DISPLAY=""
+    HW_XDO_XAUTH=""
+    local _pid _args _env _disp=""
+    local _re_disp='--xwayland-display[= ](:[0-9]+)'
+    local _re_auth='--xwayland-xauthority[= ]([^ ]+)'
+    # 1. Our nested kwin's own cmdline record. Last match wins — highest
+    #    pid is the freshest if a dying predecessor lingers mid-restart.
+    for _pid in $(pgrep -x kwin_wayland 2>/dev/null || true); do
+        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/${_pid}/environ" \
+            2>/dev/null || continue
+        _args=$(tr '\0' ' ' < "/proc/${_pid}/cmdline" 2>/dev/null || true)
+        [[ "$_args" =~ $_re_disp ]] && HW_XDO_DISPLAY="${BASH_REMATCH[1]}"
+        [[ "$_args" =~ $_re_auth ]] && HW_XDO_XAUTH="${BASH_REMATCH[1]}"
+    done
+    # 2. Environ of a marked process inside the nested session (the
+    #    re-invoked prodFromPlasma / testFromPlasma / _nestedSession).
+    if [[ -z "$HW_XDO_DISPLAY" ]]; then
+        for _pid in $(pgrep -f 'minecraftSplitscreen' 2>/dev/null || true); do
+            _env=$(tr '\0' '\n' < "/proc/${_pid}/environ" 2>/dev/null \
+                || true)
+            [[ -n "$_env" ]] || continue
+            grep -q '^SPLITSCREEN_DEBUG_LOG=' <<<"$_env" || continue
+            grep -q '^MCSS_NESTED_SESSION=' <<<"$_env" || continue
+            grep -q '^MCSS_NESTED_SESSION=0$' <<<"$_env" && continue
+            if [[ -z "$HW_XDO_XAUTH" ]]; then
+                HW_XDO_XAUTH=$(sed -n 's/^XAUTHORITY=//p' <<<"$_env" \
+                    | head -1)
+            fi
+            HW_XDO_DISPLAY=$(sed -n 's/^MCSS_DISPLAY=//p' <<<"$_env" \
+                | head -1)
+            [[ -n "$HW_XDO_DISPLAY" ]] && break
+            if [[ -z "$_disp" ]]; then
+                _disp=$(sed -n 's/^DISPLAY=//p' <<<"$_env" | head -1)
+            fi
+        done
+        HW_XDO_DISPLAY="${HW_XDO_DISPLAY:-$_disp}"
     fi
+    # 3. No nested session found — ambient display (pre-launch stages).
     HW_XDO_DISPLAY="${HW_XDO_DISPLAY:-${DISPLAY:-:0}}"
     HW_XDO_XAUTH="${HW_XDO_XAUTH:-${XAUTHORITY:-}}"
 }
