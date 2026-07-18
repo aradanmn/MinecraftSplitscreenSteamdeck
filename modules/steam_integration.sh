@@ -1,42 +1,34 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Steam Integration Module
+# STEAM INTEGRATION MODULE
 # =============================================================================
-# 
-# This module handles the integration of Minecraft Splitscreen launcher with
-# Steam, providing native Steam library integration, Big Picture mode support,
-# and Steam Deck Game Mode integration.
+# Adds the Minecraft Splitscreen launcher to the user's Steam library as a
+# non-Steam shortcut, with SteamGridDB artwork, so it's reachable from Steam
+# Big Picture / Game Mode with controller input and Steam's own UI.
 #
-# Functions provided:
-# - setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
+# Public API:
+#   setup_steam_integration() — prompts the user, then shuts down Steam
+#     (only if running), edits shortcuts.vdf via add-to-steam.py, downloads
+#     artwork, and leaves Steam stopped for the user to restart
 #
+# Globals CONSUMED (set elsewhere, read here):
+#   TARGET_DIR         — installer entry
+#   MCSS_REPO_RAW_URL  — installer entry; add-to-steam.py download base
+#   MCSS_TARGET_DIR    — set here for add-to-steam.py's own root probe (#45/
+#                         D16 residual): the script defaults to hardcoded
+#                         $HOME probes without it
+#
+# Inputs:  Steam userdata/shortcuts.vdf, add-to-steam.py (local repo copy or
+#          downloaded — out of scope for this module, only invoked here),
+#          SteamGridDB artwork.
+# Outputs: modifies shortcuts.vdf, downloads artwork, leaves Steam stopped.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  Fix #86: named shutdown/poll-wait constants
+#   v1.2 2026-07-15  Fix #51/D16 residual: pass TARGET_DIR to add-to-steam.py
+#   v1.1 2026-07-10  Fix #45/D15: MCSS_REPO_RAW_URL for script download
+#   v1.0 2025-06-27  Initial extraction; #56 no auto-restart of Steam
 # =============================================================================
-
-# setup_steam_integration: Add Minecraft Splitscreen launcher to Steam library
-#
-# STEAM INTEGRATION BENEFITS:
-# - Launch directly from Steam's game library interface
-# - Access from Steam Big Picture mode (ideal for Steam Deck)
-# - Controller support through Steam Input system
-# - Game Mode integration on Steam Deck
-# - Professional appearance with custom artwork
-# - Consistent with other Steam games in library
-#
-# TECHNICAL IMPLEMENTATION:
-# 1. Detects active Steam installation and user data
-# 2. Safely shuts down Steam to modify shortcuts database
-# 3. Creates backup of existing shortcuts for safety
-# 4. Uses specialized Python script to modify binary shortcuts.vdf format
-# 5. Downloads custom artwork from SteamGridDB for professional appearance
-# 6. Leaves Steam stopped — it picks up the new shortcut on its next normal
-#    start (auto-restarting inherited the installer's environment and died
-#    headless / over SSH, killing the user's Steam session — see issue #56)
-#
-# SAFETY MEASURES:
-# - Checks for existing shortcut to prevent duplicates
-# - Creates backup before modifications
-# - Uses official Steam binary format handling
-# - Handles multiple Steam installation types (native, Flatpak)
 
 # --- Module-level constants ---
 # Fix #86: named literals for the shutdown wait/poll sequence (#86 item e).
@@ -50,6 +42,17 @@ readonly STEAM_INTEGRATION_SHUTDOWN_POLL_INTERVAL_S=1
 # proceeding anyway.
 readonly STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS=10
 
+# setup_steam_integration: Add the launcher to Steam as a non-Steam shortcut.
+# #56: leaves Steam stopped rather than restarting it — an auto-restart
+# inherits the installer's environment, so headless/SSH runs had no
+# DISPLAY/Wayland socket and the relaunched Steam died, killing the user's
+# session. Steam picks up shortcuts.vdf on its next normal start, so simply
+# leaving it stopped (only if it was running) is safe.
+# Inputs:
+#   Globals: TARGET_DIR, MCSS_REPO_RAW_URL, SCRIPT_DIR (read)
+# Outputs:
+#   side effects — shortcuts.vdf edited, artwork downloaded, Steam left
+#     stopped if it was running; print_* status to stderr
 setup_steam_integration() {
     print_header "🎯 STEAM INTEGRATION SETUP"
     

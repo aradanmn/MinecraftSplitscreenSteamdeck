@@ -2,8 +2,40 @@
 # =============================================================================
 # LAUNCHER SETUP MODULE
 # =============================================================================
-# PolyMC setup functions
-# PolyMC is used as the primary launcher for splitscreen gameplay
+# Deploys PolyMC and the splitscreen launcher: downloads the AppImage, writes
+# baseline PolyMC defaults (skips the first-run wizard), installs
+# minecraftSplitscreen.sh, and deploys the runtime orchestrator modules.
+#
+# Public API:
+#   download_prism_launcher()        — fetch latest PolyMC AppImage; exit 1
+#                                       if no download URL is found
+#   configure_polymc_defaults()      — write polymc.cfg; return 0
+#   setup_splitscreen_launcher_script() — install minecraftSplitscreen.sh;
+#                                       return 1 if the fetch produced no
+#                                       usable script
+#   install_runtime_modules()        — deploy modules/ from
+#                                       runtime_modules.list; return 1 if the
+#                                       manifest or any module can't be found
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   TARGET_DIR              — installer entry
+#   MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB — installer entry (PAIRED copies here
+#                              via the := guard below, see Fix #87)
+#   MCSS_REPO_RAW_URL       — installer entry; module/launcher download base
+#   SCRIPT_DIR, MODULES_DIR — installer entry (local-checkout fallbacks)
+#
+# Inputs:  GitHub API (PolyMC releases), MCSS_REPO_RAW_URL downloads,
+#          modules/runtime_modules.list (#49 manifest).
+# Outputs: PolyMC.AppImage + minecraftSplitscreen.sh + modules/ deployed
+#          under $TARGET_DIR; version-stamp sed substitution on the launcher.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-17  Fix #90: delete vestigial Phase-A/JDK/bwrap shims
+#   v1.3 2026-07-17  Fix #87: canonical heap-default home + paired guard
+#   v1.2 2026-07-15  Fix #51 D14: fetch_url replaces curl/wget branching
+#   v1.1 2026-07-10  Fix #45 PR3/#49: MCSS_REPO_RAW_URL + one manifest reader
+#   v1.0 2025-06-27  Initial extraction from monolith
+# =============================================================================
 
 # --- Module-level constants ---
 # Fix #87: canonical home is install-minecraft-splitscreen.sh's constants
@@ -18,8 +50,14 @@
 : "${MCSS_MAX_MEM_MB:=3072}"
 : "${MCSS_MIN_MEM_MB:=512}"
 
-# download_prism_launcher: Download the latest PolyMC AppImage
-# We download it to the target directory for splitscreen launcher usage
+# download_prism_launcher: Fetch the latest PolyMC AppImage into TARGET_DIR.
+# No-op if already present. Queries the GitHub releases API for an x86_64/
+# amd64 AppImage asset.
+# Inputs:
+#   Globals: TARGET_DIR (read)
+# Outputs:
+#   side effects — $TARGET_DIR/PolyMC.AppImage written + made executable
+#   exit 1 — if no matching AppImage URL is found in the release assets
 download_prism_launcher() {
     # Skip download if AppImage already exists
     if [[ -f "$TARGET_DIR/PolyMC.AppImage" ]]; then
@@ -59,7 +97,13 @@ download_prism_launcher() {
     print_success "PolyMC AppImage downloaded successfully"
 }
 
-# configure_polymc_defaults: Write a baseline PolyMC config to avoid first-run setup prompts.
+# configure_polymc_defaults: Write polymc.cfg so the first-run setup wizard
+# (Java/memory Quick Setup) never appears.
+# Inputs:
+#   Globals: TARGET_DIR, JAVA_PATH, MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB (read)
+# Outputs:
+#   side effects — $TARGET_DIR/polymc.cfg written
+#   return — 0 (always)
 configure_polymc_defaults() {
     print_progress "Configuring PolyMC defaults (Java + memory)..."
 
@@ -95,8 +139,16 @@ EOF
     return 0
 }
 
-# setup_splitscreen_launcher_script: Install minecraftSplitscreen.sh into TARGET_DIR
-# Prefer local repository copy when available, fall back to GitHub download.
+# setup_splitscreen_launcher_script: Install minecraftSplitscreen.sh into
+# TARGET_DIR. Prefers a local repository copy, falls back to a
+# MCSS_REPO_RAW_URL download, then stamps build provenance (version/commit/
+# date) into the deployed copy.
+# Inputs:
+#   Globals: TARGET_DIR, SCRIPT_DIR, MCSS_REPO_RAW_URL (read)
+# Outputs:
+#   side effects — $TARGET_DIR/minecraftSplitscreen.sh written + executable
+#   return — 1 if the fetch produced no usable script (missing/empty/no
+#            shebang); the launcher stamp failure itself is non-fatal
 setup_splitscreen_launcher_script() {
     print_progress "Installing splitscreen launcher script..."
 
@@ -145,10 +197,17 @@ setup_splitscreen_launcher_script() {
     return 0
 }
 
-# install_runtime_modules: Deploy the runtime orchestrator modules to TARGET_DIR/modules/
-# These modules are sourced by minecraftSplitscreen.sh at launch time (not at install time).
-# Prefers files already in MODULES_DIR (put there by the installer's download step),
-# falls back to local repo copy, then GitHub download.
+# install_runtime_modules: Deploy the runtime orchestrator modules to
+# TARGET_DIR/modules/. Sourced by minecraftSplitscreen.sh at launch time, not
+# at install time. #49: the module list is read from the ONE manifest,
+# runtime_modules.list — preferred from MODULES_DIR, then the local repo
+# checkout, then a GitHub download.
+# Inputs:
+#   Globals: TARGET_DIR, MCSS_REPO_RAW_URL, MODULES_DIR, SCRIPT_DIR (read)
+# Outputs:
+#   side effects — modules + the manifest copied under $TARGET_DIR/modules/
+#   return — 1 if the manifest can't be found/is empty, or any listed
+#            module fails to download (deploying a partial set is refused)
 install_runtime_modules() {
     print_progress "Installing runtime orchestrator modules..."
 

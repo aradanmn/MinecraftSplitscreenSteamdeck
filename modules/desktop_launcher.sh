@@ -1,35 +1,39 @@
 #!/bin/bash
 # =============================================================================
-# Minecraft Splitscreen Steam Deck Installer - Desktop Launcher Module
+# DESKTOP LAUNCHER MODULE
 # =============================================================================
-# 
-# This module handles the creation of native desktop launchers and application
-# menu integration for the Minecraft Splitscreen launcher. Provides seamless
-# integration with Linux desktop environments.
+# Generates a freedesktop.org .desktop entry for the splitscreen launcher, so
+# it appears as a desktop shortcut and in the application menu on any Linux
+# desktop environment (GNOME, KDE, XFCE, ...).
 #
-# Functions provided:
-# - create_desktop_launcher: Generate .desktop file for system integration
+# Public API:
+#   create_desktop_launcher() — prompts the user, then writes the .desktop
+#     file to both the desktop and the applications directory
 #
+# Globals CONSUMED (set elsewhere, read here):
+#   TARGET_DIR           — installer entry; icon storage + launcher path
+#   MCSS_INSTANCE_PREFIX — installer entry; PolyMC instance-icon fallback path
+#
+# Inputs:  SteamGridDB icon (downloaded), PolyMC instance icon (fallback).
+# Outputs: writes ~/Desktop/MinecraftSplitscreen.desktop and
+#          ~/.local/share/applications/MinecraftSplitscreen.desktop.
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-07-15  Fix #51 D14: fetch_url replaces the bare wget call
+#   v1.0 2025-06-27  Initial extraction: freedesktop .desktop integration
 # =============================================================================
 
-# create_desktop_launcher: Generate .desktop file for system integration
-#
-# DESKTOP LAUNCHER BENEFITS:
-# - Native desktop environment integration (GNOME, KDE, XFCE, etc.)
-# - Appears in application menus and search results
-# - Desktop shortcut for quick access
-# - Proper icon and metadata for professional appearance
-# - Follows freedesktop.org Desktop Entry Specification
-# - Works with all Linux desktop environments
-#
-# ICON HIERARCHY:
-# 1. SteamGridDB custom icon (downloaded, professional appearance)
-# 2. PolyMC instance icon (fallback)
-# 3. System generic icon (ultimate fallback)
-#
-# DESKTOP FILE LOCATIONS:
-# - Desktop shortcut: ~/Desktop/MinecraftSplitscreen.desktop
-# - System integration: ~/.local/share/applications/MinecraftSplitscreen.desktop
+# create_desktop_launcher: Write a .desktop entry for system integration.
+# ICON HIERARCHY: SteamGridDB custom icon (downloaded) > PolyMC instance icon
+# (fallback) > generic system executable icon (ultimate fallback).
+# FILE LOCATIONS: desktop shortcut at ~/Desktop/MinecraftSplitscreen.desktop;
+# application-menu entry at
+# ~/.local/share/applications/MinecraftSplitscreen.desktop.
+# Inputs:
+#   Globals: TARGET_DIR, MCSS_INSTANCE_PREFIX (read)
+# Outputs:
+#   side effects — .desktop files written (see FILE LOCATIONS above),
+#     icon downloaded, desktop database refreshed if the tool is present
 create_desktop_launcher() {
     print_header "🖥️ DESKTOP LAUNCHER SETUP"
     
