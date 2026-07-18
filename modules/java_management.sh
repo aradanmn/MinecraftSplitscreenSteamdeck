@@ -1,10 +1,56 @@
 #!/bin/bash
 # =============================================================================
 # JAVA MANAGEMENT MODULE
+# =============================================================================
+# Automatic Java detection, installation, and management: determines the
+# Java major version a Minecraft version requires, searches system/app-owned
+# locations for a matching JDK, and installs one from Eclipse Temurin
+# (Adoptium) if none is found.
+#
+# Public API:
+#   get_required_java_version(mc_version) — stdout: Java major (e.g. "21")
+#   download_and_install_jdk(major)        — exit 0/1; installs under
+#                                             $TARGET_DIR/java
+#   find_java_installation(major)          — stdout: path to java binary,
+#                                             or empty if not found
+#   detect_and_install_java()              — sets JAVA_PATH; exits 1 on
+#                                             unrecoverable failure
+#   detect_java()                          — legacy alias for
+#                                             detect_and_install_java
+#
+# (Internal: _java_output_matches_major, _mc_version_to_java_major.)
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   MC_VERSION                 — target Minecraft version (installer globals)
+#   TARGET_DIR                 — install root; JDKs land in $TARGET_DIR/java
+#
+# Globals PROVIDED (set here, read elsewhere):
+#   JAVA_PATH                  — resolved java binary path, set by
+#                                 detect_and_install_java
+#
+# Inputs:  Mojang version manifest (piston-meta.mojang.com), Adoptium
+#          (Eclipse Temurin) JDK API/downloads, local `java -version` probes
+# Outputs: print_* progress/status to stdout/stderr; JDK extracted under
+#          $TARGET_DIR/java; resolved java path to stdout where captured
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  #90: drop legacy Phase-A prototype + JDK/bwrap shims
+#   v1.2 2026-07-15  #51 D14: fetch_url/fetch_url_status transport adopted
+#   v1.1 2026-07-07  Self-contained JDK dir; no ~/.profile edits (#41)
+#   v1.0 2026-07-06  #48: generic Java-major detection, adds Java 25/MC 26.x
+#   v0.2 2026-06-13  Direct Adoptium API download, no third-party installer
+#   v0.1 2025-06-27  Initial extraction from monolith
+# =============================================================================
+
 # _java_output_matches_major: does `java -version` output $2 report major $1?
 # #48: the per-major match tables (8/16/17/21/23/24, four copies) silently
 # lacked Java 25 — a correctly installed jdk-25 (required by MC 26.x) was
 # undetectable offline. One generic pattern instead of a table to maintain.
+# Inputs:
+#   $1 — major (e.g. "21", "8")
+#   $2 — output (the `java -version` stderr/stdout text to test)
+# Outputs:
+#   return — 0 if output reports this major, 1 otherwise
 _java_output_matches_major() {
     local major="$1" output="$2"
     if [[ "$major" == "8" ]]; then
@@ -14,8 +60,7 @@ _java_output_matches_major() {
     fi
 }
 
-# =============================================================================
-# Automatic Java detection, installation and management functions
+# --- Internal functions ---
 
 # _mc_version_to_java_major: offline fallback table mapping a Minecraft version
 # to its required Java major. Used ONLY when the Mojang manifest is unreachable
@@ -24,9 +69,10 @@ _java_output_matches_major() {
 # get_required_java_version, and none of them knew the 2026 yearly scheme
 # (26.x), so any 26.x version fell through to "8" offline — the installer
 # picked Java 8 for a Java-25 game.
-# Parameters:
-#   $1 - mc_version (e.g., "1.21.3", "26.1.2")
-# Returns: Java major on stdout (e.g., "25", "21", "17", "16", "8")
+# Inputs:
+#   $1 — mc_version (e.g., "1.21.3", "26.1.2")
+# Outputs:
+#   stdout — Java major (e.g., "25", "21", "17", "16", "8")
 _mc_version_to_java_major() {
     local mc_version="$1"
     if [[ "$mc_version" =~ ^[2-9][0-9]+\. ]]; then
@@ -45,11 +91,15 @@ _mc_version_to_java_major() {
     fi
 }
 
-# get_required_java_version: Determine the required Java version for a Minecraft version
-# Fetches version manifest from Mojang API to get the official Java requirements
-# Parameters:
-#   $1 - mc_version: Minecraft version (e.g., "1.21.3")
-# Returns: Java version number (e.g., "21", "17", "8") or exits on error
+# get_required_java_version: Determine the required Java version for a
+# Minecraft version. Fetches the version manifest from the Mojang API to get
+# the official Java requirement; falls back to _mc_version_to_java_major if
+# the manifest is unreachable or lacks this version.
+# Inputs:
+#   $1 — mc_version: Minecraft version (e.g., "1.21.3")
+# Outputs:
+#   stdout — Java major version number (e.g., "21", "17", "8")
+#   return — 1 if $1 is empty, 0 otherwise (always resolves via fallback)
 get_required_java_version() {
     local mc_version="$1"
     
@@ -102,18 +152,25 @@ get_required_java_version() {
     fi
 }
 
-# download_and_install_jdk: Download and install JDK directly from Eclipse Temurin (Adoptium).
-# Queries the Adoptium API for the latest release of the requested major version,
-# downloads the tarball, verifies its SHA-256 checksum, extracts it under the
-# app's own data dir ($TARGET_DIR/java — #41: keep the install self-contained,
-# nothing at the top of HOME), and exports JAVA_<version>_HOME so the caller can
-# locate the new binary immediately. In-process export ONLY — no ~/.profile
-# edits (#41): the resolved JAVA_PATH is baked into polymc.cfg/instance.cfg at
-# install time and find_java_installation scans the install dirs directly, so
-# nothing needs the variable after this installer run ends.
+# download_and_install_jdk: Download and install a JDK directly from
+# Eclipse Temurin (Adoptium).
+# Queries the Adoptium API for the latest release of the requested major
+# version, downloads the tarball, verifies its SHA-256 checksum, extracts it
+# under the app's own data dir ($TARGET_DIR/java — #41: keep the install
+# self-contained, nothing at the top of HOME), and exports
+# JAVA_<version>_HOME so the caller can locate the new binary immediately.
+# In-process export ONLY — no ~/.profile edits (#41): the resolved
+# JAVA_PATH is baked into polymc.cfg/instance.cfg at install time and
+# find_java_installation scans the install dirs directly, so nothing needs
+# the variable after this installer run ends.
 # No git, no third-party installer scripts.
-# Parameters:
-#   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
+# Inputs:
+#   $1 — required_version: Required Java major version (e.g., "21", "17", "8")
+#   Globals: TARGET_DIR (read)
+# Outputs:
+#   side effect — JDK extracted under $TARGET_DIR/java; exports
+#                 JAVA_<version>_HOME in-process (not persisted)
+#   return — 0 on success, 1 on API/download/checksum/extract failure
 download_and_install_jdk() {
     local required_version="$1"
     local install_dir="${TARGET_DIR:-$HOME/.local/share/PolyMC}/java"
@@ -182,7 +239,8 @@ download_and_install_jdk() {
 
     rm -rf "$temp_dir"
 
-    # Locate the extracted JDK directory (Temurin names it jdk-<version>+<build> or jdk8u<n>-...)
+    # Locate the extracted JDK directory (Temurin names it
+    # jdk-<version>+<build> or jdk8u<n>-...)
     local jdk_dir
     jdk_dir=$(find "$install_dir" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)
 
@@ -201,11 +259,15 @@ download_and_install_jdk() {
     return 0
 }
 
-# find_java_installation: Find a Java installation of the specified version
-# Searches both system locations and the automatic installer location
-# Parameters:
-#   $1 - required_version: Required Java major version (e.g., "21", "17", "8")
-# Returns: Path to Java executable or empty string if not found
+# find_java_installation: Find a Java installation of the specified major
+# version. Searches, in order: this run's exported JAVA_<ver>_HOME, the
+# app-owned install dir plus legacy locations (~/.local/jdk, ~/java), system
+# JVM paths, and finally the default `java` on PATH.
+# Inputs:
+#   $1 — required_version: Required Java major version (e.g., "21", "17", "8")
+#   Globals: TARGET_DIR (read)
+# Outputs:
+#   stdout — path to a matching java executable, or empty if not found
 find_java_installation() {
     local required_version="$1"
     local java_path=""
@@ -272,10 +334,16 @@ find_java_installation() {
     echo "$java_path"
 }
 
-# detect_and_install_java: Find required Java version and install if needed
-# This function automatically detects the required Java version, searches for it,
-# and installs it automatically if not found. No user interaction required.
-# Must be called after MC_VERSION is set
+# detect_and_install_java: Find the required Java version and install it if
+# needed. Fully automatic — no user interaction required. Must be called
+# after MC_VERSION is set.
+# Inputs:
+#   Globals: MC_VERSION (read)
+# Outputs:
+#   side effect — sets global JAVA_PATH
+#   exit — 1 if MC_VERSION is unset, or if installation fails and no usable
+#          Java can be found (this function exits the process, not just
+#          returns, on unrecoverable failure)
 detect_and_install_java() {
     if [[ -z "${MC_VERSION:-}" ]]; then
         print_error "MC_VERSION must be set before calling detect_and_install_java"
