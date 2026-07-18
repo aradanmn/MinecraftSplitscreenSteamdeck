@@ -2,15 +2,64 @@
 # =============================================================================
 # VERSION MANAGEMENT MODULE
 # =============================================================================
-# Minecraft and Fabric version selection and detection functions
-# Intelligent version selection based on required mod compatibility
+# Minecraft and Fabric version selection and detection. Intelligent version
+# selection filters candidate MC versions down to those where every required
+# splitscreen mod (and any optional extra-required custom mod) is available.
+#
+# Public API:
+#   get_supported_minecraft_versions() — stdout: supported MC versions,
+#                                         newest first, one per line;
+#                                         exit 1 if none found
+#   check_mod_version_compatibility(mod_id, platform, mc_version, [strict])
+#                                       — exit 0 if compatible, 1 if not
+#   fallback_dependencies(mod_id, platform)
+#                                       — stdout: space-separated dependency
+#                                         mod IDs (may be empty)
+#   get_minecraft_version()            — interactive; sets MC_VERSION; no
+#                                         stdout contract (prompts on stdin)
+#   get_fabric_version()               — sets FABRIC_VERSION; no stdout
+#                                         contract (print_* progress only)
+#
+# Globals PROVIDED (set here, read elsewhere):
+#   MC_VERSION                — set by get_minecraft_version
+#   FABRIC_VERSION            — set by get_fabric_version
+#
+# Globals CONSUMED (set elsewhere, read here):
+#   MC_VERSION                 — installer globals; also read back here
+#   REQUIRED_SPLITSCREEN_MODS/IDS/PLATFORMS[] — from mods.conf (installer)
+#   EXTRA_REQUIRED_MOD_ID/PLATFORM/NAME       — set by mod_management.sh's
+#                                                prompt_custom_mods when the
+#                                                user picks "switch version
+#                                                to support this mod too"
+#   MODRINTH_API_BASE, CURSEFORGE_API_BASE    — API base URLs (installer)
+#   FABRIC_META_BASE                          — Fabric Meta API base
+#
+# Inputs:  Mojang version manifest (piston-meta.mojang.com), Modrinth API,
+#          CurseForge API, Fabric Meta API
+# Outputs: print_* progress/status to stdout/stderr; version data to stdout
+#          where noted above
+#
+# Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-17  Standard perf mod set; #47/#88 shared match policy
+#   v1.2 2026-07-15  #51 D14: fetch_url/fetch_url_status transport adopted
+#   v1.1 2026-07-10  #45 PR3: API base constants adopted
+#   v1.0 2026-06-23  KWin does splitscreen tiling; mod no longer required
+#   v0.1 2025-06-27  Initial extraction from monolith
+# =============================================================================
 
-# get_supported_minecraft_versions: Check what Minecraft versions support required mods
-# Queries APIs for every mod in REQUIRED_SPLITSCREEN_MODS/IDS/PLATFORMS (loaded from
-# mods.conf's "required" entries — Controlify plus the standard performance set) to
-# find compatible versions. Splitscreen tiling is done by KWin, not a mod, as of
-# 2026-06-23 — Splitscreen Support is no longer installed/required.
-# Returns: Array of supported Minecraft versions in descending order (newest first)
+# get_supported_minecraft_versions: Check what Minecraft versions support
+# required mods. Queries APIs for every mod in
+# REQUIRED_SPLITSCREEN_MODS/IDS/PLATFORMS (loaded from mods.conf's "required"
+# entries — Controlify plus the standard performance set) to find compatible
+# versions. Splitscreen tiling is done by KWin, not a mod, as of 2026-06-23 —
+# Splitscreen Support is no longer installed/required.
+# Inputs:
+#   Globals: REQUIRED_SPLITSCREEN_MODS/IDS/PLATFORMS[] (read),
+#            EXTRA_REQUIRED_MOD_ID/PLATFORM/NAME (read, optional)
+# Outputs:
+#   stdout — supported Minecraft versions, newest first, one per line
+#   return — 0 on success, 1 if the Mojang manifest fetch failed or no
+#            version satisfies every required mod
 get_supported_minecraft_versions() {
     if [[ -n "${EXTRA_REQUIRED_MOD_ID:-}" && -n "${EXTRA_REQUIRED_MOD_PLATFORM:-}" ]]; then
         print_progress "Checking supported Minecraft versions for core mods + ${EXTRA_REQUIRED_MOD_NAME:-custom mod}..." >&2
@@ -107,15 +156,20 @@ get_supported_minecraft_versions() {
     printf '%s\n' "${supported_versions[@]}"
 }
 
-# check_mod_version_compatibility: Check if a specific mod supports a specific MC version
-# This is a lightweight version check that doesn't add mods to arrays
-# Parameters:
-#   $1 - mod_id: Mod ID (Modrinth project ID or CurseForge project ID)
-#   $2 - platform: "modrinth" or "curseforge"
-#   $3 - mc_version: Minecraft version to check.
-#        Supports both legacy format (e.g. "1.21.3") and the new yearly format
-#        introduced in 2026 (e.g. "26.0", "26.1", "26.1.1" = year.release[.patch]).
-# Returns: 0 if compatible, 1 if not compatible
+# check_mod_version_compatibility: Check if a specific mod supports a
+# specific MC version. Lightweight — unlike check_modrinth_mod/
+# check_curseforge_mod in mod_management.sh, this doesn't append to the
+# SUPPORTED_MODS/MOD_* tracking arrays.
+# Inputs:
+#   $1 — mod_id: Modrinth project ID or CurseForge project ID
+#   $2 — platform: "modrinth" or "curseforge"
+#   $3 — mc_version: Minecraft version to check. Supports both legacy format
+#        (e.g. "1.21.3") and the 2026 yearly format (e.g. "26.0", "26.1",
+#        "26.1.1" = year.release[.patch])
+#   $4 — strict_mode: "true" = exact mc_version match only, no ladder
+#        fallback (default "false")
+# Outputs:
+#   return — 0 if compatible, 1 if not compatible
 check_mod_version_compatibility() {
     local mod_id="$1"
     local platform="$2"
@@ -221,7 +275,13 @@ check_mod_version_compatibility() {
     return 1  # Not compatible
 }
 
-# Add fallback dependencies for critical mods when API calls fail
+# fallback_dependencies: Hardcoded dependency list for critical mods, used
+# when an API-based dependency lookup fails.
+# Inputs:
+#   $1 — mod_id
+#   $2 — platform ("modrinth" or "curseforge")
+# Outputs:
+#   stdout — space-separated dependency mod IDs, or empty string
 fallback_dependencies() {
     local mod_id="$1"
     local platform="$2"
@@ -239,9 +299,15 @@ fallback_dependencies() {
     esac
 }
 
-# get_minecraft_version: Get target Minecraft version with intelligent compatibility checking
-# Only offers versions that support every required mod (window tiling is done by
-# KWin, not a mod)
+# get_minecraft_version: Interactively select the target Minecraft version.
+# Only offers versions that support every required mod (window tiling is
+# done by KWin, not a mod). Prompts on stdin/stdout; not called via command
+# substitution.
+# Inputs:
+#   Globals: EXTRA_REQUIRED_MOD_ID/PLATFORM/NAME (read, optional)
+# Outputs:
+#   side effect — sets global MC_VERSION
+#   return — 0 on success, 1 if no supported versions were found
 get_minecraft_version() {
     print_header "🎯 MINECRAFT VERSION SELECTION"
     
@@ -312,8 +378,11 @@ get_minecraft_version() {
     print_info "Selected Minecraft version: $MC_VERSION"
 }
 
-# get_fabric_version: Fetch the latest Fabric loader version from official API
-# Fabric loader provides the mod loading framework for Minecraft
+# get_fabric_version: Fetch the latest Fabric loader version from the
+# official Fabric Meta API. Fabric loader provides the mod loading framework.
+# Outputs:
+#   side effect — sets global FABRIC_VERSION (falls back to a known-stable
+#                 version on API failure)
 get_fabric_version() {
     print_progress "Detecting latest Fabric loader version..."
     
