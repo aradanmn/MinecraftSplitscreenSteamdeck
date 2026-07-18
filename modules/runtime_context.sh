@@ -150,7 +150,7 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     export MCSS_INSTANCE_PREFIX="${MCSS_INSTANCE_PREFIX:-latestUpdate-}"
     # accounts.json profile names P1..PN (NOT derivable from the instance
     # prefix — independent contract with the installer-shipped accounts.json).
-    export MCSS_ACCOUNT_PREFIX="${MCSS_ACCOUNT_PREFIX:-P}"
+    export MCSS_ACCOUNT_PREFIX="${MCSS_ACCOUNT_PREFIX:-Player}"
     # The join key between JVM -Dorg.lwjgl.opengl.Window.title args, dex's
     # window search, KWin rules, and the watchdog.
     export MCSS_WINDOW_TITLE_PREFIX="${MCSS_WINDOW_TITLE_PREFIX:-SplitscreenP}"
