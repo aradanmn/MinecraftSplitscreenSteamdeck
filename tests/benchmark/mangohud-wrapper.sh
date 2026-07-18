@@ -19,7 +19,9 @@
 # =============================================================================
 
 export MANGOHUD_DLSYM=1
-export MANGOHUD_CONFIG="${MCSS_BENCH_MANGOHUD_CONFIG:-fps_only=1,position=top-right,output_folder=$HOME/mcss-benchmark/mangohud,log_interval=100,autostart_log=15,log_duration=1200}"
+# horizontal: the log-active red dot sits BESIDE the fps number instead of on
+# top of it (operator couldn't read the counter during the 2026-07-17 run).
+export MANGOHUD_CONFIG="${MCSS_BENCH_MANGOHUD_CONFIG:-fps_only=1,horizontal,position=top-right,output_folder=$HOME/mcss-benchmark/mangohud,log_interval=100,autostart_log=15,log_duration=1200}"
 
 mkdir -p "$HOME/mcss-benchmark/mangohud" 2>/dev/null || true
 
