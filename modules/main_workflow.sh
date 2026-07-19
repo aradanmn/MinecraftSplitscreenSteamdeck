@@ -172,7 +172,11 @@ main() {
     # =============================================================================
     # SYSTEM INTEGRATION PHASE: Optional platform integration
     # =============================================================================
-    
+
+    # #38 D4/PR1: build-at-install the pinned, patched evsieve in a
+    # distrobox (seamless controller reconnect, v1.2). FAIL-OPEN — never
+    # aborts the install; MCSS_CONTROLLER_PROXY stays OFF until PR7.
+    install_evsieve
     setup_steam_integration     # Add splitscreen launcher to Steam library (optional)
     create_desktop_launcher     # Create native desktop launcher and app menu entry (optional)
     

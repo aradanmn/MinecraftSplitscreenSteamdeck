@@ -65,9 +65,10 @@ test_t7_1() {
 }
 
 # =============================================================================
-# T7.2 — MODULE_FILES contains all 20 modules (10 installer + 10 runtime)
-# NOTE: this count has drifted upward over time as runtime modules were added
-# (preflight/kwin_positioner/orchestrator/dex/runtime_context); keep it in sync with
+# T7.2 — MODULE_FILES contains all 21 modules (11 installer + 10 runtime)
+# NOTE: this count has drifted upward over time as runtime/installer modules
+# were added (preflight/kwin_positioner/orchestrator/dex/runtime_context,
+# and now evsieve_management #38 D4/PR1); keep it in sync with
 # INSTALLER_MODULE_FILES + RUNTIME_MODULE_FILES in install-minecraft-splitscreen.sh
 # whenever a module is added or removed, rather than letting it silently go stale.
 # =============================================================================
@@ -81,10 +82,13 @@ test_t7_2() {
     runtime_count=$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/modules/runtime_modules.list" || true)
     local total=$(( installer_count + runtime_count ))
 
-    if (( total == 20 )); then
-        _pass "T7.2 — MODULE_FILES contains 20 entries (10 installer + 10 runtime)"
+    if (( total == 21 )); then
+        _pass "T7.2 — MODULE_FILES has 21 entries (11 installer + 10 runtime)"
     else
-        _fail "T7.2" "expected 20 total entries (INSTALLER_MODULE_FILES + runtime_modules.list), found ${total} (${installer_count} + ${runtime_count})"
+        local msg="expected 21 total entries (INSTALLER_MODULE_FILES +"
+        msg+=" runtime_modules.list), found ${total}"
+        msg+=" (${installer_count} + ${runtime_count})"
+        _fail "T7.2" "$msg"
     fi
 }
 
