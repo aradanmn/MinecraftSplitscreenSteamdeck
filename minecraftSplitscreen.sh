@@ -65,13 +65,34 @@ fi
 # re-invokes us); those autostart Exec lines pass SPLITSCREEN_DEBUG_LOG so both
 # halves of one run append to the SAME file. Only the first invocation (env var
 # unset) mints a new timestamp. A stable -latest symlink makes tailing easy.
+# Computing the path is side-effect-free (no file touched yet); the actual
+# log/exec-redirect side effects below are guarded (see next comment).
 LOG="${SPLITSCREEN_DEBUG_LOG:-/tmp/splitscreen-debug-$(date +%Y%m%d-%H%M%S).log}"
-export SPLITSCREEN_DEBUG_LOG="$LOG"
-ln -sfn "$LOG" /tmp/splitscreen-debug-latest.log 2>/dev/null || true
-exec 2>>"$LOG"
-set -x
 
-echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset} DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
+# ── Sourced-vs-executed guard (Fix #80, incident class 2026-07) ────────────
+# tests/test_orchestrator.sh sources this file to reach its functions, using
+# the same BASH_SOURCE[0]==$0 idiom modules/orchestrator.sh and
+# modules/dex.sh already guard their own direct-run entry points with. Before
+# this fix, everything below — including `exec 2>>"$LOG"` + `set -x` — ran
+# UNCONDITIONALLY on source: every test's [PASS]/[FAIL] line and the final
+# summary got redirected into the debug log instead of the terminal, `bash -x`
+# traced only up to `++ exec`, and a plain host debug-log namespace got
+# polluted by every test run. Guard the log/exec side effects (and the
+# dispatch `case` at the bottom of the file) behind "are we actually being
+# executed as the launcher", not just "are we being sourced at all" — the
+# module-sourcing block right below stays UNGUARDED on purpose, since a test
+# harness sourcing this file still needs docked_flow/handheld_flow/
+# start_watchdog/etc. from the module manifest to be defined.
+if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]]; then
+    export SPLITSCREEN_DEBUG_LOG="$LOG"
+    ln -sfn "$LOG" /tmp/splitscreen-debug-latest.log 2>/dev/null || true
+    exec 2>>"$LOG"
+    set -x
+
+    echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset}" \
+        "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset}" \
+        "DISPLAY=${DISPLAY:-unset} ===" >> "$LOG"
+fi
 
 # Source runtime orchestrator modules. runtime_context.sh sources FIRST and its
 # resolvers run BEFORE the other modules source (#45 / PLAN Part 4 loading-order
@@ -80,7 +101,13 @@ echo "=== $(date) XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-unset} XDG_CURRENT_
 # consumed by mcss_resolve_paths — the old _detect_instances_dir /
 # _detect_launcher_exec cascades live in the resolver now (superset: it also
 # probes squashfs-root/AppRun, the FUSE workaround only the installer knew).
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+# Fix #80: resolve against BASH_SOURCE[0], not $0 — when this file is SOURCED
+# (test_orchestrator.sh), $0 is the CALLER's path (tests/test_orchestrator.sh),
+# so a $0-based resolution pointed SCRIPT_DIR at tests/ and the module-manifest
+# lookup below hit its "broken deploy" FATAL/exit 1 on every test run, killing
+# the sourcing shell before a single test executed. BASH_SOURCE[0] is always
+# THIS file's own path, sourced or executed directly.
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 if [[ ! -f "$SCRIPT_DIR/modules/runtime_context.sh" ]]; then
     echo "FATAL: $SCRIPT_DIR/modules/runtime_context.sh missing — broken deploy (run deploy.sh or the installer)" | tee -a "$LOG" >&2
     exit 1
@@ -918,6 +945,19 @@ launchNested() {
 # ─────────────────────────────────────────────────────────────────────────────
 # dispatch_mode is set by the test/testPlasma wrappers to override the
 # default behavior when running automated tests inside nested KDE.
+
+# Fix #80 (incident class 2026-07): everything from here to EOF is the
+# EXECUTED-launcher dispatch (preflight hard-stop + the `case` below) — it
+# must never run just because this file was SOURCED (tests/test_orchestrator.sh
+# does exactly that, to reach the functions defined above). Before this guard,
+# sourcing fell into the bare-invocation `*)` branch's `exit 1` (or the
+# preflight check's `exit 1`), which — because this is a SOURCE, not a
+# subshell — killed the whole test process before it printed anything. Same
+# BASH_SOURCE[0]==$0 idiom as modules/orchestrator.sh/modules/dex.sh; `return`
+# (not `exit`) so a sourcing shell just stops here instead of dying.
+if [[ "${BASH_SOURCE[0]:-}" != "${0:-}" ]]; then
+    return 0
+fi
 
 # Fail-fast HARD STOP if the KDE/Plasma/KWin stack (or other critical deps) is missing —
 # a clear, distro-aware message beats a cryptic mid-launch crash (preflight, item G).
