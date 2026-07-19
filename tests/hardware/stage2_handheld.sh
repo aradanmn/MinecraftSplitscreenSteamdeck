@@ -131,39 +131,62 @@ run_stage2_handheld() {
     # H2.5 — Gameplay (operator observes, reports in chat)
     # -----------------------------------------------------------------------
     hw_info "H2.5 — Gameplay: observe Minecraft and report to Scott in chat"
-    # -----------------------------------------------------------------------
-    hw_info "H2.6 — Waiting for Minecraft exit (operator quits in-game)"
 
-    hw_log "Waiting up to 120s for slot 1 to go inactive after exit"
-    if ! hw_wait_for "H2.6 slot 1 cleared on exit" 30 \
-        jq -e '.slots["1"].active == false' "${SPLITSCREEN_STATE}"; then
-        hw_fail "H2.6 slot 1 did not clear within 30s — watchdog or teardown may be broken"
-        hw_dump_state
-        hw_dump_processes
+    # -----------------------------------------------------------------------
+    # H2.6/H2.7 — Operator exits the game; THEN verify cleanup (automated)
+    # -----------------------------------------------------------------------
+    # HW-1 (2026-07-18): the old H2.6 started its fixed 30s wait
+    # immediately, racing the operator — the clock had no idea whether
+    # they'd even begun exiting. It timed out while they were still in the
+    # menus, H2.7 then found the still-running java as an "orphan", and
+    # hw_stop_orchestrator reaped the LIVE session out from under them.
+    # Gate on an explicit operator confirmation first (mirrors stage6's
+    # T6.1 "quit from INSIDE the game ... Press Enter AFTER"); the
+    # timeouts below are only meaningful once exit has actually happened.
+    hw_info "H2.6 — Waiting for operator to exit the game"
+    if hw_prompt "Exit the game now (menu -> Quit). Press Enter here
+  AFTER the game window has closed."; then
+
+        hw_log "Waiting up to 30s for slot 1 to go inactive after exit"
+        if ! hw_wait_for "H2.6 slot 1 cleared on exit" 30 \
+            jq -e '.slots["1"].active == false' "${SPLITSCREEN_STATE}"
+        then
+            hw_fail "H2.6 slot 1 did not clear within 30s — watchdog or" \
+                "teardown may be broken"
+            hw_dump_state
+            hw_dump_processes
+        fi
+
+        # Verify window is gone
+        sleep 2
+        local window_gone=""
+        window_gone=$(xdotool search --onlyvisible --name SplitscreenP1 \
+            2>/dev/null || true)
+        hw_log "H2.6 SplitscreenP1 window after exit:" \
+            "'${window_gone:-<not found (expected)>}'"
+        hw_assert_empty "H2.6 SplitscreenP1 window closed after game exit" \
+            "$window_gone"
+
+        # -------------------------------------------------------------------
+        # H2.7 — No orphan processes after exit (automated)
+        # -------------------------------------------------------------------
+        hw_info "H2.7 — Verifying cleanup: no orphan bwrap/java processes"
+        sleep 2
+
+        local bwrap_procs=""
+        bwrap_procs=$(pgrep -af 'bwrap.*latestUpdate' 2>/dev/null || true)
+        hw_log "H2.7 bwrap+latestUpdate processes: ${bwrap_procs:-<none>}"
+        hw_assert_empty "H2.7 no orphan bwrap processes after exit" \
+            "$bwrap_procs"
+
+        local java_procs=""
+        java_procs=$(pgrep -af 'java.*latestUpdate' 2>/dev/null || true)
+        hw_log "H2.7 java+latestUpdate processes: ${java_procs:-<none>}"
+        hw_assert_empty "H2.7 no orphan java processes after exit" \
+            "$java_procs"
+    else
+        hw_skip "H2.6/H2.7 exit-cleanup checks skipped by operator"
     fi
-
-    # Verify window is gone
-    sleep 2
-    local window_gone=""
-    window_gone=$(xdotool search --onlyvisible --name SplitscreenP1 2>/dev/null || true)
-    hw_log "H2.6 SplitscreenP1 window after exit: '${window_gone:-<not found (expected)>}'"
-    hw_assert_empty "H2.6 SplitscreenP1 window closed after game exit" "$window_gone"
-
-    # -----------------------------------------------------------------------
-    # H2.7 — No orphan processes after exit (automated)
-    # -----------------------------------------------------------------------
-    hw_info "H2.7 — Verifying cleanup: no orphan bwrap/java processes"
-    sleep 2
-
-    local bwrap_procs=""
-    bwrap_procs=$(pgrep -af 'bwrap.*latestUpdate' 2>/dev/null || true)
-    hw_log "H2.7 bwrap+latestUpdate processes: ${bwrap_procs:-<none>}"
-    hw_assert_empty "H2.7 no orphan bwrap processes after exit" "$bwrap_procs"
-
-    local java_procs=""
-    java_procs=$(pgrep -af 'java.*latestUpdate' 2>/dev/null || true)
-    hw_log "H2.7 java+latestUpdate processes: ${java_procs:-<none>}"
-    hw_assert_empty "H2.7 no orphan java processes after exit" "$java_procs"
 
     hw_dump_state
     hw_dump_processes
