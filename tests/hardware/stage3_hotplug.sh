@@ -251,23 +251,47 @@ run_stage3_hotplug() {
         return 0
     fi
 
-    hw_info "D3.7 — Waiting for slot 2 to become inactive (up to 15s)..."
-    hw_wait_for "D3.7 slot 2 inactive after disconnect" 15 \
-        bash -c "jq -e '.slots[\"2\"].active == false' '${SPLITSCREEN_STATE}' >/dev/null 2>&1" || true
+    # Fix #84: #37's CONTROLLER_REMOVE handler (orchestrator.sh) is a
+    # deliberate no-op on the state — it never calls update_slot_state, so
+    # slot 2 stays exactly as it was (active, same event_node/js_node/pid/
+    # wid). Only a game-window death (SLOT_DIED) reaps a slot. The old
+    # "slot 2 inactive after disconnect" wait_for asserted the PRE-#37
+    # teardown-on-disconnect contract and always timed out against current
+    # behavior — contradicting the persistence check a few lines below in
+    # this same section (confirmed on-Deck 2026-07-15, #84).
+    hw_info "D3.7 — slot 2 must STAY active after disconnect (#37)..."
+    # Settle window: give the monitor/orchestrator time to process the
+    # remove event, then read the state ONCE — the expected outcome is "no
+    # state change", so a wait-until-true loop would pass instantly and
+    # mask a late, buggy deactivation.
+    sleep 5
 
     hw_dump_state
 
-    # Automated: verify slots 1, 3, 4 are still active (sticky)
-    local s1_still s3_still s4_still
-    s1_still=$(jq -r '.slots["1"].active' "${SPLITSCREEN_STATE}" 2>/dev/null || echo "?")
-    s3_still=$(jq -r '.slots["3"].active' "${SPLITSCREEN_STATE}" 2>/dev/null || echo "?")
-    s4_still=$(jq -r '.slots["4"].active' "${SPLITSCREEN_STATE}" 2>/dev/null || echo "?")
-    hw_log "D3.7 sticky: slot1=${s1_still} slot3=${s3_still} slot4=${s4_still}"
+    # Automated: ALL four slots still active — #37 keeps slot 2 itself
+    # active too (only window death reaps), not just its siblings.
+    local s1_still s2_still s3_still s4_still
+    s1_still=$(jq -r '.slots["1"].active' "${SPLITSCREEN_STATE}" \
+        2>/dev/null || echo "?")
+    s2_still=$(jq -r '.slots["2"].active' "${SPLITSCREEN_STATE}" \
+        2>/dev/null || echo "?")
+    s3_still=$(jq -r '.slots["3"].active' "${SPLITSCREEN_STATE}" \
+        2>/dev/null || echo "?")
+    s4_still=$(jq -r '.slots["4"].active' "${SPLITSCREEN_STATE}" \
+        2>/dev/null || echo "?")
+    hw_log "D3.7 sticky: slot1=${s1_still} slot2=${s2_still}" \
+        "slot3=${s3_still} slot4=${s4_still}"
     hw_assert_eq "D3.7 slot 1 still active (sticky)" "true" "$s1_still"
+    hw_assert_eq \
+        "D3.7 slot 2 STILL active after disconnect (#37 owner design)" \
+        "true" "$s2_still"
     hw_assert_eq "D3.7 slot 3 still active (sticky)" "true" "$s3_still"
     hw_assert_eq "D3.7 slot 4 still active (sticky)" "true" "$s4_still"
 
-    # Automated: P1, P3, P4 windows still at quad positions; P2 should be a placeholder (not a Minecraft window)
+    # Automated: P1, P3, P4 windows still at quad positions — #37/#84: no
+    # reflow on disconnect, so the grid stays a 4-up quad (P2's cell keeps
+    # showing P2's persisted, still-running window; asserted separately
+    # below).
     read -r g1_x g1_y g1_w g1_h < <(hw_expected_slot_geometry 1 "1 2 3 4" "$sw" "$sh")
     read -r g3_x g3_y g3_w g3_h < <(hw_expected_slot_geometry 3 "1 2 3 4" "$sw" "$sh")
     read -r g4_x g4_y g4_w g4_h < <(hw_expected_slot_geometry 4 "1 2 3 4" "$sw" "$sh")
