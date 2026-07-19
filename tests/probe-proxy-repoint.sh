@@ -55,6 +55,22 @@
 #                        probe file below so its RESULTS default honors it)
 #
 # Version history:
+#   v1.1 2026-07-19  HW-1 (round 2): this driver's OWN shell never called
+#                    mcss_resolve_paths — only proxy_* calls did, in their
+#                    own scope — so direct MCSS_PROXY_VIRT_DIR/PADS_DIR/
+#                    HELPER_DIR reads here (record_virtual_node call
+#                    sites, H7 evidence) saw them unbound; resolved once
+#                    up front now, with fail-loud guards at each read
+#                    site. Also: an empty pre/post identity tally (the
+#                    on-Deck symptom of the bug above) vacuously compared
+#                    equal and emitted H6_VIRT_JS=STABLE from nothing —
+#                    extracted _h6_identity_verdict/_h5_repoint_verdict
+#                    (mirrors probe-evsieve-reconnect.sh's Probe B
+#                    CAPTURE_EMPTY guard) so an empty capture can never
+#                    reach a STABLE/RESUMES comparison. Main flow now
+#                    guarded (BASH_SOURCE[0]==$0, same idiom as that
+#                    file's v1.1) so these two pure helpers are unit-
+#                    testable by sourcing.
 #   v1.0 2026-07-19  #38 M1/PR2 spike §F: D2-CONFIRM Deck driver for
 #                    controller_proxy.sh (H5/H6/H7)
 # =============================================================================
@@ -96,7 +112,7 @@ for _required_fn in proxy_start_slot proxy_virtual_nodes proxy_repoint_slot \
     proxy_stop_slot record_virtual_node find_ds4_event_node emit_verdict \
     wait_for_ds4 prompt_operator announce_wiggle capture_stream \
     _fidelity_matches _tally_is_empty _extract_field _start_node_watcher \
-    _stop_watchers _evsieve_logfile _nodewatch_logfile; do
+    _stop_watchers _evsieve_logfile _nodewatch_logfile mcss_resolve_paths; do
     if ! declare -f "$_required_fn" >/dev/null 2>&1; then
         echo "ERROR: ${_required_fn} not found — a required module/probe" \
              "file failed to source" >&2
@@ -112,6 +128,24 @@ unset _required_fn
 # own re-assertion right after its module source.
 set +e
 set -uo pipefail
+
+# HW-1 (round 2): mcss_resolve_paths has, until now, only ever run INSIDE
+# a controller_proxy.sh function's own call frame — never in THIS
+# driver's own top-level shell. Every direct MCSS_PROXY_PADS_DIR/
+# MCSS_PROXY_VIRT_DIR/MCSS_HELPER_DIR read done BY THIS DRIVER (as
+# opposed to inside a proxy_* call, which resolves its own copy) was
+# therefore reading an unset variable. Confirmed on-Deck: MCSS_PROXY_
+# VIRT_DIR unbound at the record_virtual_node call sites (inside a
+# command substitution, so under `set -u` those subshells died silently
+# and pre_tally/post_tally came back as bare empty strings — see
+# _h6_identity_verdict's own HW-1 comment below for how THAT then
+# produced a vacuous "STABLE" verdict from nothing). Resolve here, once,
+# before any Main-flow step touches a path var; idempotent, so a proxy_*
+# call re-running it later is harmless.
+mcss_resolve_paths
+: "${MCSS_HELPER_DIR:?driver must resolve paths first}"
+: "${MCSS_PROXY_PADS_DIR:?driver must resolve paths first}"
+: "${MCSS_PROXY_VIRT_DIR:?driver must resolve paths first}"
 
 readonly PROXY_SLOT=1
 
@@ -141,15 +175,88 @@ _find_ds4_vendor_product() {
 # controller_proxy.sh's own pidfile (see that module's header
 # "Implementation note" — the pidfile, not the in-process cache, is the
 # subshell-safe record). Used only for H7's teardown assertion.
+# HW-1 (round 2): guarded read — MCSS_HELPER_DIR is resolved once, up
+# front (see the mcss_resolve_paths call above), but a bare read here
+# would otherwise degrade to a silent unbound-variable death if that
+# ordering ever regressed; ${VAR:?msg} fails loud instead.
 # Inputs: $1 — slot number
 _confirm_proxy_dead() {
-    local slot="$1" pidfile
-    pidfile="${MCSS_HELPER_DIR}/proxy-slot${slot}.pid"
+    local slot="$1"
+    local dir="${MCSS_HELPER_DIR:?_confirm_proxy_dead: resolve paths first}"
+    local pidfile="${dir}/proxy-slot${slot}.pid"
     [[ -f "$pidfile" ]] || return 0
     local pid
     pid=$(<"$pidfile")
     [[ -z "$pid" ]] && return 0
     ! kill -0 "$pid" 2>/dev/null
+}
+
+# _h6_identity_verdict: Compute H6's STABLE/CHANGED/CAPTURE_EMPTY verdict
+# from a pre/post record_virtual_node tally pair. Structural guard
+# (mirrors probe-evsieve-reconnect.sh's Probe B CAPTURE_EMPTY handling):
+# an empty tally on EITHER side must never reach the STABLE/CHANGED
+# comparison below.
+# HW-1 (round 2): this exact vacuous match fired on-Deck when this
+# driver's MCSS_PROXY_VIRT_DIR was unbound — record_virtual_node was
+# never even called (the command substitution died first), so pre_tally
+# and post_tally were bare empty strings. Every field _extract_field
+# pulls from an empty string is itself "" (not the "NONE" sentinel
+# record_virtual_node emits on a real, run-to-completion failure), so
+# "" == "" and "" != "NONE" passed every existing guard and emitted
+# STABLE from nothing. Checking the raw tally strings for emptiness
+# FIRST closes that gap regardless of which field it would have hit.
+# Inputs: $1 — pre_tally, $2 — post_tally (record_virtual_node's output)
+# Outputs: stdout — "STABLE"|"CHANGED"|"CAPTURE_EMPTY"
+_h6_identity_verdict() {
+    local pre="$1" post="$2"
+    if [[ -z "$pre" || -z "$post" ]]; then
+        echo "CAPTURE_EMPTY"
+        return 0
+    fi
+
+    local pre_inode post_inode pre_path post_path
+    local pre_mm post_mm pre_js post_js
+    pre_inode=$(_extract_field inode "$pre")
+    post_inode=$(_extract_field inode "$post")
+    pre_path=$(_extract_field realpath "$pre")
+    post_path=$(_extract_field realpath "$post")
+    pre_mm=$(_extract_field majmin "$pre")
+    post_mm=$(_extract_field majmin "$post")
+    pre_js=$(_extract_field js "$pre")
+    post_js=$(_extract_field js "$post")
+
+    if [[ "$pre_inode" == "$post_inode" && -n "$pre_inode" \
+        && "$pre_inode" != "NONE" \
+        && "$pre_path" == "$post_path" && -n "$pre_path" \
+        && "$pre_mm" == "$post_mm" \
+        && "$pre_js" == "$post_js" && "$pre_js" != "NONE" ]]
+    then
+        echo "STABLE"
+    else
+        echo "CHANGED"
+    fi
+}
+
+# _h5_repoint_verdict: Compute H5's RESUMES/SILENT/FAIL verdict from a
+# post-repoint capture_stream tally.
+# HW-1 (round 2): capture_stream's own contract guarantees a well-formed
+# "capture=EMPTY ..."/"capture=UNAVAILABLE ..." placeholder on failure —
+# never a bare empty string — so a literally empty $tally here means the
+# capture itself crashed before producing ANY output (an infra failure)
+# rather than a legitimate "no forwarding happened" SILENT finding; the
+# two must not be folded together. Kept as its own small function (same
+# rationale as _h6_identity_verdict) so it is unit-testable by sourcing.
+# Inputs: $1 — tally (capture_stream's output)
+# Outputs: stdout — "RESUMES"|"SILENT"|"FAIL"
+_h5_repoint_verdict() {
+    local tally="$1"
+    if [[ -z "$tally" ]]; then
+        echo "FAIL"
+    elif _tally_is_empty "$tally"; then
+        echo "SILENT"
+    else
+        echo "RESUMES"
+    fi
 }
 
 _print_banner() {
@@ -173,6 +280,19 @@ _print_banner() {
 }
 
 # --- Main flow ---
+
+# HW-1 (round 2): guarded (same BASH_SOURCE[0]==$0 idiom as probe-
+# evsieve-reconnect.sh's own v1.1 Main-flow guard, modules/orchestrator.
+# sh, modules/dex.sh) so a test harness can `source` this file to unit-
+# test _h6_identity_verdict/_h5_repoint_verdict (and any other pure
+# helper defined above this line) without running the operator-
+# interactive flow. Judgment call: the body below is intentionally NOT
+# re-indented under this guard — several lines already sit near the
+# 80-char limit (see the repo's added-line-length convention), and a
+# full re-indent of ~130 lines is unrelated churn that would risk
+# breaking multi-line quoted strings for no functional gain. Direct
+# execution (`bash tests/probe-proxy-repoint.sh`) is unaffected.
+if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]]; then
 
 _print_banner
 
@@ -256,7 +376,9 @@ virt_ev="${virt_pair%% *}"
 virt_js="${virt_pair#* }"
 echo "[probe] virtual nodes: ${virt_ev} ${virt_js}" >&2
 
-pre_tally=$(record_virtual_node "${MCSS_PROXY_VIRT_DIR}/slot${PROXY_SLOT}" \
+# HW-1 (round 2): guarded read — see the mcss_resolve_paths call above.
+pre_tally=$(record_virtual_node \
+    "${MCSS_PROXY_VIRT_DIR:?resolve paths first}/slot${PROXY_SLOT}" \
     "MCSS-slot${PROXY_SLOT}")
 echo "[probe] pre-cycle virtual identity: ${pre_tally}" >&2
 
@@ -297,26 +419,17 @@ if ! wait_for_ds4 "$RECONNECT_WAIT_S"; then
 fi
 sleep 2
 
+# HW-1 (round 2): guarded read — see the mcss_resolve_paths call above.
 post_tally=$(record_virtual_node \
-    "${MCSS_PROXY_VIRT_DIR}/slot${PROXY_SLOT}" "MCSS-slot${PROXY_SLOT}")
+    "${MCSS_PROXY_VIRT_DIR:?resolve paths first}/slot${PROXY_SLOT}" \
+    "MCSS-slot${PROXY_SLOT}")
 echo "[probe] post-cycle virtual identity: ${post_tally}" >&2
 
-pre_inode=$(_extract_field inode "$pre_tally")
-post_inode=$(_extract_field inode "$post_tally")
-pre_path=$(_extract_field realpath "$pre_tally")
-post_path=$(_extract_field realpath "$post_tally")
-pre_mm=$(_extract_field majmin "$pre_tally")
-post_mm=$(_extract_field majmin "$post_tally")
-pre_js=$(_extract_field js "$pre_tally")
-post_js=$(_extract_field js "$post_tally")
-
-h6_verdict="CHANGED"
-if [[ "$pre_inode" == "$post_inode" && "$pre_inode" != "NONE" \
-    && "$pre_path" == "$post_path" && "$pre_mm" == "$post_mm" \
-    && "$pre_js" == "$post_js" && "$pre_js" != "NONE" ]]
-then
-    h6_verdict="STABLE"
-fi
+# HW-1 (round 2): _h6_identity_verdict refuses to compare when either
+# tally is empty (CAPTURE_EMPTY) instead of letting "" == "" vacuously
+# pass as STABLE — see that function's own comment for the on-Deck bug
+# this closes.
+h6_verdict=$(_h6_identity_verdict "$pre_tally" "$post_tally")
 h6_evidence="pre[${pre_tally}] post[${post_tally}]"
 h6_evidence+=" (same-eventN reconnect, no repoint issued yet)"
 emit_verdict H6_VIRT_JS "$h6_verdict" "$h6_evidence"
@@ -371,10 +484,11 @@ announce_wiggle "Wiggle the LEFT stick — we read the repointed virtual" \
     "(${virt_js}) to see whether forwarding resumed."
 tally=$(capture_stream "$virt_ev" "$CAPTURE_SECONDS" post-repoint)
 
-h5_verdict="SILENT"
-if ! _tally_is_empty "$tally"; then
-    h5_verdict="RESUMES"
-fi
+# HW-1 (round 2): _h5_repoint_verdict distinguishes a genuinely empty
+# capture (infra failure -> FAIL) from a well-formed-but-empty tally
+# (a real "no forwarding" finding -> SILENT) — see that function's
+# comment.
+h5_verdict=$(_h5_repoint_verdict "$tally")
 h5_evidence="repointed pads-link to event${ev_new} (was event${ev_orig});"
 h5_evidence+=" virtual=${virt_ev} tally[${tally}] over"
 h5_evidence+=" ${CAPTURE_SECONDS}s; renumber_confirmed="
@@ -385,16 +499,19 @@ emit_verdict H5_REPOINT "$h5_verdict" "$h5_evidence"
 proxy_stop_slot "$PROXY_SLOT"
 sleep 0.3
 
-h7_evidence="pads_link=$([[ -e "${MCSS_PROXY_PADS_DIR}/slot${PROXY_SLOT}" \
-    ]] && echo present || echo absent)"
-h7_evidence+=" virt_link=$([[ -e "${MCSS_PROXY_VIRT_DIR}/slot${PROXY_SLOT}" \
-    ]] && echo present || echo absent)"
+# HW-1 (round 2): guarded reads — see the mcss_resolve_paths call above.
+h7_pads_link="${MCSS_PROXY_PADS_DIR:?resolve paths first}/slot${PROXY_SLOT}"
+h7_virt_link="${MCSS_PROXY_VIRT_DIR:?resolve paths first}/slot${PROXY_SLOT}"
+
+h7_evidence="pads_link=$([[ -e "$h7_pads_link" ]] \
+    && echo present || echo absent)"
+h7_evidence+=" virt_link=$([[ -e "$h7_virt_link" ]] \
+    && echo present || echo absent)"
 h7_evidence+=" evsieve_dead=$(_confirm_proxy_dead "$PROXY_SLOT" \
     && echo yes || echo no)"
 
 h7_verdict="CLEAN"
-if [[ -e "${MCSS_PROXY_PADS_DIR}/slot${PROXY_SLOT}" \
-    || -e "${MCSS_PROXY_VIRT_DIR}/slot${PROXY_SLOT}" ]] \
+if [[ -e "$h7_pads_link" || -e "$h7_virt_link" ]] \
     || ! _confirm_proxy_dead "$PROXY_SLOT"
 then
     h7_verdict="DIRTY"
@@ -410,3 +527,5 @@ echo " evsieve log: $(_evsieve_logfile "MCSS-slot${PROXY_SLOT}")"
 echo " Physical-node watcher log: $(_nodewatch_logfile)"
 echo " Paste the VERDICT lines above into issue #38."
 echo "=============================================================="
+
+fi
