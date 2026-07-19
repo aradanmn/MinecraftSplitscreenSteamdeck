@@ -56,7 +56,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 hw_section "Minecraft Splitscreen Hardware Test Suite"
 hw_log "  Log:  ${HW_LOG}"
 hw_log "  Date: $(date)"
-hw_log "  Host: $(hostname)"
+hw_log "  Host: ${HOSTNAME:-$(uname -n 2>/dev/null || echo unknown)}"
 hw_log "  Repo: ${REPO_ROOT}"
 hw_log "============================================================"
 
