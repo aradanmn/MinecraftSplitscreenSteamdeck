@@ -68,31 +68,37 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
-readonly INSTANCE_LIFECYCLE_POLL_INTERVAL_S=0.5
-readonly INSTANCE_LIFECYCLE_POLL_TIMEOUT_S=60
-# Fix #86: INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S deleted — zero references
-# repo-wide (dead constant, #86 item c).
-readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
-# Title-keeper: after the window is found, Minecraft's own startup overwrites the
-# caption (SplitscreenP<slot> → "Minecraft* <ver>" — the flash). Re-assert our name
-# a few times over this window to win the race so the label sticks on screen.
-readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT=15
-readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S=1
-# Map-keeper (Fix #57, UNTESTED 2026-07-05): in handheld/full-screen the game's own
-# LATE window setup (GL context / fullscreen switch, well after apply_layout positioned
-# the window) can leave the override_redirect'd window UNMAPPED → black screen with audio
-# (the first on-Deck handheld symptom). Poll the window over its startup and re-map it if
-# the game unmapped it. Longer than the title flash because the unmap can land after MC
-# finishes loading assets: ~90s of coverage (45 × 2s) then self-exit.
-readonly INSTANCE_LIFECYCLE_MAP_KEEP_COUNT=45
-readonly INSTANCE_LIFECYCLE_MAP_KEEP_INTERVAL_S=2
-# Window poll can take longer than the java poll (MC takes 60-90s to open its window).
-readonly INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S=120
-# H11: derive loop iteration counts from timeout / interval instead of hardcoding 120/240
-# (which silently duplicated the constants). awk handles the fractional 0.5s interval.
-INSTANCE_LIFECYCLE_JAVA_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
-INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
-readonly INSTANCE_LIFECYCLE_JAVA_POLL_ITERS INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_INSTANCE_LIFECYCLE_CONSTANTS_LOCKED:-}" ]]; then
+    readonly INSTANCE_LIFECYCLE_POLL_INTERVAL_S=0.5
+    readonly INSTANCE_LIFECYCLE_POLL_TIMEOUT_S=60
+    # Fix #86: INSTANCE_LIFECYCLE_WINDOW_WAIT_TIMEOUT_S deleted — zero references
+    # repo-wide (dead constant, #86 item c).
+    readonly INSTANCE_LIFECYCLE_TEARDOWN_GRACE_S=10
+    # Title-keeper: after the window is found, Minecraft's own startup overwrites the
+    # caption (SplitscreenP<slot> → "Minecraft* <ver>" — the flash). Re-assert our name
+    # a few times over this window to win the race so the label sticks on screen.
+    readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_COUNT=15
+    readonly INSTANCE_LIFECYCLE_TITLE_REASSERT_INTERVAL_S=1
+    # Map-keeper (Fix #57, UNTESTED 2026-07-05): in handheld/full-screen the game's own
+    # LATE window setup (GL context / fullscreen switch, well after apply_layout positioned
+    # the window) can leave the override_redirect'd window UNMAPPED → black screen with audio
+    # (the first on-Deck handheld symptom). Poll the window over its startup and re-map it if
+    # the game unmapped it. Longer than the title flash because the unmap can land after MC
+    # finishes loading assets: ~90s of coverage (45 × 2s) then self-exit.
+    readonly INSTANCE_LIFECYCLE_MAP_KEEP_COUNT=45
+    readonly INSTANCE_LIFECYCLE_MAP_KEEP_INTERVAL_S=2
+    # Window poll can take longer than the java poll (MC takes 60-90s to open its window).
+    readonly INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S=120
+    # H11: derive loop iteration counts from timeout / interval instead of hardcoding 120/240
+    # (which silently duplicated the constants). awk handles the fractional 0.5s interval.
+    INSTANCE_LIFECYCLE_JAVA_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
+    INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS=$(awk "BEGIN{print int(${INSTANCE_LIFECYCLE_WINDOW_POLL_TIMEOUT_S}/${INSTANCE_LIFECYCLE_POLL_INTERVAL_S})}")
+    readonly INSTANCE_LIFECYCLE_JAVA_POLL_ITERS INSTANCE_LIFECYCLE_WINDOW_POLL_ITERS
+    _INSTANCE_LIFECYCLE_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # --- Internal functions ---
 

@@ -31,16 +31,22 @@
 # =============================================================================
 
 # --- Module-level constants ---
-# Fix #86: named literals for the shutdown wait/poll sequence (#86 item e).
-# Grace period after `steam -shutdown` before force-closing the client.
-readonly STEAM_INTEGRATION_GRACEFUL_SHUTDOWN_WAIT_S=3
-# Settle time after `pkill -x steam` before the exit-poll loop starts.
-readonly STEAM_INTEGRATION_FORCE_CLOSE_WAIT_S=2
-# Poll interval while waiting for Steam to fully exit.
-readonly STEAM_INTEGRATION_SHUTDOWN_POLL_INTERVAL_S=1
-# Max poll iterations (~10s at the interval above) before giving up and
-# proceeding anyway.
-readonly STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS=10
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_STEAM_INTEGRATION_CONSTANTS_LOCKED:-}" ]]; then
+    # Fix #86: named literals for the shutdown wait/poll sequence (#86 item e).
+    # Grace period after `steam -shutdown` before force-closing the client.
+    readonly STEAM_INTEGRATION_GRACEFUL_SHUTDOWN_WAIT_S=3
+    # Settle time after `pkill -x steam` before the exit-poll loop starts.
+    readonly STEAM_INTEGRATION_FORCE_CLOSE_WAIT_S=2
+    # Poll interval while waiting for Steam to fully exit.
+    readonly STEAM_INTEGRATION_SHUTDOWN_POLL_INTERVAL_S=1
+    # Max poll iterations (~10s at the interval above) before giving up and
+    # proceeding anyway.
+    readonly STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS=10
+    _STEAM_INTEGRATION_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # setup_steam_integration: Add the launcher to Steam as a non-Steam shortcut.
 # #56: leaves Steam stopped rather than restarting it — an auto-restart
