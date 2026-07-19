@@ -53,6 +53,20 @@ set -euo pipefail
 # a function's own invocation happens to run in-process (e.g. this
 # module's own test suite calling functions directly).
 #
+# A pidfile alone is NOT enough, though (second implementation
+# correction, post-review): $MCSS_HELPER_DIR falls back to /tmp when
+# $XDG_RUNTIME_DIR is unwritable, and /tmp SURVIVES REBOOTS — a crashed
+# session's stale pidfile can outlive the pid it names, and the kernel
+# recycles pids. Every site that treats a tracked pid as "alive" (start
+# idempotence, repoint, stop) therefore goes through _proxy_live_pid,
+# which requires BOTH `kill -0` AND _proxy_pid_is_ours (a /proc/<pid>/
+# cmdline check for the evsieve binary + this exact slot's --input path)
+# before trusting or signaling a pid; anything that fails either check is
+# forgotten, never signaled, and treated as if no proxy existed. Teardown
+# additionally cannot rely on `wait` to confirm the process actually
+# exited (that pid is not this shell's child — see _proxy_kill_verified),
+# so it polls `kill -0` after SIGTERM and falls back to SIGKILL.
+#
 # Globals CONSUMED (set elsewhere, read here):
 #   MCSS_EVSIEVE_BIN, MCSS_PROXY_PADS_DIR, MCSS_PROXY_VIRT_DIR,
 #   MCSS_HELPER_DIR, MCSS_MAX_PLAYERS — from runtime_context.sh (Group
@@ -78,6 +92,10 @@ set -euo pipefail
 # all already env-overridable at their runtime_context.sh home (Group B).
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-07-19  Review fix: never trust a bare pidfile pid — verify
+#                    identity (/proc/<pid>/cmdline) before any kill -0
+#                    liveness check or signal; SIGTERM+poll+SIGKILL
+#                    replaces kill+wait (wait cannot reap a non-child)
 #   v1.0 2026-07-19  #38 M1/PR2: dark module — evsieve symlink-farm proxy
 #                    lifecycle, zero callers, zero state writes
 # =============================================================================
@@ -95,6 +113,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 readonly CONTROLLER_PROXY_START_TIMEOUT_S=2
 readonly CONTROLLER_PROXY_POLL_INTERVAL_S="0.1"
 readonly CONTROLLER_PROXY_START_POLL_ITERS=20
+
+# Bounded poll for a SIGTERM'd evsieve to actually exit before the
+# SIGKILL fallback (review fix: `wait` cannot reap a non-child — the pid
+# was launched in an EARLIER, separate proxy_start_slot invocation, so a
+# later proxy_stop_slot call has no child relationship to it; polling
+# kill -0 is the only reliable "did it actually die" signal across that
+# boundary). Same cadence as the start poll.
+readonly CONTROLLER_PROXY_STOP_TIMEOUT_S=2
+readonly CONTROLLER_PROXY_STOP_POLL_ITERS=20
 
 # --- Internal data structures ---
 
@@ -170,6 +197,111 @@ _proxy_forget_slot() {
     unset '_CONTROLLER_PROXY_PIDS[$slot]'
 }
 
+# _proxy_pid_is_ours: Verify PID is actually an evsieve process THIS
+# module could have launched for SLOT — a pidfile number is NEVER trusted
+# blindly. Review fix: $MCSS_HELPER_DIR falls back to /tmp when
+# $XDG_RUNTIME_DIR is unwritable, and /tmp SURVIVES REBOOTS — a crashed
+# session's stale proxy-slot<N>.pid can therefore outlive the pid it
+# named by a long margin, and the kernel recycles pids. Without this
+# check, an unrelated process that happened to reuse the number would
+# either get SIGTERM/SIGKILL'd (proxy_stop_slot/proxy_stop_all) or be
+# mistaken for "alive" by the start idempotence check (which would then
+# never actually launch evsieve again for that slot). This repo already
+# paid for exactly this hazard class once (see tests/test_orchestrator.sh
+# fixture-PID-beyond-pid_max convention/comments).
+# Inputs:
+#   $1 — pid
+#   $2 — slot number
+#   Globals: MCSS_EVSIEVE_BIN, MCSS_PROXY_PADS_DIR (read, via
+#            mcss_resolve_paths)
+# Outputs:
+#   return — 0 iff /proc/<pid>/cmdline exists and its NUL-separated argv
+#            has BOTH: argv[0] equal to MCSS_EVSIEVE_BIN (or ending in
+#            "/evsieve") AND a token exactly equal to
+#            "$MCSS_PROXY_PADS_DIR/slot<slot>" (the --input value, unique
+#            per slot — this is what makes the check slot-precise, not
+#            just binary-precise); 1 otherwise, including a vanished pid
+_proxy_pid_is_ours() {
+    local pid="$1" slot="$2"
+    mcss_resolve_paths
+
+    local cmdline
+    cmdline=$(tr '\0' '\n' < "/proc/${pid}/cmdline" 2>/dev/null) || return 1
+    [[ -n "$cmdline" ]] || return 1
+
+    local argv0
+    argv0=$(head -n1 <<< "$cmdline")
+    [[ "$argv0" == "$MCSS_EVSIEVE_BIN" || "$argv0" == */evsieve ]] \
+        || return 1
+
+    local want="$MCSS_PROXY_PADS_DIR/slot${slot}"
+    grep -qxF "$want" <<< "$cmdline"
+}
+
+# _proxy_live_pid: Return SLOT's tracked pid IFF it is BOTH alive
+# (kill -0) AND verified (_proxy_pid_is_ours) — the combined check every
+# liveness/signal site in this module must use. A pid that fails either
+# half is NEVER signaled and NEVER treated as alive: this clears the
+# stale record (_proxy_forget_slot) and returns empty, so the caller
+# proceeds exactly as if no proxy existed for the slot.
+# Inputs:
+#   $1 — slot number
+# Outputs:
+#   stdout(data) — the verified-live pid, or empty
+#   return — 0 always
+_proxy_live_pid() {
+    local slot="$1" pid
+    pid=$(_proxy_tracked_pid "$slot")
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null \
+        && _proxy_pid_is_ours "$pid" "$slot"
+    then
+        echo "$pid"
+        return 0
+    fi
+    _proxy_forget_slot "$slot"
+    return 0
+}
+
+# _proxy_kill_verified: Terminate PID — already identity-verified once by
+# the caller via _proxy_live_pid — with SIGTERM, poll for exit, SIGKILL
+# fallback. Re-verifies identity immediately before EACH signal sent:
+# review fix — pid reuse mid-poll (rare, but the entire reason this
+# module never trusts a bare pid number) must never let a later signal
+# land on a different, unrelated process that took over the same pid
+# during the wait. Single-pid signals only — never a process group,
+# never pkill (probe discipline, same as tests/probe-evsieve-reconnect.sh
+# and tests/probe-proxy-repoint.sh).
+# Inputs:
+#   $1 — pid (caller has already confirmed liveness+identity once)
+#   $2 — slot number (the re-verification key)
+# Outputs:
+#   side effects — sends SIGTERM, and SIGKILL if still alive+ours after
+#                  the poll window, to $1 ONLY
+_proxy_kill_verified() {
+    local pid="$1" slot="$2"
+
+    _proxy_pid_is_ours "$pid" "$slot" && kill -TERM "$pid" 2>/dev/null
+
+    local i
+    for (( i = 0; i < CONTROLLER_PROXY_STOP_POLL_ITERS; i++ )); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep "$CONTROLLER_PROXY_POLL_INTERVAL_S"
+    done
+
+    if kill -0 "$pid" 2>/dev/null && _proxy_pid_is_ours "$pid" "$slot"; then
+        echo "[controller_proxy] evsieve pid ${pid} (slot ${slot}) did" \
+            "not exit after SIGTERM within" \
+            "${CONTROLLER_PROXY_STOP_TIMEOUT_S}s — sending SIGKILL" >&2
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    # Opportunistic, non-blocking reap: harmless (immediate no-op error)
+    # unless $pid happens to be an actual child of THIS shell that has
+    # already exited (a zombie) — in which case this clears it. Never
+    # blocks on a still-running non-child (bash reports "not a child"
+    # immediately rather than waiting).
+    wait "$pid" 2>/dev/null || true
+}
+
 # --- Public API ---
 
 # proxy_start_slot: Start (or idempotently resume) SLOT's evsieve proxy,
@@ -198,16 +330,19 @@ proxy_start_slot() {
     local bin
     bin=$(_proxy_evsieve_bin) || return 2
 
-    # Idempotence: a tracked, still-alive pid is a no-op double-start; a
-    # tracked but dead pid is reaped and falls through to a fresh start.
+    # Idempotence: a tracked, still-alive, IDENTITY-VERIFIED pid is a
+    # no-op double-start. _proxy_live_pid already clears the record (and
+    # returns empty) for anything dead OR failing the identity check —
+    # including a stale pidfile whose number was recycled by an unrelated
+    # process — so falling through here always means a genuinely fresh
+    # start is needed.
     local existing
-    existing=$(_proxy_tracked_pid "$slot")
-    if [[ -n "$existing" ]] && kill -0 "$existing" 2>/dev/null; then
+    existing=$(_proxy_live_pid "$slot")
+    if [[ -n "$existing" ]]; then
         _CONTROLLER_PROXY_PIDS[$slot]="$existing"
         echo "$existing"
         return 0
     fi
-    _proxy_forget_slot "$slot"
 
     mkdir -p "$MCSS_PROXY_PADS_DIR" "$MCSS_PROXY_VIRT_DIR"
 
@@ -269,8 +404,8 @@ proxy_repoint_slot() {
     ln -sfn "$phys_event_node" "$MCSS_PROXY_PADS_DIR/slot${slot}"
 
     local pid
-    pid=$(_proxy_tracked_pid "$slot")
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    pid=$(_proxy_live_pid "$slot")
+    if [[ -n "$pid" ]]; then
         _CONTROLLER_PROXY_PIDS[$slot]="$pid"
         return 0
     fi
@@ -281,25 +416,26 @@ proxy_repoint_slot() {
 
 # proxy_stop_slot: Tear down SLOT's proxy. ALWAYS cleans up regardless of
 # MCSS_EVSIEVE_BIN (teardown must never be blocked by a missing binary).
-# Idempotent: stop-when-stopped is a clean no-op.
+# Idempotent: stop-when-stopped is a clean no-op. NEVER signals a pid that
+# fails _proxy_pid_is_ours (review fix — see that function and
+# _proxy_kill_verified for the stale-pidfile/pid-reuse hazard this guards
+# against).
 # Inputs:
 #   $1 — slot number
 #   Globals: MCSS_PROXY_PADS_DIR, MCSS_PROXY_VIRT_DIR (read, via
 #            mcss_resolve_paths); _CONTROLLER_PROXY_PIDS (read/write)
 # Outputs:
 #   return — 0 always
-#   side effects — kills+reaps the slot's tracked evsieve pid (if any);
-#                  rm -f both slot<N> symlinks + the slot's pidfile
+#   side effects — SIGTERM (then SIGKILL if needed) the slot's tracked
+#                  evsieve pid, ONLY if it is still alive AND verified as
+#                  ours; rm -f both slot<N> symlinks + the slot's pidfile
 proxy_stop_slot() {
     local slot="$1"
     mcss_resolve_paths
 
     local pid
-    pid=$(_proxy_tracked_pid "$slot")
-    if [[ -n "$pid" ]]; then
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    fi
+    pid=$(_proxy_live_pid "$slot")
+    [[ -n "$pid" ]] && _proxy_kill_verified "$pid" "$slot"
     _proxy_forget_slot "$slot"
 
     rm -f "$MCSS_PROXY_PADS_DIR/slot${slot}" "$MCSS_PROXY_VIRT_DIR/slot${slot}"

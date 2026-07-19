@@ -10,20 +10,29 @@ set -euo pipefail
 # controller_proxy.sh inside its own subshell, mirroring
 # tests/test_evsieve_management.sh's isolated-subshell/PATH-stub pattern:
 # a fake `evsieve` script logs argv to $CALLS, creates the create-link
-# target itself (a symlink to a fake node file), and stays alive via
-# `exec sleep <n>` (single process, no child tree — mirrors the module's
-# own plain `&`, no setsid, per spike §A step 5) so kill/kill-0 semantics
-# match production exactly.
+# target itself (a symlink to a fake node file), then re-execs itself
+# (exec -a) into a `while` loop so its OWN /proc/<pid>/cmdline shows
+# argv[0]=this-script's-own-path plus the original args verbatim — a bare
+# `exec sleep <n>` here lets bash tail-call-optimize straight into sleep's
+# image, silently discarding argv[0]/args (verified empirically), which
+# would fail controller_proxy.sh's _proxy_pid_is_ours identity check
+# (review fix, post-initial-review: never trust a bare pidfile pid — see
+# that module's header). The `while` loop defeats the optimization so the
+# stub's cmdline looks like a real evsieve's, and kill/kill-0/SIGTERM
+# semantics match production exactly (single process, no child tree,
+# mirrors the module's own plain `&`, no setsid — spike §A step 5).
 #
-# Every fake PID this suite tracks is a REAL backgrounded stub process
-# (never a fixture literal), so the tests/test_orchestrator.sh
-# fixture-PID-beyond-pid_max convention does not apply here — there is no
-# mock state-file PID in this suite at all (§F: PR2 writes zero state).
+# Every fake PID this suite tracks is a REAL backgrounded stub (or, in
+# T10/T11, a plain `sleep`/an out-of-range literal) — never a
+# tests/test_orchestrator.sh-style mock state-file fixture, since PR2
+# writes zero state (§F). T11's stale-pidfile literal still follows that
+# suite's fixture-PID-beyond-pid_max convention (must never resolve to a
+# real process).
 #
 # Run: bash tests/test_controller_proxy.sh
 # =============================================================================
 
-readonly TEST_TOTAL=9
+readonly TEST_TOTAL=12
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 readonly REPO_ROOT
@@ -52,8 +61,17 @@ _configure_env() {
 
 # _write_evsieve_stub: Write a fake evsieve to $1. Logs argv to $CALLS,
 # creates the create-link=PATH target as a symlink to $FAKE_NODE, then
-# execs into `sleep 100` (replaces its own image — single process, no
-# child tree, killable by the exact tracked pid, same as real evsieve).
+# stays alive with a cmdline that looks like a real evsieve's: argv[0]
+# is this script's own path (== MCSS_EVSIEVE_BIN as invoked) followed by
+# the original args verbatim — required so controller_proxy.sh's
+# _proxy_pid_is_ours identity check (argv[0] + the exact --input slot
+# path) recognizes this stub as "an evsieve for this slot", the same
+# check it applies to a real binary. A bare `exec sleep N` here would
+# let bash tail-call-optimize straight into sleep's own image, silently
+# discarding argv[0] and every other arg (verified empirically — that
+# was this suite's own first draft, and it broke every identity check);
+# the `while` loop defeats that optimization by keeping bash itself,
+# not sleep, as the long-lived process at this pid.
 # Inputs: $1 — path to write the stub to
 #   Globals (read by the STUB at run time, must be exported by the
 #   caller): CALLS, FAKE_NODE
@@ -72,7 +90,7 @@ if [[ -n "$link" ]]; then
     mkdir -p "$(dirname "$link")"
     ln -sfn "$FAKE_NODE" "$link"
 fi
-exec sleep 100
+exec -a "$0" /bin/bash -c 'while :; do sleep 100 & wait $!; done' "$@"
 EOF
     chmod +x "$path"
 }
@@ -536,6 +554,138 @@ test_t9() {
 }
 
 # =============================================================================
+# T10 — stale-pidfile ALIEN pid safety: proxy_stop_slot must never signal
+#       a pid that isn't verified as an evsieve for this slot
+# =============================================================================
+test_t10() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    if (
+        _configure_env "$tmp"
+        mkdir -p "$MCSS_PROXY_PADS_DIR" "$MCSS_PROXY_VIRT_DIR"
+        # shellcheck disable=SC1090
+        source "$CONTROLLER_MONITOR_MODULE"
+        # shellcheck disable=SC1090
+        source "$MODULE"
+
+        # An unrelated, real, long-lived process THIS TEST owns (its own
+        # child, so we can clean it up) — simulates a crashed session's
+        # stale pidfile whose number was recycled by an unrelated process.
+        # /proc/<pid>/cmdline for a plain `sleep` never matches
+        # MCSS_EVSIEVE_BIN/"*/evsieve", so _proxy_pid_is_ours must refuse
+        # it.
+        sleep 300 &
+        alien_pid=$!
+
+        pidfile="$(_proxy_pidfile 1)"
+        echo "$alien_pid" > "$pidfile"
+
+        rc=0
+        proxy_stop_slot 1 || rc=$?
+        ok=1
+        [[ "$rc" -eq 0 ]] || { ok=0; echo "  stop rc=$rc" >&2; }
+        kill -0 "$alien_pid" 2>/dev/null \
+            || { ok=0; echo "  ALIEN PID WAS KILLED" >&2; }
+        [[ ! -f "$pidfile" ]] \
+            || { ok=0; echo "  pidfile not cleared" >&2; }
+
+        kill "$alien_pid" 2>/dev/null || true
+        wait "$alien_pid" 2>/dev/null || true
+        (( ok == 1 ))
+    ); then
+        _pass "T10 — stale pidfile naming an alien pid is never signaled"
+    else
+        _fail "T10" "module signaled a non-evsieve pid (see stderr above)"
+    fi
+}
+
+# =============================================================================
+# T11 — stale-pidfile IMPOSSIBLE pid recovery: proxy_start_slot must
+#       treat an out-of-range pidfile as dead and start fresh
+# =============================================================================
+test_t11() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    if (
+        _configure_env "$tmp"
+        export MCSS_EVSIEVE_BIN="$tmp/evsieve"
+        _write_evsieve_stub "$MCSS_EVSIEVE_BIN"
+        export CALLS="$tmp/calls.log"; : > "$CALLS"
+        export FAKE_NODE="$tmp/fake-node"; : > "$FAKE_NODE"
+        # shellcheck disable=SC1090
+        source "$CONTROLLER_MONITOR_MODULE"
+        # shellcheck disable=SC1090
+        source "$MODULE"
+
+        mkdir -p "$MCSS_HELPER_DIR"
+        pidfile="$(_proxy_pidfile 1)"
+        # Beyond kernel.pid_max (tests/test_orchestrator.sh convention) —
+        # can never resolve to a real process on this or any host.
+        echo "4999910" > "$pidfile"
+
+        pid=$(proxy_start_slot 1 /dev/input/event7 054c 09cc)
+        rc=$?
+        ok=1
+        [[ "$rc" -eq 0 ]] || { ok=0; echo "  rc=$rc" >&2; }
+        [[ "$pid" =~ ^[0-9]+$ ]] || { ok=0; echo "  pid=$pid" >&2; }
+        [[ "$pid" != "4999910" ]] \
+            || { ok=0; echo "  echoed the impossible stale pid" >&2; }
+        launches=$(grep -c '^evsieve ' "$CALLS")
+        [[ "$launches" -eq 1 ]] \
+            || { ok=0; echo "  launches=$launches" >&2; }
+
+        proxy_stop_all >/dev/null 2>&1 || true
+        (( ok == 1 ))
+    ); then
+        _pass "T11 — impossible pidfile pid treated as dead; fresh start"
+    else
+        _fail "T11" "see stderr above"
+    fi
+}
+
+# =============================================================================
+# T12 — stop actually reaps: the bounded SIGTERM-poll path (not `wait` on
+#       a non-child) must leave the stub process gone
+# =============================================================================
+test_t12() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    if (
+        _configure_env "$tmp"
+        export MCSS_EVSIEVE_BIN="$tmp/evsieve"
+        _write_evsieve_stub "$MCSS_EVSIEVE_BIN"
+        export CALLS="$tmp/calls.log"; : > "$CALLS"
+        export FAKE_NODE="$tmp/fake-node"; : > "$FAKE_NODE"
+        # shellcheck disable=SC1090
+        source "$CONTROLLER_MONITOR_MODULE"
+        # shellcheck disable=SC1090
+        source "$MODULE"
+
+        pid=$(proxy_start_slot 1 /dev/input/event7 054c 09cc)
+        proxy_stop_slot 1
+
+        ok=1
+        for _i in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.2
+        done
+        kill -0 "$pid" 2>/dev/null \
+            && { ok=0; echo "  stub still alive after stop" >&2; }
+        (( ok == 1 ))
+    ); then
+        _pass "T12 — proxy_stop_slot's SIGTERM-poll path actually reaps"
+    else
+        _fail "T12" "stub process survived proxy_stop_slot"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== controller_proxy test suite ==="
@@ -549,6 +699,9 @@ test_t6
 test_t7
 test_t8
 test_t9
+test_t10
+test_t11
+test_t12
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
