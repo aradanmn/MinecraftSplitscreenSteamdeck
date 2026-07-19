@@ -41,12 +41,13 @@
 #   Constants:    MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX,
 #                 MCSS_WINDOW_TITLE_PREFIX, MCSS_STEAM_VENDOR_ID/PRODUCT_ID,
 #                 MCSS_RAW_BINDING, MCSS_STATE_LOCK_TIMEOUT_S,
-#                 MCSS_DISPLAY_PROBE_TIMEOUT_S
+#                 MCSS_DISPLAY_PROBE_TIMEOUT_S, MCSS_CONTROLLER_PROXY
 #   Paths:        MCSS_LAUNCHER_ROOT, MCSS_INSTANCES_DIR, MCSS_LAUNCHER_EXEC,
 #                 SPLITSCREEN_STATE, MCSS_STATE_LOCK, SPLITSCREEN_FIFO,
 #                 MCSS_GEOM_DIR, MCSS_RUNTIME_DIR, MCSS_PULSE_SERVER,
 #                 MCSS_HELPER_DIR, MCSS_KWIN_WRAPPER_PATH,
-#                 MCSS_SESSION_ENV_BAK, MCSS_AUTOSTART_*
+#                 MCSS_SESSION_ENV_BAK, MCSS_AUTOSTART_*, MCSS_EVSIEVE_BIN,
+#                 MCSS_PROXY_PADS_DIR, MCSS_PROXY_VIRT_DIR
 #   Screen:       MCSS_SCREEN_W/H
 #   Display:      MCSS_DISPLAY
 #
@@ -56,12 +57,13 @@
 # SPLITSCREEN_DEBUG_LOG.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-19  #38 M1/PR2: MCSS_CONTROLLER_PROXY flag (OFF) + evsieve/
+#                    proxy-dir paths for controller_proxy.sh (dark)
 #   v1.5 2026-07-18  fix: MCSS_ACCOUNT_PREFIX default P → Player
 #   v1.4 2026-07-17  Fix #86: named MCSS_DISPLAY_PROBE_TIMEOUT_S constant
 #   v1.3 2026-07-15  #51/D17: mcss_query_displays — one display-output parser
 #   v1.2 2026-07-09  #45 PR2/PR3: paths+constants+screen resolvers, exec-env
 #   v1.1 2026-07-06  #50: SPLITSCREEN_STATE/lock resolved to a single home
-#   v1.0 2026-07-01  #43: environment resolver + gamescope-guard (#42)
 # =============================================================================
 
 # #50: the ONLY place the state-file default exists. Previously this fallback
@@ -196,11 +198,17 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     # Fix #86: name the display-probe timeout (#86 item b) — was a bare
     # `timeout 3` at each of the four probe sites below.
     export MCSS_DISPLAY_PROBE_TIMEOUT_S="${MCSS_DISPLAY_PROBE_TIMEOUT_S:-3}"
+    # #38 M1/PR2: master feature flag for the evsieve controller-proxy
+    # (controller_proxy.sh). OFF (0) until PR7 flips it — no proxy_*
+    # function branches on this; it gates PR4's orchestrator wiring only.
+    # A drifted copy would silently keep a caller on the wrong bind path,
+    # same cross-process-contract risk as MCSS_RAW_BINDING above.
+    export MCSS_CONTROLLER_PROXY="${MCSS_CONTROLLER_PROXY:-0}"
 
     readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
              MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
              MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S \
-             MCSS_DISPLAY_PROBE_TIMEOUT_S
+             MCSS_DISPLAY_PROBE_TIMEOUT_S MCSS_CONTROLLER_PROXY
     _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
 fi
 
@@ -242,6 +250,15 @@ mcss_resolve_paths() {
         MCSS_LAUNCHER_ROOT="${MCSS_LAUNCHER_ROOT:-$HOME/.local/share/PolyMC}"
     fi
     export MCSS_LAUNCHER_ROOT
+
+    # #38 M1/PR2: the evsieve binary controller_proxy.sh execs. Pairs with
+    # the installer's INSTALL-time home (evsieve_management.sh:_evsieve_bin,
+    # TARGET_DIR/bin/evsieve) — TARGET_DIR defaults to the same path as
+    # MCSS_LAUNCHER_ROOT, so the two resolve identically by default.
+    # Executability is validated at USE time by _proxy_evsieve_bin, not
+    # here (this only names the path).
+    export MCSS_EVSIEVE_BIN=\
+"${MCSS_EVSIEVE_BIN:-$MCSS_LAUNCHER_ROOT/bin/evsieve}"
 
     # INSTANCES_DIR is the legacy override name (test harnesses set it).
     export MCSS_INSTANCES_DIR="${INSTANCES_DIR:-${MCSS_INSTANCES_DIR:-$MCSS_LAUNCHER_ROOT/instances}}"
@@ -302,6 +319,15 @@ mcss_resolve_paths() {
     fi
     export MCSS_KWIN_WRAPPER_PATH="${MCSS_KWIN_WRAPPER_PATH:-$MCSS_HELPER_DIR/kwin_wayland_wrapper}"
     export MCSS_SESSION_ENV_BAK="${MCSS_SESSION_ENV_BAK:-$MCSS_HELPER_DIR/session-env.bak}"
+
+    # #38 M1/PR2: controller_proxy.sh's symlink-farm dirs (pads = evsieve
+    # --input targets the orchestrator re-targets on reconnect; virt = the
+    # uinput evdev evsieve creates via --output create-link). Named only —
+    # controller_proxy.sh itself does the mkdir -p, not this resolver.
+    export MCSS_PROXY_PADS_DIR=\
+"${MCSS_PROXY_PADS_DIR:-$MCSS_HELPER_DIR/proxy-pads}"
+    export MCSS_PROXY_VIRT_DIR=\
+"${MCSS_PROXY_VIRT_DIR:-$MCSS_HELPER_DIR/proxy-virt}"
 
     # Autostart contract: exactly two .desktop names exist; a missed rm here
     # strands an autostart that relaunches the game on every Plasma login.
@@ -584,6 +610,12 @@ mcss_exec_env_string() {
         MCSS_NESTED_SESSION       # plan Part 4 canonical list; omitting it let a
                                   # PR-2 Exec line default the child to 0 → the
                                   # gamescope guard REFUSES inside nested Plasma
+        MCSS_CONTROLLER_PROXY    # #38 M1/PR2: a re-exec'd child must inherit
+                                  # the PARENT's resolved flag value, not
+                                  # silently re-derive its own default (same
+                                  # cross-process-contract risk as
+                                  # MCSS_RAW_BINDING, which is not itself in
+                                  # this list but shares the same reasoning)
         MCSS_MODE
         SPLITSCREEN_STATE
         SPLITSCREEN_FIFO
