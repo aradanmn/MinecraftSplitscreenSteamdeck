@@ -81,8 +81,14 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
-readonly CONTROLLER_MONITOR_DEBOUNCE_MS=500
-readonly CONTROLLER_MONITOR_DEFAULT_PROC_PATH="/proc/bus/input/devices"
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_CONTROLLER_MONITOR_CONSTANTS_LOCKED:-}" ]]; then
+    readonly CONTROLLER_MONITOR_DEBOUNCE_MS=500
+    readonly CONTROLLER_MONITOR_DEFAULT_PROC_PATH="/proc/bus/input/devices"
+    _CONTROLLER_MONITOR_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 # One-release deprecation aliases for the ids (external consumers/tests);
 # internal reads use the MCSS names. Guarded: re-sourcing must not re-readonly.
 if [[ ! -v CONTROLLER_MONITOR_STEAM_VENDOR ]]; then

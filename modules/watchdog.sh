@@ -49,14 +49,20 @@ set -euo pipefail
 #                    handheld/docked hot-swap
 # =============================================================================
 
-readonly WATCHDOG_DEFAULT_POLL_INTERVAL_S=2
-# Fix #86: named from MCSS_MAX_PLAYERS, not a bare "4" (#86 item d). watchdog.sh
-# does not source runtime_context.sh itself (grandfathered — relies on ambient
-# sourcing by the launcher), so the ${:-4} fallback stays for standalone use.
-readonly WATCHDOG_MAX_SLOT="${MCSS_MAX_PLAYERS:-4}"
-# Consecutive polls a slot's window must be CONFIRMED absent before declaring the
-# player quit (debounce against a transient/partial window-tree query). ~2 polls = ~4s.
-readonly WATCHDOG_WINDOW_GONE_TICKS="${WATCHDOG_WINDOW_GONE_TICKS:-2}"
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_WATCHDOG_CONSTANTS_LOCKED:-}" ]]; then
+    readonly WATCHDOG_DEFAULT_POLL_INTERVAL_S=2
+    # Fix #86: named from MCSS_MAX_PLAYERS, not a bare "4" (#86 item d). watchdog.sh
+    # does not source runtime_context.sh itself (grandfathered — relies on ambient
+    # sourcing by the launcher), so the ${:-4} fallback stays for standalone use.
+    readonly WATCHDOG_MAX_SLOT="${MCSS_MAX_PLAYERS:-4}"
+    # Consecutive polls a slot's window must be CONFIRMED absent before declaring the
+    # player quit (debounce against a transient/partial window-tree query). ~2 polls = ~4s.
+    readonly WATCHDOG_WINDOW_GONE_TICKS="${WATCHDOG_WINDOW_GONE_TICKS:-2}"
+    _WATCHDOG_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # Dedup cache: key=slot, value=1 if SLOT_DIED already emitted
 declare -A _WATCHDOG_REPORTED

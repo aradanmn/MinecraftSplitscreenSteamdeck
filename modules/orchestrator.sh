@@ -63,18 +63,24 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # ── Module-level constants ───────────────────────────────────────────────────
-readonly ORCHESTRATOR_SPAWN_DELAY_S=3
-# FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
-readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
-# docked_flow: number of consecutive empty (zero active slots) loop iterations to tolerate
-# AFTER at least one player has joined before ending the session. Gives a short grace
-# (~ticks × FIFO read timeout) so a disconnect-then-reconnect doesn't kill the session.
-readonly ORCHESTRATOR_EMPTY_EXIT_TICKS=2
-# docked_flow startup: poll this long for already-connected controllers before handing
-# off to the hotplug monitor. A short window (not a single one-shot scan) because Steam
-# Input creates its 28de:11ff virtual pads with a delay and staggered. If NONE appear in
-# this window, docked has no player (can't play on the built-in pad) → clean exit.
-readonly ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=5
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_ORCHESTRATOR_CONSTANTS_LOCKED:-}" ]]; then
+    readonly ORCHESTRATOR_SPAWN_DELAY_S=3
+    # FIFO read timeout — also the cadence of the per-iteration liveness reap (H9).
+    readonly ORCHESTRATOR_FIFO_READ_TIMEOUT_S=5
+    # docked_flow: number of consecutive empty (zero active slots) loop iterations to tolerate
+    # AFTER at least one player has joined before ending the session. Gives a short grace
+    # (~ticks × FIFO read timeout) so a disconnect-then-reconnect doesn't kill the session.
+    readonly ORCHESTRATOR_EMPTY_EXIT_TICKS=2
+    # docked_flow startup: poll this long for already-connected controllers before handing
+    # off to the hotplug monitor. A short window (not a single one-shot scan) because Steam
+    # Input creates its 28de:11ff virtual pads with a delay and staggered. If NONE appear in
+    # this window, docked has no player (can't play on the built-in pad) → clean exit.
+    readonly ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=5
+    _ORCHESTRATOR_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # PID tracking for background workers
 _WATCHDOG_PID=""

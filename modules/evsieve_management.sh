@@ -46,40 +46,46 @@
 # =============================================================================
 
 # --- Module-level constants ---
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process, so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_EVSIEVE_CONSTANTS_LOCKED:-}" ]]; then
 
-# Pinned upstream source (#38 D4). v1.4.0 + master fixes. Acquisition is
-# `git clone` + `git checkout <commit>` — NOT a codeload tarball: GitHub
-# archive tarballs are gzip-layer nondeterministic (2023 checksum-breakage
-# incident), so a hardcoded tarball SHA is fragile. Instead we verify
-# rev-parse AND the SHA-256 of the DETERMINISTIC `git archive` byte stream,
-# which reproduces identically on any machine.
-readonly EVSIEVE_REPO_URL="https://github.com/KarsMulder/evsieve.git"
-readonly EVSIEVE_PINNED_COMMIT="ebd7efe1ee902e70c5943b65a2bf44b9a3c31eb8"
-readonly EVSIEVE_SOURCE_ARCHIVE_SHA256=\
+    # Pinned upstream source (#38 D4). v1.4.0 + master fixes. Acquisition is
+    # `git clone` + `git checkout <commit>` — NOT a codeload tarball: GitHub
+    # archive tarballs are gzip-layer nondeterministic (2023 checksum-breakage
+    # incident), so a hardcoded tarball SHA is fragile. Instead we verify
+    # rev-parse AND the SHA-256 of the DETERMINISTIC `git archive` byte stream,
+    # which reproduces identically on any machine.
+    readonly EVSIEVE_REPO_URL="https://github.com/KarsMulder/evsieve.git"
+    readonly EVSIEVE_PINNED_COMMIT="ebd7efe1ee902e70c5943b65a2bf44b9a3c31eb8"
+    readonly EVSIEVE_SOURCE_ARCHIVE_SHA256=\
 "118fb0e33d11a4de54621c7d5c562e98f9b00ac07d01a1d7aa9de4951a1bc86d"
 
-# Our ~35-line GPL-2.0 bounded-retry patch. Canonical home is the GPL
-# island; SHA-verified before use (local checkout OR curl|bash raw fetch).
-readonly EVSIEVE_PATCH_REPO_PATH=\
+    # Our ~35-line GPL-2.0 bounded-retry patch. Canonical home is the GPL
+    # island; SHA-verified before use (local checkout OR curl|bash raw fetch).
+    readonly EVSIEVE_PATCH_REPO_PATH=\
 "third_party/evsieve/evsieve-persist-reopen.patch"
-readonly EVSIEVE_PATCH_SHA256=\
+    readonly EVSIEVE_PATCH_SHA256=\
 "9ec2cd9d50e0ed1eb387379d5baacadd565861c84fa1bbe8a4f800c8db261154"
 
-# Deterministic debian:12 build box; created by the module if missing.
-readonly EVSIEVE_DISTROBOX_NAME=\
+    # Deterministic debian:12 build box; created by the module if missing.
+    readonly EVSIEVE_DISTROBOX_NAME=\
 "${EVSIEVE_DISTROBOX_NAME:-mcss-evsieve-build}"
-readonly EVSIEVE_DISTROBOX_IMAGE="debian:12"
+    readonly EVSIEVE_DISTROBOX_IMAGE="debian:12"
 
-# Timeouts (units in name, STYLE-GUIDE §6). Box create pulls an image;
-# cargo build of evsieve is the long pole.
-readonly EVSIEVE_BOX_CREATE_TIMEOUT_S=300
-readonly EVSIEVE_BUILD_TIMEOUT_S=900
+    # Timeouts (units in name, STYLE-GUIDE §6). Box create pulls an image;
+    # cargo build of evsieve is the long pole.
+    readonly EVSIEVE_BOX_CREATE_TIMEOUT_S=300
+    readonly EVSIEVE_BUILD_TIMEOUT_S=900
 
-# The house fail-open wording (#38 D6), shared by every degrade site so the
-# message is worded identically no matter which step failed.
-readonly EVSIEVE_FAIL_OPEN_NOTE="seamless controller reconnect \
+    # The house fail-open wording (#38 D6), shared by every degrade site so the
+    # message is worded identically no matter which step failed.
+    readonly EVSIEVE_FAIL_OPEN_NOTE="seamless controller reconnect \
 unavailable (v1.2 proxy feature stays OFF); your v1.1 install is \
 unaffected."
+    _EVSIEVE_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # EVSIEVE_INSTALL_STATUS: module-provided mutable global, set by
 # install_evsieve(). Exactly one of these lowercase tokens after the call
