@@ -11,6 +11,34 @@ set -euo pipefail
 
 readonly TEST_TOTAL=8
 
+# Fixture PIDs for the mock state-file JSON below. teardown_instance (in
+# modules/instance_lifecycle.sh) sends process-GROUP kills — kill -TERM
+# "-${bwrap_pid}", then kill -KILL "-${bwrap_pid}" — to whatever PID a
+# state file names, and the real (un-mocked) watchdog can trigger extra
+# teardown rounds against these same values. Every one MUST exceed
+# kernel.pid_max: the kernel never assigns a real PID/PGID above that
+# cap, so these fixtures can never resolve to a live process or group.
+readonly FIXTURE_BWRAP_PID_1=4999910
+readonly FIXTURE_JAVA_PID_1=4999911
+readonly FIXTURE_BWRAP_PID_2=4999920
+readonly FIXTURE_JAVA_PID_2=4999922
+
+# Guard: an un-namespaced run with a reachable fixture PID can have its
+# group kill land on a REAL process group — this has previously SIGKILLed
+# the invoking shell's own session. Refuse to run rather than risk it.
+_pid_max=$(cat /proc/sys/kernel/pid_max)
+for _fixture_pid in "$FIXTURE_BWRAP_PID_1" "$FIXTURE_JAVA_PID_1" \
+    "$FIXTURE_BWRAP_PID_2" "$FIXTURE_JAVA_PID_2"; do
+    if (( _fixture_pid <= _pid_max )); then
+        echo "FATAL: fixture PID $_fixture_pid <= pid_max $_pid_max." >&2
+        echo "teardown_instance does process-GROUP kills on the" >&2
+        echo "state-file PID; a reachable fixture PID risks hitting a" >&2
+        echo "REAL process group in an un-namespaced run (this has" >&2
+        echo "SIGKILLed the invoking shell's session before)." >&2
+        exit 1
+    fi
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 TESTS_PASSED=0
@@ -71,8 +99,10 @@ test_t6_3() {
     exec 9<>"$fifo"
 
     local state_file="$tmpdir/splitscreen_state.json"
+    # Literal PIDs below equal FIXTURE_JAVA/BWRAP_PID_1/2 above (must stay
+    # in sync — the guard above checks the named constants, not this JSON).
     cat > "$state_file" <<'JSON'
-{"mode":"docked","slots":{"1":{"active":true,"pid":1111,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":1110},"2":{"active":true,"pid":2222,"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":2220},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+{"mode":"docked","slots":{"1":{"active":true,"pid":4999911,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":4999910},"2":{"active":true,"pid":4999922,"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":4999920},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
 JSON
 
     local sentinel="$tmpdir/teardown_slot2"
@@ -144,8 +174,15 @@ JSON
         export SPLITSCREEN_STATE="$state_file"
         list_eligible_controllers() { echo "/dev/input/event3 /dev/input/js0 28de 11ff"; }
         spawn_instance() {
-            jq --arg slot "$1" '.slots[$slot] = {active: true, pid: 1, event_node: "/dev/input/event3", js_node: "/dev/input/js0", bwrap_pid: 1}' \
-                "$state_file" > "${state_file}.tmp" && mv "${state_file}.tmp" "$state_file"
+            # jp/bp: FIXTURE_JAVA_PID_1/FIXTURE_BWRAP_PID_1 (never a live PID).
+            jq --arg slot "$1" \
+                --argjson jp "$FIXTURE_JAVA_PID_1" \
+                --argjson bp "$FIXTURE_BWRAP_PID_1" \
+                '.slots[$slot] = {active: true, pid: $jp,
+                    event_node: "/dev/input/event3",
+                    js_node: "/dev/input/js0", bwrap_pid: $bp}' \
+                "$state_file" > "${state_file}.tmp" &&
+                mv "${state_file}.tmp" "$state_file"
             return 0
         }
         teardown_all_instances() { return 0; }
@@ -283,8 +320,11 @@ test_t6_8() {
     local dead_pid=$!
     wait "$dead_pid" 2>/dev/null || true
 
+    # "pid" (java) is a literal equal to FIXTURE_JAVA_PID_1 (never live);
+    # bwrap_pid is a real dead PID from $! so the watchdog's kill -0 finds
+    # it gone. Delimiter stays unquoted only for the $dead_pid expansion.
     cat > "$state_file" <<JSON
-{"mode":"docked","slots":{"1":{"active":true,"pid":1111,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":${dead_pid}},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+{"mode":"docked","slots":{"1":{"active":true,"pid":4999911,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":${dead_pid}},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
 JSON
 
     local teardown_sentinel="$tmpdir/teardown_slot1"
