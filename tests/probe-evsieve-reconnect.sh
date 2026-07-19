@@ -57,6 +57,9 @@
 # probed here -- see the A_NODE_STABILITY evidence string.
 #
 # Version history:
+#   v1.1 2026-07-19  #38 M1/PR2: guard the main flow (BASH_SOURCE[0]==$0)
+#                    so probe-proxy-repoint.sh can source this file's
+#                    helpers without re-running probe P0/A/B
 #   v1.0 2026-07-18  Initial evsieve reconnect probe for #38 (§4.3
 #                    experiments)
 # =============================================================================
@@ -1171,34 +1174,45 @@ _run_probe_b() {
 
 # --- Main flow ---
 
-if [[ ! -x "$EVSIEVE_BIN" ]]; then
-    emit_verdict P0_UINPUT_OPEN FAIL \
-        "evsieve binary not found or not executable at ${EVSIEVE_BIN}"
-    exit 1
+# #38 M1/PR2: guarded (same BASH_SOURCE[0]==$0 idiom as modules/
+# orchestrator.sh/modules/dex.sh) so tests/probe-proxy-repoint.sh can
+# `source` this file to reuse its helper functions and cleanup/trap
+# tracked-pid discipline (cleanup, record_virtual_node, capture_stream,
+# _dual_capture, _fidelity_matches, _tally_is_empty, wait_for_ds4,
+# prompt_operator, announce_wiggle, emit_verdict, _start_node_watcher)
+# WITHOUT also running probe P0/A/B here. Direct execution (`bash
+# tests/probe-evsieve-reconnect.sh`) is unaffected — this only skips the
+# block when sourced.
+if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]]; then
+    if [[ ! -x "$EVSIEVE_BIN" ]]; then
+        emit_verdict P0_UINPUT_OPEN FAIL \
+            "evsieve binary not found or not executable at ${EVSIEVE_BIN}"
+        exit 1
+    fi
+
+    _write_results_header
+    _confirm_cli_flags
+    _print_banner
+
+    _run_p0_gate
+    _run_probe_a
+    _run_probe_b
+
+    _stop_watchers
+
+    echo
+    echo "=============================================================="
+    echo " Results file: ${RESULTS}"
+    echo " evsieve logs (stdout+stderr, timestamped):"
+    echo "   P0:    $(_evsieve_logfile MCSS-probe-p0)"
+    echo "   A:     $(_evsieve_logfile MCSS-probe-slotA)"
+    echo "   B:     $(_evsieve_logfile MCSS-probe-slotB)"
+    echo " Physical-node watcher log: $(_nodewatch_logfile)"
+    if (( _UDEV_WATCHER_STARTED )); then
+        echo " udevadm monitor log:       $(_udev_logfile)"
+    else
+        echo " udevadm monitor log:       (udevadm not found, not started)"
+    fi
+    echo " Paste the VERDICT lines above into issue #38."
+    echo "=============================================================="
 fi
-
-_write_results_header
-_confirm_cli_flags
-_print_banner
-
-_run_p0_gate
-_run_probe_a
-_run_probe_b
-
-_stop_watchers
-
-echo
-echo "=============================================================="
-echo " Results file: ${RESULTS}"
-echo " evsieve logs (stdout+stderr, timestamped):"
-echo "   P0:    $(_evsieve_logfile MCSS-probe-p0)"
-echo "   A:     $(_evsieve_logfile MCSS-probe-slotA)"
-echo "   B:     $(_evsieve_logfile MCSS-probe-slotB)"
-echo " Physical-node watcher log: $(_nodewatch_logfile)"
-if (( _UDEV_WATCHER_STARTED )); then
-    echo " udevadm monitor log:       $(_udev_logfile)"
-else
-    echo " udevadm monitor log:       (udevadm not found, not started)"
-fi
-echo " Paste the VERDICT lines above into issue #38."
-echo "=============================================================="
