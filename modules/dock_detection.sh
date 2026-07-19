@@ -43,8 +43,15 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
-readonly DOCK_DETECTION_DEFAULT_DRM_PATH="/sys/class/drm"
-readonly DOCK_DETECTION_POLL_INTERVAL_S=3
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
+# modules are re-sourceable within one process (e.g. a hardware-suite runner
+# that sources every stage script into one shell), so an unguarded readonly
+# would abort on the second source.
+if [[ -z "${_DOCK_DETECTION_CONSTANTS_LOCKED:-}" ]]; then
+    readonly DOCK_DETECTION_DEFAULT_DRM_PATH="/sys/class/drm"
+    readonly DOCK_DETECTION_POLL_INTERVAL_S=3
+    _DOCK_DETECTION_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # --- Internal functions ---
 
