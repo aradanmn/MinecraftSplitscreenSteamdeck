@@ -583,29 +583,71 @@ hw_checklist() {
 # Display environment
 # ---------------------------------------------------------------------------
 
-# hw_detect_display: set/export DISPLAY if not already set, for xdotool/xrandr
+# hw_detect_display: set/export DISPLAY (and XAUTHORITY when found), for
+# xdotool/xrandr, before any nested session exists — hw_nested_display takes
+# over the discrimination once one is up (Fix #83 above).
+# Fallback ladder, most to least trusted:
+#   1. DISPLAY already set (operator/environment) — leave it alone.
+#   2. A live Xwayland server's own cmdline: its ":N" arg, plus an -auth
+#      path when the server carries one. HW-1 (2026-07-18): Game Mode's
+#      gamescope Xwaylands are AUTHLESS —
+#        Xwayland :0 -rootless -core -terminate -listenfd 90 ...
+#        Xwayland :1 -rootless -core -terminate -listenfd 92 ...
+#      — while Desktop Mode's Plasma Xwayland carries -auth (the shape
+#      _detect_xauthority/instance_lifecycle.sh and input-heartbeat.sh's
+#      _derive_x target). So ":N" is required, -auth is optional. Gamescope
+#      runs one Xwayland per screen; prefer the lowest :N when several are
+#      live and log the rest as candidates, not winners.
+#   3. `who` — last resort only. HW-1 (2026-07-18): an SSH login row
+#      polluted `who` and this picked a bogus :40 on-Deck, so this leg is
+#      logged as a WARN rather than trusted silently.
 hw_detect_display() {
     if [[ -n "${DISPLAY:-}" ]]; then
         hw_info "DISPLAY already set: ${DISPLAY}"
         return 0
     fi
 
-    # Try common values
-    local candidate
-    for candidate in :0 :1 :0.0; do
-        if DISPLAY="$candidate" xdotool getactivewindow >/dev/null 2>&1; then
-            export DISPLAY="$candidate"
-            hw_info "Auto-detected DISPLAY=${DISPLAY}"
+    local xw_lines
+    xw_lines=$(pgrep -af Xwayland 2>/dev/null || true)
+    if [[ -n "$xw_lines" ]]; then
+        local line disp best="" best_auth="" all=()
+        while IFS= read -r line; do
+            [[ "$line" =~ [[:space:]](:[0-9]+)([[:space:]]|$) ]] || continue
+            disp="${BASH_REMATCH[1]}"
+            all+=("$disp")
+            if [[ -z "$best" ]] || (( ${disp#:} < ${best#:} )); then
+                best="$disp"
+                best_auth=""
+                if [[ "$line" =~ -auth[[:space:]]+([^[:space:]]+) ]]; then
+                    best_auth="${BASH_REMATCH[1]}"
+                fi
+            fi
+        done <<<"$xw_lines"
+
+        if [[ -n "$best" ]]; then
+            export DISPLAY="$best"
+            if [[ -n "$best_auth" ]]; then
+                export XAUTHORITY="$best_auth"
+                hw_info "DISPLAY derived from Xwayland cmdline" \
+                    "(auth-bearing): ${DISPLAY}, XAUTHORITY=${XAUTHORITY}"
+            else
+                hw_info "DISPLAY derived from Xwayland cmdline" \
+                    "(authless gamescope): ${DISPLAY}"
+            fi
+            if (( ${#all[@]} > 1 )); then
+                hw_info "Live Xwayland displays: ${all[*]}" \
+                    "(selected ${best})"
+            fi
             return 0
         fi
-    done
+    fi
 
-    # Fallback: parse Xauthority
+    # Last resort: `who` (unreliable under SSH — see header comment above)
     local auth_display
     auth_display=$(who 2>/dev/null | grep -oP ':\d+' | head -1 || true)
     if [[ -n "$auth_display" ]]; then
         export DISPLAY="$auth_display"
-        hw_info "DISPLAY set from who output: ${DISPLAY}"
+        hw_warn "DISPLAY set from who output (last resort): ${DISPLAY}"
         return 0
     fi
 
