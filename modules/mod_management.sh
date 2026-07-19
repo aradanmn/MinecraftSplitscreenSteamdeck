@@ -1915,11 +1915,31 @@ prompt_custom_mods() {
     done
 }
 
+# _required_mods_summary: Join REQUIRED_SPLITSCREEN_MODS into a
+# human-readable, comma-separated list for the "-1 = Install only required
+# mods (...)" prompt line. Derives the summary from mods.conf's live
+# required set instead of a hardcoded name, so it can't go stale again as
+# required mods are added/removed (it used to always say "Controlify").
+# Inputs:
+#   Globals: REQUIRED_SPLITSCREEN_MODS[] (read)
+# Outputs:
+#   stdout — comma-separated mod names, e.g. "Controlify, Sodium, Lithium"
+_required_mods_summary() {
+    local out="" name
+    for name in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
+        out+="${out:+, }$name"
+    done
+    printf '%s\n' "$out"
+}
+
 # select_user_mods: Interactive mod selection with intelligent
 # categorization. Separates required mods (auto-installed) from
 # user-selectable ones, then drives the full dependency-resolution pipeline:
 # mods.conf deps (resolve_conf_dependencies), API deps
-# (resolve_all_dependencies), and custom mods (prompt_custom_mods).
+# (resolve_all_dependencies), and custom mods (prompt_custom_mods). When
+# mods.conf has no optional mods (every mod is "required"), the selection
+# prompt is skipped entirely — an empty "available mods" list that still
+# asked the user to choose was vestigial, not a real choice.
 # Inputs:
 #   Globals: SUPPORTED_MODS, REQUIRED_SPLITSCREEN_MODS[] (read); MC_VERSION
 #            (read, may change via prompt_custom_mods' version-switch path)
@@ -1928,7 +1948,7 @@ prompt_custom_mods() {
 #   exit 1 — if SUPPORTED_MODS is empty (no compatible mods for MC_VERSION)
 select_user_mods() {
     print_header "🎯 MOD SELECTION"
-    
+
     # Validate that we have compatible mods to present to the user
     local supported_count=0
     if [[ ${#SUPPORTED_MODS[@]} -gt 0 ]]; then
@@ -1938,22 +1958,16 @@ select_user_mods() {
         print_error "No compatible mods found for Minecraft $MC_VERSION"
         exit 1
     fi
-    
+
     # Build list of user-selectable mods by filtering out framework and required mods
     # Framework mods (Fabric API, etc.) are installed automatically as dependencies
-    # Required mods (Controlify) are always installed
+    # Required mods (from mods.conf's "required|" lines) are always installed
     local user_mod_indexes=()    # Indexes of mods user can choose from
     local install_all_mods=false # Flag for "install all" option
-    
-    echo ""
-    echo "The following mods are available for Minecraft $MC_VERSION:"
-    echo ""
-    
-    # Display numbered list of user-selectable mods
-    local counter=1
+
     for i in "${!SUPPORTED_MODS[@]}"; do
         local skip=false
-        
+
         # Skip required splitscreen mods (these are automatically installed)
         for req in "${REQUIRED_SPLITSCREEN_MODS[@]}"; do
             if [[ "${SUPPORTED_MODS[$i]}" == "$req"* ]]; then
@@ -1961,34 +1975,50 @@ select_user_mods() {
                 break
             fi
         done
-        
-        if [[ "$skip" == false ]]; then
-            echo "  $counter. ${SUPPORTED_MODS[$i]}"
-            user_mod_indexes+=("$i")
-            counter=$((counter + 1))
-        fi
+
+        [[ "$skip" == false ]] && user_mod_indexes+=("$i")
     done
-    
-    echo ""
-    echo "Enter the numbers of the mods you want to install (e.g., '1 3 5' or '1-5'):"
-    echo "  0 = Install all available mods (default)"
-    echo "  -1 = Install only required mods (Controlify)"
-    echo ""
-    
-    local mod_selection
-    read -p "Your choice [0]: " mod_selection
-    
-    # Process user selection
-    if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then
+
+    local mod_selection=""
+    if [[ ${#user_mod_indexes[@]} -eq 0 ]]; then
+        # All of mods.conf is "required" right now (7/7) — there is nothing
+        # optional to offer, so don't print an empty list and prompt anyway.
         install_all_mods=true
-        print_info "Installing all available mods"
-    elif [[ "$mod_selection" == "-1" ]]; then
-        mod_selection=""
-        print_info "Installing only required mods"
+        print_info \
+            "All $supported_count mods are required — nothing to select."
     else
-        print_info "Installing selected mods"
+        echo ""
+        echo "The following mods are available for Minecraft $MC_VERSION:"
+        echo ""
+
+        # Display numbered list of user-selectable mods
+        local counter=1
+        for i in "${user_mod_indexes[@]}"; do
+            echo "  $counter. ${SUPPORTED_MODS[$i]}"
+            counter=$((counter + 1))
+        done
+
+        echo ""
+        echo "Enter the numbers of the mods you want to install" \
+            "(e.g., '1 3 5' or '1-5'):"
+        echo "  0 = Install all available mods (default)"
+        echo "  -1 = Install only required mods ($(_required_mods_summary))"
+        echo ""
+
+        read -p "Your choice [0]: " mod_selection
+
+        # Process user selection
+        if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then
+            install_all_mods=true
+            print_info "Installing all available mods"
+        elif [[ "$mod_selection" == "-1" ]]; then
+            mod_selection=""
+            print_info "Installing only required mods"
+        else
+            print_info "Installing selected mods"
+        fi
     fi
-    
+
     # Build final mod list including dependencies
     declare -A added
     
