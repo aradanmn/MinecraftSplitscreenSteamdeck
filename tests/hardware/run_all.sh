@@ -19,18 +19,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<'USAGE'
 Usage:
-  bash run_all.sh              Run all stages (0–5) in order.
-  bash run_all.sh stage<N>     Run only the specified stage (e.g. stage2).
+  bash run_all.sh              Run all stages (0-5) in order.
+  bash run_all.sh <stage>      Run only one stage: its full file name
+                                (e.g. stage2_handheld) or a short form
+                                (e.g. stage2) that resolves via glob to
+                                the one matching stage*.sh file. An
+                                unmatched or ambiguous short form is a
+                                hard error — never a silent no-op.
   bash run_all.sh --help       Print this help.
 
-Stages:
-  stage0   Prerequisites check (automated)
-  stage0b  Full installer verification (operator + automated) — run before stage1
-  stage1   Module smoke tests (automated)
-  stage2   Handheld mode (operator prompts)
-  stage3   Docked hot-plug (operator prompts)
-  stage4   Controller isolation verification
-  stage5   Crash recovery (mostly automated)
+Stages (full name / short form):
+  stage0_prereqs   / stage0    Prerequisites check (automated)
+  stage0b_install  / stage0b   Full installer verification (operator +
+                                automated) — run before stage1
+  stage1_modules   / stage1    Module smoke tests (automated)
+  stage2_handheld  / stage2    Handheld mode (operator prompts)
+  stage3_hotplug   / stage3    Docked hot-plug (operator prompts)
+  stage4_isolation / stage4    Controller isolation verification
+  stage5_crash     / stage5    Crash recovery (mostly automated)
 
 Environment:
   DISPLAY      X display to use (auto-detected if not set)
@@ -56,7 +62,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 hw_section "Minecraft Splitscreen Hardware Test Suite"
 hw_log "  Log:  ${HW_LOG}"
 hw_log "  Date: $(date)"
-hw_log "  Host: $(hostname)"
+hw_log "  Host: ${HOSTNAME:-$(uname -n 2>/dev/null || echo unknown)}"
 hw_log "  Repo: ${REPO_ROOT}"
 hw_log "============================================================"
 
@@ -112,8 +118,28 @@ run_stage() {
     local stage_file="$SCRIPT_DIR/${stage_name}.sh"
 
     if [[ ! -f "$stage_file" ]]; then
-        hw_warn "Stage file not found: ${stage_file} — skipping"
-        return 0
+        # HW-1 (2026-07-18): a short arg like "stage2" doesn't match any
+        # file exactly (the real file is stage2_handheld.sh). This used
+        # to just WARN and `return 0` — a silent no-op that let the suite
+        # print an all-zero GRAND TOTAL as if it had passed (happened
+        # twice live). Resolve short names by globbing instead; only an
+        # unambiguous single match is trusted.
+        local -a matches
+        matches=("$SCRIPT_DIR/${stage_name}"*.sh)
+        if [[ ${#matches[@]} -eq 1 && -f "${matches[0]}" ]]; then
+            stage_file="${matches[0]}"
+            stage_name="$(basename "$stage_file" .sh)"
+            hw_log "Resolved stage arg to: ${stage_name}"
+        else
+            hw_log ""
+            hw_log "ABORT: '${1}' does not match exactly one stage file."
+            hw_log "Available stages:"
+            local f
+            for f in "$SCRIPT_DIR"/stage*.sh; do
+                hw_log "  $(basename "$f" .sh)"
+            done
+            exit 1
+        fi
     fi
 
     _reset_stage_counters

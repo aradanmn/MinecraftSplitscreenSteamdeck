@@ -123,7 +123,7 @@ run_stage3_hotplug() {
         hw_checklist "D3.3 P1 fullscreen docked" \
             "P1 Minecraft window fills the entire external display" \
             "The game renders correctly (no black / corruption)" \
-            "Moving the left stick on P1's controller rotates the view" \
+            "P1's left stick moves the player, right stick the camera" \
             "No input from the BUILT-IN Steam Deck buttons affects P1"
     else
         hw_skip "D3.3 checklist skipped"
@@ -156,8 +156,8 @@ run_stage3_hotplug() {
   Press Enter to start the D3.4 checklist, or type 'skip'."; then
         hw_checklist "D3.4 2-player top/bottom split" \
             "External display shows TWO Minecraft windows stacked top/bottom" \
-            "P1 (top half): moving left stick moves P1's view ONLY" \
-            "P2 (bottom half): moving left stick on P2's controller moves P2's view ONLY" \
+            "P1 (top half): P1's sticks affect P1's screen ONLY" \
+            "P2 (bottom half): P2's sticks affect P2's screen ONLY" \
             "Neither player's input affects the other"
     else
         hw_skip "D3.4 checklist skipped"
@@ -193,9 +193,9 @@ run_stage3_hotplug() {
   Press Enter for D3.5 checklist, or type 'skip'."; then
         hw_checklist "D3.5 3-player quad layout" \
             "Top-left=P1, top-right=P2, bottom-left=P3, bottom-right=BLACK placeholder" \
-            "P1 left stick moves P1's view ONLY" \
-            "P2 left stick moves P2's view ONLY" \
-            "P3 left stick moves P3's view ONLY" \
+            "P1's sticks affect P1's screen ONLY" \
+            "P2's sticks affect P2's screen ONLY" \
+            "P3's sticks affect P3's screen ONLY" \
             "Black placeholder (bottom-right) shows no Minecraft content"
     else
         hw_skip "D3.5 checklist skipped"
