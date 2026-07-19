@@ -92,12 +92,13 @@ set -euo pipefail
 # all already env-overridable at their runtime_context.sh home (Group B).
 #
 # Version history (one line per version; details live in git; max 6 lines):
-#   v1.1 2026-07-19  Review fix: never trust a bare pidfile pid — verify
-#                    identity (/proc/<pid>/cmdline) before any kill -0
-#                    liveness check or signal; SIGTERM+poll+SIGKILL
-#                    replaces kill+wait (wait cannot reap a non-child)
-#   v1.0 2026-07-19  #38 M1/PR2: dark module — evsieve symlink-farm proxy
-#                    lifecycle, zero callers, zero state writes
+#   v1.2 2026-07-19  HW-1 fix: every public proxy_* resolves paths
+#                    directly (not via a subshell) before any path-var
+#                    access; _proxy_pidfile fails loud via ${VAR:?} now
+#   v1.1 2026-07-19  Review fix: verify pid identity before any kill -0;
+#                    SIGTERM+poll+SIGKILL replaces kill+wait
+#   v1.0 2026-07-19  #38 M1/PR2: dark module — evsieve symlink-farm
+#                    proxy lifecycle, zero callers, zero state writes
 # =============================================================================
 
 # Sourcing runtime_context.sh here (idempotent, process-local sentinels)
@@ -157,13 +158,22 @@ _proxy_evsieve_bin() {
 # _proxy_pidfile: Return SLOT's on-disk pid-record path — the
 # subshell-safe authoritative liveness record (see the module header's
 # "Implementation note").
+# HW-1 fix: every public proxy_* entry point now calls mcss_resolve_paths
+# directly (not via a command-substitution subshell — see proxy_start_slot/
+# proxy_repoint_slot) before this can be reached, but a bare "$MCSS_HELPER_
+# DIR" read here previously failed as a generic, hard-to-diagnose "unbound
+# variable" if that ordering ever regressed. ${VAR:?msg} fails loud with a
+# message that names the actual contract violation instead.
 # Inputs:
 #   $1 — slot number
 #   Globals: MCSS_HELPER_DIR (read; caller must have resolved paths first)
 # Outputs:
 #   stdout(data) — $MCSS_HELPER_DIR/proxy-slot<N>.pid
+#   return — aborts the calling (sub)shell with an error message if
+#            MCSS_HELPER_DIR is unset — see HW-1 fix note above
 _proxy_pidfile() {
-    echo "$MCSS_HELPER_DIR/proxy-slot$1.pid"
+    local dir="${MCSS_HELPER_DIR:?_proxy_pidfile: resolve paths first}"
+    echo "${dir}/proxy-slot$1.pid"
 }
 
 # _proxy_tracked_pid: Read SLOT's currently-recorded pid, preferring the
@@ -327,6 +337,20 @@ _proxy_kill_verified() {
 #                  slot's pidfile (see _proxy_pidfile)
 proxy_start_slot() {
     local slot="$1" phys_event_node="$2" phys_vendor="$3" phys_product="$4"
+    # HW-1 fix: resolve paths HERE, directly in this function's own shell,
+    # BEFORE any path-var access — including before _proxy_evsieve_bin.
+    # The old order called _proxy_evsieve_bin (which itself calls
+    # mcss_resolve_paths) only inside `bin=$(...)`; command substitution
+    # always forks a subshell, so that resolution's exported vars
+    # (MCSS_HELPER_DIR, MCSS_PROXY_PADS_DIR, ...) died with the subshell
+    # and never reached this function's own scope — the next line down to
+    # touch a path var (_proxy_live_pid -> _proxy_tracked_pid ->
+    # _proxy_pidfile, then this function's own mkdir -p) saw it unset.
+    # Confirmed on-Deck (HW-1): unbound-variable aborts at exactly those
+    # two sites. mcss_resolve_paths is idempotent per process (guarded by
+    # its own non-exported sentinel), so this call is cheap even when
+    # _proxy_evsieve_bin's internal call below re-runs it.
+    mcss_resolve_paths
     local bin
     bin=$(_proxy_evsieve_bin) || return 2
 
@@ -398,6 +422,16 @@ proxy_start_slot() {
 #                  exists from proxy_start_slot); ln -sfn the pads symlink
 proxy_repoint_slot() {
     local slot="$1" phys_event_node="$2"
+    # HW-1: `_proxy_evsieve_bin >/dev/null` (output-redirected, not a
+    # command SUBSTITUTION) does not itself fork a subshell, so this call
+    # already ran mcss_resolve_paths in-scope — this function was not
+    # actually hit by the proxy_start_slot bug (see that function's HW-1
+    # comment). Made explicit anyway, defensively: every public proxy_*
+    # entry point resolving paths directly, as its own first action, means
+    # a future refactor of _proxy_evsieve_bin's call style here (e.g. to
+    # `bin=$(...)`, which WOULD fork a subshell) can't silently reintroduce
+    # the hazard. mcss_resolve_paths is idempotent per process.
+    mcss_resolve_paths
     _proxy_evsieve_bin >/dev/null || return 2
 
     mkdir -p "$MCSS_PROXY_PADS_DIR"
