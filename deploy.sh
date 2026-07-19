@@ -29,6 +29,8 @@
 # older deploy of IDENTICAL code is not reported as drift.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-19  #89: documented as a deliberate duplicate reader (#38
+#                    PR2 adds controller_proxy.sh to the manifest)
 #   v1.2 2026-07-10  #45 PR3/#49: runtime_modules.list is the one manifest
 #   v1.1 2026-07-07  Refresh launcher stamp on module-only redeploys too
 #   v1.0 2026-07-07  Initial deploy/--check tool (issue #54)
@@ -63,6 +65,12 @@ MANIFEST_SOURCE="$MODULES_SRC_DIR/runtime_modules.list"
 # out of launcher_setup with sed) ---
 # runtime_module_list: List the runtime module filenames from the manifest,
 # skipping blank/comment lines.
+# #89: this duplicates install-minecraft-splitscreen.sh's canonical
+# read_runtime_manifest (identical parse rule) rather than sharing it — this
+# is a standalone dev tool with no installer/module sourcing of its own
+# (it does not source ANY modules, by design: it only copies files), so
+# there is no in-process function to reach. Any change to the parse rule
+# must be mirrored in both places.
 # Outputs: stdout — one module filename per line (data only)
 runtime_module_list() {
     grep -vE '^[[:space:]]*(#|$)' "$MANIFEST_SOURCE" 2>/dev/null

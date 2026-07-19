@@ -27,12 +27,13 @@
 # not an oversight.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-19  #89: read_runtime_manifest documented as the canonical
+#                    reader (launcher_setup.sh now reuses it; #38 PR2)
 #   v1.4 2026-07-18  Account prefix "P" -> "Player" for MC account names
 #   v1.3 2026-07-17  Fix #87: canonical JVM heap-default home + paired guards
 #   v1.2 2026-07-10  Fix #45 PR3: API base constants, MCSS_REPO_RAW_URL home,
 #                    runtime_modules.list — one manifest, four readers (#49)
 #   v1.1 2026-07-06  Fix: curl|bash bootstrap survives unset BASH_SOURCE
-#   v1.0 2025-06-11  Initial monolith -> modular entry point
 # =============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -137,6 +138,13 @@ readonly RUNTIME_MANIFEST_NAME="runtime_modules.list"
 declare -a RUNTIME_MODULE_FILES=()
 
 # read_runtime_manifest: Print manifest entries, ignoring comments/blanks.
+# #89: the CANONICAL definition of the manifest parser — three other sites
+# duplicate this exact rule (modules/launcher_setup.sh reuses this very
+# function object via a same-process soft guard when sourced from here, the
+# normal path; minecraftSplitscreen.sh and deploy.sh each carry their own
+# copy with a comment pointing back here, because neither runs in the same
+# process as this installer entry — see their copies for why). Any change
+# to the parse rule must be mirrored in all three.
 # Inputs:
 #   $1 — path to a runtime_modules.list-format manifest
 # Outputs:

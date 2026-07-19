@@ -23,6 +23,12 @@
 #                              via the := guard below, see Fix #87)
 #   MCSS_REPO_RAW_URL       — installer entry; module/launcher download base
 #   SCRIPT_DIR, MODULES_DIR — installer entry (local-checkout fallbacks)
+#   read_runtime_manifest() — #89: install-minecraft-splitscreen.sh's
+#                              canonical manifest parser, already defined
+#                              in-process when this module is sourced from
+#                              the installer entry (the normal path); this
+#                              module soft-guard-redefines it if absent, so
+#                              standalone sourcing (tests) still works
 #
 # Inputs:  GitHub API (PolyMC releases), MCSS_REPO_RAW_URL downloads,
 #          modules/runtime_modules.list (#49 manifest).
@@ -30,6 +36,7 @@
 #          under $TARGET_DIR; version-stamp sed substitution on the launcher.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-19  #89: manifest parse -> shared read_runtime_manifest
 #   v1.4 2026-07-17  Fix #90: delete vestigial Phase-A/JDK/bwrap shims
 #   v1.3 2026-07-17  Fix #87: canonical heap-default home + paired guard
 #   v1.2 2026-07-15  Fix #51 D14: fetch_url replaces curl/wget branching
@@ -197,6 +204,17 @@ setup_splitscreen_launcher_script() {
     return 0
 }
 
+# #89: read_runtime_manifest is install-minecraft-splitscreen.sh's
+# canonical manifest parser. In the normal path this module is SOURCED BY
+# that entry script (same process), so the function is already defined by
+# the time install_runtime_modules() runs below — redefine it here ONLY if
+# absent (cross-module soft guard, STYLE-GUIDE §7.6) so
+# tests/test_installer.sh's standalone `source modules/launcher_setup.sh`
+# (T7.7) keeps passing without depending on the installer entry at all.
+declare -f read_runtime_manifest >/dev/null 2>&1 || read_runtime_manifest() {
+    grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null
+}
+
 # install_runtime_modules: Deploy the runtime orchestrator modules to
 # TARGET_DIR/modules/. Sourced by minecraftSplitscreen.sh at launch time, not
 # at install time. #49: the module list is read from the ONE manifest,
@@ -237,7 +255,7 @@ install_runtime_modules() {
         return 1
     fi
     local runtime_mods=()
-    mapfile -t runtime_mods < <(grep -vE '^[[:space:]]*(#|$)' "$manifest_src")
+    mapfile -t runtime_mods < <(read_runtime_manifest "$manifest_src")
     if [[ ${#runtime_mods[@]} -eq 0 ]]; then
         print_error "$manifest is empty — refusing to deploy a launcher with no runtime modules"
         return 1
