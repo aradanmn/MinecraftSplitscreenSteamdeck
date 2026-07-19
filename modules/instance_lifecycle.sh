@@ -53,12 +53,12 @@ set -euo pipefail
 #   MCSS_LAUNCHER_ROOT — override launcher base dir (resolved by runtime_context.sh)
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-19  Fix #95: document seed/re-assert split for first-boot race
 #   v1.5 2026-07-17  Standard JVM GC flags per instance; setInstanceCfgValue fix
 #   v1.4 2026-07-15  #51/D11,D13: state accessors + shared /proc parser unified
 #   v1.3 2026-07-09  #45: constants/paths sourced from runtime_context.sh
 #   v1.2 2026-07-05  Fix #57 (UNTESTED): map-keeper re-shows late-unmapped win
 #   v1.1 2026-07-01  v1.1 batch: env guard, state-file H3 race fix, 14 audits
-#   v1.0 2026-06-13  Initial extraction: bwrap sandbox + atomic JSON state
 # =============================================================================
 
 # #45: instance prefix, account prefix, window-title prefix, slot count, and
@@ -857,6 +857,22 @@ spawn_instance() {
     rm -f "${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/config/controllable/selected_controllers.json"
 
     # 2.3 Set out_of_focus_input=true so unfocused instances respond to their controller
+    # Fix #95: this write only ever fired when the file already existed, so a
+    # bare fresh instance's TRUE first launch found no file, did nothing here,
+    # and Controlify's own first-boot default write (out_of_focus_input:false)
+    # went unchallenged. instance_creation.sh now seeds this file (with the
+    # flag already true) before any instance's first boot, so the `-f` check
+    # below is true from slot 1's very first spawn onward — this unconditional
+    # jq set (not just a false->true fixup) then re-asserts true every single
+    # launch, seed or no seed, belt-and-suspenders with that install-time seed.
+    # Residual: if Controlify's config loader ever fully regenerates (rather
+    # than field-merges) an unrecognized/partial file instead of preserving
+    # unknown-to-it-but-valid keys, the on-disk file could still flip back to
+    # false sometime during/after that first session — but Controlify reads
+    # the flag into memory at ITS OWN startup, which happens AFTER this write,
+    # so that session's actual input behavior is already correct regardless;
+    # any such later on-disk drift is caught and re-corrected here before the
+    # NEXT launch either way.
     local controlify_cfg="${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/config/controlify.json"
     if [[ -f "$controlify_cfg" ]] && command -v jq >/dev/null 2>&1; then
         local updated_cfg
