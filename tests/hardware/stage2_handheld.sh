@@ -18,7 +18,8 @@ set -euo pipefail
 #
 # Human-in-loop checks:
 #   - Game renders correctly (not black / corrupted)
-#   - Controller input works (left stick moves view)
+#   - Controller input works (left stick moves the player; right stick
+#     moves the camera)
 #   - Audio is audible
 #   - Exit via in-game menu works cleanly
 #
