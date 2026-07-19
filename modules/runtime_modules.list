@@ -13,6 +13,7 @@ dock_detection.sh
 controller_monitor.sh
 kwin_positioner.sh
 window_manager.sh
+controller_proxy.sh
 instance_lifecycle.sh
 watchdog.sh
 orchestrator.sh
