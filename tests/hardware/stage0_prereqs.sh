@@ -141,15 +141,26 @@ run_stage0_prereqs() {
     # -----------------------------------------------------------------------
     # P0.7 — Display is reachable via xdotool
     # -----------------------------------------------------------------------
+    # HW-1 (2026-07-18): getactivewindow needs a focused X window and fails
+    # ("XGetWindowProperty[_NET_ACTIVE_WINDOW] failed", code=1) on a healthy,
+    # reachable gamescope Xwayland root whenever Game Mode is idle in the
+    # Steam UI — an idle gamescope root simply has no _NET_ACTIVE_WINDOW, so
+    # a focus-based probe is the wrong test here (verified on-Deck from both
+    # an SSH shell and a local keyboard session). getdisplaygeometry only
+    # needs the display itself to answer, so it is a true REACHABILITY
+    # check regardless of focus state.
     hw_info "P0.7 — Checking display reachability"
-    hw_log "Running: DISPLAY=${DISPLAY:-:0} xdotool getactivewindow"
+    hw_log "Running: DISPLAY=${DISPLAY:-:0} xdotool getdisplaygeometry"
     local xdotool_out
-    xdotool_out=$(DISPLAY="${DISPLAY:-:0}" xdotool getactivewindow 2>&1 || true)
+    xdotool_out=$(DISPLAY="${DISPLAY:-:0}" xdotool getdisplaygeometry 2>&1 \
+        || true)
     hw_log "xdotool output: ${xdotool_out}"
-    if DISPLAY="${DISPLAY:-:0}" xdotool getactivewindow >/dev/null 2>&1; then
+    if DISPLAY="${DISPLAY:-:0}" xdotool getdisplaygeometry >/dev/null 2>&1
+    then
         hw_pass "P0.7 Display ${DISPLAY:-:0} is reachable via xdotool"
     else
-        hw_fail "P0.7 xdotool getactivewindow failed on DISPLAY=${DISPLAY:-:0}"
+        hw_fail "P0.7 xdotool getdisplaygeometry failed on" \
+            "DISPLAY=${DISPLAY:-:0}"
         prereq_failed=1
     fi
 
