@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_installer.sh
 # =============================================================================
 
-readonly TEST_TOTAL=9
+readonly TEST_TOTAL=12
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -335,6 +335,118 @@ test_t7_10() {
 }
 
 # =============================================================================
+# T7.11 — select_user_mods' "-1" prompt line derives the required-mod
+# summary from mods.conf (REQUIRED_SPLITSCREEN_MODS) instead of a hardcoded
+# name. It used to always say "(Controlify)", stale since mods.conf grew
+# more required mods.
+# =============================================================================
+test_t7_11() {
+    local mod_mgmt="$REPO_ROOT/modules/mod_management.sh"
+
+    local has_derived=0 has_hardcoded=0
+    # shellcheck disable=SC2016  # literal fixed-string match, no expansion
+    if grep -qF 'Install only required mods ($(_required_mods_summary))' \
+        "$mod_mgmt"; then
+        has_derived=1
+    fi
+    if grep -qF 'Install only required mods (Controlify)' "$mod_mgmt"; then
+        has_hardcoded=1
+    fi
+
+    if (( has_derived == 1 && has_hardcoded == 0 )); then
+        _pass "T7.11 — required-mods summary derived, not hardcoded"
+    else
+        local msg="expected the derived-summary call and no hardcoded"
+        msg+=" '(Controlify)' (derived=${has_derived},"
+        msg+=" hardcoded=${has_hardcoded})"
+        _fail "T7.11" "$msg"
+    fi
+}
+
+# =============================================================================
+# T7.12 — select_user_mods skips the interactive prompt entirely when
+# mods.conf has no optional mods (every mod is "required" — Fix, 2026-07-19:
+# an empty "available mods" list that still prompted was vestigial).
+# =============================================================================
+test_t7_12() {
+    local result
+    result=$(
+        bash -c "
+            set -euo pipefail
+
+            print_header()   { :; }
+            print_info()     { echo \"[INFO] \$*\"; }
+            print_progress() { :; }
+            print_success()  { :; }
+            print_error()    { echo \"[ERROR] \$*\" >&2; }
+            print_warning()  { :; }
+            print_debug()    { :; }
+
+            declare -a SUPPORTED_MODS=(\"Controlify\" \"Sodium\")
+            declare -a REQUIRED_SPLITSCREEN_MODS=(\"Controlify\" \"Sodium\")
+            declare -a MOD_IDS=(\"id1\" \"id2\")
+            declare -a MOD_TYPES=(\"modrinth\" \"modrinth\")
+            declare -a MOD_DEPENDENCIES=(\"\" \"\")
+            declare -A MOD_DEPS_BY_NAME=()
+            declare -a FINAL_MOD_INDEXES=()
+            MC_VERSION=\"1.21.6\"
+
+            source '${REPO_ROOT}/modules/mod_management.sh' 2>/dev/null \
+                || true
+
+            # Neutralize the downstream pipeline (network calls, the custom-
+            # mods prompt) — this test targets only select_user_mods' own
+            # prompt-skip branch, not the rest of the pipeline.
+            resolve_conf_dependencies() { :; }
+            resolve_all_dependencies()  { :; }
+            prompt_custom_mods()        { :; }
+
+            select_user_mods < /dev/null
+
+            echo \"FINAL_COUNT=\${#FINAL_MOD_INDEXES[@]}\"
+        " 2>&1
+    )
+
+    if echo "$result" | grep -q "nothing to select" \
+        && echo "$result" | grep -q "^FINAL_COUNT=2$" \
+        && ! echo "$result" | grep -qi "Your choice"; then
+        _pass "T7.12 — select_user_mods skips the prompt (no optional mods)"
+    else
+        _fail "T7.12" "expected prompt-skip path (result: ${result})"
+    fi
+}
+
+# =============================================================================
+# T7.13 — create_desktop_launcher() is gated behind
+# MCSS_ENABLE_DESKTOP_LAUNCHER (default off, Desktop Mode unsupported as of
+# v1.2) in main_workflow.sh, and the module itself is NOT deleted.
+# =============================================================================
+test_t7_13() {
+    local workflow="$REPO_ROOT/modules/main_workflow.sh"
+    local desktop_mod="$REPO_ROOT/modules/desktop_launcher.sh"
+
+    local has_gate=0 has_skip_msg=0 has_function=0
+    if grep -Eq 'MCSS_ENABLE_DESKTOP_LAUNCHER:-0.*==.*"1"' "$workflow"; then
+        has_gate=1
+    fi
+    if grep -qF 'Desktop launcher: skipped (desktop mode unsupported)' \
+        "$workflow"; then
+        has_skip_msg=1
+    fi
+    if grep -q '^create_desktop_launcher()' "$desktop_mod"; then
+        has_function=1
+    fi
+
+    if (( has_gate == 1 && has_skip_msg == 1 && has_function == 1 )); then
+        _pass "T7.13 — desktop launcher gated (default off); module kept"
+    else
+        local msg="gate=${has_gate} skip_msg=${has_skip_msg}"
+        msg+=" module_fn=${has_function}"
+        _fail "T7.13" "$msg"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== installer test suite ==="
@@ -348,6 +460,9 @@ test_t7_7
 test_t7_8
 test_t7_9
 test_t7_10
+test_t7_11
+test_t7_12
+test_t7_13
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

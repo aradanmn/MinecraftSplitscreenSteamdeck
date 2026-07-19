@@ -17,12 +17,15 @@
 #   MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX — installer
 #     entry constants
 #   MCSS_REPO_RAW_URL, MODS, REPO_REF, TARGET_DIR — installer entry
+#   MCSS_ENABLE_DESKTOP_LAUNCHER — opt-in gate for create_desktop_launcher();
+#     default off, Desktop Mode is unsupported as of v1.2
 #
 # Inputs:  user prompts; delegates to every other installer module.
 # Outputs: full install under TARGET_DIR; summary report to stdout/stderr
 #          via print_* and plain echo.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-19  Gate create_desktop_launcher: default off (unsupported)
 #   v1.2 2026-07-15  Fix #51 D14: fetch_url replaces the bare wget call
 #   v1.1 2026-07-10  Fix #45 PR3/D15: MCSS_REPO_RAW_URL adopted for downloads
 #   v1.0 2026-06-14  Initial extraction: phased workflow, runtime modules,
@@ -178,7 +181,17 @@ main() {
     # aborts the install; MCSS_CONTROLLER_PROXY stays OFF until PR7.
     install_evsieve
     setup_steam_integration     # Add splitscreen launcher to Steam library (optional)
-    create_desktop_launcher     # Create native desktop launcher and app menu entry (optional)
+
+    # Desktop Mode is unsupported as of v1.2 (splitscreen needs the Game
+    # Mode / gamescope compositor stack) — skip the interactive "DESKTOP
+    # LAUNCHER SETUP" prompt by default. Set MCSS_ENABLE_DESKTOP_LAUNCHER=1
+    # to re-enable it; the module stays in place for when Desktop Mode
+    # gains support, it is just not called from here.
+    if [[ "${MCSS_ENABLE_DESKTOP_LAUNCHER:-0}" == "1" ]]; then
+        create_desktop_launcher    # Desktop shortcut + app menu entry
+    else
+        print_info "Desktop launcher: skipped (desktop mode unsupported)"
+    fi
     
     # =============================================================================
     # INSTALLATION COMPLETION AND STATUS REPORTING
