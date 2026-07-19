@@ -29,12 +29,14 @@
 #
 # Inputs:  mods.conf-derived arrays, Modrinth API, Fabric loader files.
 # Outputs: PolyMC instance dirs + mmc-pack.json/instance.cfg written under
-#          $TARGET_DIR/instances; print_* status to stderr.
+#          $TARGET_DIR/instances; config/controlify.json seeded with
+#          out_of_focus_input:true; print_* status to stderr.
 #
 # This module is sourced, not executed — no `set -euo pipefail` here by
 # design; callers run under the entry script's strict mode.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-19  Fix #95: seed controlify.json out_of_focus_input=true
 #   v1.3 2026-07-17  Per-instance JVM GC flags; #87 heap-default canonical home
 #   v1.2 2026-07-15  Fix #51 D8/D14: single mmc-pack.json writer + fetch_url
 #   v1.1 2026-07-10  Fix #45 PR3: installer constants pairing + literal sweep
@@ -709,9 +711,41 @@ key_key.hotbar.8:key.keyboard.8
 key_key.hotbar.9:key.keyboard.9
 EOF
     fi
-    
+
     print_success "Audio configuration complete for $instance_name"
-    
+
+    # Fix #95: seed Controlify's out_of_focus_input flag BEFORE first boot.
+    # Controlify writes its own default config (out_of_focus_input:false) the
+    # first time an instance launches; spawn_instance's pre-launch jq patch
+    # (instance_lifecycle.sh "2.3") only fires when the file already exists,
+    # so on a bare fresh instance that first-ever launch always won the race
+    # and left unfocused splitscreen players' controllers dead. Seeding here
+    # means the file exists before Controlify ever runs, so its own loader
+    # merges onto our value instead of generating defaults from nothing.
+    local controlify_cfg="$instance_dir/.minecraft/config/controlify.json"
+    mkdir -p "$(dirname "$controlify_cfg")"
+    if [[ -f "$controlify_cfg" ]]; then
+        # Re-install over an existing instance: merge the flag in, don't
+        # clobber whatever else Controlify has already written (bindings,
+        # per-controller profiles, etc).
+        if command -v jq >/dev/null 2>&1; then
+            local seeded_cfg
+            seeded_cfg=$(jq '.global.out_of_focus_input = true' \
+                "$controlify_cfg" 2>/dev/null)
+            if [[ -n "$seeded_cfg" ]]; then
+                echo "$seeded_cfg" > "$controlify_cfg"
+                local reassert_msg="   → Re-asserted Controlify"
+                reassert_msg+=" out_of_focus_input=true (existing config)"
+                print_info "$reassert_msg"
+            fi
+        fi
+    else
+        printf '{"global":{"out_of_focus_input":true}}\n' > "$controlify_cfg"
+        local seed_msg="   → Seeded Controlify out_of_focus_input=true"
+        seed_msg+=" ahead of first boot"
+        print_info "$seed_msg"
+    fi
+
     print_success "Fabric and mods installation complete for $instance_name"
     
     # Restore original error handling setting

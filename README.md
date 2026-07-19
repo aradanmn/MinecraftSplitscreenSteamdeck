@@ -69,6 +69,8 @@ The installer downloads Minecraft and the splitscreen pieces and adds a **"Minec
 3. Each connected controller gets its own section of the screen; the layout re-tiles as players join or leave.
 4. Play together!
 
+*(Each instance's very first launch downloads Minecraft's assets and lets mods finish initializing, so it can take a little while — give every player's screen time to reach the main menu before judging responsiveness. Later launches are fast once everything's cached.)*
+
 *(To play together in the same world, one player creates a world and opens it to LAN, and the others join from the Multiplayer menu — automatic shared-world setup isn't built yet.)*
 
 ---
