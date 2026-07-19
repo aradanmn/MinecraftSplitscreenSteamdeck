@@ -201,7 +201,17 @@ elif (( rc != 0 )); then
         "no 054c js-bearing pad detected; cannot proceed"
     exit 1
 fi
-ev_orig="${ds4%% *}"
+# HW-1 fix: find_ds4_event_node's own contract (see its docstring in
+# probe-evsieve-reconnect.sh) returns "/dev/input/eventN jsN" — the FIRST
+# field is already the full node path, not a bare number. The bare-number
+# extraction (needed for _find_ds4_vendor_product's eventN-keyed match,
+# and for the "eventN"-prefixed log text below) must strip the path,
+# same "${var##*event}" pattern _assert_not_steam_vendor already uses.
+# Confirmed on-Deck (HW-1): treating the full path as a bare number
+# produced the malformed "event/dev/input/event18" log/device-id string
+# and made _find_ds4_vendor_product's eventN match always miss.
+ev_orig_node="${ds4%% *}"
+ev_orig="${ev_orig_node##*event}"
 
 vnd_prd="" vnd="" prd=""
 if vnd_prd=$(_find_ds4_vendor_product "$ev_orig"); then
@@ -215,14 +225,20 @@ else
          "stays keyed off vendor per D3)" >&2
 fi
 
-_start_node_watcher "/dev/input/event${ev_orig}"
+_start_node_watcher "$ev_orig_node"
 
 echo "[probe] starting proxy: slot=${PROXY_SLOT}" \
      "event${ev_orig} ${vnd}:${prd}" >&2
+# HW-1 fix: capture the TRUE rc before any `!`/negation touches $? — the
+# old `if ! pid=$(...); then rc=$?; ...` read $? INSIDE the negated
+# branch, where it always reflects the (0, true) result of the `!` test
+# itself, never proxy_start_slot's real exit code. Confirmed on-Deck
+# (HW-1): the verdict logged "rc=0" for an actual proxy_start_slot
+# failure. Plain sequential capture reports the real code.
 pid=""
-if ! pid=$(proxy_start_slot "$PROXY_SLOT" "/dev/input/event${ev_orig}" \
-    "$vnd" "$prd"); then
-    rc=$?
+pid=$(proxy_start_slot "$PROXY_SLOT" "$ev_orig_node" "$vnd" "$prd")
+rc=$?
+if (( rc != 0 )); then
     emit_verdict H5_REPOINT FAIL \
         "proxy_start_slot failed (rc=${rc}) — cannot proceed"
     exit 1
@@ -324,9 +340,11 @@ if ! wait_for_ds4 "$RECONNECT_WAIT_S"; then
     exit 1
 fi
 
-ds4_new="" ev_new=""
+# HW-1 fix: same full-path-vs-bare-number contract as ev_orig above.
+ds4_new="" ev_new_node="" ev_new=""
 ds4_new=$(find_ds4_event_node)
-ev_new="${ds4_new%% *}"
+ev_new_node="${ds4_new%% *}"
+ev_new="${ev_new_node##*event}"
 echo "[probe] new physical node: event${ev_new} (was event${ev_orig})" >&2
 if [[ "$ev_new" == "$ev_orig" ]]; then
     echo "[probe] WARN: eventN did not actually change (${ev_new}) —" \
@@ -335,7 +353,7 @@ if [[ "$ev_new" == "$ev_orig" ]]; then
 fi
 
 repoint_rc=0
-proxy_repoint_slot "$PROXY_SLOT" "/dev/input/event${ev_new}" || repoint_rc=$?
+proxy_repoint_slot "$PROXY_SLOT" "$ev_new_node" || repoint_rc=$?
 if (( repoint_rc == 2 )); then
     emit_verdict H5_REPOINT FAIL \
         "proxy_repoint_slot: MCSS_EVSIEVE_BIN unavailable"

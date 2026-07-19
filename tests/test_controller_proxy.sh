@@ -32,7 +32,7 @@ set -euo pipefail
 # Run: bash tests/test_controller_proxy.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=15
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 readonly REPO_ROOT
@@ -686,6 +686,182 @@ test_t12() {
 }
 
 # =============================================================================
+# T13 — HW-1 regression: proxy_start_slot in a truly clean process (env -i,
+#       `set -u`, NO MCSS_* pre-set at all — unlike every test above, which
+#       calls _configure_env and so always pre-sets MCSS_HELPER_DIR/
+#       MCSS_PROXY_PADS_DIR/MCSS_PROXY_VIRT_DIR before sourcing, masking
+#       any ordering bug in path resolution) with MCSS_EVSIEVE_BIN left
+#       UNSET — must return 2 cleanly, no unbound-variable errors.
+# =============================================================================
+test_t13() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    local out="$tmp/stdout.log" err="$tmp/stderr.log" rc=0
+    env -i \
+        PATH="$PATH" \
+        HOME="$tmp/home" \
+        XDG_RUNTIME_DIR="$tmp/xdg-runtime" \
+        CM_MODULE="$CONTROLLER_MONITOR_MODULE" \
+        PROXY_MODULE="$MODULE" \
+        bash -c '
+            set -u
+            # shellcheck disable=SC1090
+            source "$CM_MODULE"
+            # shellcheck disable=SC1090
+            source "$PROXY_MODULE"
+            proxy_start_slot 1 /dev/input/event7 054c 09cc
+        ' >"$out" 2>"$err" || rc=$?
+
+    ok=1
+    [[ "$rc" -eq 2 ]] || { ok=0; echo "  rc=$rc (want 2)" >&2; }
+    [[ ! -s "$out" ]] || { ok=0; echo "  stdout: $(cat "$out")" >&2; }
+    if grep -qi 'unbound variable' "$err"; then
+        ok=0
+        echo "  unbound-variable error present:" >&2
+        cat "$err" >&2
+    fi
+
+    if (( ok == 1 )); then
+        _pass "T13 — clean process, MCSS_EVSIEVE_BIN unset: -> 2 cleanly, \
+no unbound-variable errors"
+    else
+        _fail "T13" "see stderr above"
+    fi
+}
+
+# =============================================================================
+# T14 — HW-1 regression, THE ACTUAL DECK REPRO: T13 alone does NOT catch
+#       the on-Deck bug — MCSS_EVSIEVE_BIN unset makes proxy_start_slot
+#       return early (via _proxy_evsieve_bin's own `|| return 2`) before
+#       ever reaching a SECOND path-var access in proxy_start_slot's own
+#       (non-subshell) scope. The real bug needed a RESOLVABLE evsieve
+#       binary: proxy_start_slot's old first line, `bin=$(_proxy_evsieve_
+#       bin) || return 2`, resolved paths only inside that command-
+#       substitution subshell, so a subsequent bare access in this
+#       function's own scope (_proxy_live_pid -> ... -> _proxy_pidfile,
+#       then this function's own mkdir -p) saw MCSS_HELPER_DIR/
+#       MCSS_PROXY_PADS_DIR unbound. Confirmed empirically against the
+#       pre-fix module: this exact test (env -i, set -u, no MCSS_* preset,
+#       a resolvable evsieve stub) reproduced the identical two-line-166 +
+#       one-line-347 unbound-variable sequence from the Deck evidence.
+# =============================================================================
+test_t14() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    local evsieve_bin="$tmp/evsieve"
+    _write_evsieve_stub "$evsieve_bin"
+    local fake_node="$tmp/fake-node"
+    : > "$fake_node"
+    local calls="$tmp/calls.log"
+    : > "$calls"
+
+    local out="$tmp/stdout.log" err="$tmp/stderr.log" rc=0
+    env -i \
+        PATH="$PATH" \
+        HOME="$tmp/home" \
+        XDG_RUNTIME_DIR="$tmp/xdg-runtime" \
+        MCSS_EVSIEVE_BIN="$evsieve_bin" \
+        CALLS="$calls" \
+        FAKE_NODE="$fake_node" \
+        CM_MODULE="$CONTROLLER_MONITOR_MODULE" \
+        PROXY_MODULE="$MODULE" \
+        bash -c '
+            set -u
+            # shellcheck disable=SC1090
+            source "$CM_MODULE"
+            # shellcheck disable=SC1090
+            source "$PROXY_MODULE"
+            proxy_start_slot 1 /dev/input/event7 054c 09cc
+            proxy_stop_slot 1
+        ' >"$out" 2>"$err" || rc=$?
+
+    ok=1
+    [[ "$rc" -eq 0 ]] || { ok=0; echo "  rc=$rc (want 0)" >&2; }
+    local pid
+    pid="$(head -n1 "$out" 2>/dev/null)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || { ok=0; echo "  pid=$pid" >&2; }
+    if grep -qi 'unbound variable' "$err"; then
+        ok=0
+        echo "  unbound-variable error present (the on-Deck bug):" >&2
+        cat "$err" >&2
+    fi
+
+    if (( ok == 1 )); then
+        _pass "T14 — clean process, resolvable evsieve, NO pre-set path \
+vars: proxy_start_slot succeeds, no unbound-variable errors (Deck repro)"
+    else
+        _fail "T14" "see stderr above"
+    fi
+}
+
+# =============================================================================
+# T15 — HW-1 lead 2, investigated and REFUTED as a distinct bug (see the
+#       commit message for the empirical trace): a pre-exported
+#       MCSS_ENV_CONTEXT (Game Mode session env leaking into a probe's
+#       shell) does NOT make mcss_resolve_paths or controller_proxy.sh's
+#       own sourcing a no-op — mcss_resolve_paths is gated by its OWN
+#       process-local, NEVER-exported sentinel (_MCSS_PATHS_DONE; see
+#       runtime_context.sh's "Load-guard rule"), not by MCSS_ENV_CONTEXT.
+#       Pinned here as a regression guard: T14's exact scenario, plus
+#       MCSS_ENV_CONTEXT pre-exported, must still succeed cleanly.
+# =============================================================================
+test_t15() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    local evsieve_bin="$tmp/evsieve"
+    _write_evsieve_stub "$evsieve_bin"
+    local fake_node="$tmp/fake-node"
+    : > "$fake_node"
+    local calls="$tmp/calls.log"
+    : > "$calls"
+
+    local out="$tmp/stdout.log" err="$tmp/stderr.log" rc=0
+    env -i \
+        PATH="$PATH" \
+        HOME="$tmp/home" \
+        XDG_RUNTIME_DIR="$tmp/xdg-runtime" \
+        MCSS_ENV_CONTEXT="gamescope" \
+        MCSS_EVSIEVE_BIN="$evsieve_bin" \
+        CALLS="$calls" \
+        FAKE_NODE="$fake_node" \
+        CM_MODULE="$CONTROLLER_MONITOR_MODULE" \
+        PROXY_MODULE="$MODULE" \
+        bash -c '
+            set -u
+            # shellcheck disable=SC1090
+            source "$CM_MODULE"
+            # shellcheck disable=SC1090
+            source "$PROXY_MODULE"
+            proxy_start_slot 1 /dev/input/event7 054c 09cc
+            proxy_stop_slot 1
+        ' >"$out" 2>"$err" || rc=$?
+
+    ok=1
+    [[ "$rc" -eq 0 ]] || { ok=0; echo "  rc=$rc (want 0)" >&2; }
+    local pid
+    pid="$(head -n1 "$out" 2>/dev/null)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || { ok=0; echo "  pid=$pid" >&2; }
+    if grep -qi 'unbound variable' "$err"; then
+        ok=0
+        echo "  unbound-variable error present:" >&2
+        cat "$err" >&2
+    fi
+
+    if (( ok == 1 )); then
+        _pass "T15 — MCSS_ENV_CONTEXT pre-exported does not block path \
+resolution: proxy_start_slot still succeeds cleanly"
+    else
+        _fail "T15" "see stderr above"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== controller_proxy test suite ==="
@@ -702,6 +878,9 @@ test_t9
 test_t10
 test_t11
 test_t12
+test_t13
+test_t14
+test_t15
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
