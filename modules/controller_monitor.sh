@@ -24,7 +24,8 @@ set -euo pipefail
 # Raw is now the DEFAULT. See docs/RAW-CONTROLLER-BIND-PLAN.md and [[controller-isolation-sdl-udev-leak]].
 #
 # Public API:
-#   list_eligible_controllers(mode)     — stdout: "event_node js_node vendor product" lines
+#   list_eligible_controllers(mode)     — stdout: "event_node js_node vendor
+#     product uniq" lines (uniq may be empty; #38 PR3 field 8, see below)
 #   start_controller_monitor(mode)      — blocks; writes CONTROLLER_ADD/REMOVE to FIFO
 #   get_controller_by_index(index, mode) — stdout: "event_node js_node" or empty
 #
@@ -61,6 +62,8 @@ set -euo pipefail
 #   CONTROLLER_MONITOR_DEBOUNCE_MS  — override the add-event debounce window
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-19  #38 PR3: parse_input_device_blocks field 8 (uniq);
+#                    threaded (inert) through every read site + CONTROLLER_ADD
 #   v1.4 2026-07-15  Fix #51 (D13): parse_input_device_blocks (/proc parser)
 #   v1.3 2026-07-09  #45: vendor/product/slot/raw-binding globals via
 #                    runtime_context.sh
@@ -131,12 +134,16 @@ _get_proc_input_path() {
 #   stdout — one line per device block, fields separated by the ASCII unit
 #     separator \x1f (NOT tab/space: those are IFS whitespace, so empty
 #     fields would collapse and shift columns on read):
-#     vendor, product, name, handlers, sysfs, phys, keybits
+#     vendor, product, name, handlers, sysfs, phys, keybits, uniq
 #     vendor/product: 4-hex lowercase or empty if unparsed; name/handlers/
-#     sysfs/phys: the raw N:/H:/S:/P: values (may be empty); keybits: the
-#     "B: KEY=" bitmap only (other B: lines ignored). Consume with:
+#     sysfs/phys/uniq: the raw N:/H:/S:/P:/U: values (may be empty); keybits:
+#     the "B: KEY=" bitmap only (other B: lines ignored). #38 PR3: uniq (the
+#     `U: Uniq=` line, e.g. a Bluetooth MAC) is field 8, APPENDED so existing
+#     7-var readers stay backward-compatible (they must still be updated to
+#     an 8-var read — see the module's read-site list — otherwise `read`
+#     slurps "$keybits\x1f$uniq" into keybits). Consume with:
 #     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-#         keybits; do ...
+#         keybits uniq; do ...
 #   return — 1 if the proc file is missing/unreadable
 parse_input_device_blocks() {
     local proc_path="${1:-$(_get_proc_input_path)}"
@@ -144,16 +151,18 @@ parse_input_device_blocks() {
 
     local in_block=0 line
     local vendor="" product="" name="" handlers="" sysfs="" phys="" keybits=""
+    local uniq=""
     _emit_block() {
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$vendor" \
-            "$product" "$name" "$handlers" "$sysfs" "$phys" "$keybits"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$vendor" \
+            "$product" "$name" "$handlers" "$sysfs" "$phys" "$keybits" \
+            "$uniq"
     }
     while IFS= read -r line; do
         if [[ -z "$line" ]]; then
             (( in_block )) && _emit_block
             in_block=0
             vendor=""; product=""; name=""; handlers=""; sysfs=""; phys=""
-            keybits=""
+            keybits=""; uniq=""
             continue
         fi
         in_block=1
@@ -168,6 +177,7 @@ parse_input_device_blocks() {
             H:*) handlers="${line#H: Handlers=}" ;;
             S:*) sysfs="${line#S: Sysfs=}" ;;
             P:*) phys="${line#P: Phys=}" ;;
+            U:*) uniq="${line#U: Uniq=}" ;;
             B:*)
                 # Only the KEY bitmap matters; ignore ABS=/REL=/MSC= etc.
                 [[ "$line" == "B: KEY="* ]] && keybits="${line#B: KEY=}"
@@ -199,9 +209,11 @@ _parse_steam_virtual_devices() {
     # Fix #51 (D13): block capture via parse_input_device_blocks; this
     # function keeps only its own keying (28de:11ff filter, LAST event/js
     # token — no break, matching the original).
-    local vendor product name handlers sysfs phys keybits _h
+    # shellcheck disable=SC2034  # uniq: #38 PR3 8-var read (field-8 arity);
+    # this function doesn't key on uniq, so it's read and discarded.
+    local vendor product name handlers sysfs phys keybits uniq _h
     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-        keybits; do
+        keybits uniq; do
         [[ "$vendor" == "$MCSS_STEAM_VENDOR_ID" ]] || continue
         [[ "$product" == "$MCSS_STEAM_PRODUCT_ID" ]] || continue
         local eventN="" jsN=""
@@ -239,9 +251,12 @@ _parse_all_gamepad_devices() {
     # Fix #51 (D13): block capture via parse_input_device_blocks; this
     # function keeps only its own keying (any block with a js handler,
     # FIRST event/js token — break, matching the original).
-    local vendor product name handlers sysfs phys keybits _h
+    # shellcheck disable=SC2034  # uniq: #38 PR3 8-var read (field-8 arity);
+    # this function's OWN output contract stays 6-field (untouched) — uniq
+    # is read and discarded here, never appended to the echoed line.
+    local vendor product name handlers sysfs phys keybits uniq _h
     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-        keybits; do
+        keybits uniq; do
         local jsN=""
         for _h in $handlers; do
             case "$_h" in
@@ -318,15 +333,18 @@ _eventN_to_virtual_idx() {
 # DO NOT key identity on `uniq`/MAC/serial: some DS4 units report the SAME Bluetooth MAC,
 # so two of them would collide. We match purely by inputN creation order + device nodes,
 # which stays correct even for same-MAC pads (each still gets its own inputN/event/js).
+# #38 PR3: the public emit gained a 5th (uniq) field for arity-uniformity
+# with _list_raw_external_pads — this function ALWAYS emits it EMPTY; the
+# DO-NOT-key-on-uniq rule above stays true, uniq passes through inert.
 #
 # Inputs:
 #   Globals: MCSS_STEAM_VENDOR_ID, MCSS_STEAM_PRODUCT_ID, MCSS_MAX_PLAYERS
 #     (read)
 # Outputs:
 #   stdout — one line per claimed virtual:
-#     "<eventN> <jsN> <ext_vendor> <ext_product>" (event/js are the
-#     VIRTUAL's; vendor/product are the matched external's). Capped at
-#     MCSS_MAX_PLAYERS.
+#     "<eventN> <jsN> <ext_vendor> <ext_product> <uniq>" (event/js are the
+#     VIRTUAL's; vendor/product are the matched external's; uniq is ALWAYS
+#     empty — see the #38 PR3 note above). Capped at MCSS_MAX_PLAYERS.
 #   side effects — diagnostic enumeration lines to stderr, plus a
 #     `[vpad-probe]` tagged line per claim (grep'd by
 #     tests/probe-controller-reconnect.sh)
@@ -390,6 +408,12 @@ _map_external_player_virtuals() {
             # or whether Steam minted a fresh one (new numbers) — see the reconnect-identity
             # research doc and issue #38. Reused by tests/probe-controller-reconnect.sh.
             echo "[vpad-probe] t=$(_get_epoch_ms) ext=${e_ven}:${e_prod} ext_input=${e_input} virtual_input=${pv_input} virtual_event=${pv_ev} virtual_js=${pv_js}" >&2
+            # #38 PR3: uniq is ALWAYS empty on this path (see the
+            # DO-NOT-key-on-uniq docstring note above) — omit rather than
+            # append a literal trailing space, so this line stays
+            # byte-identical to pre-PR3 output (a 5-var reader still sees
+            # field 5 as empty either way; awk/`read` don't distinguish
+            # "absent" from "present-but-empty" trailing fields).
             echo "${pv_ev} ${pv_js} ${e_ven} ${e_prod}"
             count=$((count + 1))
         else
@@ -447,7 +471,9 @@ _has_gamepad_buttons() {
 #   3) VENDOR GATE: drop vendor == CONTROLLER_MONITOR_STEAM_VENDOR (28de) — both 11ff
 #      virtuals AND any 1205 that bears a js. All other vendors kept (do NOT hardcode 054c).
 #   4) inputN parsed from the sysfs tail; skip rows missing inputN/eventN/jsN.
-#   5) collect internal records (sysfs+phys kept ONLY for in-pass dedup; never emitted).
+#   5) collect internal records (sysfs+phys kept ONLY for in-pass dedup;
+#      never emitted; uniq — #38 PR3 field 8 — threaded through to the
+#      public emit, step 10).
 #   6) SHARED-PARENT DEDUP: parent key = sysfs with a trailing /input/inputN (or bare
 #      /inputN) stripped, phys fallback when sysfs empty; keep the LOWEST jsN per key
 #      (collapses an 8BitDo dual-js under one uhid). NOTE: a BT uhid key is per-CONNECTION
@@ -463,13 +489,17 @@ _has_gamepad_buttons() {
 #      >&2 warning (possible same pad on USB+BT OR two identical pads). Do NOT auto-collapse
 #      (VID:PID dedup would wrongly merge two identical same-MAC DS4s).
 #   9) CAP at MCSS_MAX_PLAYERS AFTER the sort.
-#  10) EMIT "<eventN> <jsN> <vendor> <product>" — the pad's OWN raw nodes (the
-#      list_eligible_controllers docked branch prefixes /dev/input/event and /dev/input/js,
-#      preserving the 4-field public contract). keybits/sysfs/phys are NEVER emitted.
+#  10) EMIT "<eventN> <jsN> <vendor> <product> <uniq>" — the pad's OWN raw
+#      nodes (the list_eligible_controllers docked branch prefixes
+#      /dev/input/event and /dev/input/js, preserving the field contract).
+#      keybits/sysfs/phys are NEVER emitted; uniq (#38 PR3 field 8, may be
+#      empty) IS emitted as field 5 — inert (no gate/dedup keys on it;
+#      identity here stays sysfs-parent + inputN/eventN as documented above).
 # Inputs:
 #   Globals: MCSS_STEAM_VENDOR_ID, MCSS_MAX_PLAYERS (read)
 # Outputs:
-#   stdout — one line per surviving pad: "<eventN> <jsN> <vendor> <product>"
+#   stdout — one line per surviving pad:
+#     "<eventN> <jsN> <vendor> <product> <uniq>"
 #   return — 1 if the proc path is missing
 _list_raw_external_pads() {
     local proc_path
@@ -480,7 +510,10 @@ _list_raw_external_pads() {
         return 1
     fi
 
-    local -a records=()   # surviving internal rows: "inputN eventN jsN vendor product sysfs phys"
+    # surviving internal rows, \x1f-joined (NOT space-joined — sysfs/phys/
+    # uniq can each independently be empty; see the \x1f rationale at
+    # records+= below): "inputN eventN jsN vendor product sysfs phys uniq"
+    local -a records=()
 
     # _consider: apply per-block gates (steps 1-5) to the just-parsed block; on survival
     # append an internal record. Reads the block-capture locals (handlers, vendor, …) via
@@ -509,28 +542,40 @@ _list_raw_external_pads() {
         local _inputn=""
         [[ "$sysfs" =~ input([0-9]+)$ ]] && _inputn="${BASH_REMATCH[1]}"
         [[ -z "$_inputn" || -z "$_eventN" || -z "$_jsN" ]] && return 0
-        # step 5: collect (sysfs+phys retained for dedup ONLY).
-        records+=("$_inputn $_eventN $_jsN ${vendor:-0000} ${product:-0000} ${sysfs:-} ${phys:-}")
+        # step 5: collect (sysfs+phys retained for dedup ONLY; uniq threaded
+        # through to the public emit, step 10). \x1f-joined: sysfs/phys/uniq
+        # can each independently be empty, and an empty MIDDLE field in a
+        # space-joined record would collapse under a whitespace-splitting
+        # `read`, shifting every field after it (the exact hazard
+        # parse_input_device_blocks' own \x1f already guards against).
+        local _rec_line
+        printf -v _rec_line '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+            "$_inputn" "$_eventN" "$_jsN" "${vendor:-0000}" \
+            "${product:-0000}" "${sysfs:-}" "${phys:-}" "${uniq:-}"
+        records+=("$_rec_line")
     }
 
     # Fix #51 (D13): block capture via parse_input_device_blocks — the read
     # vars keep their names so _consider's dynamic-scope reads are unchanged.
     # Process substitution (not a pipe): _consider appends to `records` and
     # must run in THIS shell (see the subshell-trap note at the top).
-    local vendor product name handlers sysfs phys keybits
+    local vendor product name handlers sysfs phys keybits uniq
     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-        keybits; do
+        keybits uniq; do
         _consider
     done < <(parse_input_device_blocks "$proc_path")
     unset -f _consider
 
     # step 6: SHARED-PARENT DEDUP — keep the lowest jsN per parent device.
     local -A _best_js=()    # parent key → lowest jsN seen
-    local -A _best_row=()   # parent key → emit row "inputN eventN jsN vendor product"
+    # parent key → emit row, \x1f-joined:
+    # "inputN eventN jsN vendor product uniq"
+    local -A _best_row=()
     local _rec
     for _rec in "${records[@]}"; do
-        local r_input r_ev r_js r_vn r_pr r_sysfs r_phys
-        read -r r_input r_ev r_js r_vn r_pr r_sysfs r_phys <<< "$_rec"
+        local r_input r_ev r_js r_vn r_pr r_sysfs r_phys r_uniq
+        IFS=$'\x1f' read -r r_input r_ev r_js r_vn r_pr r_sysfs r_phys \
+            r_uniq <<< "$_rec"
         local _key="$r_sysfs"
         if [[ -n "$_key" ]]; then
             # strip a trailing /input/inputN (or bare /inputN) → the device-node parent path
@@ -542,7 +587,10 @@ _list_raw_external_pads() {
         local _prev_js="${_best_js[$_key]:-}"
         if [[ -z "$_prev_js" ]] || (( r_js < _prev_js )); then
             _best_js[$_key]="$r_js"
-            _best_row[$_key]="$r_input $r_ev $r_js $r_vn $r_pr"
+            local _best_line
+            printf -v _best_line '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+                "$r_input" "$r_ev" "$r_js" "$r_vn" "$r_pr" "$r_uniq"
+            _best_row[$_key]="$_best_line"
         fi
     done
 
@@ -553,13 +601,16 @@ _list_raw_external_pads() {
         _survivors+=("${_best_row[$_k]}")
     done
     local -a _sorted=()
-    (( ${#_survivors[@]} )) && mapfile -t _sorted < <(printf '%s\n' "${_survivors[@]}" | sort -n -k1,1 -k2,2)
+    (( ${#_survivors[@]} )) && mapfile -t _sorted \
+        < <(printf '%s\n' "${_survivors[@]}" | sort -t $'\x1f' -n -k1,1 -k2,2)
 
     # step 8: DUAL-TRANSPORT GUARD — warn (do NOT collapse) on shared VID:PID.
     local -A _vidpid_count=()
-    local _row s_input s_ev s_js s_vn s_pr
+    local _row s_input s_ev s_js s_vn s_pr s_uniq
     for _row in "${_sorted[@]}"; do
-        read -r s_input s_ev s_js s_vn s_pr <<< "$_row"
+        # shellcheck disable=SC2034  # s_input/s_ev/s_js/s_uniq: fixed-width
+        # \x1f record: only s_vn/s_pr key the VID:PID tally below.
+        IFS=$'\x1f' read -r s_input s_ev s_js s_vn s_pr s_uniq <<< "$_row"
         _vidpid_count["$s_vn:$s_pr"]=$(( ${_vidpid_count["$s_vn:$s_pr"]:-0} + 1 ))
     done
     local _vp
@@ -572,13 +623,21 @@ _list_raw_external_pads() {
     # diagnostics mirroring _map_external_player_virtuals' >&2 style.
     echo "[controller_monitor] raw enumeration: ${#_sorted[@]} external raw pad(s) after js+gamepad+vendor gate and shared-parent dedup" >&2
 
-    # steps 9 + 10: cap at MAX_PLAYERS, then emit "<eventN> <jsN> <vendor> <product>".
-    local _count=0 o_input o_ev o_js o_vn o_pr
+    # steps 9 + 10: cap at MAX_PLAYERS, then emit
+    # "<eventN> <jsN> <vendor> <product> <uniq>".
+    local _count=0 o_input o_ev o_js o_vn o_pr o_uniq
     for _row in "${_sorted[@]}"; do
         (( _count >= MCSS_MAX_PLAYERS )) && break
-        read -r o_input o_ev o_js o_vn o_pr <<< "$_row"
+        IFS=$'\x1f' read -r o_input o_ev o_js o_vn o_pr o_uniq <<< "$_row"
         echo "[controller_monitor]   raw pad: input${o_input} [${o_vn}:${o_pr}] event${o_ev} js${o_js}" >&2
-        echo "${o_ev} ${o_js} ${o_vn} ${o_pr}"
+        # #38 PR3: append uniq only when non-empty — see the matching note
+        # in list_eligible_controllers' docked wrapper (avoids a bare
+        # trailing space changing stdout bytes for the common empty case).
+        if [[ -n "$o_uniq" ]]; then
+            echo "${o_ev} ${o_js} ${o_vn} ${o_pr} ${o_uniq}"
+        else
+            echo "${o_ev} ${o_js} ${o_vn} ${o_pr}"
+        fi
         _count=$((_count + 1))
     done
 }
@@ -590,14 +649,18 @@ _list_raw_external_pads() {
 #     Steam virtual by inputN creation order (built-in + phantoms excluded; max 4).
 #   - == 1: _list_raw_external_pads — each external pad's OWN raw js node (js-gated,
 #     gamepad+vendor gated, deduped, ordered by (inputN,eventN); built-in/28de excluded).
-# Either source emits the IDENTICAL 4-field contract; only the source differs.
-# In handheld mode: exactly one line — the first gamepad-capable device (any VID:PID).
+# Either source emits the IDENTICAL 5-field contract; only the source
+# differs (#38 PR3: field 5 is uniq — real for the raw source, ALWAYS empty
+# for the legacy virtual-mapper). In handheld mode: exactly one line — the
+# first gamepad-capable device (any VID:PID); field 5 (uniq) is ALWAYS empty
+# on this path (_parse_all_gamepad_devices doesn't carry it).
 # Inputs:
 #   $1 — mode ("handheld" or "docked")
 #   Globals: MCSS_RAW_BINDING (read)
 # Outputs:
 #   stdout — one line per eligible device:
-#     "<event_node> <js_node> <physical_vendor> <physical_product>"
+#     "<event_node> <js_node> <physical_vendor> <physical_product> <phys_uniq>"
+#     (phys_uniq may be empty; see above)
 #   return — 1 if mode is neither "handheld" nor "docked"
 list_eligible_controllers() {
     local mode="${1:-}"
@@ -619,6 +682,11 @@ list_eligible_controllers() {
         jsN=$(echo "$first" | awk '{print $2}')
         vendor=$(echo "$first" | awk '{print $3}')
         product=$(echo "$first" | awk '{print $4}')
+        # #38 PR3: uniq is ALWAYS empty on this path
+        # (_parse_all_gamepad_devices' 6-field output has no uniq to carry)
+        # — omit rather than append a literal trailing space, so this line
+        # stays byte-identical to pre-PR3 output (a 5-var reader still sees
+        # field 5 as empty either way).
         echo "/dev/input/event$eventN /dev/input/js$jsN $vendor $product"
         return 0
     fi
@@ -628,19 +696,33 @@ list_eligible_controllers() {
     #   - unset/0 (DEFAULT): _map_external_player_virtuals — external pads mapped to their
     #     Steam virtual by inputN creation order; built-in (no jsN) + startup-pool phantoms
     #     are never claimed, so they can't leak in.
-    # Both sources emit the IDENTICAL 4-field internal contract; the formatting below is
-    # unchanged, so the public stdout contract is the same regardless of the flag.
+    # Both sources emit the IDENTICAL 5-field internal contract (#38 PR3:
+    # field 5 is uniq — real from _list_raw_external_pads, ALWAYS empty from
+    # _map_external_player_virtuals); the formatting below just passes it
+    # through, so the public stdout contract is the same shape regardless of
+    # the flag.
     local src
     if [[ "$MCSS_RAW_BINDING" == "1" ]]; then
         src=_list_raw_external_pads
     else
         src=_map_external_player_virtuals
     fi
-    local _line _ev _js _vn _pr
+    local _line _ev _js _vn _pr _uq
     while IFS= read -r _line; do
         [[ -z "$_line" ]] && continue
-        read -r _ev _js _vn _pr <<< "$_line"
-        echo "/dev/input/event${_ev} /dev/input/js${_js} ${_vn} ${_pr}"
+        read -r _ev _js _vn _pr _uq <<< "$_line"
+        # #38 PR3: append uniq only when non-empty — an unconditional
+        # trailing " $_uq" would add a bare trailing space whenever uniq is
+        # empty (the common case), changing stdout bytes for every existing
+        # exact-match caller/test. A 5-var reader sees field 5 as empty
+        # either way (absent vs. present-but-empty are indistinguishable to
+        # `read`/awk on trailing fields).
+        if [[ -n "$_uq" ]]; then
+            echo "/dev/input/event${_ev} /dev/input/js${_js} ${_vn}" \
+                "${_pr} ${_uq}"
+        else
+            echo "/dev/input/event${_ev} /dev/input/js${_js} ${_vn} ${_pr}"
+        fi
     done < <("$src")
 }
 
@@ -736,13 +818,19 @@ _check_devices_changed() {
             fi
             _CONTROLLER_MONITOR_DEBOUNCE_MAP["$ev"]=$now_ms
 
-            local js_node phys_vendor phys_product
+            local js_node phys_vendor phys_product phys_uniq
             js_node=$(echo "${current_nodes[$ev]}" | awk '{print $2}')
             phys_vendor=$(echo "${current_nodes[$ev]}" | awk '{print $3}')
             phys_product=$(echo "${current_nodes[$ev]}" | awk '{print $4}')
+            # #38 PR3: field 5, may be empty (clone/non-Sony pad or the
+            # legacy virtual-mapper path — see list_eligible_controllers).
+            phys_uniq=$(echo "${current_nodes[$ev]}" | awk '{print $5}')
 
             echo "[controller_monitor] Controller added: $ev $js_node $phys_vendor $phys_product" >&2
-            echo "CONTROLLER_ADD $ev $js_node $phys_vendor $phys_product" >> "$fifo"
+            local _add_line
+            printf -v _add_line 'CONTROLLER_ADD %s %s %s %s %s' "$ev" \
+                "$js_node" "$phys_vendor" "$phys_product" "$phys_uniq"
+            echo "$_add_line" >> "$fifo"
         fi
     done
 
@@ -807,15 +895,21 @@ start_controller_monitor() {
     local cline
     while IFS= read -r cline; do
         [[ -z "$cline" ]] && continue
-        local ev js_node phys_vendor phys_product
+        local ev js_node phys_vendor phys_product phys_uniq
         ev=$(echo "$cline" | awk '{print $1}')
         js_node=$(echo "$cline" | awk '{print $2}')
         phys_vendor=$(echo "$cline" | awk '{print $3}')
         phys_product=$(echo "$cline" | awk '{print $4}')
+        # #38 PR3: field 5, may be empty (clone/non-Sony pad or the legacy
+        # virtual-mapper path — see list_eligible_controllers).
+        phys_uniq=$(echo "$cline" | awk '{print $5}')
         prev_nodes="$prev_nodes $ev"
         if [[ "$skip_emit" != "1" ]]; then
             echo "[controller_monitor] Initial controller present: $ev $js_node $phys_vendor $phys_product" >&2
-            echo "CONTROLLER_ADD $ev $js_node $phys_vendor $phys_product" >> "$fifo"
+            local _add_line
+            printf -v _add_line 'CONTROLLER_ADD %s %s %s %s %s' "$ev" \
+                "$js_node" "$phys_vendor" "$phys_product" "$phys_uniq"
+            echo "$_add_line" >> "$fifo"
         else
             echo "[controller_monitor] Initial controller present (baseline only, emit skipped): $ev" >&2
         fi
