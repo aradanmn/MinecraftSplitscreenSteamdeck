@@ -37,12 +37,12 @@
 #   installer/deploy.sh)
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-19  #89: manifest parse -> read_runtime_manifest (mechanical)
 #   v1.5 2026-07-17  Fix #90: delete Phase-A prototype path + vestigial shims
 #   v1.4 2026-07-10  #45 PR3: runtime_modules.list — one manifest, sourced
 #   v1.3 2026-07-01  v1.1 batch: #43/#42 env guard, #40 fix, #15 teardown
 #   v1.2 2026-06-23  A1: wire production launchFromPlasma to nested Plasma
 #   v1.1 2026-06-19  Phase B test-mode entry point (testPlasma, lifecycle test)
-#   v1.0 2025-06-11  Initial monolith launcher (145 commits — compressed hard)
 
 # ── Build provenance ─────────────────────────────────────────────────────────
 # Stamped by the installer at deploy time (setup_splitscreen_launcher_script does
@@ -118,19 +118,29 @@ mcss_resolve_paths
 # #49: the module list is the ONE manifest deployed alongside the modules
 # (installer and deploy.sh both ship it). runtime_context.sh is skipped in the
 # loop — it was sourced explicitly above, before its resolvers ran.
+#
+# #89: read_runtime_manifest mirrors install-minecraft-splitscreen.sh's
+# function of the same name (that copy is the canonical definition — it is
+# already shared in-process by modules/launcher_setup.sh via a soft guard).
+# This script cannot reach that copy: it is a standalone deployed production
+# file, run as its own process, in a tree that never ships the installer
+# entry alongside it. Any change to the parse rule must be mirrored in both
+# places.
+read_runtime_manifest() {
+    grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null
+}
 _MOD_MANIFEST="$SCRIPT_DIR/modules/runtime_modules.list"
 if [[ ! -f "$_MOD_MANIFEST" ]]; then
     echo "FATAL: $_MOD_MANIFEST missing — broken deploy (run deploy.sh or the installer)" | tee -a "$LOG" >&2
     exit 1
 fi
 while IFS= read -r _mod; do
-    [[ "$_mod" =~ ^[[:space:]]*(#|$) ]] && continue
     [[ "$_mod" == "runtime_context.sh" ]] && continue
     _mod_path="$SCRIPT_DIR/modules/$_mod"
     if [[ -f "$_mod_path" ]]; then
         source "$_mod_path"
     fi
-done < "$_MOD_MANIFEST"
+done < <(read_runtime_manifest "$_MOD_MANIFEST")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session-env leak guard.
