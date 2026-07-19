@@ -195,10 +195,11 @@ _vendor_of_js_node() {
     # parse_input_device_blocks (sourced before this module per
     # runtime_modules.list). Keying stays here: exact handler-token equality
     # (never substring, so "js1" != "js10").
-    local vendor product name handlers sysfs phys keybits _h
-    # shellcheck disable=SC2034  # fixed-width record: only vendor+handlers used
+    local vendor product name handlers sysfs phys keybits uniq _h
+    # shellcheck disable=SC2034  # fixed-width record (#38 PR3 field 8: uniq):
+    # only vendor+handlers used
     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-        keybits; do
+        keybits uniq; do
         for _h in $handlers; do
             if [[ "$_h" == "$want" ]]; then
                 echo "$vendor"

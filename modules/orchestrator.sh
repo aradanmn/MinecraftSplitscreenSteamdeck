@@ -49,12 +49,12 @@ set -euo pipefail
 #          `[orchestrator] ` prefix.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-19  #38 PR3: CONTROLLER_ADD gains phys_uniq (parsed,
+#                    discarded); _find_slot_by_uniq defined (unused)
 #   v1.5 2026-07-17  Fix #86: named timeouts; #85 reflow via resolve_screen
 #   v1.4 2026-07-09  #45: single MCSS_MODE/DISPLAY writers; one screen cascade
 #   v1.3 2026-07-06  #50: single state-path/lock resolution; observe-delay fix
 #   v1.2 2026-06-26  H9 heartbeats + liveness reap; raw per-slot controller bind
-#   v1.1 2026-06-24  N1-N9 audit batch; controller-mask isolation; C1 fix
-#   v1.0 2026-06-19  Initial extraction: FIFO event loop, handheld/docked flows
 # =============================================================================
 
 # #45: slot count + screen dims are runtime_context-owned; sourcing it here is
@@ -202,6 +202,28 @@ _find_slot_by_event_node() {
     jq -r --arg n "$node" \
         'first(.slots | to_entries[] | select(.value.active == true and .value.event_node == $n) | .key) // empty' \
         "$state" 2>/dev/null
+}
+
+# _find_slot_by_uniq: Map a controller's phys_uniq (Bluetooth MAC / HID
+# serial) back to the active slot that owns it. #38 PR3: defined now, called
+# by nobody — `.slots["<N>"].phys_uniq` isn't written until PR4 (flag-gated),
+# so there is nothing yet for this to match against. Parallels
+# _find_slot_by_event_node.
+# Inputs:
+#   $1 — uniq string (may be empty)
+#   Globals: SPLITSCREEN_STATE (read)
+# Outputs:
+#   stdout — the owning slot number, or empty if no active slot matches
+#   return — always 0 (empty stdout is the "not found" signal)
+_find_slot_by_uniq() {
+    local uniq="$1" state="$SPLITSCREEN_STATE"
+    # Empty/absent uniq NEVER sticky-matches — clone/non-Sony pads must
+    # degrade to _find_free_slot (D2), never collide on "" or match null.
+    [[ -n "$uniq" && -f "$state" ]] || return 0
+    jq -r --arg u "$uniq" \
+        'first(.slots | to_entries[]
+          | select(.value.active == true and .value.phys_uniq == $u)
+          | .key) // empty' "$state" 2>/dev/null
 }
 
 # _collect_mask_pairs: Collect (event_node, js_node) pairs for every ACTIVE
@@ -383,8 +405,10 @@ _handle_msg() {
             update_slot_state "$slot" '{"active": true}'
 
             # Extract controller fields from the CONTROLLER_ADD arg if provided.
-            # Format (controller_monitor emits 4 fields):
-            #   "CONTROLLER_ADD /dev/input/eventX /dev/input/jsX <vendor> <product>"
+            # Format (controller_monitor emits 5 fields — #38 PR3 added
+            # phys_uniq):
+            #   "CONTROLLER_ADD /dev/input/eventX /dev/input/jsX <vendor>
+            #    <product> <uniq>"
             # The old `${msg_arg#* }` parse took "everything after the first space" as
             # js_node, which polluted it with the trailing vendor/product on the real
             # 4-field message (audit C1). The test harness injected only 2 fields so it
@@ -398,9 +422,21 @@ _handle_msg() {
             # spawn_instance's js-empty branch docked-UNREACHABLE under the flag. We keep
             # them for the handheld/legacy paths and do NOT thread a vendor arg (that would
             # collide with the variadic mask-pair tail).
+            # #38 PR3: phys_uniq is parsed and DISCARDED here —
+            # behavior-neutral by design. It is NOT passed to spawn_instance
+            # (signature unchanged) and NOT written to state;
+            # `.slots["<N>"].phys_uniq` is a PR4-only, flag-gated write. A
+            # test harness message with only 4 fields (no phys_uniq) reads
+            # it as empty here, same as today.
             local event_node="" js_node="" phys_vendor="" phys_product=""
+            local phys_uniq=""
             if [[ -n "$msg_arg" ]]; then
-                read -r event_node js_node phys_vendor phys_product <<< "$msg_arg"
+                # shellcheck disable=SC2034  # phys_vendor/phys_product were
+                # already unused-on-purpose pre-PR3 (kept for handheld/
+                # legacy parity); phys_uniq (#38 PR3) is parsed and
+                # deliberately DISCARDED here too — see the note above.
+                read -r event_node js_node phys_vendor phys_product \
+                    phys_uniq <<< "$msg_arg"
                 # Single-arg form sentinel: monitor sets js_node==event_node when there
                 # is no distinct js node — blank it so spawn_instance skips the js bind.
                 [[ "$event_node" == "$js_node" ]] && js_node=""

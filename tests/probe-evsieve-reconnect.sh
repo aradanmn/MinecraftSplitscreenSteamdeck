@@ -249,13 +249,13 @@ record_virtual_node() {
     inode="${inode:-NONE}"
     majmin="${majmin:-NONE}"
 
-    local vendor product name handlers sysfs phys keybits _h stripped
-    # shellcheck disable=SC2034  # vendor/product/sysfs/keybits are
-    # positional fields of parse_input_device_blocks' fixed 7-column
-    # contract; only name/handlers are used here but all must be read to
-    # keep the later columns aligned.
+    local vendor product name handlers sysfs phys keybits uniq _h stripped
+    # shellcheck disable=SC2034  # vendor/product/sysfs/keybits/uniq are
+    # positional fields of parse_input_device_blocks' fixed 8-column
+    # contract (#38 PR3 field 8: uniq); only name/handlers are used here but
+    # all must be read to keep the later columns aligned.
     while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
-        keybits; do
+        keybits uniq; do
         stripped="${name#\"}"
         stripped="${stripped%\"}"
         [[ "$stripped" == "$devname" ]] || continue

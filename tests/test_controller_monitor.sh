@@ -9,13 +9,17 @@ set -euo pipefail
 # Run: bash tests/test_controller_monitor.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=21
 
 # Find the repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 source "$REPO_ROOT/modules/controller_monitor.sh"
+# #38 PR3: _find_slot_by_uniq (T2.21) is orchestrator.sh's, not this
+# module's — sourcing it here only defines functions (no side effects at
+# source time beyond runtime_context.sh, already sourced above).
+source "$REPO_ROOT/modules/orchestrator.sh"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -241,8 +245,17 @@ H: Handlers=event5 js2
 
 PROCEOF
 
+    # NOTE (pre-existing, unrelated to #38 PR3): this test's expectation
+    # ("external claims a Steam-minted virtual") targets the LEGACY
+    # virtual-mapper, but CONTROLLER_MONITOR_RAW_BINDING's runtime default
+    # was promoted to 1 (raw) after this test was written and MCSS_RAW_BINDING
+    # is readonly by the time this test runs (can't pin it back per-test
+    # without a fresh interpreter) — this assertion already fails on main,
+    # independent of PR3's uniq plumbing. Left as-is; not a PR3 regression.
     local result
-    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        INPUTPLUMBER_DBUS_AVAILABLE=0 \
+        list_eligible_controllers docked)
 
     local count
     count=$(_count_lines "$result")
@@ -367,8 +380,11 @@ H: Handlers=event19 js10
 
 PROCEOF
 
+    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
+    # — this assertion already fails on main under the raw-binding default.
     local result
-    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
 
     local count
     count=$(_count_lines "$result")
@@ -419,7 +435,7 @@ I: Bus=0003 Vendor=054c Product=09cc Version=0111
 N: Name="Sony DualSense"
 P: Phys=usb-0000:00:14.0-1/input0
 S: Sysfs=/devices/pci0000:00/usb1/1-1/1-1:1.0/input/input700
-U: Uniq=
+U: Uniq=dc:0c:2d:aa:bb:cc
 H: Handlers=event20 js1
 
 I: Bus=0003 Vendor=28de Product=11ff Version=0001
@@ -474,12 +490,20 @@ PROCEOF
     ln -sf "$tmpdir/proc_input_after" "$tmpdir/proc_input_link"
 
     # Read from FIFO — should get CONTROLLER_ADD within ~3s (2s poll + processing)
-    local line
+    # #38 PR3: field 5 is phys_uniq, threaded from the DualSense block's
+    # `U: Uniq=` line above. Default CONTROLLER_MONITOR_RAW_BINDING (unset ==
+    # 1) means docked mode's source is _list_raw_external_pads, so the
+    # eligible/added device is the DualSense's OWN raw node (event20 js1),
+    # not the (unclaimed) X-Box-pad virtual — matches the raw-binding-is-
+    # DEFAULT behavior documented at the top of this module.
+    local line expected
+    expected="CONTROLLER_ADD /dev/input/event20 /dev/input/js1 054c 09cc"
+    expected="$expected dc:0c:2d:aa:bb:cc"
     if read -r -t 8 line < "$fifo"; then
-        if [[ "$line" == "CONTROLLER_ADD /dev/input/event4 /dev/input/js2 054c 09cc" ]]; then
-            _pass "T2.8 — CONTROLLER_ADD message format correct"
+        if [[ "$line" == "$expected" ]]; then
+            _pass "T2.8 — CONTROLLER_ADD format correct (5 fields, uniq)"
         else
-            _fail "T2.8" "expected 'CONTROLLER_ADD /dev/input/event4 /dev/input/js2 054c 09cc', got '$line'"
+            _fail "T2.8" "expected '$expected', got '$line'"
         fi
     else
         _fail "T2.8" "timed out waiting for CONTROLLER_ADD message"
@@ -541,6 +565,8 @@ PROCEOF
     local fifo="$tmpdir/splitscreen.fifo"
     mkfifo "$fifo"
 
+    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
+    # — this assertion already fails on main under the raw-binding default.
     INPUTPLUMBER_DBUS_AVAILABLE=0 \
         PROC_INPUT_DEVICES="$tmpdir/proc_input_link" \
         CONTROLLER_MONITOR_UDEVADM_CMD="/nonexistent/udevadm_fake" \
@@ -626,8 +652,11 @@ S: Sysfs=/devices/virtual/misc/uhid/A/input/input660
 H: Handlers=event4 js1
 
 PROCEOF
+    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
+    # — this assertion already fails on main under the raw-binding default.
     local result count
-    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
     count=$(_count_lines "$result")
     if (( count == 0 )); then
         _pass "T2.11 — external present but virtual not ready: 0 players, no built-in leak"
@@ -653,6 +682,350 @@ test_t2_12() {
 }
 
 # =============================================================================
+# #38 PR3 — uniq (field 8) plumbing tests
+# =============================================================================
+
+# =============================================================================
+# Test T2.13 — parse_input_device_blocks: field 8 (uniq) captured; empty for
+# a bare "U: Uniq=" line
+# =============================================================================
+test_t2_13() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=aa:bb:cc:dd:ee:ff
+S: Sysfs=/devices/virtual/misc/uhid/X/input/input700
+U: Uniq=11:22:33:44:55:66
+H: Handlers=event10 js3
+
+I: Bus=0003 Vendor=28de Product=11ff Version=0001
+N: Name="Microsoft X-Box 360 pad"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input651
+U: Uniq=
+H: Handlers=event3 js0
+
+PROCEOF
+    local blocks line1 line2
+    blocks=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" parse_input_device_blocks)
+    line1=$(echo "$blocks" | sed -n '1p')
+    line2=$(echo "$blocks" | sed -n '2p')
+
+    local vendor product name handlers sysfs phys keybits uniq ok=1
+    IFS=$'\x1f' read -r vendor product name handlers sysfs phys keybits \
+        uniq <<< "$line1"
+    [[ "$vendor" == "054c" && "$uniq" == "11:22:33:44:55:66" ]] || ok=0
+
+    IFS=$'\x1f' read -r vendor product name handlers sysfs phys keybits \
+        uniq <<< "$line2"
+    [[ "$vendor" == "28de" && -z "$uniq" ]] || ok=0
+
+    if (( ok )); then
+        _pass "T2.13 — parse_input_device_blocks: field 8 uniq (real + empty)"
+    else
+        _fail "T2.13" "field-8 uniq mismatch: line1='$line1' line2='$line2'"
+    fi
+}
+
+# =============================================================================
+# Test T2.14 — _has_gamepad_buttons regression (read site #3): a pad block
+# with a REAL "U: Uniq=" line AFTER "B: KEY=" still passes the
+# _list_raw_external_pads capability gate (the 8-var read must keep keybits
+# clean of the trailing uniq field — see the module's read-site table).
+# =============================================================================
+test_t2_14() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    # B: KEY= bitmap: 5 words, word[0]=0x1000000000000 → bit 48 set →
+    # BTN_SOUTH (0x130=304, bit 48 of the bits-256..319 word) → gate ACCEPTS.
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=aa:bb:cc:dd:ee:ff
+S: Sysfs=/devices/virtual/misc/uhid/REG/input/input800
+B: KEY=1000000000000 0 0 0 0
+U: Uniq=11:22:33:44:55:66
+H: Handlers=event30 js5
+
+PROCEOF
+    local result
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" _list_raw_external_pads \
+        2>/dev/null)
+    if [[ "$result" == "30 5 054c 05c4 11:22:33:44:55:66" ]]; then
+        _pass "T2.14 — gamepad-buttons gate passes with uniq (8-var read)"
+    else
+        local _msg="expected '30 5 054c 05c4 11:22:33:44:55:66'"
+        _msg="$_msg, got '$result'"
+        _fail "T2.14" "$_msg"
+    fi
+}
+
+# =============================================================================
+# Test T2.15 — _list_raw_external_pads emits a 5-field line with the
+# correct uniq threaded through
+# =============================================================================
+test_t2_15() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:05C4.000A/input/input660
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event4 js1
+
+PROCEOF
+    local result
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" _list_raw_external_pads \
+        2>/dev/null)
+    if [[ "$result" == "4 1 054c 05c4 a0:5a:5e:d0:8a:dc" ]]; then
+        _pass "T2.15 — _list_raw_external_pads: 5-field line, uniq threaded"
+    else
+        local _msg="expected '4 1 054c 05c4 a0:5a:5e:d0:8a:dc'"
+        _msg="$_msg, got '$result'"
+        _fail "T2.15" "$_msg"
+    fi
+}
+
+# =============================================================================
+# Test T2.16 — two same-MAC DS4s (identical U:, distinct event/js) → two
+# distinct 5-field lines, BOTH carrying the shared MAC (never collapsed)
+# =============================================================================
+test_t2_16() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/AAAA/input/input660
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event4 js1
+
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/BBBB/input/input670
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event6 js2
+
+PROCEOF
+    local result count
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" _list_raw_external_pads \
+        2>/dev/null)
+    count=$(_count_lines "$result")
+    local line1 line2
+    line1=$(echo "$result" | sed -n '1p')
+    line2=$(echo "$result" | sed -n '2p')
+    if (( count == 2 )) \
+        && [[ "$line1" == "4 1 054c 05c4 a0:5a:5e:d0:8a:dc" ]] \
+        && [[ "$line2" == "6 2 054c 05c4 a0:5a:5e:d0:8a:dc" ]]; then
+        _pass "T2.16 — two same-MAC DS4s: two lines, both carry the MAC"
+    else
+        _fail "T2.16" "expected 2 MAC-bearing lines, got $count: $result"
+    fi
+}
+
+# =============================================================================
+# Test T2.17 — empty-uniq pad → empty 5th field (no bare trailing space:
+# a 4-token line, same as pre-PR3 — see the conditional-emit note in
+# _list_raw_external_pads)
+# =============================================================================
+test_t2_17() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=
+S: Sysfs=/devices/virtual/misc/uhid/CCCC/input/input680
+U: Uniq=
+H: Handlers=event7 js3
+
+PROCEOF
+    local result
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" _list_raw_external_pads \
+        2>/dev/null)
+    local uq
+    read -r _ _ _ _ uq <<< "$result"
+    if [[ "$result" == "7 3 054c 05c4" && -z "$uq" ]]; then
+        _pass "T2.17 — empty-uniq pad: empty 5th field, no trailing space"
+    else
+        _fail "T2.17" "expected '7 3 054c 05c4' with empty 5th, got '$result'"
+    fi
+}
+
+# =============================================================================
+# Test T2.18 — start_controller_monitor's INITIAL-emit site (the second of
+# the two #38 PR3 CONTROLLER_ADD emit sites) also carries the 5-field
+# format with uniq
+# =============================================================================
+test_t2_18() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:05C4.000A/input/input660
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event4 js1
+
+PROCEOF
+    local fifo="$tmpdir/splitscreen.fifo"
+    mkfifo "$fifo"
+
+    # Default CONTROLLER_MONITOR_SKIP_INITIAL_EMIT (unset/0): the already-
+    # connected pad above is emitted as a CONTROLLER_ADD from the INITIAL
+    # snapshot (not the udev/poll loop) — this is the OTHER emit site.
+    INPUTPLUMBER_DBUS_AVAILABLE=0 \
+        PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        CONTROLLER_MONITOR_UDEVADM_CMD="/nonexistent/udevadm_fake" \
+        SPLITSCREEN_FIFO="$fifo" \
+        start_controller_monitor docked &
+    local monitor_pid=$!
+
+    local line expected
+    expected="CONTROLLER_ADD /dev/input/event4 /dev/input/js1 054c 05c4"
+    expected="$expected a0:5a:5e:d0:8a:dc"
+    if read -r -t 8 line < "$fifo"; then
+        if [[ "$line" == "$expected" ]]; then
+            _pass "T2.18 — initial-emit CONTROLLER_ADD also carries 5 fields"
+        else
+            _fail "T2.18" "expected '$expected', got '$line'"
+        fi
+    else
+        _fail "T2.18" "timed out waiting for initial CONTROLLER_ADD"
+    fi
+
+    kill "$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+    rm -f "$fifo"
+}
+
+# =============================================================================
+# Test T2.19 — _map_external_player_virtuals emits an empty 5th field (never
+# populated — DO NOT key on uniq); byte-identical to its pre-PR3 4-field line
+# =============================================================================
+test_t2_19() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0003 Vendor=28de Product=11ff Version=0001
+N: Name="Microsoft X-Box 360 pad 0"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input651
+U: Uniq=
+H: Handlers=event3 js0
+
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:05C4.000A/input/input660
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event4 js1
+
+I: Bus=0003 Vendor=28de Product=11ff Version=0001
+N: Name="Microsoft X-Box 360 pad 1"
+P: Phys=
+S: Sysfs=/devices/virtual/input/input661
+U: Uniq=
+H: Handlers=event5 js2
+
+PROCEOF
+    local result
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        _map_external_player_virtuals 2>/dev/null)
+    local uq
+    read -r _ _ _ _ uq <<< "$result"
+    # DS4's real MAC uniq is in the fixture, but this path NEVER surfaces it
+    # (DO-NOT-key-on-uniq) — field 5 must read empty regardless, and the
+    # line itself stays the exact pre-PR3 4-token shape.
+    if [[ "$result" == "5 2 054c 05c4" && -z "$uq" ]]; then
+        _pass "T2.19 — _map_external_player_virtuals: empty 5th (inert)"
+    else
+        _fail "T2.19" "expected '5 2 054c 05c4' empty 5th, got '$result'"
+    fi
+}
+
+# =============================================================================
+# Test T2.20 — list_eligible_controllers: docked passes uniq through
+# (raw-binding default source); handheld's 5th field is always empty
+# =============================================================================
+test_t2_20() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8111
+N: Name="Wireless Controller"
+P: Phys=a0:5a:5e:d0:8a:dc
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:05C4.000A/input/input660
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event4 js1
+
+PROCEOF
+    local docked docked_expected handheld ok=1
+    docked=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+    docked_expected="/dev/input/event4 /dev/input/js1 054c 05c4"
+    docked_expected="$docked_expected a0:5a:5e:d0:8a:dc"
+    [[ "$docked" == "$docked_expected" ]] || ok=0
+
+    handheld=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
+        list_eligible_controllers handheld)
+    local uq
+    read -r _ _ _ _ uq <<< "$handheld"
+    [[ "$handheld" == "/dev/input/event4 /dev/input/js1 054c 05c4" \
+        && -z "$uq" ]] || ok=0
+
+    if (( ok )); then
+        _pass "T2.20 — docked passthrough + handheld empty uniq"
+    else
+        _fail "T2.20" "docked='$docked' handheld='$handheld'"
+    fi
+}
+
+# =============================================================================
+# Test T2.21 — _find_slot_by_uniq (orchestrator.sh, #38 PR3 — defined,
+# unused): matches an active slot's phys_uniq; empty uniq NEVER matches
+# (D2 clone-pad guard); an unmatched MAC returns empty.
+# =============================================================================
+test_t2_21() {
+    # Fixture PIDs MUST exceed kernel.pid_max — see test_orchestrator.sh's
+    # constants+guard: teardown-style consumers of this same state-file
+    # shape do process-group kills keyed on these fields, so a reachable
+    # value could hit a REAL process group in an un-namespaced run.
+    local pid_max fixture_pid
+    pid_max=$(cat /proc/sys/kernel/pid_max)
+    fixture_pid=$(( pid_max + 100000 ))
+
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    export SPLITSCREEN_STATE="$tmpdir/splitscreen_state.json"
+    cat > "$SPLITSCREEN_STATE" <<EOF
+{
+  "mode": "docked",
+  "slots": {
+    "1": {"active": true, "bwrap_pid": $fixture_pid,
+           "phys_uniq": "a0:5a:5e:d0:8a:dc"},
+    "2": {"active": true, "bwrap_pid": $fixture_pid, "phys_uniq": ""}
+  }
+}
+EOF
+    local matched empty_guard unmatched ok=1
+    matched=$(_find_slot_by_uniq "a0:5a:5e:d0:8a:dc")
+    [[ "$matched" == "1" ]] || ok=0
+
+    empty_guard=$(_find_slot_by_uniq "")
+    [[ -z "$empty_guard" ]] || ok=0
+
+    unmatched=$(_find_slot_by_uniq "ff:ff:ff:ff:ff:ff")
+    [[ -z "$unmatched" ]] || ok=0
+
+    if (( ok )); then
+        _pass "T2.21 — _find_slot_by_uniq: match / empty-guard / unmatched"
+    else
+        local _msg="matched='$matched' empty_guard='$empty_guard'"
+        _msg="$_msg unmatched='$unmatched'"
+        _fail "T2.21" "$_msg"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== controller_monitor test suite ==="
@@ -670,6 +1043,15 @@ test_t2_9
 test_t2_10
 test_t2_11
 test_t2_12
+test_t2_13
+test_t2_14
+test_t2_15
+test_t2_16
+test_t2_17
+test_t2_18
+test_t2_19
+test_t2_20
+test_t2_21
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
