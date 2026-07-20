@@ -57,13 +57,13 @@
 # SPLITSCREEN_DEBUG_LOG.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.7 2026-07-20  #70: mcss_detect_max_refresh + query refresh field (maxFps cap)
 #   v1.6 2026-07-19  #38 M1/PR2: MCSS_CONTROLLER_PROXY flag (OFF) + evsieve/
 #                    proxy-dir paths for controller_proxy.sh (dark)
 #   v1.5 2026-07-18  fix: MCSS_ACCOUNT_PREFIX default P → Player
 #   v1.4 2026-07-17  Fix #86: named MCSS_DISPLAY_PROBE_TIMEOUT_S constant
 #   v1.3 2026-07-15  #51/D17: mcss_query_displays — one display-output parser
 #   v1.2 2026-07-09  #45 PR2/PR3: paths+constants+screen resolvers, exec-env
-#   v1.1 2026-07-06  #50: SPLITSCREEN_STATE/lock resolved to a single home
 # =============================================================================
 
 # #50: the ONLY place the state-file default exists. Previously this fallback
@@ -204,11 +204,28 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     # A drifted copy would silently keep a caller on the wrong bind path,
     # same cross-process-contract risk as MCSS_RAW_BINDING above.
     export MCSS_CONTROLLER_PROXY="${MCSS_CONTROLLER_PROXY:-0}"
+    # #70: cap each instance's maxFps to the host display refresh (convert
+    # discarded frames into thermal/CPU headroom). Master switch ON by default;
+    # set MCSS_CAP_FPS_TO_REFRESH=0 to keep the baked options.txt value.
+    # FALLBACK is used when detection yields nothing (60 = Deck LCD scanout and
+    # the synthetic value a nested XWayland reports). FLOOR/CEIL clamp the
+    # detected/overridden value: 30Hz is a legit SteamOS battery-saver mode so it
+    # is the floor (a sub-30 parse is garbage); 360Hz is the highest real panel
+    # so the ceiling only guards against a concatenation/parse error, never a
+    # genuine display. The detected value itself lives in MCSS_MAX_REFRESH_HZ,
+    # which is deliberately NOT set/locked here — it stays unset so host sampling
+    # runs, and doubles as the explicit user override + host→nested cache.
+    export MCSS_CAP_FPS_TO_REFRESH="${MCSS_CAP_FPS_TO_REFRESH:-1}"
+    export MCSS_MAX_REFRESH_FALLBACK_HZ="${MCSS_MAX_REFRESH_FALLBACK_HZ:-60}"
+    export MCSS_MAX_REFRESH_FLOOR_HZ="${MCSS_MAX_REFRESH_FLOOR_HZ:-30}"
+    export MCSS_MAX_REFRESH_CEIL_HZ="${MCSS_MAX_REFRESH_CEIL_HZ:-360}"
 
     readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
              MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
              MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S \
-             MCSS_DISPLAY_PROBE_TIMEOUT_S MCSS_CONTROLLER_PROXY
+             MCSS_DISPLAY_PROBE_TIMEOUT_S MCSS_CONTROLLER_PROXY \
+             MCSS_CAP_FPS_TO_REFRESH MCSS_MAX_REFRESH_FALLBACK_HZ \
+             MCSS_MAX_REFRESH_FLOOR_HZ MCSS_MAX_REFRESH_CEIL_HZ
     _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
 fi
 
@@ -374,8 +391,11 @@ mcss_instance_dir() {
 #        (default: kscreen-doctor xrandr)
 # Outputs:
 #   stdout — one line per output from the FIRST tool that produced any:
-#            "<name> <enabled|disabled> <WxH|->"
-#            WxH is the current/first-listed mode ("-" when unknown)
+#            "<name> <enabled|disabled> <WxH|-> <refresh_hz|->"
+#            WxH is the current/first-listed mode ("-" when unknown); refresh_hz
+#            is the integer Hz of that current mode ("-" when unknown). #70 added
+#            the 4th field — the two existing callers (mcss_resolve_screen and
+#            dock_detection.sh) read it into a throwaway 4th `read` var.
 #   return — 0 always (empty stdout when no tool answered)
 mcss_query_displays() {
     local -a _tools=("$@")
@@ -402,14 +422,25 @@ mcss_query_displays() {
                 # un-anchored — kscreen-doctor wraps the word in ANSI color
                 # codes ("disabled" does not contain "enabled", so this is
                 # unambiguous). WxH: first mode on the line, matching the
-                # pre-D17 mcss_resolve_screen read.
+                # pre-D17 mcss_resolve_screen read. #70: refresh is the Hz of
+                # the current (`*`-marked) WxH@RR token, else the first WxH@RR,
+                # else "-" for a bare WxH with no "@RR" (test stubs).
                 _out=$(echo "$_raw" | awk '
                     /^Output:/ {
                         st = ($0 ~ /enabled/) ? "enabled" : "disabled"
-                        res = "-"
-                        if (match($0, /[0-9]+x[0-9]+/))
+                        res = "-"; rate = "-"; tok = ""
+                        if (match($0, /[0-9]+x[0-9]+@[0-9]+([.][0-9]+)?[*]/))
+                            tok = substr($0, RSTART, RLENGTH)
+                        else if (match($0, /[0-9]+x[0-9]+@[0-9]+([.][0-9]+)?/))
+                            tok = substr($0, RSTART, RLENGTH)
+                        if (tok != "") {
+                            r = tok; sub(/@.*/, "", r); res = r
+                            h = tok; sub(/.*@/, "", h); sub(/[*].*/, "", h)
+                            rate = int(h + 0)
+                        } else if (match($0, /[0-9]+x[0-9]+/)) {
                             res = substr($0, RSTART, RLENGTH)
-                        print $3, st, res
+                        }
+                        print $3, st, res, rate
                     }')
                 ;;
             wlr-randr)
@@ -417,17 +448,22 @@ mcss_query_displays() {
                 _raw=$(timeout "$MCSS_DISPLAY_PROBE_TIMEOUT_S" \
                     wlr-randr 2>/dev/null || true)
                 # Per-output blocks: non-indented "NAME ..." header, then
-                # indented "Enabled: yes" and "WxH px, ... (current)" lines.
+                # indented "Enabled: yes" and "WxH px, NN.NN Hz (current)" lines.
+                # #70: the current-mode line also carries the refresh ("NN Hz").
                 _out=$(echo "$_raw" | awk '
-                    function emit() { print name, st, res }
+                    function emit() { print name, st, res, rate }
                     /^[^ \t]/ {
                         if (name != "") emit()
-                        name = $1; st = "disabled"; res = "-"
+                        name = $1; st = "disabled"; res = "-"; rate = "-"
                     }
                     /^[ \t]+Enabled:[ \t]*yes/ { st = "enabled" }
                     /\(current\)/ {
                         if (match($0, /[0-9]+x[0-9]+/))
                             res = substr($0, RSTART, RLENGTH)
+                        if (match($0, /[0-9]+([.][0-9]+)? Hz/)) {
+                            h = substr($0, RSTART, RLENGTH); sub(/ Hz/, "", h)
+                            rate = int(h + 0)
+                        }
                     }
                     END { if (name != "") emit() }')
                 ;;
@@ -441,25 +477,45 @@ mcss_query_displays() {
                 # Sparse XWayland output (a bare mode table, no connector
                 # lines — gamescope) falls back to the *-marked current
                 # mode as a synthetic record, the pre-D17 read.
+                # #70: the active refresh ("NN.NN*") sits on the indented mode
+                # line, NOT the connector line, so connector records are
+                # BUFFERED and flushed at END once their mode line has been seen.
                 _out=$(echo "$_raw" | awk '
                     / connected/ {
-                        st = "disabled"; res = "-"
+                        cur = $1; order[++n] = cur
+                        st[cur] = "disabled"; res[cur] = "-"; rate[cur] = "-"
                         if (match($0, /[0-9]+x[0-9]+\+[0-9]+\+[0-9]+/)) {
-                            st = "enabled"
-                            res = substr($0, RSTART, RLENGTH)
-                            sub(/\+.*/, "", res)
+                            st[cur] = "enabled"
+                            g = substr($0, RSTART, RLENGTH); sub(/\+.*/, "", g)
+                            res[cur] = g
                         }
-                        print $1, st, res; n++
                         next
                     }
-                    / disconnected/ { print $1, "disabled", "-"; n++; next }
-                    /\*/ && star == "" {
+                    / disconnected/ {
+                        cur = $1; order[++n] = cur
+                        st[cur] = "disabled"; res[cur] = "-"; rate[cur] = "-"
+                        next
+                    }
+                    /\*/ {
+                        mres = ""; mrate = "-"
                         if (match($0, /[0-9]+x[0-9]+/))
-                            star = substr($0, RSTART, RLENGTH)
+                            mres = substr($0, RSTART, RLENGTH)
+                        if (match($0, /[0-9]+\.[0-9]+\*/)) {
+                            t = substr($0, RSTART, RLENGTH); sub(/[*].*/, "", t)
+                            mrate = int(t + 0)
+                        }
+                        if (cur != "") {
+                            if (mrate != "-") rate[cur] = mrate
+                            if (res[cur] == "-" && mres != "") res[cur] = mres
+                        }
+                        if (star == "" && mres != "") { star = mres; starrate = mrate }
                     }
                     END {
+                        for (i = 1; i <= n; i++) {
+                            c = order[i]; print c, st[c], res[c], rate[c]
+                        }
                         if (n == 0 && star != "")
-                            print "screen", "enabled", star
+                            print "screen", "enabled", star, starrate
                     }')
                 ;;
             *) continue ;;
@@ -533,8 +589,11 @@ mcss_resolve_screen() {
         # Prefer the first EXTERNAL enabled output; fall back to the first
         # enabled one (the eDP-before-head ordering bug from the PR #78
         # review is structural now — the filter runs on normalized records).
-        local _name _en _res _edp_res=""
-        while read -r _name _en _res; do
+        # #70: mcss_query_displays now emits a 4th refresh field; consume it into
+        # a throwaway _rate so it does NOT fold into _res (which feeds ${_res%x*}
+        # arithmetic — a two-token _res would corrupt the height).
+        local _name _en _res _rate _edp_res=""
+        while read -r _name _en _res _rate; do
             [[ "$_en" == "enabled" && "$_res" == *x* ]] || continue
             if [[ "$_name" == *eDP* ]]; then
                 [[ -z "$_edp_res" ]] && _edp_res="$_res"
@@ -568,6 +627,64 @@ mcss_resolve_screen() {
     if [[ -n "$_logf" ]]; then
         echo "[runtime_context] screen: ${MCSS_SCREEN_W}x${MCSS_SCREEN_H} (refresh=${_refresh} no_probe=${_no_probe})" >> "$_logf" 2>/dev/null
     fi
+}
+
+# --- mcss_detect_max_refresh --------------------------------------------------
+# #70: echoes (and exports MCSS_MAX_REFRESH_HZ) the MAX current-mode refresh
+# (integer Hz) across ENABLED outputs, so each instance's maxFps can be capped
+# to it — frames rendered above the panel's scanout are discarded, and capping
+# converts them into thermal/CPU headroom (BENCH-AB-2026-07-18: 300-600fps into
+# a 60Hz panel at 92-94% CPU, 4P).
+#
+# The AUTHORITATIVE sampling context is the HOST (host Plasma or the outer
+# gamescope), BEFORE nesting — the nested XWayland reports a synthetic 60Hz.
+# _start_nested_plasma samples once there and the value rides mcss_exec_env_string
+# to the nested orchestrator; a nested call therefore finds MCSS_MAX_REFRESH_HZ
+# already set and HONORS it instead of re-probing (a re-probe would return 60).
+# Pre-setting MCSS_MAX_REFRESH_HZ is likewise an explicit user override.
+#
+# Sampling mirrors mcss_resolve_screen: X11-only probe list (kscreen-doctor is
+# KDE-session-gated + timeout-guarded inside mcss_query_displays; wlr-randr is
+# FORBIDDEN at play time — gamescope kills throwaway Wayland clients). The value
+# is fallback-defaulted and clamped to [FLOOR, CEIL].
+# Inputs:  --refresh  — force a re-probe even if already resolved this process
+# Outputs: stdout — the resolved integer Hz; also exports MCSS_MAX_REFRESH_HZ
+mcss_detect_max_refresh() {
+    local _refresh=0 _arg
+    for _arg in "$@"; do
+        [[ "$_arg" == "--refresh" ]] && _refresh=1
+    done
+
+    # Process-local idempotency (mirrors _MCSS_SCREEN_DONE).
+    if [[ -n "${_MCSS_REFRESH_DONE:-}" && "$_refresh" != "1" ]]; then
+        echo "${MCSS_MAX_REFRESH_HZ:-$MCSS_MAX_REFRESH_FALLBACK_HZ}"
+        return 0
+    fi
+
+    local _hz=""
+    # Inherited-or-override value wins: never re-probe a synthetic nested context.
+    if [[ "${MCSS_MAX_REFRESH_HZ:-}" =~ ^[0-9]+$ ]]; then
+        _hz="$MCSS_MAX_REFRESH_HZ"
+    else
+        local _name _en _res _rate _max=0
+        while read -r _name _en _res _rate; do
+            [[ "$_en" == "enabled" && "$_rate" =~ ^[0-9]+$ ]] || continue
+            (( _rate > _max )) && _max="$_rate"
+        done < <(mcss_query_displays kscreen-doctor xrandr)
+        (( _max > 0 )) && _hz="$_max"
+    fi
+
+    # Fallback, then clamp to [FLOOR, CEIL].
+    [[ -z "$_hz" ]] && _hz="$MCSS_MAX_REFRESH_FALLBACK_HZ"
+    (( _hz < MCSS_MAX_REFRESH_FLOOR_HZ )) && _hz="$MCSS_MAX_REFRESH_FLOOR_HZ"
+    (( _hz > MCSS_MAX_REFRESH_CEIL_HZ  )) && _hz="$MCSS_MAX_REFRESH_CEIL_HZ"
+
+    export MCSS_MAX_REFRESH_HZ="$_hz"
+    _MCSS_REFRESH_DONE=1   # process-local — NOT exported (see load-guard rule)
+
+    local _logf="${LOG:-${SPLITSCREEN_DEBUG_LOG:-}}"
+    [[ -n "$_logf" ]] && echo "[runtime_context] max refresh: ${_hz}Hz (refresh=${_refresh})" >> "$_logf" 2>/dev/null
+    echo "$_hz"
 }
 
 # --- mcss_set_display ---------------------------------------------------------
@@ -617,6 +734,13 @@ mcss_exec_env_string() {
                                   # MCSS_RAW_BINDING, which is not itself in
                                   # this list but shares the same reasoning)
         MCSS_MODE
+        MCSS_CAP_FPS_TO_REFRESH   # #70: the maxFps-cap master switch must
+                                  # survive the re-exec (spawn_instance reads it)
+        MCSS_MAX_REFRESH_HZ       # #70: host-sampled display refresh — the nested
+                                  # XWayland would only see a synthetic 60Hz, so
+                                  # it must be CARRIED, not re-derived (same
+                                  # cross-process contract as MCSS_SCREEN_*).
+                                  # Unset until host sampling runs → "don't cap".
         SPLITSCREEN_STATE
         SPLITSCREEN_FIFO
         SPLITSCREEN_DEBUG_LOG

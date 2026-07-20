@@ -124,8 +124,11 @@ _detect_via_drm() {
 _detect_via_display_query() {
     echo "[dock_detection] Trying display-query fallback (wlr-randr/kscreen-doctor)..." >&2
 
-    local name enabled res saw_any=0
-    while read -r name enabled res; do
+    # #70: mcss_query_displays now emits a 4th refresh field; consume it into a
+    # throwaway _rate (dock detection only needs name/enabled) so it does not
+    # fold into res.
+    local name enabled res _rate saw_any=0
+    while read -r name enabled res _rate; do
         [[ -n "$name" ]] || continue
         saw_any=1
         [[ "$name" == *eDP* ]] && continue

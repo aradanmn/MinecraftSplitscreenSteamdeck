@@ -35,6 +35,7 @@ set -euo pipefail
 #   MCSS_RAW_BINDING, MCSS_LAUNCHER_EXEC (legacy LAUNCHER_EXEC),
 #   MCSS_LAUNCHER_ROOT, MCSS_GEOM_DIR, MCSS_PULSE_SERVER,
 #   MCSS_STATE_LOCK_TIMEOUT_S, SPLITSCREEN_STATE, LOG (launcher entry script).
+#   MCSS_CAP_FPS_TO_REFRESH, MCSS_MAX_REFRESH_HZ (#70: host-sampled maxFps cap).
 #   CONTROLLER_MONITOR_STEAM_VENDOR — legacy alias for MCSS_STEAM_VENDOR_ID,
 #   still read by _build_bwrap_command's vendor comparison.
 #   Test-only overrides: SPLITSCREEN_MOCK_SPAWN, BWRAP_CMD.
@@ -53,12 +54,12 @@ set -euo pipefail
 #   MCSS_LAUNCHER_ROOT — override launcher base dir (resolved by runtime_context.sh)
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.7 2026-07-20  #70: spawn_instance caps maxFps to host display refresh
 #   v1.6 2026-07-19  Fix #95: document seed/re-assert split for first-boot race
 #   v1.5 2026-07-17  Standard JVM GC flags per instance; setInstanceCfgValue fix
 #   v1.4 2026-07-15  #51/D11,D13: state accessors + shared /proc parser unified
 #   v1.3 2026-07-09  #45: constants/paths sourced from runtime_context.sh
 #   v1.2 2026-07-05  Fix #57 (UNTESTED): map-keeper re-shows late-unmapped win
-#   v1.1 2026-07-01  v1.1 batch: env guard, state-file H3 race fix, 14 audits
 # =============================================================================
 
 # #45: instance prefix, account prefix, window-title prefix, slot count, and
@@ -896,6 +897,26 @@ spawn_instance() {
     if [[ -f "$cfg_path" ]]; then
         _set_jvm_window_title "$cfg_path" "$slot"
         echo "[spawn_instance] Set window title ${MCSS_WINDOW_TITLE_PREFIX}${slot} via instance.cfg (GC flags preserved)" >&2
+    fi
+
+    # 2.6 Cap maxFps to the host display refresh (#70). MCSS_MAX_REFRESH_HZ was
+    # sampled in the HOST context before nesting and carried across the re-exec
+    # (mcss_exec_env_string) — do NOT re-probe here (the nested XWayland reports a
+    # synthetic 60Hz). Idempotent every launch: rewrite the existing `maxFps:`
+    # line, or append it if a preserved user options.txt lacks the key. The two
+    # guards (switch on + numeric value) mean a failed/empty detection leaves the
+    # file untouched. Keep `maxFps:` at column 0 — the benchmark RUNBOOK's
+    # `s/^maxFps:.*/` sed anchor depends on it.
+    if [[ "${MCSS_CAP_FPS_TO_REFRESH:-1}" != "0" && "${MCSS_MAX_REFRESH_HZ:-}" =~ ^[0-9]+$ ]]; then
+        local options_txt="${launcher_dir}/instances/${MCSS_INSTANCE_PREFIX}${slot}/.minecraft/options.txt"
+        if [[ -f "$options_txt" ]]; then
+            if grep -q '^maxFps:' "$options_txt" 2>/dev/null; then
+                sed -i "s/^maxFps:.*/maxFps:${MCSS_MAX_REFRESH_HZ}/" "$options_txt"
+            else
+                printf 'maxFps:%s\n' "$MCSS_MAX_REFRESH_HZ" >> "$options_txt"
+            fi
+            echo "[spawn_instance] Capped maxFps=${MCSS_MAX_REFRESH_HZ} for slot $slot (host display refresh)" >&2
+        fi
     fi
 
     # 3. Build the launch command string.
