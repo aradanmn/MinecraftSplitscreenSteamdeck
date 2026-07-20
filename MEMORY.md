@@ -7,6 +7,44 @@ files.
 
 ---
 
+## 2026-07-20 — #70: cap maxFps to live display refresh (launch-time, dynamic)
+
+**What:** Minecraft's `maxFps` is no longer the hard-coded `120` from the installer
+heredoc — at play time each instance's `options.txt` is rewritten to the host
+display's **current refresh** on every launch. New `mcss_detect_max_refresh()`
+(runtime_context.sh) returns the MAX current-mode refresh across enabled outputs;
+`mcss_query_displays` gained a 4th output field (refresh Hz) parsed from all three
+tools (kscreen-doctor `@RR*`, wlr-randr `NN Hz (current)`, xrandr `NN.NN*` — the
+xrandr awk now buffers connector records because the rate sits on the mode line, not
+the connector line). Its two existing `read` callers (mcss_resolve_screen,
+dock_detection) took a throwaway 4th var. `_start_nested_plasma` samples refresh in
+the **host** context (before nesting), exports `MCSS_MAX_REFRESH_HZ`, and the value
+rides `mcss_exec_env_string` to the nested `spawn_instance`, which does the per-slot
+`sed`/append on `^maxFps:`. On by default (`MCSS_CAP_FPS_TO_REFRESH=1`); fallback 60,
+clamp [30,360]; `MCSS_MAX_REFRESH_HZ` doubles as an explicit override. New env vars
+are constants in the runtime_context guarded block; installer heredoc keeps
+`maxFps:120` as a labeled pre-launch placeholder (installer can't source
+runtime_context.sh). Tests T23–T26 added (28/28), CI baseline 22→28.
+
+**Why:** Issue #70's live owner direction (2026-07-18, superseding the earlier
+close-as-moot): BENCH-AB measured 300–600 fps per screen into a 60 Hz panel at
+92–94% CPU (4P). Frames above the panel's scanout are discarded; capping `maxFps` to
+refresh converts them into thermal/CPU headroom and better 1%-lows. Maintainer chose
+launch-time (dynamic to whatever display is actually connected), current-active
+refresh, on by default.
+
+**Decision / gotchas:** Sample in the HOST context ONLY — the nested XWayland reports
+a **synthetic 60 Hz**, so the nested code trusts the inherited value and never
+re-probes (the override-wins branch enforces this). `wlr-randr` stays forbidden at
+play time (gamescope kills throwaway Wayland clients); the probe list is X11-only
+(kscreen-doctor KDE-gated, then xrandr). Steam's per-game Framerate Limit / Refresh
+Rate needs no special case — sampling the host output mode picks up whatever SteamOS
+scans out (incl. a user-set 30 Hz), and Steam's fps limiter composes on top. **Open:**
+whether the outer Game-Mode gamescope probe returns a true refresh (not KDE, so only
+xrandr runs against gamescope's XWayland) needs an on-Deck check; degrades safely to
+the 60 fallback / override otherwise. Per-slot-count render-cap variation
+(renderDistance/heaps, the other half of #70's original scope) remains out of scope.
+
 ## 2026-07-17 — Architecture audit + placement law (docs + issues, no code)
 
 **What:** Three-agent audit of all 27 scripts (~12k lines): full interaction map

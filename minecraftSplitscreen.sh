@@ -235,6 +235,17 @@ _start_nested_plasma() {
     W="$MCSS_SCREEN_W"; H="$MCSS_SCREEN_H"
     echo "[$tag] W=$W H=$H" >> "$LOG"
 
+    # #70: sample the HOST display refresh HERE (before nesting) so the launch-
+    # time maxFps cap has a truthful value — the nested XWayland only ever
+    # reports a synthetic 60Hz. The exported MCSS_MAX_REFRESH_HZ then rides
+    # mcss_exec_env_string (below) across the re-exec into spawn_instance. Runs
+    # before both re-exec boundaries; a no-op / cheap fallback when the switch is
+    # off or no display answers (mcss_detect_max_refresh degrades to the default).
+    if [[ "${MCSS_CAP_FPS_TO_REFRESH:-1}" != "0" ]]; then
+        mcss_detect_max_refresh >/dev/null || true
+        echo "[$tag] max refresh=${MCSS_MAX_REFRESH_HZ:-?}Hz" >> "$LOG"
+    fi
+
     # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
     # world-writable /tmp — it is injected into PATH and EXECUTED by
     # startplasma.
