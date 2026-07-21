@@ -441,14 +441,17 @@ install_evsieve() {
 
     print_progress "Building evsieve in the ${EVSIEVE_DISTROBOX_NAME}\
  distrobox (this can take several minutes)..."
-    if ! _evsieve_ensure_box; then
+    if ! run_with_spinner \
+        "Preparing ${EVSIEVE_DISTROBOX_NAME} box (first run pulls a debian image)" \
+        _evsieve_ensure_box; then
         msg="evsieve build box could not be created;"
         msg+=" ${EVSIEVE_FAIL_OPEN_NOTE}"
         _evsieve_degrade "degraded-build-failed" "$msg"
         return 0
     fi
 
-    if ! _evsieve_build_in_box "$build_root/src"; then
+    if ! run_with_spinner "Compiling evsieve (cargo build --release)" \
+        _evsieve_build_in_box "$build_root/src"; then
         msg="evsieve build (cargo build --release) failed;"
         msg+=" ${EVSIEVE_FAIL_OPEN_NOTE}"
         _evsieve_degrade "degraded-build-failed" "$msg"
