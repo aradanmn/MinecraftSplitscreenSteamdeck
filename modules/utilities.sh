@@ -5,10 +5,10 @@
 # Progress and status reporting functions and general utilities
 # These functions provide consistent, colored output for better user experience
 #
-# Network transport (fetch_url/fetch_url_status) and — per Fix #47 — the
-# CurseForge API token fetch+decrypt also live here: both are transport-layer
-# concerns (download + auth material), while the version-match POLICY that
-# consumes the token stays in mod_management.sh (ARCHITECTURE.md §2).
+# Network transport (fetch_url/fetch_url_status) and the CurseForge API key
+# resolution (BYOK, #120) live here: both are transport-layer / auth-material
+# concerns, while the version-match POLICY that consumes the key stays in
+# mod_management.sh (ARCHITECTURE.md §2).
 #
 # Public API:
 #   get_prism_executable()        — stdout: PolyMC executable path; return 1
@@ -16,14 +16,19 @@
 #   fetch_url(url, out, [timeout]) — download via curl/wget; "-" streams
 #                                    the body to stdout
 #   fetch_url_status(url, out, [timeout]) — stdout: HTTP status; return 0
-#   get_curseforge_api_token()    — stdout: decrypted token or empty
+#   resolve_curseforge_api_token() — BYOK, INTERACTIVE; call once up-front in
+#                                    the parent shell; exports the resolved
+#                                    key; return 1 if none (mods skipped)
+#   get_curseforge_api_token()    — pure accessor: stdout key or empty; safe
+#                                    inside $(...) (never prompts/networks)
 #   print_header/success/warning/error/info/progress/debug(msg) — colored
 #                                    UX helpers (error to stderr; debug only
 #                                    when DEBUG_MODE=true)
 #
 # Globals CONSUMED (set elsewhere, read here):
-#   TARGET_DIR — installer entry (get_prism_executable)
-#   REPO_REF   — installer entry, optional (get_curseforge_api_token)
+#   TARGET_DIR          — installer entry (get_prism_executable)
+#   CURSEFORGE_API_KEY  — user env, optional (BYOK) — a real key wins
+#   CURSEFORGE_KEY_FILE — optional (BYOK), defaults under ~/.config
 #
 # Inputs:  network (curl/wget), CurseForge token material.
 # Outputs: stdout body for fetch_url("-", ...); colored UX to stderr/stdout
@@ -114,53 +119,106 @@ fetch_url_status() {
     return 0
 }
 
-# get_curseforge_api_token: Download and decrypt the CurseForge API token.
-# Fix #47: canonical home. Was copy-pasted at 7 sites across
-# mod_management.sh/version_management.sh — same download + openssl AES
-# decrypt + hardcoded passphrase + cleanup, each with its own ad hoc
-# curl/wget branching and a drifted timeout. All other sites now call this.
-# Inputs:
-#   Globals: REPO_REF (read, optional) — token.enc branch, default "main"
+# ---------------------------------------------------------------------------
+# CurseForge API key — bring-your-own-key (BYOK), #120.
+# The old bundled-token.enc download+decrypt model is retired here: a publicly
+# redistributable build can't ship a shared token (#33). Modrinth mods
+# (everything installed by default) need no key; only user-added CurseForge
+# mods do. `token.enc` is intentionally KEPT in the repo for now so already-
+# shipped installs that still fetch it at runtime don't 404 — its deletion is
+# gated on #33 (deprecation window).
+# ---------------------------------------------------------------------------
+
+# BYOK: default location of the saved user key. The CURSEFORGE_API_KEY env var
+# (a real key) always wins over this file. Env-overridable default, set once at
+# the owning module per the ARCHITECTURE.md globals ladder (rung 4 — read only
+# by utilities.sh).
+: "${CURSEFORGE_KEY_FILE:=$HOME/.config/minecraft-splitscreen/curseforge-api-key}"
+
+# _mcss_cf_key_from_env_or_file: NON-interactive key resolution — env var, then
+# key file. No prompt, no network. Echoes the key (possibly empty). Always
+# returns 0 so `key=$(...)` is safe under `set -e`.
+_mcss_cf_key_from_env_or_file() {
+    if [[ -n "${CURSEFORGE_API_KEY:-}" ]]; then
+        printf '%s' "$CURSEFORGE_API_KEY"
+    elif [[ -f "$CURSEFORGE_KEY_FILE" ]]; then
+        tr -d '[:space:]' < "$CURSEFORGE_KEY_FILE" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# resolve_curseforge_api_token: up-front, INTERACTIVE key resolution. Call ONCE
+# in the parent shell (never inside $(...)) before CurseForge mods are
+# processed — e.g. when the user adds a custom CurseForge mod. Order:
+# CURSEFORGE_API_KEY env -> key file -> a guarded stdin prompt that skips
+# cleanly on piped/EOF stdin (returns non-zero, never hangs — mirrors
+# prompt_custom_mods). A real key is saved to CURSEFORGE_KEY_FILE (chmod 600)
+# so later mods and future runs don't re-prompt. Exports the result so the
+# $()-captured get_curseforge_api_token calls inherit it (parent-shell
+# resolution is what makes the export visible to those subshells — the #120
+# per-mod-re-prompt fix).
+# Outputs: exports _MCSS_CF_API_KEY + _MCSS_CF_KEY_RESOLVED; no stdout.
+# return — 0 if a key was resolved, 1 otherwise (CurseForge mods skipped).
+resolve_curseforge_api_token() {
+    # Idempotent: resolve at most once per install run.
+    if [[ -n "${_MCSS_CF_KEY_RESOLVED:-}" ]]; then
+        if [[ -n "${_MCSS_CF_API_KEY:-}" ]]; then return 0; else return 1; fi
+    fi
+
+    local key
+    key=$(_mcss_cf_key_from_env_or_file)
+
+    if [[ -z "$key" ]]; then
+        {
+            echo ""
+            echo "A CurseForge API key is needed to install CurseForge mods."
+            echo "(Modrinth mods — everything installed by default — need no key.)"
+            echo "Get a free key at https://console.curseforge.com/ -> 'API Keys'."
+        } >&2
+        # Guarded read from stdin: on a piped/unattended install this hits EOF
+        # and returns non-zero, so we skip WITHOUT blocking (the #120
+        # unattended-hang fix — the old WIP read /dev/tty and hung).
+        if ! read -r -p "CurseForge API key (Enter to skip): " key; then
+            key=""
+        fi
+        key=$(printf '%s' "$key" | tr -d '[:space:]')
+        if [[ -n "$key" ]]; then
+            if mkdir -p "$(dirname "$CURSEFORGE_KEY_FILE")" 2>/dev/null \
+                && printf '%s\n' "$key" > "$CURSEFORGE_KEY_FILE" 2>/dev/null; then
+                chmod 600 "$CURSEFORGE_KEY_FILE" 2>/dev/null || true
+                print_info "Saved CurseForge key to $CURSEFORGE_KEY_FILE (chmod 600) — delete it to be re-prompted."
+            fi
+        fi
+    fi
+
+    export _MCSS_CF_API_KEY="$key"
+    export _MCSS_CF_KEY_RESOLVED=1
+    if [[ -z "$key" ]]; then
+        print_warning "No CurseForge API key provided — CurseForge mods will be skipped. Modrinth mods are unaffected."
+        return 1
+    fi
+    return 0
+}
+
+# get_curseforge_api_token: PURE accessor for the resolved CurseForge key —
+# safe inside $(...) because it NEVER prompts and NEVER networks. Returns the
+# value resolved up-front by resolve_curseforge_api_token; if that has not run
+# (a non-interactive path), falls back to env var / key file only. #120 BYOK:
+# replaces the retired token.enc download+decrypt.
 # Outputs:
-#   stdout — the decrypted token, or empty on failure
-#   return — 1 if the token file couldn't be fetched at all; 0 otherwise
-#            (openssl-missing/decrypt-failure falls through with empty
-#            stdout and return 0 — the pre-existing contract every caller
-#            already double-checks via `[[ -z "$api_token" ]]`, not just
-#            the exit status; preserved as-is, not tightened, per #47/#88's
-#            no-behavior-change mandate)
+#   stdout — the API key, or empty
+#   return — 1 if no key is available, 0 otherwise (callers also treat empty
+#            stdout as "skip" via `[[ -z "$api_token" ]]`)
 get_curseforge_api_token() {
-    local token_url="https://raw.githubusercontent.com/aradanmn/\
-MinecraftSplitscreenSteamdeck/${REPO_REF:-main}/token.enc"
-    local encrypted_token_file
-    encrypted_token_file=$(mktemp)
-
-    if [[ -z "$encrypted_token_file" ]]; then
-        echo ""
+    if [[ -n "${_MCSS_CF_KEY_RESOLVED:-}" ]]; then
+        [[ -n "${_MCSS_CF_API_KEY:-}" ]] \
+            && { printf '%s' "$_MCSS_CF_API_KEY"; return 0; }
         return 1
     fi
-
-    # Fix #47: fetch_url replaces the per-site curl/wget branching. Timeout
-    # 0 (unbounded) is the most tolerant of the drifted copies — 5 of the 6
-    # duplicates had no timeout at all, only one wrapped `timeout 10` — per
-    # the #51/D14 tolerance fix, which this must not re-tighten.
-    if ! fetch_url "$token_url" "$encrypted_token_file" 0 \
-        || [[ ! -s "$encrypted_token_file" ]]; then
-        rm -f "$encrypted_token_file"
-        echo ""
-        return 1
-    fi
-
-    local api_token=""
-    if command -v openssl >/dev/null 2>&1; then
-        api_token=$(openssl enc -d -aes-256-cbc -a -pbkdf2 \
-            -in "$encrypted_token_file" \
-            -pass pass:"MinecraftSplitscreenSteamDeck2025" 2>/dev/null \
-            | tr -d '\n\r' | sed 's/[[:space:]]*$//')
-    fi
-
-    rm -f "$encrypted_token_file"
-    echo "$api_token"
+    local key
+    key=$(_mcss_cf_key_from_env_or_file)
+    [[ -n "$key" ]] && { printf '%s' "$key"; return 0; }
+    return 1
 }
 
 # print_header: Display a section header with visual separation
