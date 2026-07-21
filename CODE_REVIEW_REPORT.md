@@ -1,20 +1,27 @@
 # Minecraft Splitscreen Code Review Report
 
-## Overview
+**Report Date:** 2026-07-21 (Updated review)  
+**Baseline:** Commit 40bfaef (v1.2 mainline + hardware validation + #70 maxFps cap)  
+**Scope:** Runtime modules, launcher flow, installer, hardware tests
 
-This review covers the launcher, runtime modules, and installer flow within the `MinecraftSplitscreenSteamdeck` repository. The code is generally well modularized, with strong documentation and defensive shell practices. The main risks are concentrated in broad `set +e` regions, legacy environment override complexity, custom parsing of low-level device files, and a few fragile system-integration branches.
+## Executive Summary
+
+This review reflects significant progress since the initial v1.0 assessment. The codebase has undergone focused refactoring (#45-#90 de-duplication work), hardware validation (HW1 on 2026-07-19), and new features (dynamic display refresh capping in #70, controller proxy dark-on-arrival in #38). The code is well-modularized with strong defensive practices, excellent documentation, and idempotent load guards across runtime_context.sh. Residual risks remain in broad `set +e` regions, legacy environment override complexity, custom low-level device parsing, and the non-integrated controller-proxy feature.
 
 ---
 
 ## Strengths
 
-- Clear separation between runtime modules and installer modules.
-- Centralized runtime context resolution in `modules/runtime_context.sh`.
-- Good use of comments documenting bug-fix rationale and module contracts.
-- Atomic state writes and lock handling in `modules/instance_lifecycle.sh`.
-- Explicit public API comments for many modules.
-- Defensive handling of runtime environment assumptions and fallbacks.
-- Unified manifest list in `modules/runtime_modules.list`.
+- **Consolidation & de-duplication:** #51-#90 work eliminated numerous duplication sites (display parsers, version-match ladders, token fetching, mmc-pack.json writers, fetch_url branches).
+- **Centralized runtime context:** `modules/runtime_context.sh` is the single source of truth for cross-module constants, with idempotent load guards and process-local sentinels (guard pattern: `_MODULE_CONSTANTS_LOCKED` sentinel).
+- **Clear separation of concerns:** Runtime modules, installer modules, and hardware test stages are well partitioned and independently sourced.
+- **Excellent documentation:** Bug-fix rationale (Fix #NN comments), module contracts, version history, and specific line-number cross-references.
+- **Atomic state management:** JSON state writes via jq + tmp + mv; lock handling with flock timeouts and timeout-aware state file locking.
+- **Explicit public APIs:** Most modules document their public functions, globals, and dependency chains clearly.
+- **Defensive practices:** Fallbacks for missing tools (wlr-randr/xrandr), graceful degradation (controller proxy fail-open, evsieve build fail-open).
+- **Dynamic hardware adaptation:** #70 caps per-instance maxFps to live display refresh at launch; respects Deck (HDMI) vs desktop (multi-display) chains.
+- **Module resource guards:** #109 fix applied readonly guard pattern to prevent duplicate const declarations on re-source.
+- **Hardware validation records:** HW1-2026-07-19.md documents M0+M1 Deck validation (docked/handheld, splitscreen, hardware hotplug).
 
 ---
 
