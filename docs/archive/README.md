@@ -19,6 +19,7 @@ Archived 2026-06-19 during a docs decluttering pass; a second batch added 2026-0
 | `DECISION-LOG-2026-06-19.md` | Decision record: keep bwrap, restore GPU re-bind regression (commit d348bf1) | Decision implemented; historical (added 2026-06-23) |
 | `GAMESCOPE_INVESTIGATION.md` | Feb-2026 Border Enforcer / static-mode gamescope memory-leak root-cause analysis | Superseded — the mod + Border Enforcer approach was abandoned for nested KWin (added 2026-06-23) |
 | `GAMESCOPE_RESEARCH.md` | Feb-2026 research: "gamescope can't do splitscreen" | Same era/conclusion; superseded by the nested-KWin architecture (added 2026-06-23) |
+| `research-controller-identity-raw.json` | 2.5k-line raw research dump behind the controller-identity / reconnect handoff (from the `docs/controller-identity-research` branch, 2026-07-03) | Superseded by `DESIGN-38-CONTROLLER-VIRTUALIZATION-V1_2.md` + `RESEARCH-CONTROLLER-VIRTUALIZATION-2026-07-17.md`; raw data kept for the reasoning trail (added 2026-07-20; branch then deleted) |
 
 Two further docs were deleted outright (not archived) in the same pass, as they
 described work that is complete or branches that are dead — recover from git history
