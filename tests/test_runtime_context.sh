@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_runtime_context.sh
 # =============================================================================
 
-readonly TEST_TOTAL=28
+readonly TEST_TOTAL=30
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -233,6 +233,21 @@ assert_equals "$out" "360" "T25b: override still clamped to ceiling 360" || true
 # out kscreen-doctor and the xrandr stub answers nothing.
 out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
 assert_equals "$out" "60" "T26: no probe answer → fallback 60" || true
+
+# T27: Game-Mode xrandr path rounds, does not floor. Under gamescope the outer
+# XWayland advertises the active output's refresh a hair UNDER nominal — on real
+# hardware 90Hz OLED reports "89.89*" and a docked 60Hz panel reports "59.96*"
+# (verified on-Deck 2026-07-20, both handheld and docked). int(x+0) floored those
+# to 89/59; int(x+0.5) rounds to the true 90/60. kscreen-doctor is gated out by
+# the gamescope session, so only the xrandr branch runs — the production path.
+printf '#!/bin/bash\necho "eDP-1 connected 1280x800+0+0 (normal) 0mm x 0mm"\necho "   1280x800     89.89*+"\n' > "$_scratch/rbin/xrandr"
+chmod +x "$_scratch/rbin/xrandr"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "90" "T27a: gamescope xrandr 89.89* rounds to 90 (handheld OLED)" || true
+printf '#!/bin/bash\necho "DP-1 connected 1920x1080+0+0 (normal) 0mm x 0mm"\necho "   1920x1080     59.96*+"\n' > "$_scratch/rbin/xrandr"
+chmod +x "$_scratch/rbin/xrandr"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "60" "T27b: gamescope xrandr 59.96* rounds to 60 (docked)" || true
 
 # --- Summary ---
 echo ""

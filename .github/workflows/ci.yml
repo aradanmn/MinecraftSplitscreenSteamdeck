@@ -73,7 +73,7 @@ jobs:
             [tests/test_watchdog.sh]=10
             [tests/test_window_manager.sh]=7
             [tests/test_dock_detection.sh]=8
-            [tests/test_runtime_context.sh]=28
+            [tests/test_runtime_context.sh]=30
           )
 
           for suite in "${!BASELINE[@]}"; do

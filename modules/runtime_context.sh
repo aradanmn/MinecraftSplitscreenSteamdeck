@@ -436,7 +436,9 @@ mcss_query_displays() {
                         if (tok != "") {
                             r = tok; sub(/@.*/, "", r); res = r
                             h = tok; sub(/.*@/, "", h); sub(/[*].*/, "", h)
-                            rate = int(h + 0)
+                            # round, not floor: compositors advertise the mode a
+                            # hair under nominal (gamescope: 59.96/89.89) — #70
+                            rate = int(h + 0.5)
                         } else if (match($0, /[0-9]+x[0-9]+/)) {
                             res = substr($0, RSTART, RLENGTH)
                         }
@@ -462,7 +464,7 @@ mcss_query_displays() {
                             res = substr($0, RSTART, RLENGTH)
                         if (match($0, /[0-9]+([.][0-9]+)? Hz/)) {
                             h = substr($0, RSTART, RLENGTH); sub(/ Hz/, "", h)
-                            rate = int(h + 0)
+                            rate = int(h + 0.5)  # round, not floor — see #70 note above
                         }
                     }
                     END { if (name != "") emit() }')
@@ -502,7 +504,7 @@ mcss_query_displays() {
                             mres = substr($0, RSTART, RLENGTH)
                         if (match($0, /[0-9]+\.[0-9]+\*/)) {
                             t = substr($0, RSTART, RLENGTH); sub(/[*].*/, "", t)
-                            mrate = int(t + 0)
+                            mrate = int(t + 0.5)  # round, not floor — see #70 note above
                         }
                         if (cur != "") {
                             if (mrate != "-") rate[cur] = mrate
