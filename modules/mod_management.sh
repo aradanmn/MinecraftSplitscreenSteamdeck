@@ -1781,6 +1781,15 @@ prompt_custom_mods() {
             continue
         fi
 
+        # #120 BYOK: resolve the CurseForge API key once, up-front, in THIS
+        # parent shell (not a $() subshell) the first time a CurseForge mod is
+        # added, so the capture-site get_curseforge_api_token calls below
+        # inherit the exported key instead of re-prompting per mod. No-op after
+        # the first call and for Modrinth-only sessions.
+        if [[ "$platform" == "curseforge" ]]; then
+            resolve_curseforge_api_token || true
+        fi
+
         local existing_idx=""
         existing_idx=$(find_existing_mod_index "$platform" "$mod_id" || true)
         if [[ -n "$existing_idx" ]]; then
