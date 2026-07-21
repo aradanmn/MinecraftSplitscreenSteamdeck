@@ -36,12 +36,12 @@
 # design; callers run under the entry script's strict mode.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.5 2026-07-20  #70: note maxFps:120 is a launch-time-rewritten placeholder
 #   v1.4 2026-07-19  Fix #95: seed controlify.json out_of_focus_input=true
 #   v1.3 2026-07-17  Per-instance JVM GC flags; #87 heap-default canonical home
 #   v1.2 2026-07-15  Fix #51 D8/D14: single mmc-pack.json writer + fetch_url
 #   v1.1 2026-07-10  Fix #45 PR3: installer constants pairing + literal sweep
-#   v1.0 2025-06-27  Initial extraction: Fabric+mod install, options.txt
-#                    preserved across updates (2025-06-27..2025-07-28)
+#   v1.0 2025-06-27  Initial extraction: Fabric+mod install, options.txt preserved
 # =============================================================================
 
 # Per-instance JVM heap (MiB). Up to four instances run concurrently for 4-player
@@ -576,6 +576,14 @@ install_fabric_and_mods() {
     else
         print_info "   → Creating default splitscreen-optimized options.txt"
         mkdir -p "$(dirname "$options_file")"
+        # #70: the `maxFps:120` below is a pre-launch PLACEHOLDER only — at play
+        # time spawn_instance (instance_lifecycle.sh) rewrites `maxFps:` to the
+        # host display's current refresh on every launch, before Minecraft reads
+        # the file, so the game never observes 120 once installed. The installer
+        # does NOT source runtime_context.sh, so refresh detection cannot run
+        # here (it is a launch-time concern). enableVsync:true (below) already
+        # caps to refresh when vsync is on; the maxFps cap also holds if a user
+        # disables vsync in-game. Keep `maxFps:` at column 0 (benchmark sed anchor).
         cat > "$options_file" <<EOF
 version:3465
 autoJump:false

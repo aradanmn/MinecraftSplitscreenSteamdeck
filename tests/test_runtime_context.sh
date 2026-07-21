@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_runtime_context.sh
 # =============================================================================
 
-readonly TEST_TOTAL=22
+readonly TEST_TOTAL=30
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,7 +26,8 @@ unset N_SLOTS INSTANCES_DIR LAUNCHER_EXEC SPLITSCREEN_SCREEN_W SPLITSCREEN_SCREE
       CONTROLLER_MONITOR_RAW_BINDING MCSS_LAUNCHER_ROOT MCSS_INSTANCES_DIR \
       MCSS_LAUNCHER_EXEC MCSS_SCREEN_W MCSS_SCREEN_H MCSS_MAX_PLAYERS \
       MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID MCSS_RAW_BINDING \
-      XDG_CURRENT_DESKTOP KDE_FULL_SESSION MCSS_NESTED_SESSION 2>/dev/null || true
+      XDG_CURRENT_DESKTOP KDE_FULL_SESSION MCSS_NESTED_SESSION \
+      MCSS_MAX_REFRESH_HZ MCSS_CAP_FPS_TO_REFRESH 2>/dev/null || true
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -195,6 +196,58 @@ assert_equals "$out" "1920x1080" "T21: non-KDE session skips kscreen-doctor, xra
 
 out=$(env PATH="$_scratch/kbin:$PATH" XDG_CURRENT_DESKTOP=KDE bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_resolve_screen; echo \${MCSS_SCREEN_W}x\${MCSS_SCREEN_H}" 2>/dev/null)
 assert_equals "$out" "3840x2160" "T22: KDE session probes kscreen-doctor, external output wins over eDP" || true
+
+# --- T23-T26: mcss_detect_max_refresh (#70) --------------------------------
+# Reuses mcss_query_displays (kscreen-doctor gated on KDE, then xrandr). Stub
+# kscreen-doctor with two enabled outputs at different current-mode refreshes
+# so the MAX-across-enabled result is unambiguous. Own kbin dir (rbin) so the
+# T21/T22 stubs are untouched. The `@RR*` marks the current mode.
+mkdir -p "$_scratch/rbin"
+printf '#!/bin/bash\necho "Output: 1 eDP-1 enabled 1280x800@60*!"\necho "Output: 2 HDMI-A-1 enabled 2560x1440@144*!"\n' > "$_scratch/rbin/kscreen-doctor"
+printf '#!/bin/bash\ntrue\n' > "$_scratch/rbin/xrandr"
+chmod +x "$_scratch/rbin/kscreen-doctor" "$_scratch/rbin/xrandr"
+
+# T23: max current-mode refresh across enabled outputs (KDE session) → 144.
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=KDE bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "144" "T23: max refresh across enabled outputs (60,144) → 144" || true
+
+# T24: clamp to [FLOOR=30, CEIL=360] (defends against parse/concat errors; 30Hz
+# is a legit battery-saver mode so it is the accepted floor).
+printf '#!/bin/bash\necho "Output: 1 eDP-1 enabled 1280x800@600*!"\n' > "$_scratch/rbin/kscreen-doctor"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=KDE bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "360" "T24a: refresh 600 clamped to ceiling 360" || true
+printf '#!/bin/bash\necho "Output: 1 eDP-1 enabled 1280x800@20*!"\n' > "$_scratch/rbin/kscreen-doctor"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=KDE bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "30" "T24b: refresh 20 clamped up to floor 30" || true
+
+# T25: a pre-set MCSS_MAX_REFRESH_HZ is the override/host-cache — honored
+# WITHOUT re-probing (a nested re-probe would return the synthetic 60), still
+# clamped. Stub advertises 144 to prove the override wins over the probe.
+printf '#!/bin/bash\necho "Output: 1 eDP-1 enabled 1280x800@144*!"\n' > "$_scratch/rbin/kscreen-doctor"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=KDE MCSS_MAX_REFRESH_HZ=90 bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "90" "T25a: pre-set MCSS_MAX_REFRESH_HZ override honored (no re-probe)" || true
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=KDE MCSS_MAX_REFRESH_HZ=999 bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "360" "T25b: override still clamped to ceiling 360" || true
+
+# T26: nothing detected → documented fallback (60). A gamescope session gates
+# out kscreen-doctor and the xrandr stub answers nothing.
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "60" "T26: no probe answer → fallback 60" || true
+
+# T27: Game-Mode xrandr path rounds, does not floor. Under gamescope the outer
+# XWayland advertises the active output's refresh a hair UNDER nominal — on real
+# hardware 90Hz OLED reports "89.89*" and a docked 60Hz panel reports "59.96*"
+# (verified on-Deck 2026-07-20, both handheld and docked). int(x+0) floored those
+# to 89/59; int(x+0.5) rounds to the true 90/60. kscreen-doctor is gated out by
+# the gamescope session, so only the xrandr branch runs — the production path.
+printf '#!/bin/bash\necho "eDP-1 connected 1280x800+0+0 (normal) 0mm x 0mm"\necho "   1280x800     89.89*+"\n' > "$_scratch/rbin/xrandr"
+chmod +x "$_scratch/rbin/xrandr"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "90" "T27a: gamescope xrandr 89.89* rounds to 90 (handheld OLED)" || true
+printf '#!/bin/bash\necho "DP-1 connected 1920x1080+0+0 (normal) 0mm x 0mm"\necho "   1920x1080     59.96*+"\n' > "$_scratch/rbin/xrandr"
+chmod +x "$_scratch/rbin/xrandr"
+out=$(env PATH="$_scratch/rbin:$PATH" XDG_CURRENT_DESKTOP=gamescope bash -c "set -euo pipefail; source '$RC_MODULE'; mcss_detect_max_refresh" 2>/dev/null)
+assert_equals "$out" "60" "T27b: gamescope xrandr 59.96* rounds to 60 (docked)" || true
 
 # --- Summary ---
 echo ""
