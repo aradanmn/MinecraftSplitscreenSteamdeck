@@ -113,6 +113,7 @@ is about to run the full installer anyway).
 
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen).
 - Built and maintained by [aradanmn](https://github.com/aradanmn); the installer originated from [FlyingEwok](https://github.com/FlyingEwok).
+- **The code, tests, and documentation in this repo were written by [Claude](https://www.anthropic.com/claude) (Anthropic's [Claude Code](https://claude.com/claude-code)).**
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC) and [Eclipse Temurin (Adoptium)](https://adoptium.net).
 
 > **License:** not finalized yet — this project is not cleared for public redistribution pending license resolution of the inherited installer code. For personal use for now.
