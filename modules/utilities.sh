@@ -281,7 +281,11 @@ run_with_spinner() {
     fi
 
     # Interactive: run in the background, animate elapsed time until it exits.
-    "$@" &
+    # Detach the child's stdin (< /dev/null): a backgrounded process that reads
+    # the controlling TTY gets SIGTTIN-stopped (T state) and wedges — exactly
+    # the failure the evsieve build hit on a hidden sudo prompt. The command
+    # keeps its own stdout/stderr.
+    "$@" </dev/null &
     local pid=$! start=$SECONDS frames='|/-\' i=0 rc=0
     while kill -0 "$pid" 2>/dev/null; do
         printf '\r  %s %s  (%ds)  ' "${frames:i++%${#frames}:1}" "$label" \
