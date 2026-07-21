@@ -24,6 +24,9 @@
 #   print_header/success/warning/error/info/progress/debug(msg) — colored
 #                                    UX helpers (error to stderr; debug only
 #                                    when DEBUG_MODE=true)
+#   run_with_spinner(label, cmd...) — run a long quiet command with a live
+#                                    busy indicator on a TTY (stderr); inline
+#                                    on a pipe. Returns the command's status
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   TARGET_DIR          — installer entry (get_prism_executable)
@@ -258,4 +261,36 @@ print_debug() {
     if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
         echo "🐛 $1"
     fi
+}
+
+# run_with_spinner: run a long, quiet command while showing a live "busy"
+# indicator so it doesn't look hung (e.g. the multi-minute evsieve cargo
+# build). Human output goes to STDERR (stdout stays the data protocol, §2).
+# The animated spinner only runs on an interactive terminal (`-t 2`); on a
+# piped / unattended install it prints one start line and runs the command
+# inline, so logs stay clean. Returns the command's own exit status.
+# Usage: run_with_spinner "Compiling evsieve..." cmd [args...]
+run_with_spinner() {
+    local label="$1"; shift
+
+    # Non-interactive (CI / piped install): no spinner spam — one line, inline.
+    if [[ ! -t 2 ]]; then
+        printf '🔄 %s\n' "$label" >&2
+        "$@"
+        return $?
+    fi
+
+    # Interactive: run in the background, animate elapsed time until it exits.
+    "$@" &
+    local pid=$! start=$SECONDS frames='|/-\' i=0 rc=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf '\r  %s %s  (%ds)  ' "${frames:i++%${#frames}:1}" "$label" \
+            "$((SECONDS - start))" >&2
+        sleep 0.2
+    done
+    wait "$pid" && rc=0 || rc=$?
+    printf '\r\033[K   %s %s  (%ds)\n' \
+        "$([[ $rc -eq 0 ]] && printf '✅' || printf '❌')" "$label" \
+        "$((SECONDS - start))" >&2
+    return "$rc"
 }
