@@ -150,3 +150,42 @@ before this merges.
 | `MCSS_MAX_REFRESH_HZ` | *(unset)* | Force a specific cap; also the host→nested cache. Still clamped. |
 | `MCSS_MAX_REFRESH_FALLBACK_HZ` | `60` | Used when no display answers. |
 | `MCSS_MAX_REFRESH_FLOOR_HZ` / `_CEIL_HZ` | `30` / `360` | Clamp bounds. |
+
+---
+
+## Results — on-Deck validation, Steam Deck OLED (Galileo), 2026-07-20
+
+Validated in **Game Mode** on real hardware, in-game on the modset (Sodium,
+Controlify, ModernFix, ImmediatelyFast, Lithium, YACL…) against the home Paper
+server. Refresh read verified against DRM ground truth (`modetest -M amdgpu`, the
+active CRTC mode) and gamescope's own `GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK`.
+
+| # | Check | Mode | Expected | Observed | Pass |
+|---|-------|------|----------|----------|------|
+| 1 | probe / detect | **Game Mode handheld** | 90 (OLED) | probe `90`; DRM active CRTC `800x1280@90` | ✅ |
+| 1 | probe / detect | **Game Mode docked** | external rate | probe `60`; DRM active CRTC `1920x1080@60` (ext on `DP-1`, `eDP-1` dark) | ✅ |
+| 2 | options.txt == detected | handheld | maxFps:90 | `latestUpdate-1 → maxFps:90` | ✅ |
+| 2 | options.txt == detected | docked, 4 slots | maxFps:60 ×4 | all four `latestUpdate-{1..4} → maxFps:60` | ✅ |
+| 3 | MC honors the cap | handheld | MC target = 90 | F3: `T: 90` (delivered 45 = vsync half-rate; scene below cap) | ✅ |
+| 3 | MC honors the cap | docked | MC target = 60 | F3: `T: 60`, delivered a pinned `p50=p98=p99.5=60` | ✅ |
+| — | 4P aggregate load | docked, capped 60 | << uncapped 92–94% | 4 instances in-game: summed CPU ≈335%/800% (~42%), GPU ≈25% | ✅ |
+
+**Headline (the pre-merge open question): the xrandr-under-gamescope probe IS
+sufficient — no DRM fallback needed.** gamescope's outer XWayland reports the *real
+active output's* refresh (tracks docked↔handheld), it just advertises it a hair
+under nominal (`89.89`, `59.96`). The v1 code floored that with `int(x+0)` →
+89/59; fixed here to round (`int(x+0.5)`) → 90/60. Both matched ground truth in
+both states. Tests T27a/b lock this in (30/30).
+
+### Notes / findings unrelated to #70
+- **Steam's performance overlay cannot measure the nested instances** — mangoapp
+  reads gamescope's composited output, not the nested plasma/kwin surfaces. MC's
+  own **F3** counter is the ground truth here. gamescope also independently
+  fps-limits the *presented* output to the panel refresh, so #70's benefit is the
+  *internal* render/CPU reduction, not the on-screen rate.
+- **MC 26.1.2 update (2026-07-20) broke all instances**, independent of #70: the
+  new LWJGL 3.4.1 metadata migrated windowing to SDL and dropped `lwjgl-glfw` from
+  the Linux classpath, but the client still references `org.lwjgl.glfw.*` →
+  `NoClassDefFoundError` at init. Worked around per-instance with a local
+  `org.lwjgl3.glfwfix` patch re-adding `lwjgl-glfw:3.4.1` (+ linux natives) to the
+  classpath. Not part of this branch — belongs in a separate instance/metadata fix.
