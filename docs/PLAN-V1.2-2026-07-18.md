@@ -282,3 +282,18 @@ consumer using `persist` hits the udev-ACL EACCES race); merging it shrinks
 our maintenance surface. Explicitly does not block v1.2.
 
 **Close #70** with the BENCH-AB-2026-07-18 citation (Part 7).
+
+> **Addendum 2026-07-20 — #70 NOT closed; delivered instead.** The owner's
+> 2026-07-18 comment superseded the close recommendation: rather than close on the
+> moot memory angle, cap `maxFps` to display refresh (BENCH-AB measured 300–600fps
+> per screen into a 60Hz panel at 92–94% CPU, 4P — capping converts discarded
+> frames into thermal/CPU headroom). **Implemented on `claude/dynamic-maxfps-displays`:**
+> a launch-time `mcss_detect_max_refresh` samples the host output mode's current
+> refresh (kscreen-doctor/xrandr, host context before nesting — the nested XWayland
+> reports a synthetic 60Hz), carries it across the re-exec, and `spawn_instance`
+> rewrites each slot's `options.txt maxFps:` per launch. On by default
+> (`MCSS_CAP_FPS_TO_REFRESH`); fallback 60, clamp [30,360]; overridable via
+> `MCSS_MAX_REFRESH_HZ`. Steam's per-game Framerate Limit / Refresh Rate composes
+> on top (we cap to whatever the host scans out). Per-slot-count render-cap variation
+> (renderDistance/heaps) remains out of scope. On-Deck check needed to confirm the
+> Game-Mode probe returns a real refresh (degrades safely to fallback otherwise).
