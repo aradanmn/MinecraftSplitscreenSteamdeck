@@ -168,7 +168,7 @@ JSON
         export SPLITSCREEN_STATE="$state_file"
         teardown_instance() { [[ "$1" == "2" ]] && touch "$sentinel"; return 0; }
         _handle_msg "SLOT_DIED 2"
-    ) &
+    ) >/dev/null 2>&1 &
     _wait_bounded "$!" 8 >/dev/null 2>&1 || true
 
     if [[ -f "$sentinel" ]]; then
@@ -225,7 +225,7 @@ JSON
         restorePanels() { return 0; }
         docked_flow() { return 0; }
         handheld_flow
-    ) &
+    ) >/dev/null 2>&1 &
     local hf_pid=$!
 
     sleep 0.3
@@ -273,7 +273,7 @@ JSON
         get_active_slots() { echo "1 2"; }
         slot_is_active() { [[ "$1" == "1" ]]; }   # slot 1 survives the transition
         _handle_msg "DISPLAY_MODE_CHANGE handheld"
-    ) &
+    ) >/dev/null 2>&1 &
     local rc=0
     _wait_bounded "$!" 8 || rc=$?   # returns the flow's exit code; 1 = handheld re-entry requested
 
@@ -358,7 +358,7 @@ JSON
         export SPLITSCREEN_FIFO="$fifo"
         export SPLITSCREEN_STATE="$state_file"
         WATCHDOG_POLL_INTERVAL_S=0.1 start_watchdog
-    ) &
+    ) >/dev/null 2>&1 &
     local wd_pid=$!
 
     (
@@ -385,9 +385,15 @@ JSON
             jq -r '[.slots | to_entries[] | select(.value.active == true) | .key] | sort | join(" ")' \
                 "$state_file" 2>/dev/null || true
         }
+        # Mock the watchdog docked_flow starts INTERNALLY: otherwise it spawns a
+        # REAL watchdog grandchild that survives when we kill the docked_flow
+        # subshell (orphaned, still holding the CI `out=$(bash …)` capture pipe →
+        # $(...) hangs forever). The test runs its OWN real watchdog separately
+        # (wd_pid) to drive the pipeline.
+        start_watchdog() { return 0; }
         _CONTROLLER_MONITOR_PID=""
         docked_flow
-    ) &
+    ) >/dev/null 2>&1 &
     local df_pid=$!
 
     # Give up to 5s for the full pipeline to fire
