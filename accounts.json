@@ -7,8 +7,7 @@
                 "ownsMinecraft": true
             },
             "profile": {
-                "capes": [
-                ],
+                "capes": [],
                 "id": "681f539b8bb83f8585e5a2945f6c6539",
                 "name": "Player1",
                 "skin": {
@@ -20,10 +19,10 @@
             "type": "Offline",
             "ygg": {
                 "extra": {
-                    "clientToken": "bf6cb3d6c80d4448a932522de4a51d51",
+                    "clientToken": "88a4ba7f4b60a8103a011d8842e3434b",
                     "userName": "Player1"
                 },
-                "iat": 1745307597,
+                "iat": 1784734262,
                 "token": "0"
             }
         },
@@ -33,8 +32,7 @@
                 "ownsMinecraft": true
             },
             "profile": {
-                "capes": [
-                ],
+                "capes": [],
                 "id": "aed5efd4551b3965bc28ae21aa072a66",
                 "name": "Player2",
                 "skin": {
@@ -46,10 +44,10 @@
             "type": "Offline",
             "ygg": {
                 "extra": {
-                    "clientToken": "878b7cd9a9e34505b64efde6ce1f9470",
+                    "clientToken": "f4fb11e610ba3d91d3e35592636ea76e",
                     "userName": "Player2"
                 },
-                "iat": 1745307602,
+                "iat": 1784734263,
                 "token": "0"
             }
         },
@@ -59,8 +57,7 @@
                 "ownsMinecraft": true
             },
             "profile": {
-                "capes": [
-                ],
+                "capes": [],
                 "id": "f318a6c70ff1368e9d3e1b850b84da5e",
                 "name": "Player3",
                 "skin": {
@@ -72,10 +69,10 @@
             "type": "Offline",
             "ygg": {
                 "extra": {
-                    "clientToken": "de836a1d55a448e091cf21ed2800bf1a",
+                    "clientToken": "7f2a8454ed73b8ca12abfa98c38811f3",
                     "userName": "Player3"
                 },
-                "iat": 1745307605,
+                "iat": 1784734264,
                 "token": "0"
             }
         },
@@ -85,8 +82,7 @@
                 "ownsMinecraft": true
             },
             "profile": {
-                "capes": [
-                ],
+                "capes": [],
                 "id": "f72b2d259f4536b9af71ec48f438787b",
                 "name": "Player4",
                 "skin": {
@@ -98,10 +94,10 @@
             "type": "Offline",
             "ygg": {
                 "extra": {
-                    "clientToken": "5d36c1ee9be04fe8a0d256cbbd3af3d2",
+                    "clientToken": "292bf55c20ccbc26f3331bd9ac5f42f8",
                     "userName": "Player4"
                 },
-                "iat": 1745307609,
+                "iat": 1784734265,
                 "token": "0"
             }
         }
