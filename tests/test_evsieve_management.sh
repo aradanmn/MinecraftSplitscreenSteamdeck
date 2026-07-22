@@ -56,6 +56,13 @@ trap '[[ -n "$_ISOLATED_BASE" ]] && rm -rf "$_ISOLATED_BASE"' EXIT
 _pass() { echo "[PASS] $1"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
 _fail() { echo "[FAIL] $1 — $2"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
+# evsieve_management.sh wraps its box-create/build steps with run_with_spinner
+# (defined in utilities.sh, which this suite does not source). Provide a
+# transparent stub — run the wrapped command directly so the PATH stubs below
+# (distrobox etc.) still drive the flow; the spinner's TTY animation is not
+# under test here (see tests/test_utilities.sh for that).
+run_with_spinner() { local _label="$1"; shift; "$@"; }
+
 # --- Mock helpers ------------------------------------------------------
 
 # _ISOLATED_BASE: lazily-built once, cloned (cheaply) by every
