@@ -131,7 +131,7 @@ mcss_require_gamescope() {
 # #45 (#43 part 2) — paths, screen, and cross-module constants
 # =============================================================================
 # Everything below centralizes values that were previously re-derived at 2+
-# independent sites (the bar for inclusion — see docs/PLAN-V1.1-2026-07-05.md
+# independent sites (the bar for inclusion — see docs/PLAN-20260705.md
 # Part 4). Module-local tunables (ORCHESTRATOR_*_S, WATCHDOG_*, ...) stay in
 # their modules on purpose.
 #
