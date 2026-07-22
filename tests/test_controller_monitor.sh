@@ -49,6 +49,25 @@ _fail() {
     TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
+# _cm_legacy (#105): run controller_monitor functions in a FRESH interpreter with
+# the legacy virtual-mapper binding (CONTROLLER_MONITOR_RAW_BINDING=0) pinned
+# BEFORE the module is sourced. MCSS_RAW_BINDING resolves `readonly` the moment
+# the module is sourced in THIS process (to the raw-binding default), so the
+# legacy-mapper ENUMERATION cases (T2.5/2.7/2.11 — written before that default
+# flip; some test concepts exist ONLY under the mapper, e.g. "await the Steam
+# virtual") cannot pin it back inline. They run their list_eligible_controllers
+# call here instead, keeping the legacy escape-hatch path
+# (CONTROLLER_MONITOR_RAW_BINDING=0) covered; the raw default is covered by
+# T2.6/T2.8/T2.9/T2.13-15. (T2.9's monitor was moved to the raw default rather
+# than pinned — start_controller_monitor needs the fully-sourced env.)
+# Caller-set env
+# (PROC_INPUT_DEVICES, INPUTPLUMBER_DBUS_AVAILABLE, ...) passes through to the child.
+# Usage: result=$(ENV=... _cm_legacy '<command using the module functions>')
+_cm_legacy() {
+    CONTROLLER_MONITOR_RAW_BINDING=0 MCSS_RAW_BINDING=0 \
+        bash -c 'source "'"$REPO_ROOT"'/modules/controller_monitor.sh"; '"$1"
+}
+
 # Helper: count lines in output
 _count_lines() {
     local count=0
@@ -245,17 +264,14 @@ H: Handlers=event5 js2
 
 PROCEOF
 
-    # NOTE (pre-existing, unrelated to #38 PR3): this test's expectation
-    # ("external claims a Steam-minted virtual") targets the LEGACY
-    # virtual-mapper, but CONTROLLER_MONITOR_RAW_BINDING's runtime default
-    # was promoted to 1 (raw) after this test was written and MCSS_RAW_BINDING
-    # is readonly by the time this test runs (can't pin it back per-test
-    # without a fresh interpreter) — this assertion already fails on main,
-    # independent of PR3's uniq plumbing. Left as-is; not a PR3 regression.
+    # #105: legacy virtual-mapper case ("external claims a Steam-minted
+    # virtual"). Pinned to CONTROLLER_MONITOR_RAW_BINDING=0 in a fresh
+    # interpreter (see _cm_legacy) — MCSS_RAW_BINDING is readonly once the module
+    # is sourced in-process, so it can't be pinned back inline.
     local result
     result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
         INPUTPLUMBER_DBUS_AVAILABLE=0 \
-        list_eligible_controllers docked)
+        _cm_legacy 'list_eligible_controllers docked')
 
     local count
     count=$(_count_lines "$result")
@@ -380,11 +396,11 @@ H: Handlers=event19 js10
 
 PROCEOF
 
-    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
-    # — this assertion already fails on main under the raw-binding default.
+    # #105: legacy virtual-mapper cap case (external claims its Steam virtual) —
+    # pinned raw=0 in a fresh interpreter (see _cm_legacy).
     local result
     result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
-        INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+        INPUTPLUMBER_DBUS_AVAILABLE=0 _cm_legacy 'list_eligible_controllers docked')
 
     local count
     count=$(_count_lines "$result")
@@ -522,9 +538,10 @@ test_t2_9() {
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' RETURN
 
-    # Initial state: built-in virtual (event3) + one real external DS4 (raw input700 +
-    # its virtual event4 at input701, born after the raw). Eligible = the external's
-    # virtual (event4). After removal both the raw and its virtual vanish.
+    # Initial state: built-in virtual (event3) + one real external DualSense (raw
+    # input700 event20 + its Steam virtual event4 at input701, born after the raw).
+    # Eligible (raw default) = the external's REAL node event20 (virtuals dropped).
+    # After removal both the raw and its virtual vanish.
     cat > "$tmpdir/proc_input_initial" <<'PROCEOF'
 I: Bus=0003 Vendor=28de Product=11ff Version=0001
 N: Name="Microsoft X-Box 360 pad 0"
@@ -565,8 +582,12 @@ PROCEOF
     local fifo="$tmpdir/splitscreen.fifo"
     mkfifo "$fifo"
 
-    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
-    # — this assertion already fails on main under the raw-binding default.
+    # #105: raw-binding default removal case. Under the raw default the monitor
+    # baselines the external's REAL node (the DualSense event20; the Steam
+    # virtuals event3/event4 are dropped), so the REMOVE names event20. Runs
+    # IN-PROCESS (module already sourced with the raw default) — no fresh-interp
+    # pin here: start_controller_monitor needs the fully-sourced env, and a
+    # bare-sourced monitor that dies would leave the FIFO writer-less and hang.
     INPUTPLUMBER_DBUS_AVAILABLE=0 \
         PROC_INPUT_DEVICES="$tmpdir/proc_input_link" \
         CONTROLLER_MONITOR_UDEVADM_CMD="/nonexistent/udevadm_fake" \
@@ -583,10 +604,10 @@ PROCEOF
 
     local line
     if read -r -t 8 line < "$fifo"; then
-        if [[ "$line" == "CONTROLLER_REMOVE /dev/input/event4" ]]; then
+        if [[ "$line" == "CONTROLLER_REMOVE /dev/input/event20" ]]; then
             _pass "T2.9 — CONTROLLER_REMOVE message format correct"
         else
-            _fail "T2.9" "expected 'CONTROLLER_REMOVE /dev/input/event4', got '$line'"
+            _fail "T2.9" "expected 'CONTROLLER_REMOVE /dev/input/event20', got '$line'"
         fi
     else
         _fail "T2.9" "timed out waiting for CONTROLLER_REMOVE message"
@@ -652,11 +673,12 @@ S: Sysfs=/devices/virtual/misc/uhid/A/input/input660
 H: Handlers=event4 js1
 
 PROCEOF
-    # NOTE (pre-existing, unrelated to #38 PR3): see the T2.5 comment above
-    # — this assertion already fails on main under the raw-binding default.
+    # #105: legacy "await the Steam virtual" case — external's raw node is
+    # present but its Steam virtual isn't yet, so the mapper yields 0 (no
+    # built-in leak). No raw-binding equivalent; pinned raw=0 (see _cm_legacy).
     local result count
     result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" \
-        INPUTPLUMBER_DBUS_AVAILABLE=0 list_eligible_controllers docked)
+        INPUTPLUMBER_DBUS_AVAILABLE=0 _cm_legacy 'list_eligible_controllers docked')
     count=$(_count_lines "$result")
     if (( count == 0 )); then
         _pass "T2.11 — external present but virtual not ready: 0 players, no built-in leak"
