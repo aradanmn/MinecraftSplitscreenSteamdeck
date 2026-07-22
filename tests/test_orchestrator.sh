@@ -64,6 +64,25 @@ TESTS_FAILED=0
 _pass() { echo "[PASS] $1"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
 _fail() { echo "[FAIL] $1 — $2"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
+# _wait_bounded PID SECS — wait up to SECS for PID to exit, return its exit code.
+# On timeout, SIGKILL it and return 124. A test suite must NEVER hang on a
+# flow-under-test that fails to exit: this turns "hung forever" into a bounded
+# FAIL. Used everywhere the suite waits on a backgrounded real flow.
+_wait_bounded() {
+    local pid="$1" secs="$2" i=0
+    local ticks=$(( secs * 10 ))
+    while (( i < ticks )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null; return $?
+        fi
+        sleep 0.1
+        i=$(( i + 1 ))
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 124
+}
+
 # Pre-define stubs so sourcing the orchestrator doesn't run anything
 _TMPDIR=$(mktemp -d)
 trap 'rm -rf "$_TMPDIR"' EXIT
@@ -149,7 +168,8 @@ JSON
         export SPLITSCREEN_STATE="$state_file"
         teardown_instance() { [[ "$1" == "2" ]] && touch "$sentinel"; return 0; }
         _handle_msg "SLOT_DIED 2"
-    ) || true
+    ) &
+    _wait_bounded "$!" 8 >/dev/null 2>&1 || true
 
     if [[ -f "$sentinel" ]]; then
         _pass "T6.3 — _handle_msg SLOT_DIED 2 tears down slot 2"
@@ -213,7 +233,7 @@ JSON
 
     local exit_code
     set +e
-    wait "$hf_pid" 2>/dev/null
+    _wait_bounded "$hf_pid" 8   # bounded: a stuck flow FAILS, never hangs the suite
     exit_code=$?
     set -e
 
@@ -247,18 +267,15 @@ test_t6_5() {
 JSON
 
     local sentinel="$tmpdir/teardown_slot2"
-    local rc=0
-    if (
+    (
         export SPLITSCREEN_STATE="$state_file"
         teardown_instance() { [[ "$1" == "2" ]] && touch "$sentinel"; return 0; }
         get_active_slots() { echo "1 2"; }
         slot_is_active() { [[ "$1" == "1" ]]; }   # slot 1 survives the transition
         _handle_msg "DISPLAY_MODE_CHANGE handheld"
-    ); then
-        rc=0
-    else
-        rc=$?
-    fi
+    ) &
+    local rc=0
+    _wait_bounded "$!" 8 || rc=$?   # returns the flow's exit code; 1 = handheld re-entry requested
 
     if (( rc == 1 )) && [[ -f "$sentinel" ]]; then
         _pass "T6.5 — _handle_msg DISPLAY_MODE_CHANGE handheld tears down non-P1 and returns 1"
@@ -384,7 +401,8 @@ JSON
     done
 
     kill "$wd_pid" "$df_pid" 2>/dev/null || true
-    wait "$wd_pid" "$df_pid" 2>/dev/null || true
+    _wait_bounded "$wd_pid" 3 >/dev/null 2>&1 || true
+    _wait_bounded "$df_pid" 3 >/dev/null 2>&1 || true
     exec 9>&- || true
 
     if [[ -f "$teardown_sentinel" ]]; then
