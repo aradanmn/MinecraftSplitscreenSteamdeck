@@ -116,4 +116,11 @@ is about to run the full installer anyway).
 - **The code, tests, and documentation in this repo were written by [Claude](https://www.anthropic.com/claude) (Anthropic's [Claude Code](https://claude.com/claude-code)).**
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC) and [Eclipse Temurin (Adoptium)](https://adoptium.net).
 
-> **License:** not finalized yet — this project is not cleared for public redistribution pending license resolution of the inherited installer code. For personal use for now.
+> **License / distribution.** This project began as a fork of [FlyingEwok's](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck)
+> installer, which carries no license (all-rights-reserved). The runtime and architecture
+> here are original; several installer/launcher files remain derivative work (see
+> [`docs/DERIVATION-AUDIT-2026-07-22.md`](docs/DERIVATION-AUDIT-2026-07-22.md)). Because of
+> that, **this project lives only as a public GitHub repository — it is not distributed as a
+> standalone application** and is offered for personal use. Cloning and running it from
+> GitHub, with credit to FlyingEwok, is the intended and only distribution channel. A
+> permissive license may be adopted if the upstream author licenses the original code.
