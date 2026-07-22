@@ -251,24 +251,36 @@ _evsieve_apply_patch() {
 #            otherwise
 #   side effects — may create/remove/recreate the distrobox
 _evsieve_ensure_box() {
+    # Create the box if it does not exist yet.
     if ! distrobox list 2>/dev/null \
         | grep -q "[[:space:]]${EVSIEVE_DISTROBOX_NAME}[[:space:]]"; then
         timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
             --name "$EVSIEVE_DISTROBOX_NAME" \
             --image "$EVSIEVE_DISTROBOX_IMAGE" >/dev/null 2>&1 || return 1
-        return 0
     fi
 
+    # Verify usable AND trigger the first-run init. #124: `distrobox create`
+    # alone does NOT run the container's init — that happens on the first
+    # `distrobox enter`, and it is what configures the box user's passwordless
+    # (NOPASSWD) sudo. The old code returned right after a fresh create, so the
+    # build's first `sudo apt-get` ran before NOPASSWD was set up → sudo
+    # prompted, and with stdin on the TTY it SIGTTIN-stopped (T state) and
+    # wedged the install for the whole 15-min timeout. Entering here initializes
+    # the box before the build. `< /dev/null` so this probe can never block on a
+    # TTY read either.
     if distrobox enter --name "$EVSIEVE_DISTROBOX_NAME" -- true \
-        >/dev/null 2>&1; then
+        </dev/null >/dev/null 2>&1; then
         return 0
     fi
 
-    # Broken box (e.g. an interrupted earlier create): heal ONCE.
+    # Broken/uninitialized box (e.g. an interrupted earlier create): heal ONCE,
+    # then re-enter to initialize before returning success.
     distrobox rm -f "$EVSIEVE_DISTROBOX_NAME" >/dev/null 2>&1 || true
     timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
         --name "$EVSIEVE_DISTROBOX_NAME" \
         --image "$EVSIEVE_DISTROBOX_IMAGE" >/dev/null 2>&1 || return 1
+    distrobox enter --name "$EVSIEVE_DISTROBOX_NAME" -- true \
+        </dev/null >/dev/null 2>&1 || return 1
     return 0
 }
 
@@ -288,16 +300,21 @@ _evsieve_ensure_box() {
 _evsieve_build_in_box() {
     local src_dir="$1"
 
+    # #124: `< /dev/null` detaches the build's stdin so a prompt can NEVER
+    # SIGTTIN-stop it, and `sudo -n` makes sudo fail fast (fail-open) if
+    # passwordless sudo somehow isn't set up instead of hanging on a hidden
+    # password prompt. _evsieve_ensure_box has already entered/initialized the
+    # box (NOPASSWD ready), so in the normal case sudo -n just works.
     timeout "$EVSIEVE_BUILD_TIMEOUT_S" distrobox enter \
         --name "$EVSIEVE_DISTROBOX_NAME" -- sh -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends \
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends \
                 git cargo libevdev-dev
             cd "'"$src_dir"'"
             cargo build --release
-        ' >/dev/null 2>&1
+        ' </dev/null >/dev/null 2>&1
 }
 
 # _evsieve_install_binary: Atomically copy the built binary into place.
@@ -441,14 +458,17 @@ install_evsieve() {
 
     print_progress "Building evsieve in the ${EVSIEVE_DISTROBOX_NAME}\
  distrobox (this can take several minutes)..."
-    if ! _evsieve_ensure_box; then
+    if ! run_with_spinner \
+        "Preparing ${EVSIEVE_DISTROBOX_NAME} box (first run pulls a debian image)" \
+        _evsieve_ensure_box; then
         msg="evsieve build box could not be created;"
         msg+=" ${EVSIEVE_FAIL_OPEN_NOTE}"
         _evsieve_degrade "degraded-build-failed" "$msg"
         return 0
     fi
 
-    if ! _evsieve_build_in_box "$build_root/src"; then
+    if ! run_with_spinner "Compiling evsieve (cargo build --release)" \
+        _evsieve_build_in_box "$build_root/src"; then
         msg="evsieve build (cargo build --release) failed;"
         msg+=" ${EVSIEVE_FAIL_OPEN_NOTE}"
         _evsieve_degrade "degraded-build-failed" "$msg"
