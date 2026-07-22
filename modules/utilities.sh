@@ -127,9 +127,9 @@ fetch_url_status() {
 # The old bundled-token.enc download+decrypt model is retired here: a publicly
 # redistributable build can't ship a shared token (#33). Modrinth mods
 # (everything installed by default) need no key; only user-added CurseForge
-# mods do. `token.enc` is intentionally KEPT in the repo for now so already-
-# shipped installs that still fetch it at runtime don't 404 — its deletion is
-# gated on #33 (deprecation window).
+# mods do. `token.enc` has now been removed from the repo (#33 license
+# cleanup); nothing in the current code fetches it, and legacy installs keep
+# their own local copy — removing it from the repo does not affect them.
 # ---------------------------------------------------------------------------
 
 # BYOK: default location of the saved user key. The CURSEFORGE_API_KEY env var
