@@ -62,44 +62,83 @@ run_stage4_isolation() {
     hw_log "Active slots: ${active_slots_str}"
 
     # -----------------------------------------------------------------------
-    # I4.1 — bwrap fd count per instance
+    # I4.1 — game process holds only its own slot's /dev/input node(s)
     # -----------------------------------------------------------------------
-    hw_info "I4.1 — Verify each bwrap process has exactly 2 /dev/input file descriptors"
+    # #111: the old check counted /dev/input fds on the bwrap SUPERVISOR and
+    # expected exactly 2 (an event+js pair). Both assumptions are wrong now:
+    #   1. the device fds live in the JAVA child, not the bwrap supervisor
+    #      (state: .slots[slot].pid is java, .slots[slot].bwrap_pid is bwrap);
+    #   2. under the MCSS_RAW_BINDING=1 default only the jsN node is dev-bound
+    #      (event+js only under the legacy virtual-mapper; a virtual pair under
+    #      the future #38 uinput proxy) — so the count is mode-dependent.
+    # Instead we read the ground-truth set of input nodes bwrap actually bound
+    # for the slot from its argv (mode-agnostic), then assert the java process's
+    # open /dev/input fds are non-empty (the game holds its controller) and all
+    # within that bound set (no cross-slot leakage). Every path logs the java
+    # pid, the bound nodes, and the observed fds so a Deck run is self-diagnosing.
+    hw_info "I4.1 — Each game process holds only its own slot's /dev/input node(s)"
 
     local slot
     for slot in $active_slots_str; do
-        hw_log "Checking bwrap fd count for slot ${slot}"
+        hw_log "Checking /dev/input isolation for slot ${slot}"
 
-        local bwrap_pid=""
+        local bwrap_pid="" java_pid=""
         bwrap_pid=$(jq -r ".slots[\"${slot}\"].bwrap_pid // empty" "${SPLITSCREEN_STATE}" 2>/dev/null || true)
-        hw_log "Slot ${slot} bwrap_pid: ${bwrap_pid:-<not set>}"
+        java_pid=$(jq -r ".slots[\"${slot}\"].pid // empty" "${SPLITSCREEN_STATE}" 2>/dev/null || true)
+        hw_log "Slot ${slot} bwrap_pid=${bwrap_pid:-<unset>} java_pid=${java_pid:-<unset>}"
 
-        if [[ -z "$bwrap_pid" ]]; then
-            hw_warn "I4.1 Slot ${slot} has no bwrap_pid in state file"
-            hw_skip "I4.1 slot ${slot} bwrap fd count — bwrap_pid not in state"
+        if [[ -z "$java_pid" ]]; then
+            hw_warn "I4.1 Slot ${slot} has no java pid (.pid) in state file"
+            hw_skip "I4.1 slot ${slot} input isolation — java pid not in state"
+            continue
+        fi
+        if [[ ! -d "/proc/${java_pid}" ]]; then
+            hw_warn "I4.1 Slot ${slot} java PID ${java_pid} no longer exists"
+            hw_skip "I4.1 slot ${slot} input isolation — java process not running"
+            continue
+        fi
+        if [[ ! -r "/proc/${java_pid}/fd" ]]; then
+            hw_warn "I4.1 Cannot read /proc/${java_pid}/fd (permission denied?)"
+            hw_skip "I4.1 slot ${slot} input isolation — /proc/${java_pid}/fd not readable"
             continue
         fi
 
-        if [[ ! -d "/proc/${bwrap_pid}" ]]; then
-            hw_warn "I4.1 Slot ${slot} bwrap PID ${bwrap_pid} no longer exists"
-            hw_skip "I4.1 slot ${slot} bwrap fd count — process not running"
-            continue
+        # Ground truth: input nodes bwrap bound for this slot, from its argv
+        # (matches _build_bwrap_command's --dev-bind of the js/event node(s)).
+        local bound_nodes="" bound_count=0
+        if [[ -n "$bwrap_pid" && -r "/proc/${bwrap_pid}/cmdline" ]]; then
+            bound_nodes=$(tr '\0' '\n' < "/proc/${bwrap_pid}/cmdline" 2>/dev/null \
+                | grep -oE '/dev/input/(event|js)[0-9]+' | sort -u || true)
         fi
+        [[ -n "$bound_nodes" ]] && bound_count=$(printf '%s\n' "$bound_nodes" | grep -c .)
 
-        hw_log "Running: ls -la /proc/${bwrap_pid}/fd | grep -oE '/dev/input/event[0-9]+|/dev/input/js[0-9]+' | sort -u | wc -l"
-        local input_fds=0
-        if [[ -d "/proc/${bwrap_pid}/fd" ]]; then
-            input_fds=$(ls -la "/proc/${bwrap_pid}/fd" 2>/dev/null \
-                | grep -oE '/dev/input/event[0-9]+|/dev/input/js[0-9]+' \
-                | sort -u | wc -l || echo 0)
+        # Actual: the game process's open /dev/input fds.
+        local fd_nodes="" fd_count=0
+        fd_nodes=$(ls -la "/proc/${java_pid}/fd" 2>/dev/null \
+            | grep -oE '/dev/input/(event|js)[0-9]+' | sort -u || true)
+        [[ -n "$fd_nodes" ]] && fd_count=$(printf '%s\n' "$fd_nodes" | grep -c .)
+
+        hw_log "Slot ${slot}: bwrap-bound input nodes (${bound_count}): ${bound_nodes//$'\n'/ }"
+        hw_log "Slot ${slot}: java PID ${java_pid} open input fds (${fd_count}): ${fd_nodes//$'\n'/ }"
+
+        # Isolation: every input fd the game holds must be one bwrap bound for THIS slot.
+        local leaked="" n
+        for n in $fd_nodes; do
+            if ! grep -qxF "$n" <<<"$bound_nodes"; then
+                leaked+="${n} "
+            fi
+        done
+
+        if (( bound_count == 0 )); then
+            hw_warn "I4.1 Slot ${slot} could not read bwrap argv (${bwrap_pid:-<unset>}) for the ground-truth bound set"
+            hw_skip "I4.1 slot ${slot} input isolation — no bwrap-bound node list to check against"
+        elif (( fd_count == 0 )); then
+            hw_fail "I4.1 slot ${slot} game process (PID ${java_pid}) holds NO /dev/input fd (expected its bound jsN)"
+        elif [[ -n "$leaked" ]]; then
+            hw_fail "I4.1 slot ${slot} game holds input node(s) outside its bwrap binding: ${leaked}— leakage"
         else
-            hw_warn "I4.1 Cannot read /proc/${bwrap_pid}/fd (permission denied?)"
-            hw_skip "I4.1 slot ${slot} bwrap fd count — /proc/${bwrap_pid}/fd not readable"
-            continue
+            hw_pass "I4.1 slot ${slot} game input fds (${fd_count}) all within the slot's ${bound_count} bwrap-bound node(s); no leakage"
         fi
-
-        hw_log "Slot ${slot} bwrap PID ${bwrap_pid}: unique /dev/input device fds = ${input_fds}"
-        hw_assert_eq "I4.1 slot ${slot} bwrap /dev/input unique device count" "2" "$input_fds"
     done
 
     # -----------------------------------------------------------------------
