@@ -68,7 +68,7 @@ jobs:
 
           # suite:minimum_passing_count — bump the count when a pre-existing gap is closed.
           declare -A BASELINE=(
-            [tests/test_controller_monitor.sh]=7
+            [tests/test_controller_monitor.sh]=21
             [tests/test_instance_lifecycle.sh]=11
             [tests/test_watchdog.sh]=10
             [tests/test_window_manager.sh]=7
