@@ -6,3 +6,6 @@ token.enc
 
 # private security holding doc — must never be committed (public repo)
 ISSUES.md
+
+# Deck-side probe/benchmark scratch (issue #122 — one-shot wipeable)
+.workdir/
