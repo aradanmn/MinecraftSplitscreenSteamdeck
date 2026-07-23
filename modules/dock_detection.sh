@@ -14,7 +14,8 @@ set -euo pipefail
 #   watch_display_mode()     — blocks; writes DISPLAY_MODE_CHANGE to FIFO
 #
 # Globals PROVIDED: DOCK_DETECTION_DEFAULT_DRM_PATH,
-#   DOCK_DETECTION_POLL_INTERVAL_S — readonly module constants.
+#   DOCK_DETECTION_POLL_INTERVAL_S, DOCK_DETECTION_DEFAULT_CONFIRM_SAMPLES,
+#   DOCK_DETECTION_DEFAULT_CONFIRM_INTERVAL_S — readonly module constants.
 # Globals CONSUMED: SPLITSCREEN_FIFO (from runtime_context.sh's
 #   mcss_resolve_paths); SPLITSCREEN_MODE (override, see below); uses
 #   runtime_context's mcss_query_displays for the display-query fallback.
@@ -27,8 +28,12 @@ set -euo pipefail
 # Environment overrides:
 #   SPLITSCREEN_MODE         — "handheld" or "docked" (skips detection)
 #   DOCK_DETECTION_DRM_PATH  — override /sys/class/drm path (for testing)
+#   DOCK_DETECTION_CONFIRM_SAMPLES     — #133 debounce depth (default 3)
+#   DOCK_DETECTION_CONFIRM_INTERVAL_S  — #133 debounce spacing (default 1)
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-07-23  Fix #133: debounce DISPLAY_MODE_CHANGE — a candidate mode
+#                    must hold across N consecutive reads before it is emitted
 #   v1.2 2026-07-15  Fix #51 (D17): mcss_query_displays shared display-query
 #                    parser (H14)
 #   v1.1 2026-07-01  v1.1 batch: FIFO broken-pipe tolerance, watchdog trap,
@@ -50,6 +55,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 if [[ -z "${_DOCK_DETECTION_CONSTANTS_LOCKED:-}" ]]; then
     readonly DOCK_DETECTION_DEFAULT_DRM_PATH="/sys/class/drm"
     readonly DOCK_DETECTION_POLL_INTERVAL_S=3
+    # #133: how many consecutive agreeing reads confirm a mode change, and how
+    # far apart they are taken. 3×1s rides out the Deck's known DP status
+    # flicker (a blip reverts well inside the window) while a real undock still
+    # switches within ~2s. Overridable via DOCK_DETECTION_CONFIRM_* for tests.
+    readonly DOCK_DETECTION_DEFAULT_CONFIRM_SAMPLES=3
+    readonly DOCK_DETECTION_DEFAULT_CONFIRM_INTERVAL_S=1
     _DOCK_DETECTION_CONSTANTS_LOCKED=1   # process-local — NOT exported
 fi
 
@@ -204,15 +215,66 @@ is_docked() {
     [[ "$mode" == "docked" ]]
 }
 
+# _confirm_display_mode: #133 debounce. Given a candidate mode that a single
+# read just reported, re-read the mode until it has been seen
+# DOCK_DETECTION_CONFIRM_SAMPLES times in a row (the caller's read is sample 1),
+# spacing each extra read DOCK_DETECTION_CONFIRM_INTERVAL_S apart. Bails on the
+# FIRST disagreeing read, so a blip costs one interval and not the whole window.
+#
+# Why: HW-2 (2026-07-22) lost a live docked session to ONE spurious
+# `card0-DP-1/status = disconnected` read — the projector was physically
+# connected, and DP-1 read `connected` immediately before and after. Un-
+# debounced, that single read emitted DISPLAY_MODE_CHANGE handheld, moved
+# Minecraft onto the internal panel, and wedged teardown (force reboot). Steam
+# Game Mode rides the Deck's known DP flicker out; so must we.
+#
+# Internal — not part of the public API.
+# Inputs:
+#   $1 — candidate mode ("handheld"/"docked") the caller's first read returned
+#   Globals: DOCK_DETECTION_CONFIRM_SAMPLES, DOCK_DETECTION_CONFIRM_INTERVAL_S
+#     (overrides, read)
+# Outputs:
+#   return — 0 if the candidate held across every sample, 1 if it reverted
+#   stderr — one `[dock_detection]` line when a candidate is rejected
+_confirm_display_mode() {
+    local candidate="$1"
+    local samples="${DOCK_DETECTION_CONFIRM_SAMPLES:-$DOCK_DETECTION_DEFAULT_CONFIRM_SAMPLES}"
+    local interval="${DOCK_DETECTION_CONFIRM_INTERVAL_S:-$DOCK_DETECTION_DEFAULT_CONFIRM_INTERVAL_S}"
+
+    # Clamp bad overrides instead of erroring: this runs inside a watcher that
+    # must never die. samples<1 degrades to the pre-#133 emit-on-first-read.
+    [[ "$samples" =~ ^[0-9]+$ ]] && (( samples >= 1 )) || samples=1
+    [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || interval="$DOCK_DETECTION_DEFAULT_CONFIRM_INTERVAL_S"
+
+    local i mode
+    for (( i = 2; i <= samples; i++ )); do
+        sleep "$interval"
+        mode=$(get_display_mode 2>/dev/null)
+        if [[ "$mode" != "$candidate" ]]; then
+            echo "[dock_detection] Transient display change IGNORED: \"$candidate\" did not hold (sample $i/$samples read \"$mode\")" >&2
+            return 1
+        fi
+    done
+
+    if (( samples > 1 )); then
+        echo "[dock_detection] Display mode \"$candidate\" confirmed across $samples reads" >&2
+    fi
+    return 0
+}
+
 # watch_display_mode: Watch for display mode changes. Blocks indefinitely.
 # Uses inotifywait on the DRM path if available; otherwise polls.
 # Intended to be run as a background process by the orchestrator.
+# #133: both paths route every candidate change through _confirm_display_mode,
+# so a transient sysfs reading never reaches the FIFO. Cost: a real dock/undock
+# is reported ~(SAMPLES-1)×INTERVAL later (~2s at the defaults).
 # Inputs:
-#   Globals: DOCK_DETECTION_DRM_PATH (override), SPLITSCREEN_FIFO (read)
+#   Globals: DOCK_DETECTION_DRM_PATH (override), SPLITSCREEN_FIFO (read),
+#     DOCK_DETECTION_CONFIRM_SAMPLES / _INTERVAL_S (overrides)
 # Outputs:
 #   return — 1 if SPLITSCREEN_FIFO is not set (never returns otherwise)
 #   side effects — DISPLAY_MODE_CHANGE <mode> to $SPLITSCREEN_FIFO on each
-#     detected change
+#     detected AND confirmed change
 watch_display_mode() {
     local drm_path="${DOCK_DETECTION_DRM_PATH:-$DOCK_DETECTION_DEFAULT_DRM_PATH}"
     local fifo="${SPLITSCREEN_FIFO:-}"
@@ -240,14 +302,30 @@ watch_display_mode() {
         # inotifywait exits with 0 when an event is received; the outer `while` loop
         # re-invokes it fresh each time, so it re-scans the current tree on every pass.
         while inotifywait -q -e modify,create,delete,moved_to,delete_self -r "$drm_path" 2>/dev/null; do
-            # Debounce: brief sleep then check
+            # Settle: brief sleep so a burst of connector writes lands before
+            # the first read. The #133 confirmation below does the real work.
+            #
+            # Known gap (pre-existing, widened by #133 from ~0.5s to ~2.5s):
+            # inotifywait is re-invoked per iteration, so DRM events that fire
+            # while we are settling/confirming are not queued anywhere — they
+            # are lost. Self-correcting in every case that ends in a STEADY
+            # state, because the confirmation samples read live status rather
+            # than replaying events. The residual risk is a change that lands
+            # inside the window and then emits no further event: this branch
+            # would sit blocked until the next one. Closing it properly means
+            # bounding inotifywait (-t) so the loop doubles as a slow poll —
+            # out of scope here, tracked separately.
             sleep 0.5
             local new_mode
             new_mode=$(get_display_mode)
             if [[ "$new_mode" != "$current_mode" ]]; then
-                echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
-                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
-                current_mode="$new_mode"
+                # #133: never emit off a single read — a lone spurious sysfs
+                # status can otherwise tear a live docked session down.
+                if _confirm_display_mode "$new_mode"; then
+                    echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
+                    echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
+                    current_mode="$new_mode"
+                fi
             fi
         done
     else
@@ -257,9 +335,14 @@ watch_display_mode() {
             local new_mode
             new_mode=$(get_display_mode)
             if [[ "$new_mode" != "$current_mode" ]]; then
-                echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
-                echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
-                current_mode="$new_mode"
+                # #133: this is the path that fired on HW-2 — one spurious
+                # DP-1 read here moved a live docked session to the internal
+                # panel. Confirm the candidate holds before emitting.
+                if _confirm_display_mode "$new_mode"; then
+                    echo "[dock_detection] Display mode changed: $current_mode → $new_mode" >&2
+                    echo "DISPLAY_MODE_CHANGE $new_mode" >> "$fifo" || true  # H6: tolerate broken pipe
+                    current_mode="$new_mode"
+                fi
             fi
         done
     fi
