@@ -4,6 +4,14 @@ Status: DRAFT for review (2026-07-25). Author: Claude, orchestrating; design
 calls by Scott (manager separation; resume-first-with-grace intent policy).
 Basis: #112 on-Deck evdev captures (2026-07-25) + full code trace this session.
 
+Decisions LOCKED 2026-07-25 (Scott): Q1 grace=180s. Q2 A — the proxy virtual's
+identity follows the physical pad (ADOPT restarts with the new device-id; prompts
+become correct for the pad in hand). Q3 A — proxy-OFF reconnect is a no-op
+(reconnect is a proxy-ON feature; no throwaway relaunch stopgap). Q4 — on-Deck
+verify only, folded into the #112 session (no design change unless grab breaks the
+guide button). Q5 — REJECT-when-full LOGS ONLY (no user-message surface); the
+4-player limit is documented in the README instead (couch co-op de facto standard).
+
 --------------------------------------------------------------------------------
 ## 1. Problem
 
@@ -144,7 +152,7 @@ Given a physical pad (uniq, vendor, product, ev). Evaluate in order:
    b. abandoned slot within GRACE window     -> ADOPT (most-recent)   # battery-death-grab-a-spare
    c. a free slot                            -> SPAWN                 # genuine new player
    d. abandoned slot PAST grace, a free slot -> SPAWN (case c wins)   # explicit: grace expired = new player
-   e. nothing free, nothing abandoned        -> REJECT               # (surface #125 message)
+   e. nothing free, nothing abandoned        -> REJECT               # log only; 4p limit in README
 ```
 
 Notes:
@@ -178,7 +186,7 @@ CONTROLLER_ADD ev js vendor product uniq:            # 28de excluded; ev = js-ow
               proxy_start_if_enabled "$slot" "$ev" "$vendor" "$product" ;;   # §8
       RESUME) proxy_repoint_slot "$slot" "$ev" || proxy_restart "$slot" "$ev" "$vendor" "$product" ;;
       ADOPT)  proxy_restart "$slot" "$ev" "$vendor" "$product" ;;   # device-id changed → full restart
-      REJECT) log; emit #125 user message if full ;;
+      REJECT) log only ;;                            # session full; 4p limit documented in README
     esac
 
 CONTROLLER_REMOVE ev:
@@ -288,19 +296,22 @@ PR-c  slot_claim full policy (RESUME/ADOPT/grace) + thin CONTROLLER_ADD handler.
 PR-d  Watchdog supervision (§10) + on-Deck #112 verify (§9) → flip default ON.
 
 --------------------------------------------------------------------------------
-## 14. Open questions for review
+## 14. Decisions (RESOLVED 2026-07-25, Scott)
 
-Q1  GRACE default — 180s proposed (covers a battery swap, excludes a genuine new
-    player). Tunable via MCSS_RECONNECT_GRACE_S. OK?
-Q2  ADOPT device-id change → Controlify may re-detect controller type mid-session
-    (glyph flip, cf. #36). Acceptable, or should ADOPT be opt-in / suppressed when
-    vendor:product differs from the slot's original?
-Q3  proxy-OFF RESUME: keep today's no-reconnect (chosen), or teardown+relaunch the
-    slot (restores input, loses game state)? Chosen = no-reconnect until proxy lands.
-Q4  Steam-grab interaction: evsieve `grab` may starve Steam's own 28de virtual for
-    that pad (probe BONUS test). Verify no loss of the guide-button/overlay before
-    default-ON. (Ties to §9's Deck session.)
-Q5  REJECT-when-full: wire the #125 user-visible message here?
+Q1  GRACE = **180s** (covers a battery swap, excludes a genuine new player).
+    Tunable via MCSS_RECONNECT_GRACE_S.
+Q2  **A** — the virtual's device-id follows the physical pad. ADOPT restarts the
+    proxy with the new vendor:product; prompts flip to match the pad now in hand
+    (correct, not cosmetic-wrong). Same-brand swaps are transparent (same id).
+Q3  **A** — proxy-OFF reconnect is a no-op. Reconnect is a proxy-ON capability; no
+    teardown+relaunch stopgap (it would lose game state and be thrown away once the
+    proxy lands).
+Q4  **Verify-only** — fold the evsieve-grab-vs-guide-button check into the §9/#112
+    Deck session. No design change unless the grab breaks the Steam/guide button;
+    if it does, revisit (pass-through the guide button, or drop the exclusive grab).
+Q5  **Log only** — REJECT-when-full does NOT surface a message (no Game-Mode message
+    surface built). The 4-player limit is documented in the README instead — it's
+    the couch co-op de facto standard. (No tie to #125.)
 
 --------------------------------------------------------------------------------
 ## 15. Gotchas banked
