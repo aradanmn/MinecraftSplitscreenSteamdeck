@@ -70,7 +70,7 @@ jobs:
           declare -A BASELINE=(
             [tests/test_controller_monitor.sh]=21
             [tests/test_instance_lifecycle.sh]=11
-            [tests/test_watchdog.sh]=10
+            [tests/test_watchdog.sh]=15
             [tests/test_window_manager.sh]=7
             [tests/test_dock_detection.sh]=8
             [tests/test_runtime_context.sh]=30
