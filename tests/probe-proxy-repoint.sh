@@ -398,10 +398,13 @@ while (( waited < RECONNECT_WAIT_S )); do
         gone=1
         break
     fi
+    _probe_spin "$waited" "waiting for the DS4 to disappear... ${waited}/${RECONNECT_WAIT_S}s"
     sleep 1
     waited=$(( waited + 1 ))
 done
-(( gone )) || echo "[probe] WARN: DS4 still enumerated" >&2
+_probe_spin_clear
+(( gone )) || echo "[probe] WARN: DS4 still enumerated after ${RECONNECT_WAIT_S}s" \
+    "(power-off may not have registered) — continuing anyway" >&2
 
 if ! prompt_operator "Now power the DS4 back ON (same transport — BT or" \
     " USB). Press Enter."
@@ -435,9 +438,13 @@ h6_evidence+=" (same-eventN reconnect, no repoint issued yet)"
 emit_verdict H6_VIRT_JS "$h6_verdict" "$h6_evidence"
 
 # --- Force a NEW eventN, then proxy_repoint_slot (the H5 CONFIRM check) -
-if ! prompt_operator "Now force the DS4 onto a DIFFERENT eventN: replug" \
-    " it into a DIFFERENT USB port, or (BT) forget/re-pair it, so the" \
-    " kernel assigns a NEW event number. Press Enter once reconnected."
+if ! prompt_operator "Now force this DS4 onto a DIFFERENT (lower) eventN so" \
+    " evsieve's cached node becomes a DIFFERENT device — the #112 case." \
+    " BEST METHOD (3 pads): with 3 DS4s connected, this proxy is on the" \
+    " HIGHEST-numbered one; power OFF this pad AND a LOWER-numbered one," \
+    " then power THIS one back ON so it grabs the lower pad's freed eventN." \
+    " (Simpler: forget/re-pair this pad, or replug to another USB port.)" \
+    " Press Enter once it is reconnected on a new number."
 then
     emit_verdict H5_REPOINT OPERATOR_ABORT \
         "operator skipped the forced-renumber step"
@@ -460,9 +467,21 @@ ev_new_node="${ds4_new%% *}"
 ev_new="${ev_new_node##*event}"
 echo "[probe] new physical node: event${ev_new} (was event${ev_orig})" >&2
 if [[ "$ev_new" == "$ev_orig" ]]; then
-    echo "[probe] WARN: eventN did not actually change (${ev_new}) —" \
-         "H5 will still exercise proxy_repoint_slot, but the" \
-         "evidence string notes this was NOT a true renumber" >&2
+    # The reconnect landed on the SAME eventN, so evsieve's cached node still
+    # points at the pad — the reassignment case #112 is about was NOT set up.
+    # Running the capture here would only re-confirm the easy same-path case
+    # (already covered by H6) and read as a spurious PASS. Report INCONCLUSIVE
+    # and stop before the capture; re-run with the 3-DS4 method to force it.
+    emit_verdict H5_REPOINT INCONCLUSIVE \
+        "the DS4 came back on the SAME event${ev_new} — the renumber was NOT" \
+        " forced, so this run does not exercise the node-reassignment case." \
+        " Re-run with the 3-DS4 method (start the proxy on the highest pad;" \
+        " power off it AND a lower pad; power this one back on to grab the" \
+        " lower freed eventN)."
+    proxy_stop_slot "$PROXY_SLOT"
+    _stop_watchers
+    echo
+    exit 0
 fi
 
 repoint_rc=0
@@ -473,9 +492,14 @@ if (( repoint_rc == 2 )); then
     proxy_stop_slot "$PROXY_SLOT"
     exit 1
 elif (( repoint_rc == 1 )); then
+    # evsieve DIED across the renumber (the #112 death) — this is a REAL result
+    # now that Ctrl+C can no longer contaminate it: a genuine renumber happened
+    # (ev_new != ev_orig) and the process is gone. That means proxy_repoint_slot
+    # alone is NOT enough; the design's watchdog/relaunch fallback is required.
     emit_verdict H5_REPOINT FAIL \
-        "proxy_repoint_slot reported the slot's evsieve as dead" \
-        " (link repointed, but no live process to resume forwarding)"
+        "evsieve DIED across a real renumber (event${ev_orig}→event${ev_new});" \
+        " repoint found no live process — persist=reopen did NOT survive the" \
+        " node reassignment (this is the #112 death)."
     proxy_stop_slot "$PROXY_SLOT"
     exit 1
 fi
@@ -491,8 +515,7 @@ tally=$(capture_stream "$virt_ev" "$CAPTURE_SECONDS" post-repoint)
 h5_verdict=$(_h5_repoint_verdict "$tally")
 h5_evidence="repointed pads-link to event${ev_new} (was event${ev_orig});"
 h5_evidence+=" virtual=${virt_ev} tally[${tally}] over"
-h5_evidence+=" ${CAPTURE_SECONDS}s; renumber_confirmed="
-h5_evidence+="$([[ "$ev_new" != "$ev_orig" ]] && echo yes || echo no)"
+h5_evidence+=" ${CAPTURE_SECONDS}s; renumber_confirmed=yes"
 emit_verdict H5_REPOINT "$h5_verdict" "$h5_evidence"
 
 # --- H7: teardown must leave no process, no dangling links -------------

@@ -124,7 +124,12 @@ _UDEV_WATCHER_STARTED=0
 #   Globals: _SPAWNED_EVSIEVE_PIDS (read), LINK_DIR (read)
 # Outputs:
 #   side effects — kills PIDs, removes LINK_DIR; stderr status lines
+_PROBE_CLEANED=0
 cleanup() {
+    # Idempotent: the INT/TERM handlers below call cleanup AND exit, which then
+    # re-fires the EXIT trap — run the real work once.
+    (( _PROBE_CLEANED )) && return 0
+    _PROBE_CLEANED=1
     local pid alive=0
     for pid in "${_SPAWNED_EVSIEVE_PIDS[@]:-}" "${_SPAWNED_WATCHER_PIDS[@]:-}"
     do
@@ -146,7 +151,23 @@ cleanup() {
         "process" >&2
     echo "[probe] cleanup done; no tracked evsieve/watcher left running" >&2
 }
-trap cleanup EXIT INT TERM
+# CRITICAL (HW-2): INT/TERM must EXIT, not just clean up. The old
+# `trap cleanup INT` ran cleanup (killing evsieve) then RESUMED the interrupted
+# flow — so a Ctrl+C mid-prompt fell through into the H6/H5 measurements with a
+# dead evsieve and reported bogus CHANGED/FAIL verdicts. Now Ctrl+C exits.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+# --- Operator-feedback: busy spinner vs waiting-for-input (script-progress) ---
+# TTY-gated, stderr only, so piped/redirected runs stay clean. A silent bounded
+# wait LOOKS hung; the spinner shows the probe is working and counts down.
+_PROBE_SPIN_FRAMES='-\|/'
+_probe_spin() {   # $1 = tick, $2 = message
+    [[ -t 2 ]] || return 0
+    printf '\r[probe] %s %s   ' "${_PROBE_SPIN_FRAMES:$(( $1 % 4 )):1}" "$2" >&2
+}
+_probe_spin_clear() { [[ -t 2 ]] && printf '\r%*s\r' 72 '' >&2 || true; }
 
 # --- Helper functions ---
 
@@ -681,10 +702,12 @@ _tally_is_empty() {
 wait_for_ds4() {
     local timeout_s="$1" waited=0
     while (( waited < timeout_s )); do
-        find_ds4_event_node >/dev/null 2>&1 && return 0
+        find_ds4_event_node >/dev/null 2>&1 && { _probe_spin_clear; return 0; }
+        _probe_spin "$waited" "waiting for the DS4 to appear... ${waited}/${timeout_s}s"
         sleep 1
         waited=$(( waited + 1 ))
     done
+    _probe_spin_clear
     return 1
 }
 
@@ -699,10 +722,16 @@ prompt_operator() {
     # hold the 80-char rule — join them (2026-07-18: "$1" truncated every
     # multi-arg prompt mid-sentence on the Deck).
     local message="$*" response
-    echo "" >&2
-    echo ">>> OPERATOR ACTION REQUIRED <<<" >&2
-    echo ">>> ${message}" >&2
-    echo ">>> Press Enter when done, or type 'skip' and Enter to skip." >&2
+    _probe_spin_clear
+    {
+        echo ""
+        echo ">>> OPERATOR ACTION REQUIRED <<<"
+        echo ">>> ${message}"
+        echo ">>> Press Enter when done, or type 'skip' and Enter to skip."
+    } >&2
+    # A visible input caret so it is obvious the probe is WAITING FOR YOU (not
+    # busy/hung) — the missing cue that made the HW-2 run look frozen.
+    printf '> ' >&2
     if ! read -r response < /dev/tty 2>/dev/null; then
         echo "[probe] WARN: stdin closed, treating as skip" >&2
         return 1
