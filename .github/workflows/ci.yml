@@ -78,6 +78,7 @@ jobs:
             [tests/test_utilities.sh]=6
             [tests/test_orchestrator.sh]=8
             [tests/test_slot_manager.sh]=17
+            [tests/test_proxy_launch.sh]=7
           )
 
           for suite in "${!BASELINE[@]}"; do
