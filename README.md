@@ -29,6 +29,7 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 ## A note on controllers
 
 - ✅ **External game controllers** (PS4/PS5, Xbox, 8BitDo, etc.) — each one becomes a player.
+- ➖ **Four players max.** Connect a 5th controller and nothing happens — four is the limit (the couch co-op standard, and the Deck's performance ceiling for four simultaneous games).
 - ➖ **The Steam Deck's built-in controls** do **not** become a player when docked. Multiplayer needs external pads; this is by design so the Deck's own sticks don't grab a slot.
 - ❌ **The Valve Steam Controller is not supported as a player** — because of how Steam routes it, the game can't use it as a regular gamepad here. Use a PS/Xbox/8BitDo-style pad instead.
 
