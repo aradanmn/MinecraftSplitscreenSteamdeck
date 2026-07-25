@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_controller_monitor.sh
 # =============================================================================
 
-readonly TEST_TOTAL=21
+readonly TEST_TOTAL=22
 
 # Find the repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -286,6 +286,49 @@ PROCEOF
         fi
     else
         _fail "T2.5" "expected 1 eligible device, got $count: $result"
+    fi
+}
+
+# =============================================================================
+# Test T2.22 (#38) — the evsieve proxy virtuals (MCSS-slot*, advertised as the
+# pad's real 054c device-id) must be EXCLUDED from raw enumeration. Otherwise
+# they enumerate as phantom pads sharing the physical VID:PID and their churn
+# misroutes CONTROLLER_ADD/REMOVE, breaking live reconnect (on-Deck 2026-07-25).
+# =============================================================================
+test_t2_22() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    # One real DS4 (054c) + its MCSS-slot proxy virtual (ALSO 054c, name MCSS-slot3).
+    cat > "$tmpdir/proc_input" <<'PROCEOF'
+I: Bus=0005 Vendor=054c Product=05c4 Version=8100
+N: Name="Wireless Controller"
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:05C4.000B/input/input203
+U: Uniq=a0:5a:5e:d0:8a:dc
+H: Handlers=event21 js2
+B: KEY=7fdb000000000000 0 0 0 0
+B: ABS=3003f
+
+I: Bus=0003 Vendor=054c Product=05c4 Version=0001
+N: Name="MCSS-slot3"
+S: Sysfs=/devices/virtual/input/input261
+U: Uniq=
+H: Handlers=event261 js11
+B: KEY=7fdb000000000000 0 0 0 0
+B: ABS=3003f
+
+PROCEOF
+
+    local result
+    result=$(PROC_INPUT_DEVICES="$tmpdir/proc_input" list_eligible_controllers docked)
+    local count
+    count=$(_count_lines "$result")
+
+    if (( count == 1 )) && [[ "$result" == "/dev/input/event21 /dev/input/js2 054c 05c4 a0:5a:5e:d0:8a:dc" ]]; then
+        _pass "T2.22 — MCSS-slot* proxy virtual excluded; only the physical pad eligible"
+    else
+        _fail "T2.22" "expected only the physical DS4, got $count line(s): '$result'"
     fi
 }
 
@@ -1074,6 +1117,7 @@ test_t2_18
 test_t2_19
 test_t2_20
 test_t2_21
+test_t2_22
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
