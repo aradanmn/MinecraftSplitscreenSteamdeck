@@ -15,6 +15,7 @@ kwin_positioner.sh
 window_manager.sh
 controller_proxy.sh
 instance_lifecycle.sh
+slot_manager.sh
 watchdog.sh
 orchestrator.sh
 dex.sh

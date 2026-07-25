@@ -77,6 +77,7 @@ jobs:
             [tests/test_curseforge_token.sh]=7
             [tests/test_utilities.sh]=6
             [tests/test_orchestrator.sh]=8
+            [tests/test_slot_manager.sh]=17
           )
 
           for suite in "${!BASELINE[@]}"; do
