@@ -88,6 +88,30 @@ _watchdog_window_present() {
     return 1
 }
 
+# _watchdog_proxy_dead: #38 PR-d — evsieve proxy supervision. Returns 0 iff SLOT
+# has a tracked proxy whose evsieve is no longer live. persist=reopen survives
+# reconnects (D2 confirmed on-Deck), so a dead proxy on a running slot is a rare
+# crash — and it CANNOT be rescued by a restart: the live sandbox is bound to the
+# OLD virtual node (fixed mount) + SDL_JOYSTICK_DISABLE_UDEV means the game never
+# re-enumerates, so a fresh virtual is invisible to it. The instance is therefore
+# input-dead and unrecoverable, so the caller escalates it exactly like a dead
+# instance (SLOT_DIED → clean teardown; the player reconnects into a fresh slot).
+# Only fires for slots that ACTUALLY have a proxy (a tracked pidfile) — raw-bound
+# slots and the flag-off path have none, so they are untouched.
+# Inputs: $1 — slot; Globals: MCSS_CONTROLLER_PROXY (read)
+# Outputs: return — 0 proxy died, 1 no proxy / still alive / flag off
+_watchdog_proxy_dead() {
+    local slot="$1"
+    [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]] || return 1
+    declare -f _proxy_tracked_pid >/dev/null 2>&1 || return 1
+    local tracked
+    tracked=$(_proxy_tracked_pid "$slot" 2>/dev/null || true)
+    [[ -n "$tracked" ]] || return 1          # this slot has no proxy — skip
+    # _proxy_live_pid is empty iff the tracked pid is dead OR fails the identity
+    # check (recycled pid) — either way the slot's evsieve is gone.
+    [[ -z "$(_proxy_live_pid "$slot" 2>/dev/null || true)" ]]
+}
+
 # start_watchdog: Poll the state file on a fixed interval; emit SLOT_DIED for
 # any active slot whose process or window has gone away (see module header).
 # Inputs:
@@ -175,6 +199,14 @@ start_watchdog() {
                         fi
                         # wp == 2: can't tell — leave the counter alone, do not escalate.
                     fi
+                fi
+
+                # #38 PR-d: evsieve proxy supervision (belt-and-suspenders; rare
+                # since persist=reopen survives reconnects). A dead proxy on a
+                # live slot is input-unrecoverable — escalate as a dead instance.
+                if ! $dead && _watchdog_proxy_dead "$slot"; then
+                    dead=true
+                    reason="proxy evsieve died (input unrecoverable)"
                 fi
 
                 if $dead && [[ -z "${_WATCHDOG_REPORTED[$slot]:-}" ]]; then
