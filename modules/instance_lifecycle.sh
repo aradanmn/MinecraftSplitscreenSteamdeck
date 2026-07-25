@@ -218,6 +218,79 @@ _vendor_of_js_node() {
     return 0
 }
 
+# _vp_of_js_node: like _vendor_of_js_node, but echoes "vendor product" (both
+# 4-hex lowercased, or empty) for the block owning the exact jsN token. #38
+# PR-b: this is the device-id the per-slot evsieve virtual advertises, so
+# Controlify sees the right controller type through the proxy.
+_vp_of_js_node() {
+    local js_path="${1:-}"
+    [[ -z "$js_path" ]] && return 0
+    local want
+    want=$(basename "$js_path")
+    [[ -z "$want" ]] && return 0
+    local vendor product name handlers sysfs phys keybits uniq _h
+    # shellcheck disable=SC2034  # fixed-width record; only vendor/product/handlers used
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits uniq; do
+        for _h in $handlers; do
+            if [[ "$_h" == "$want" ]]; then
+                echo "$vendor $product"
+                return 0
+            fi
+        done
+    done < <(parse_input_device_blocks \
+        "${PROC_INPUT_DEVICES:-/proc/bus/input/devices}" 2>/dev/null || true)
+    return 0
+}
+
+# _maybe_proxy_swap: #38 PR-b. Given a slot and its PHYSICAL pad nodes, return
+# the nodes to actually --dev-bind into the sandbox. With MCSS_CONTROLLER_PROXY
+# on, start (or idempotently resume) the slot's evsieve proxy reading the
+# physical pad and bind its PERSISTENT VIRTUAL node instead — the node a
+# reconnect can never invalidate (the whole point of #38; see
+# docs/DESIGN-38-RECONNECT-WIRING.md §3.1, on-Deck-proven that no off-the-shelf
+# node survives a reconnect). Falls back to the raw physical nodes on ANY proxy
+# failure (missing binary, virtual never came up), so a proxy problem degrades
+# to today's raw binding rather than launching controller-less. No-op (echoes
+# the physical nodes) when the flag is off or there is no pad (handheld).
+#
+# The physical nodes stay the slot's identity in state — the caller records
+# THOSE, and CONTROLLER_REMOVE matches on them. Only the bind target is swapped.
+# Inputs:  $1 slot   $2 physical event_node   $3 physical js_node
+# Outputs: stdout — "<bind_event> <bind_js>"
+_maybe_proxy_swap() {
+    local slot="$1" event_node="$2" js_node="$3"
+    if [[ "${MCSS_CONTROLLER_PROXY:-0}" != "1" || -z "$js_node" ]]; then
+        echo "$event_node $js_node"
+        return 0
+    fi
+    local vendor product
+    read -r vendor product < <(_vp_of_js_node "$js_node")
+    if ! proxy_start_slot "$slot" "$event_node" "${vendor:-0000}" "${product:-0000}" \
+            >/dev/null 2>&1; then
+        echo "[instance_lifecycle] slot $slot: proxy_start_slot failed —" \
+             "falling back to raw pad bind" >&2
+        echo "$event_node $js_node"
+        return 0
+    fi
+    # proxy_virtual_nodes returns "<virt_ev> /dev/input/js<M>" only when the
+    # virtual is live (its own -e check), so trust its exit + non-empty output.
+    local vnodes virt_ev virt_js
+    if vnodes=$(proxy_virtual_nodes "$slot" 2>/dev/null) && [[ -n "$vnodes" ]]; then
+        read -r virt_ev virt_js <<< "$vnodes"
+        if [[ -n "$virt_ev" && -n "$virt_js" ]]; then
+            echo "[instance_lifecycle] slot $slot: binding proxy virtual" \
+                 "($virt_ev, $virt_js) for physical ($event_node, $js_node)" >&2
+            echo "$virt_ev $virt_js"
+            return 0
+        fi
+    fi
+    echo "[instance_lifecycle] slot $slot: proxy virtual node not live —" \
+         "falling back to raw pad bind" >&2
+    echo "$event_node $js_node"
+    return 0
+}
+
 # _detect_xauthority: Resolve the X authority cookie for launcher children.
 # Fix #51 (D10): factored from _build_direct_command/_build_bwrap_command —
 # the two inline copies had drifted (one verified the file exists, one only
@@ -924,14 +997,25 @@ spawn_instance() {
     #    full system access. Nothing to isolate (one player), and a sandbox gives the
     #    built-in's Steam virtual no /dev/input node to open → Controlify finds no controller.
     #    DOCKED (a real pad's js bound): keep the bwrap sandbox for per-instance isolation.
+    # #38 PR-b: choose the BIND target. With the controller proxy enabled, bind
+    # the slot's persistent virtual node (fed by evsieve from the physical pad)
+    # so a reconnect that churns the physical node never breaks the bind; the
+    # physical event_node/js_node still go to state below (CONTROLLER_REMOVE
+    # matches them). Flag off → bind_event/bind_js ARE the physical nodes, so
+    # this path is byte-identical to before. Handheld (no js) is untouched.
+    local bind_event="$event_node" bind_js="$js_node"
+    if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" && -n "$js_node" ]]; then
+        read -r bind_event bind_js <<< "$(_maybe_proxy_swap "$slot" "$event_node" "$js_node")"
+    fi
+
     local bwrap_command
     if [[ -z "$js_node" ]]; then
         bwrap_command=$(_build_direct_command "$slot")
         echo "[spawn_instance] Slot $slot: handheld direct launch (no sandbox, full access)" >&2
     elif [[ ${#mask_controllers[@]} -gt 0 ]]; then
-        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node" "${mask_controllers[@]}")
+        bwrap_command=$(_build_bwrap_command "$slot" "$bind_event" "$bind_js" "${mask_controllers[@]}")
     else
-        bwrap_command=$(_build_bwrap_command "$slot" "$event_node" "$js_node")
+        bwrap_command=$(_build_bwrap_command "$slot" "$bind_event" "$bind_js")
     fi
 
     # 4. Mark slot as active in state file (preliminary, bwrap_pid filled after launch)
