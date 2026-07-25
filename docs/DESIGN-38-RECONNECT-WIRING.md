@@ -79,6 +79,26 @@ connecting/reconnecting pad belongs to.
   would need a different fallback — out of scope, wired isn't used here.)
 - Deck caps at 4-up (VRAM ceiling, #70) → a 5th instance is never possible.
 
+### 3.1 Node-stability — TESTED on-Deck (2026-07-25): Steam's virtual is NOT usable
+The tempting shortcut — bind Steam's own `28de:11ff` virtual instead of building
+our own — was tested and RULED OUT. Definition: a "stable node" is a device
+INSTANCE that stays continuously alive across the pad's disconnect/reconnect,
+because a bwrap `--dev-bind` pins the specific device instance at launch and never
+re-follows the name. Test (disappearance-correlation, 2 DS4s + Steam virtuals):
+- Powered a DS4 off. Its physical node AND its Steam virtual (`pad 0`, event21)
+  BOTH vanished from `/proc/bus/input/devices` in the dead window.
+- On reconnect the virtual came back at the SAME number (event21, dev d:55) — but
+  it had demonstrably VANISHED in between, so it is a NEW instance that merely
+  reclaimed the freed minor (lowest-free, nothing else took it in the ~10s window).
+Conclusion: **Steam destroys its virtual when the physical pad dies.** A bind to it
+is dead on reconnect, identical to the raw-physical bind (#62). Matching numbers are
+a trap — stability is continuous EXISTENCE, not a matching eventN. Therefore a
+persistent virtual we hold alive ourselves (evsieve) — or relaunch-on-reconnect —
+is REQUIRED, not a redundant reinvention: evsieve's uinput device stays open
+continuously while the physical pad is gone, which is the one property nothing
+off-the-shelf provides at the /dev/input layer. This closes the "why not just use
+Steam's virtual" question empirically.
+
 --------------------------------------------------------------------------------
 ## 4. Architecture — a slot manager owns all slot state
 
