@@ -9,10 +9,20 @@ set -euo pipefail
 # Run: bash tests/test_watchdog.sh
 # =============================================================================
 
-readonly TEST_TOTAL=10
+readonly TEST_TOTAL=15
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Pre-lock runtime_context's constants so MCSS_CONTROLLER_PROXY stays settable
+# (the #38 PR-d supervision tests flip it per-test); supply the source-time
+# constants the sourced modules read. WATCHDOG_* have their own sentinel and
+# still initialize.
+export _MCSS_CONSTANTS_LOCKED=1
+export MCSS_MAX_PLAYERS=4 MCSS_STATE_LOCK_TIMEOUT_S=5
+export MCSS_STEAM_VENDOR_ID=28de MCSS_STEAM_PRODUCT_ID=11ff MCSS_RAW_BINDING=1
+export MCSS_INSTANCE_PREFIX=latestUpdate- MCSS_ACCOUNT_PREFIX=Player
+export MCSS_WINDOW_TITLE_PREFIX=SplitscreenP
 
 # Fix #51 (D11): watchdog consumes the instance_lifecycle state accessors
 # now — source it first, same relative order as runtime_modules.list.
@@ -455,6 +465,67 @@ JSON
 }
 
 # =============================================================================
+# T5.11–T5.14 — #38 PR-d evsieve proxy supervision (_watchdog_proxy_dead)
+# =============================================================================
+test_t5_11() {   # flag off → never dead, even with a dead tracked proxy
+    trap - RETURN     # these 4 tests use no tmpdir; drop any leaked RETURN trap
+    MCSS_CONTROLLER_PROXY=0
+    _proxy_tracked_pid() { echo 99999; }; _proxy_live_pid() { echo ""; }
+    if _watchdog_proxy_dead 1; then _fail "T5.11" "flag off must not report dead"
+    else _pass "T5.11 — proxy supervision off → not dead"; fi
+    unset -f _proxy_tracked_pid _proxy_live_pid
+}
+test_t5_12() {   # flag on, tracked pid but no live pid → proxy dead
+    MCSS_CONTROLLER_PROXY=1
+    _proxy_tracked_pid() { echo 99999; }; _proxy_live_pid() { echo ""; }
+    if _watchdog_proxy_dead 1; then _pass "T5.12 — tracked pid + dead → proxy dead"
+    else _fail "T5.12" "should report the proxy dead"; fi
+    unset -f _proxy_tracked_pid _proxy_live_pid
+}
+test_t5_13() {   # flag on, tracked + live → alive
+    MCSS_CONTROLLER_PROXY=1
+    _proxy_tracked_pid() { echo 12345; }; _proxy_live_pid() { echo 12345; }
+    if _watchdog_proxy_dead 1; then _fail "T5.13" "an alive proxy must not be dead"
+    else _pass "T5.13 — tracked + alive → not dead"; fi
+    unset -f _proxy_tracked_pid _proxy_live_pid
+}
+test_t5_14() {   # flag on, no tracked pid (raw-bound slot) → not dead
+    MCSS_CONTROLLER_PROXY=1
+    _proxy_tracked_pid() { echo ""; }; _proxy_live_pid() { echo ""; }
+    if _watchdog_proxy_dead 1; then _fail "T5.14" "a slot with no proxy must not be dead"
+    else _pass "T5.14 — no proxy for slot → not dead (raw-bound untouched)"; fi
+    unset -f _proxy_tracked_pid _proxy_live_pid
+}
+
+# =============================================================================
+# T5.15 — integration: dead proxy on an otherwise-live slot → SLOT_DIED
+# =============================================================================
+test_t5_15() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local state_file="$tmpdir/state.json" fifo="$tmpdir/fifo"
+    mkfifo "$fifo"; exec 9<>"$fifo"
+    dex_list_windows() { echo "12345  Minecraft*"; }   # window present
+    _proxy_tracked_pid() { echo 99999; }; _proxy_live_pid() { echo ""; }  # proxy DEAD
+    export MCSS_CONTROLLER_PROXY=1
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":$$,"bwrap_pid":$$,"wid":12345,"event_node":"/dev/input/event3","js_node":"/dev/input/js0"},"2":{"active":false},"3":{"active":false},"4":{"active":false}}}
+JSON
+    SPLITSCREEN_STATE="$state_file" SPLITSCREEN_FIFO="$fifo" \
+        WATCHDOG_POLL_INTERVAL_S=0.1 start_watchdog &
+    local wd_pid=$! got=""
+    read -r -t 3 got < "$fifo" || true
+    if [[ "$got" == "SLOT_DIED 1" ]]; then
+        _pass "T5.15 — dead proxy on a live slot → SLOT_DIED 1"
+    else
+        _fail "T5.15" "expected 'SLOT_DIED 1', got '$got'"
+    fi
+    kill "$wd_pid" 2>/dev/null || true; wait "$wd_pid" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true; rm -f "$fifo"
+    unset -f dex_list_windows _proxy_tracked_pid _proxy_live_pid
+    unset MCSS_CONTROLLER_PROXY
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== watchdog test suite ==="
@@ -469,6 +540,11 @@ test_t5_7
 test_t5_8
 test_t5_9
 test_t5_10
+test_t5_11
+test_t5_12
+test_t5_13
+test_t5_14
+test_t5_15
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
