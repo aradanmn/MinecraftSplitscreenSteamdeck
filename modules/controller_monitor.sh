@@ -538,6 +538,20 @@ _list_raw_external_pads() {
             echo "[controller_monitor]   raw: drop event${_eventN} js${_jsN} [${vendor}:${product}] — Steam vendor (built-in/virtual)" >&2
             return 0
         fi
+        # step 3b (#38): MCSS-VIRTUAL GATE — drop OUR OWN evsieve proxy virtuals.
+        # They advertise the physical pad's real 054c device-id (so Controlify
+        # shows DS4 glyphs), so the vendor gate above can NOT catch them. Left in,
+        # they enumerate as phantom player pads sharing the pads' VID:PID, and
+        # their create/destroy churn misroutes CONTROLLER_ADD/REMOVE — which on a
+        # live 4-up reconnect left the real pad's slot never marked disconnected,
+        # so slot_claim REJECTed the returning pad instead of RESUMEing it (the
+        # on-Deck 2026-07-25 reconnect failure). Keyed on the MCSS-slot<N> name
+        # controller_proxy sets (evsieve --output name=MCSS-slot<N>).
+        local _nm="${name#\"}"; _nm="${_nm%\"}"
+        if [[ "$_nm" == MCSS-slot* ]]; then
+            echo "[controller_monitor]   raw: drop event${_eventN} js${_jsN} [${vendor}:${product}] — MCSS proxy virtual (${_nm})" >&2
+            return 0
+        fi
         # step 4: inputN from the sysfs tail (mirrors _map_external_player_virtuals).
         local _inputn=""
         [[ "$sysfs" =~ input([0-9]+)$ ]] && _inputn="${BASH_REMATCH[1]}"
