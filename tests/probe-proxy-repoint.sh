@@ -304,34 +304,43 @@ if ! bin=$(_proxy_evsieve_bin); then
 fi
 echo "[probe] using evsieve: ${bin}" >&2
 
-if ! find_ds4_event_node >/dev/null 2>&1; then
-    prompt_operator "Connect your ONE external DS4 controller (USB or" \
-        " Bluetooth) now, then press Enter." || true
+# Multi-pad-tolerant selection (the 3-DS4 renumber method): pick the
+# HIGHEST-numbered DS4 and TRACK IT BY UNIQ (MAC) for the rest of the probe, so
+# other pads being connected during the forced renumber never trip the
+# single-pad guard. A single-pad run works identically (one pad = the highest).
+target="" rc=0
+if ! target=$(ds4_select_target); then
+    prompt_operator "Connect your DS4 controller(s) now — ONE for a basic run," \
+        " or THREE for the renumber method — then press Enter."
+    target=$(ds4_select_target) || rc=$?
 fi
+if [[ -z "$target" ]]; then
+    emit_verdict H5_REPOINT FAIL "no 054c js-bearing pad detected; cannot proceed"
+    exit 1
+fi
+read -r _sel_ev _sel_js MEASURED_UNIQ <<< "$target"
+ev_orig="${_sel_ev##event}"
+ev_orig_node="/dev/input/${_sel_ev}"
+_pad_count=$(_parse_ds4_pads_with_uniq | grep -c .)
+if [[ -z "$MEASURED_UNIQ" ]]; then
+    echo "[probe] WARN: the selected pad reports no uniq (MAC) — the renumber" \
+         "step needs a uniq to re-find THIS exact pad among others. A" \
+         "single-pad run still measures H6; H5 will fall back to single-pad" \
+         "detection (do NOT keep other pads connected)." >&2
+fi
+echo "[probe] measuring DS4 event${ev_orig} (js=${_sel_js#js})" \
+     "uniq=${MEASURED_UNIQ:-<none>}; ${_pad_count} DS4 pad(s) present" >&2
 
-ds4="" rc=0
-ds4=$(find_ds4_event_node)
-rc=$?
-if (( rc == 2 )); then
-    emit_verdict H5_REPOINT OPERATOR_ABORT \
-        "operator skipped the multi-pad guard; aborting probe"
-    exit 1
-elif (( rc != 0 )); then
-    emit_verdict H5_REPOINT FAIL \
-        "no 054c js-bearing pad detected; cannot proceed"
-    exit 1
-fi
-# HW-1 fix: find_ds4_event_node's own contract (see its docstring in
-# probe-evsieve-reconnect.sh) returns "/dev/input/eventN jsN" — the FIRST
-# field is already the full node path, not a bare number. The bare-number
-# extraction (needed for _find_ds4_vendor_product's eventN-keyed match,
-# and for the "eventN"-prefixed log text below) must strip the path,
-# same "${var##*event}" pattern _assert_not_steam_vendor already uses.
-# Confirmed on-Deck (HW-1): treating the full path as a bare number
-# produced the malformed "event/dev/input/event18" log/device-id string
-# and made _find_ds4_vendor_product's eventN match always miss.
-ev_orig_node="${ds4%% *}"
-ev_orig="${ev_orig_node##*event}"
+# Driver-local dispatch: track the chosen pad by uniq when we have one
+# (multi-pad safe), else the legacy single-pad detection.
+_find_target() {
+    if [[ -n "$MEASURED_UNIQ" ]]; then find_ds4_by_uniq "$MEASURED_UNIQ"
+    else find_ds4_event_node; fi
+}
+_wait_target() {
+    if [[ -n "$MEASURED_UNIQ" ]]; then wait_for_ds4_uniq "$MEASURED_UNIQ" "$1"
+    else wait_for_ds4 "$1"; fi
+}
 
 vnd_prd="" vnd="" prd=""
 if vnd_prd=$(_find_ds4_vendor_product "$ev_orig"); then
@@ -394,7 +403,7 @@ fi
 
 waited=0 gone=0
 while (( waited < RECONNECT_WAIT_S )); do
-    if ! find_ds4_event_node >/dev/null 2>&1; then
+    if ! _find_target >/dev/null 2>&1; then
         gone=1
         break
     fi
@@ -414,7 +423,7 @@ then
     exit 1
 fi
 
-if ! wait_for_ds4 "$RECONNECT_WAIT_S"; then
+if ! _wait_target "$RECONNECT_WAIT_S"; then
     emit_verdict H6_VIRT_JS FAIL \
         "DS4 did not reappear within ${RECONNECT_WAIT_S}s"
     proxy_stop_slot "$PROXY_SLOT"
@@ -452,7 +461,7 @@ then
     exit 1
 fi
 
-if ! wait_for_ds4 "$RECONNECT_WAIT_S"; then
+if ! _wait_target "$RECONNECT_WAIT_S"; then
     emit_verdict H5_REPOINT FAIL \
         "DS4 did not reappear within ${RECONNECT_WAIT_S}s after the" \
         " forced renumber"
@@ -462,7 +471,7 @@ fi
 
 # HW-1 fix: same full-path-vs-bare-number contract as ev_orig above.
 ds4_new="" ev_new_node="" ev_new=""
-ds4_new=$(find_ds4_event_node)
+ds4_new=$(_find_target)
 ev_new_node="${ds4_new%% *}"
 ev_new="${ev_new_node##*event}"
 echo "[probe] new physical node: event${ev_new} (was event${ev_orig})" >&2
