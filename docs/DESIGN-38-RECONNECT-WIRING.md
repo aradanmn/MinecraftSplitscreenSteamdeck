@@ -68,8 +68,15 @@ connecting/reconnecting pad belongs to.
   EMPTY on the `28de` Steam virtuals — which ALSO carry `js` handlers. So:
   select physical pads by vendor-exclusion (drop `28de`), key on the physical
   `uniq`; NEVER treat "has js" as the sole physical-pad test.
-- MAC is *mostly* unique. Cheap DS4 clones can duplicate it (Scott). Design must
-  degrade, not break, on collision.
+- MAC (`uniq`) is the DEVICE-AGNOSTIC identity key — present and unique on every
+  BT pad in use (DS4 AND Xbox). Corroboration: Xbox pads have no lightbar yet Steam
+  still tells them apart, so Steam keys on the MAC too, not the DS4 lightbar; we use
+  the same key. The earlier "3 DS4s share a MAC" was a misread of our own capture —
+  what repeats across same-model pads is the UHID `vendor:product` (054C:09CC), never
+  the MAC (all four uniqs were distinct). A duplicated MAC is a theoretical
+  counterfeit-only edge; the design degrades to elimination there but never depends
+  on it. (Holds because the setup is all-Bluetooth; a USB pad with an empty uniq
+  would need a different fallback — out of scope, wired isn't used here.)
 - Deck caps at 4-up (VRAM ceiling, #70) → a 5th instance is never possible.
 
 --------------------------------------------------------------------------------
@@ -168,12 +175,12 @@ Notes:
 - An abandoned slot never auto-frees on grace expiry — it persists as a live,
   input-less instance (sticky, #37/#84) until its MAC returns (RESUME), a game
   window death frees it (SLOT_DIED→slot_free), or an unknown pad ADOPTs it.
-- **Identical-MAC multi-match (the true floor):** if `slot_by_uniq` returns >1
-  disconnected slot (cloned pads, both dropped), the manager RESUMEs the
-  most-recently-disconnected. The pads are physically indistinguishable, so no
-  property can do better; documented as the known limit (also in
-  tests/probe-controller-reconnect.sh). Non-issue unless ≥2 identical pads are
-  simultaneously disconnected.
+- **Identical-MAC multi-match (theoretical safety net, NOT a real case):** real BT
+  pads have unique MACs (verified — DS4 + Xbox). Only genuinely counterfeit pads with
+  a duplicated MAC could make `slot_by_uniq` return >1 disconnected slot; if that ever
+  happens the manager RESUMEs the most-recently-disconnected (physically
+  indistinguishable pads → no property does better). Cheap belt-and-suspenders, not a
+  design constraint. Not relevant to this hardware.
 
 --------------------------------------------------------------------------------
 ## 6. Executing outcomes — the (thin) handlers + proxy actions
@@ -320,4 +327,7 @@ Q5  **Log only** — REJECT-when-full does NOT surface a message (no Game-Mode m
 - Xbox pad carries `kbd`+`js`; role rule = "has js", not "js-only".
 - eventN is lowest-free (not monotonic) + Steam mints/reaps a virtual per pad →
   the number a pad gets is unpredictable; never cache it.
-- Clone-MAC: elimination fallback; simultaneous identical-pad reconnect is the floor.
+- MAC is device-agnostic + unique per BT pad (DS4 + Xbox verified; Steam keys on it
+  too — it tells lightbar-less Xbox pads apart). The shared field across same-model
+  pads is UHID vendor:product, NOT the MAC. Clone-MAC elimination is a theoretical
+  safety net only, not a real case for this hardware.
