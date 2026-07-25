@@ -372,10 +372,93 @@ _reap_dead_slots() {
     done
 }
 
+# _launch_slot: reserve SLOT, collect the other slots' controller-mask pairs, and
+# background spawn_instance (never blocking the FIFO loop) — the shared launch
+# machinery for a NEW instance, called by both the legacy CONTROLLER_ADD path and
+# the #38 slot_claim SPAWN outcome. Behavior-identical to the inline code it was
+# extracted from (the reserve is idempotent, so slot_claim having already reserved
+# the slot's identity is fine — this just re-asserts active:true).
+# Inputs:
+#   $1 slot   $2 event_node   $3 js_node
+#   Globals: _SPAWN_PIDS (appended), ORCHESTRATOR_SPAWN_DELAY_S (read)
+_launch_slot() {
+    local slot="$1" event_node="$2" js_node="$3"
+
+    # Reserve the slot synchronously NOW — before backgrounding spawn_instance,
+    # which is what normally marks it active. Without this, a rapid back-to-back
+    # add could have the next free-slot lookup hand out THIS same slot before the
+    # backgrounded spawn marks it → two instances on one slot. Idempotent.
+    update_slot_state "$slot" '{"active": true}'
+
+    # ── Controller isolation ──────────────────────────────────────────
+    # Collect the other active slots' (event_node, js_node) pairs from the state
+    # file and forward them so _build_bwrap_command masks them in this sandbox.
+    local -a _mask_pairs=()
+    local _mp_ev _mp_js
+    while read -r _mp_ev _mp_js; do
+        [[ -z "$_mp_ev" ]] && continue
+        _mask_pairs+=("$_mp_ev" "$_mp_js")
+    done < <(_collect_mask_pairs "$slot")
+
+    # Run spawn_instance in the background so the FIFO event loop is never blocked
+    # (spawn_instance polls for java+window for up to 120s).
+    local _slot="$slot" _en="$event_node" _jn="$js_node"
+    {
+        # M1: mktemp can fail (full /tmp) → empty path. M2: this brace group runs
+        # in a backgrounded subshell, so an EXIT trap reaps the temp even if the
+        # subshell is signalled. Fall back to streaming directly if mktemp fails.
+        local _si_log _si_rc
+        _si_log=$(mktemp "${TMPDIR:-/tmp}/spawn_instance_slot${_slot}_XXXXXX.log") || _si_log=""
+        trap '[[ -n "$_si_log" ]] && rm -f "$_si_log"' EXIT
+        if [[ -n "$_si_log" ]]; then
+            spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" >"$_si_log" 2>&1
+            _si_rc=$?
+            sed 's/^/[orchestrator] /' < "$_si_log" >&2
+        else
+            spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" 2>&1 | sed 's/^/[orchestrator] /' >&2
+            _si_rc=${PIPESTATUS[0]}
+        fi
+        if (( _si_rc != 0 )); then
+            echo "[orchestrator] spawn_instance failed for slot $_slot — slot released" >&2
+            update_slot_state "$_slot" '{"active": false, "pid": null, "bwrap_pid": null, "event_node": null, "js_node": null, "wid": null}'
+        else
+            sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
+            _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
+        fi
+    } &
+    # N2: track the spawn subshell so cleanup() can kill it on teardown.
+    _SPAWN_PIDS+=($!)
+}
+
+# _reconnect_repoint: #38 PR-c — a RESUME/ADOPT outcome. The instance is alive
+# (sticky, #37) and its sandbox binds the slot's PERSISTENT virtual node, so we
+# only re-point the proxy's evsieve at the pad's new physical event node; the
+# sandbox binding never moves and no reflow is needed. On a dead evsieve
+# (proxy_repoint_slot returns 1) the slot is un-feedable — PR-d's watchdog owns
+# restarting it; here we just warn.
+# NOTE (ADOPT limitation, deferred — see design §5 / Q2): ADOPT keeps the
+# ORIGINAL device-id (glyphs may be stale on a cross-brand adopt) and a
+# cross-TYPE adopt can re-trigger #112 (evsieve caps mismatch). Correcting either
+# needs an evsieve restart, which a live fixed-bind sandbox can't follow without
+# an instance relaunch (Q3 rejected relaunch as the default). Same-type adopt and
+# all same-pad RESUMEs work cleanly. Revisit if ADOPT-across-types matters.
+_reconnect_repoint() {
+    local slot="$1" event_node="$2" kind="$3"
+    if proxy_repoint_slot "$slot" "$event_node"; then
+        echo "[orchestrator] $kind → slot $slot re-pointed to $event_node (instance preserved)" >&2
+    else
+        echo "[orchestrator] WARNING: $kind slot $slot — proxy evsieve not live; slot un-feedable until watchdog restarts it" >&2
+    fi
+}
+
 # _handle_msg: Dispatch one FIFO message (CONTROLLER_ADD, CONTROLLER_REMOVE,
 # SLOT_DIED, DISPLAY_MODE_CHANGE) to its handler. Each case below carries its
 # own rationale comments (Fix #37, C1, H10, N1/N2, the docked→handheld
 # guard, …) — kept as-is.
+# #38 PR-c: with MCSS_CONTROLLER_PROXY on, CONTROLLER_ADD routes through
+# slot_claim (SPAWN/RESUME/ADOPT/REJECT), CONTROLLER_REMOVE marks the slot
+# abandoned (slot_release), and SLOT_DIED stops the proxy + hard-frees the slot.
+# With the flag OFF every path is byte-identical to before.
 # Inputs:
 #   $1 — the raw FIFO message ("TYPE [arg…]")
 #   Globals: MCSS_MAX_PLAYERS, SPLITSCREEN_STATE (read); _SPAWN_PIDS,
@@ -394,6 +477,47 @@ _handle_msg() {
 
     case "$msg_type" in
         CONTROLLER_ADD)
+            # Parse controller fields. Format (controller_monitor, 5 fields):
+            #   "CONTROLLER_ADD <event> <js> <vendor> <product> <uniq>"
+            # read -r splits cleanly; a short test-harness message leaves the
+            # trailing vars empty. event_node/js_node are the pad's RAW nodes;
+            # #38 PR-c consumes phys_uniq/vendor/product via slot_claim (flag on)
+            # instead of discarding them.
+            local event_node="" js_node="" phys_vendor="" phys_product="" phys_uniq=""
+            if [[ -n "$msg_arg" ]]; then
+                # shellcheck disable=SC2034  # vendor/product used only on the flag-on path
+                read -r event_node js_node phys_vendor phys_product phys_uniq <<< "$msg_arg"
+                # Single-arg sentinel: monitor sets js_node==event_node when there is no
+                # distinct js node — blank it so spawn_instance skips the js bind.
+                [[ "$event_node" == "$js_node" ]] && js_node=""
+            fi
+
+            if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]]; then
+                # #38 PR-c: the slot manager owns the decision (resume-first-with-
+                # grace). It reserves/refreshes the winning slot's identity and
+                # returns the outcome to execute.
+                local _outcome="" _oc_slot=""
+                read -r _outcome _oc_slot \
+                    < <(slot_claim "$phys_uniq" "$phys_vendor" "$phys_product" "$event_node")
+                case "$_outcome" in
+                    SPAWN)
+                        echo "[orchestrator] CONTROLLER_ADD → SPAWN slot $_oc_slot" >&2
+                        _launch_slot "$_oc_slot" "$event_node" "$js_node"
+                        ;;
+                    RESUME) _reconnect_repoint "$_oc_slot" "$event_node" RESUME ;;
+                    ADOPT)  _reconnect_repoint "$_oc_slot" "$event_node" ADOPT ;;
+                    REJECT)
+                        echo "[orchestrator] CONTROLLER_ADD → REJECT (session full / nothing to adopt) — 4-player limit" >&2
+                        ;;
+                    *)
+                        echo "[orchestrator] CONTROLLER_ADD: unexpected slot_claim outcome '$_outcome' — ignoring" >&2
+                        ;;
+                esac
+                return 0
+            fi
+
+            # ── Legacy path (proxy off): byte-identical to before ──────────────
+            # find a free slot, reserve+mask+background-spawn (all in _launch_slot).
             local slot
             slot=$(_find_free_slot)
             if [[ -z "$slot" ]]; then
@@ -401,106 +525,7 @@ _handle_msg() {
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_ADD → slot $slot (spawning instance)" >&2
-
-            # Reserve the slot synchronously NOW — before backgrounding spawn_instance,
-            # which is what normally marks it active. Without this, a rapid back-to-back
-            # CONTROLLER_ADD (the startup acquisition loop, or several pads connecting at
-            # once) could have the next _find_free_slot hand out THIS same slot before the
-            # backgrounded spawn marks it → two instances on one slot. spawn_instance still
-            # writes the full preliminary state (event/js/pid/bwrap) right after.
-            update_slot_state "$slot" '{"active": true}'
-
-            # Extract controller fields from the CONTROLLER_ADD arg if provided.
-            # Format (controller_monitor emits 5 fields — #38 PR3 added
-            # phys_uniq):
-            #   "CONTROLLER_ADD /dev/input/eventX /dev/input/jsX <vendor>
-            #    <product> <uniq>"
-            # The old `${msg_arg#* }` parse took "everything after the first space" as
-            # js_node, which polluted it with the trailing vendor/product on the real
-            # 4-field message (audit C1). The test harness injected only 2 fields so it
-            # never caught this. read -r splits all fields cleanly; trailing vendor/
-            # product are captured (unused for now) instead of leaking into js_node.
-            # Under CONTROLLER_MONITOR_RAW_BINDING, event_node/js_node are the pad's RAW
-            # nodes: spawn_instance binds the jsN into the sandbox and records the eventN
-            # as slot identity only (for CONTROLLER_REMOVE matching) — the eventN is NOT
-            # bound. The docked producer is js-gated, so it ALWAYS emits BOTH event and js
-            # (never a js-less line), which makes the event==js sentinel below and
-            # spawn_instance's js-empty branch docked-UNREACHABLE under the flag. We keep
-            # them for the handheld/legacy paths and do NOT thread a vendor arg (that would
-            # collide with the variadic mask-pair tail).
-            # #38 PR3: phys_uniq is parsed and DISCARDED here —
-            # behavior-neutral by design. It is NOT passed to spawn_instance
-            # (signature unchanged) and NOT written to state;
-            # `.slots["<N>"].phys_uniq` is a PR4-only, flag-gated write. A
-            # test harness message with only 4 fields (no phys_uniq) reads
-            # it as empty here, same as today.
-            local event_node="" js_node="" phys_vendor="" phys_product=""
-            local phys_uniq=""
-            if [[ -n "$msg_arg" ]]; then
-                # shellcheck disable=SC2034  # phys_vendor/phys_product were
-                # already unused-on-purpose pre-PR3 (kept for handheld/
-                # legacy parity); phys_uniq (#38 PR3) is parsed and
-                # deliberately DISCARDED here too — see the note above.
-                read -r event_node js_node phys_vendor phys_product \
-                    phys_uniq <<< "$msg_arg"
-                # Single-arg form sentinel: monitor sets js_node==event_node when there
-                # is no distinct js node — blank it so spawn_instance skips the js bind.
-                [[ "$event_node" == "$js_node" ]] && js_node=""
-            fi
-
-            # ── Controller isolation ──────────────────────────────────────────
-            # Mask every OTHER active slot's controller nodes inside this sandbox
-            # so only THIS player's pad reaches this instance. The masking itself
-            # lives in _build_bwrap_command (--bind /dev/null per node); here we
-            # collect the other active slots' (event_node, js_node) pairs from the
-            # state file and forward them as trailing args to spawn_instance.
-            # Non-existent / "null" paths are skipped by the builder's -e guard, and
-            # SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 is already set per-slot.
-            # NOTE (pre-existing limitation): bwrap mounts are fixed at launch, so a
-            # slot that spawned earlier cannot retroactively mask a later joiner —
-            # isolation is strongest for the most-recently-joined player. Full
-            # symmetric isolation would require re-spawning earlier slots.
-            local -a _mask_pairs=()
-            local _mp_ev _mp_js
-            while read -r _mp_ev _mp_js; do
-                [[ -z "$_mp_ev" ]] && continue
-                _mask_pairs+=("$_mp_ev" "$_mp_js")
-            done < <(_collect_mask_pairs "$slot")
-
-            # Run spawn_instance in the background so the FIFO event loop is
-            # never blocked — spawn_instance polls for java+window for up to
-            # 120s, and any SLOT_DIED fired while it runs must be processed
-            # immediately (not after a 2-minute wait).
-            local _slot="$slot" _en="$event_node" _jn="$js_node"
-            {
-                # M1: mktemp can fail (full /tmp) → empty path. M2: this brace group runs
-                # in a backgrounded subshell, so an EXIT trap reaps the temp even if the
-                # subshell is signalled. Fall back to streaming directly if mktemp fails.
-                local _si_log _si_rc
-                _si_log=$(mktemp "${TMPDIR:-/tmp}/spawn_instance_slot${_slot}_XXXXXX.log") || _si_log=""
-                trap '[[ -n "$_si_log" ]] && rm -f "$_si_log"' EXIT
-                # N1: capture spawn_instance's REAL exit status (the old `|| true` swallowed
-                # it). On failure the slot was reserved active:true above but never gets a
-                # bwrap_pid, so _reap_dead_slots skips it forever ("still launching") and one
-                # of the 4 slots is permanently dead. Clear the reservation to free the slot.
-                if [[ -n "$_si_log" ]]; then
-                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" >"$_si_log" 2>&1
-                    _si_rc=$?
-                    sed 's/^/[orchestrator] /' < "$_si_log" >&2
-                else
-                    spawn_instance "$_slot" "$_en" "$_jn" "${_mask_pairs[@]}" 2>&1 | sed 's/^/[orchestrator] /' >&2
-                    _si_rc=${PIPESTATUS[0]}
-                fi
-                if (( _si_rc != 0 )); then
-                    echo "[orchestrator] spawn_instance failed for slot $_slot — slot released" >&2
-                    update_slot_state "$_slot" '{"active": false, "pid": null, "bwrap_pid": null, "event_node": null, "js_node": null, "wid": null}'
-                else
-                    sleep "$ORCHESTRATOR_SPAWN_DELAY_S"
-                    _reflow_layout || echo "[orchestrator] WARNING: post-spawn reflow failed (slot $_slot)" >&2
-                fi
-            } &
-            # N2: track the spawn subshell so cleanup() can kill it on teardown.
-            _SPAWN_PIDS+=($!)
+            _launch_slot "$slot" "$event_node" "$js_node"
             ;;
 
         CONTROLLER_REMOVE)
@@ -536,6 +561,14 @@ _handle_msg() {
                 return 0
             fi
             echo "[orchestrator] CONTROLLER_REMOVE → slot $slot controller disconnected — instance PRESERVED (no teardown)" >&2
+            # #38 PR-c: with the proxy on, MARK the slot abandoned (disconnected +
+            # timestamp) so the grace/reconnect logic can later resume or adopt it.
+            # The instance stays alive and its evsieve (persist=reopen) waits for the
+            # pad; a returning pad (known MAC) then re-points via slot_claim→RESUME.
+            # Flag off → unchanged (the pre-existing preserve-only no-op).
+            if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]]; then
+                slot_release "$slot"
+            fi
             ;;
 
         SLOT_DIED)
@@ -545,6 +578,13 @@ _handle_msg() {
                 return 0
             fi
             echo "[orchestrator] SLOT_DIED for slot $slot — cleaning up" >&2
+            # #38 PR-c: a real player-leave (game window destroyed), NOT a
+            # reconnectable drop — stop the slot's evsieve proxy and hard-free its
+            # identity so slot_find_free can reissue the slot. Flag off → unchanged.
+            if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]]; then
+                proxy_stop_slot "$slot" 2>/dev/null || true
+                slot_free "$slot" 2>/dev/null || true
+            fi
             local _td_log
             _td_log=$(mktemp "${TMPDIR:-/tmp}/teardown_slot${slot}_XXXXXX.log") || _td_log=""
             if [[ -n "$_td_log" ]]; then

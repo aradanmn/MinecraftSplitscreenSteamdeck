@@ -99,6 +99,33 @@ continuously while the physical pad is gone, which is the one property nothing
 off-the-shelf provides at the /dev/input layer. This closes the "why not just use
 Steam's virtual" question empirically.
 
+### 3.2 Why normal Game-Mode games reconnect and WE don't (the mechanism)
+Apparent paradox (Scott, 2026-07-25): if both the physical node AND Steam's
+virtual die when a pad dies, how does any normal game keep receiving input after
+a reconnect? Resolution — normal games survive **not** by any node persisting but
+by **SDL's udev-based joystick hotplug**: SDL listens to udev, gets a "removed"
+event when the pad dies and an "added" event when it returns as a brand-new node,
+and re-opens that new node (`CONTROLLERDEVICEADDED`/`REMOVED`). Steam even re-mints
+its virtual on reconnect precisely so SDL's hotplug has a new node to find. Node
+churn is handled by RE-OPENING, never by anything staying alive.
+
+We break because our per-instance isolation is built out of the very things that
+give normal games free reconnect — and both defeat hotplug:
+1. **`SDL_JOYSTICK_DISABLE_UDEV=1`** (instance_lifecycle, "THE key strict-isolation
+   hint") — we turn OFF the udev hotplug so SDL uses scandir-only and sees only the
+   one node we bind, not all 9 controllers. No udev → SDL never learns the pad
+   reconnected.
+2. **Fixed single-node bwrap bind** — even if SDL re-enumerated, the sandbox holds
+   only the node mounted at launch; the reconnected node isn't inside it.
+
+So the reconnect problem is the direct COST of isolation, not a Steam limitation.
+evsieve threads the needle: its virtual node is persistent (never churns), so SDL
+needs no hotplug (keep `DISABLE_UDEV` + the single-node bind → isolation preserved)
+and reconnect works by evsieve swapping its INPUT while the OUTPUT node the game
+reads stays rock-stable. It is the only design that gets reconnect AND isolation,
+because it moves the churn-handling job off SDL/udev (which would break isolation)
+onto a node we own.
+
 --------------------------------------------------------------------------------
 ## 4. Architecture — a slot manager owns all slot state
 
