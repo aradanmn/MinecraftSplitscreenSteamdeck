@@ -711,6 +711,76 @@ wait_for_ds4() {
     return 1
 }
 
+# --- Multi-pad, uniq-tracked identification (repoint probe's 3-DS4 method) ----
+# find_ds4_event_node BLOCKS on >1 pad (it measures exactly one). The repoint
+# probe's renumber method needs OTHER pads connected while it re-finds THE SAME
+# pad on a new eventN — so it tracks a pad by its uniq (BT MAC) instead. These
+# helpers NEVER block on multiple pads.
+
+# _parse_ds4_pads_with_uniq: emit "eventN jsN uniq" for every DS4_VENDOR
+# js-bearing pad node (uniq = parse_input_device_blocks field 8).
+_parse_ds4_pads_with_uniq() {
+    local vendor product name handlers sysfs phys keybits uniq _h ev js
+    # shellcheck disable=SC2034  # fixed 8-column record; only vendor/handlers/uniq used
+    while IFS=$'\x1f' read -r vendor product name handlers sysfs phys \
+        keybits uniq; do
+        [[ "$vendor" == "$DS4_VENDOR" ]] || continue
+        ev=""; js=""
+        for _h in $handlers; do
+            case "$_h" in
+                event*) [[ "$_h" =~ ^event[0-9]+$ ]] && ev="$_h" ;;
+                js*)    [[ "$_h" =~ ^js[0-9]+$ ]] && js="$_h" ;;
+            esac
+        done
+        [[ -n "$ev" && -n "$js" ]] || continue   # the js-bearing pad node only
+        echo "$ev $js ${uniq:-}"
+    done < <(parse_input_device_blocks \
+        "${PROC_INPUT_DEVICES:-/proc/bus/input/devices}" 2>/dev/null || true)
+}
+
+# find_ds4_by_uniq: "/dev/input/eventN jsN" for the DS4 pad whose uniq==$1,
+# tolerating any number of other pads. Empty + return 1 if absent (or $1 empty).
+find_ds4_by_uniq() {
+    local want="$1" ev js u
+    [[ -n "$want" ]] || return 1
+    while read -r ev js u; do
+        [[ "$u" == "$want" ]] || continue
+        echo "/dev/input/$ev $js"
+        return 0
+    done < <(_parse_ds4_pads_with_uniq)
+    return 1
+}
+
+# wait_for_ds4_uniq: spinner-wait up to $2 s for the pad with uniq $1.
+wait_for_ds4_uniq() {
+    local want="$1" timeout_s="$2" waited=0
+    while (( waited < timeout_s )); do
+        find_ds4_by_uniq "$want" >/dev/null 2>&1 && { _probe_spin_clear; return 0; }
+        _probe_spin "$waited" "waiting for DS4 ${want} on its new node... ${waited}/${timeout_s}s"
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    _probe_spin_clear
+    return 1
+}
+
+# ds4_select_target: multi-pad-tolerant selection — emit "eventN jsN uniq" for
+# the HIGHEST-numbered DS4 (Scott's 3-pad method puts the proxy on the highest
+# so a freed LOWER number is available for the forced renumber). return 1 if
+# none present. NEVER blocks; empties are the caller's cue to prompt+retry.
+ds4_select_target() {
+    local best_ev="" best_js="" best_uniq="" best_n=-1 ev js u n
+    while read -r ev js u; do
+        n="${ev##event}"
+        [[ "$n" =~ ^[0-9]+$ ]] || continue
+        if (( n > best_n )); then
+            best_n=$n; best_ev="$ev"; best_js="$js"; best_uniq="$u"
+        fi
+    done < <(_parse_ds4_pads_with_uniq)
+    [[ -n "$best_ev" ]] || return 1
+    echo "$best_ev $best_js $best_uniq"
+}
+
 # prompt_operator: Print MESSAGE to stderr and wait for the operator on the
 # controlling tty. Mirrors tests/hardware/stage3_hotplug.sh's hw_prompt
 # tone.
