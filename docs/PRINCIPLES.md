@@ -145,6 +145,67 @@ free slot to two spawns → two instances on one slot. The serial loop + up-fron
 reservation is what makes the rest race-free without locks in the hot path.
 
 --------------------------------------------------------------------------------
+## These are industry-standard patterns (not local inventions)
+
+We arrived at the ten above by getting burned, but each has a decades-old
+textbook name — look them up to go deeper. This is the canon, rediscovered:
+
+| # | Established name(s) |
+|---|---------------------|
+| 1 | Encapsulation / Information Hiding (Parnas 1972); Law of Demeter; Single Source of Truth |
+| 2 | Feature Toggles (Martin Fowler); Branch by Abstraction; trunk-based development |
+| 3 | The Test Pyramid — E2E/integration catch what unit tests can't |
+| 4 | Mutation Testing (an established test-quality discipline) |
+| 5 | Graceful Degradation / Fail-safe design; defensive programming |
+| 6 | Timeouts everywhere (resilience engineering); response-time feedback (Nielsen/Miller) |
+| 7 | Least privilege; blast-radius containment |
+| 8 | Resource-lifecycle discipline |
+| 9 | DRY — Don't Repeat Yourself (Hunt & Thomas, *The Pragmatic Programmer*) |
+| 10 | Single-threaded event loop (Node.js / Redis model); serialize instead of lock |
+
+--------------------------------------------------------------------------------
+## Also standard practice here (canon we already follow)
+
+Named for vocabulary; each cites where the codebase already does it, so they stay
+grounded rather than aspirational.
+
+- **Command–Query Separation (CQS, Meyer).** A function either *does* something
+  (a command, mutates, returns a status) or *answers* something (a query, returns
+  data, no side effects) — never both. Our getters (`_get_slot_field`,
+  `get_active_slots`) return data; our setters (`update_slot_state`,
+  `slot_release`) mutate. STYLE-GUIDE already says "stdout — data only!".
+
+- **Single Responsibility Principle (SRP, the "S" in SOLID).** One module, one
+  job — the reason the monolith was split into `modules/*.sh` by domain
+  (ARCHITECTURE.md §2). A function that grew a second responsibility gets split
+  (e.g. the launch machinery extracted to `_launch_slot`).
+
+- **YAGNI — You Aren't Gonna Need It.** Don't build speculative generality. This
+  is exactly why we did NOT switch the whole codebase to get/set (#1's boundary):
+  the pattern earns its keep on state, not on orchestration, so we don't impose
+  it where it buys nothing.
+
+- **Idempotency.** Operations are safe to repeat. `update_slot_state`'s reserve is
+  idempotent; `cleanup` guards against double-run with a sentinel; the module
+  constants blocks are re-source-safe (`if [[ -z "${_X_LOCKED:-}" ]]`). Retrying a
+  step must never corrupt state.
+
+- **Pure functions at the edges.** Computation with no side effects — geometry
+  (`window_manager`), the version-match ladder — takes inputs, returns outputs,
+  touches no globals. These are the easiest things to test and the safest to
+  reuse; keep calculation separate from I/O and state.
+
+- **Parse/validate at the boundary.** Untrusted input (`/proc/bus/input/devices`,
+  display-query tool output, the state file) is parsed by ONE reader at the edge
+  (`parse_input_device_blocks`, `mcss_query_displays`, `read_state`) that
+  normalizes it; the rest of the code trusts the normalized form.
+
+**Further reading** (short, high-leverage): *The Pragmatic Programmer* (DRY,
+orthogonality, YAGNI); Martin Fowler's articles on Feature Toggles and the Test
+Pyramid; the SOLID principles (SRP especially); "Fail-safe vs fail-secure" for
+where #5's fail-open is and isn't the right default.
+
+--------------------------------------------------------------------------------
 ## Using this document
 
 - New code: follow these; cite the principle number in the PR when a reviewer
