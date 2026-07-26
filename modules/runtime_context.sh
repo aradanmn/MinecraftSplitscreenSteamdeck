@@ -198,12 +198,16 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     # Fix #86: name the display-probe timeout (#86 item b) — was a bare
     # `timeout 3` at each of the four probe sites below.
     export MCSS_DISPLAY_PROBE_TIMEOUT_S="${MCSS_DISPLAY_PROBE_TIMEOUT_S:-3}"
-    # #38 M1/PR2: master feature flag for the evsieve controller-proxy
-    # (controller_proxy.sh). OFF (0) until PR7 flips it — no proxy_*
-    # function branches on this; it gates PR4's orchestrator wiring only.
-    # A drifted copy would silently keep a caller on the wrong bind path,
-    # same cross-process-contract risk as MCSS_RAW_BINDING above.
-    export MCSS_CONTROLLER_PROXY="${MCSS_CONTROLLER_PROXY:-0}"
+    # #38: master feature flag for the evsieve controller-proxy — seamless
+    # controller reconnect. Now ON (1) by default: the M2 build (slot_manager +
+    # proxy launch wiring + orchestrator reconnect dispatch + watchdog
+    # supervision) is complete and validated end-to-end on the Deck 2026-07-26 —
+    # a real 4-up game reconnected a dropped pad seamlessly (RESUME, no relaunch),
+    # isolation intact, Steam guide button working under evsieve's grab. Set
+    # MCSS_CONTROLLER_PROXY=0 to fall back to raw per-slot binding (no seamless
+    # reconnect). A drifted copy would silently keep a caller on the wrong bind
+    # path, same cross-process-contract risk as MCSS_RAW_BINDING above.
+    export MCSS_CONTROLLER_PROXY="${MCSS_CONTROLLER_PROXY:-1}"
     # #70: cap each instance's maxFps to the host display refresh (convert
     # discarded frames into thermal/CPU headroom). Master switch ON by default;
     # set MCSS_CAP_FPS_TO_REFRESH=0 to keep the baked options.txt value.
