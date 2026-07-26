@@ -105,3 +105,4 @@ Units in names (`_TIMEOUT_S`, `_INTERVAL_S`); ALL-CAPS mnemonic heredoc delimite
 - API/globals change → update Public API + PROVIDED/CONSUMED lists and add a version-history line (§5).
 - Tracked bug fix → `# Fix #N:` at the site (§4); security fixes get a neutral comment.
 - `shellcheck -x` on touched files; confirm no bare stdout leaks in functions whose stdout is captured.
+- New/changed logic → sanity-check against `PRINCIPLES.md` (esp. #1 state-through-accessors, #5 fail-open). Cite the principle number in the PR when a choice might raise a reviewer's eyebrow.
