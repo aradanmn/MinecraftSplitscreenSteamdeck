@@ -83,8 +83,13 @@ mcss_notify_user() {
     # surface, and the Minecraft instances that DO reach the screen are XWayland
     # clients on the nested :2 display — so XWayland is the only channel proven to be
     # presented. Matching it is the point; do not "simplify" this away.
+    # MCSS_NESTED_SESSION is NOT a boolean: it is "0" in the host and a session
+    # TYPE inside ours ("plasma" from minecraftSplitscreen.sh:264, "kwin" for the
+    # test path, with "1" also accepted per runtime_context.sh:27). Test it the way
+    # minecraftSplitscreen.sh:1144 does — `!= "0"`. An earlier draft compared
+    # `== "1"`, so on-Deck the branch silently never fired ([[ plasma == 1 ]]).
     local -a _env=()
-    if [[ "${MCSS_NESTED_SESSION:-0}" == "1" && -n "${DISPLAY:-}" ]]; then
+    if [[ "${MCSS_NESTED_SESSION:-0}" != "0" && -n "${DISPLAY:-}" ]]; then
         _env=(env "QT_QPA_PLATFORM=xcb" "GDK_BACKEND=x11" "DISPLAY=$DISPLAY")
     fi
     if command -v kdialog >/dev/null 2>&1; then
