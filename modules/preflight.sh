@@ -68,11 +68,18 @@
 mcss_notify_user() {
     local title="$1" body="$2" secs="${3:-0}" pid=""
     echo "[notify] ${title}: ${body//$'\n'/ }" >&2
+    # The notifier's OWN stderr goes to the debug log, not /dev/null: a dialog that
+    # fails to reach a display ("cannot connect to display", missing Wayland socket)
+    # is precisely the failure this function exists to prevent, and swallowing it
+    # made the first on-Deck test of #125 undiagnosable. A FILE, never the inherited
+    # stderr — a backgrounded child holding a capture pipe is what hung CI in
+    # #80/#103 and #133 (PRINCIPLES #8).
+    local _nlog="${SPLITSCREEN_DEBUG_LOG:-${LOG:-/dev/null}}"
     if command -v kdialog >/dev/null 2>&1; then
-        kdialog --title "$title" --error "$body" >/dev/null 2>&1 &
+        kdialog --title "$title" --error "$body" >/dev/null 2>>"$_nlog" &
         pid=$!
     elif command -v zenity >/dev/null 2>&1; then
-        zenity --error --title="$title" --text="$body" >/dev/null 2>&1 &
+        zenity --error --title="$title" --text="$body" >/dev/null 2>>"$_nlog" &
         pid=$!
     else
         return 1

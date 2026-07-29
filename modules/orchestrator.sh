@@ -89,7 +89,10 @@ if [[ -z "${_ORCHESTRATOR_CONSTANTS_LOCKED:-}" ]]; then
     # used to look like a crash: error sounds, black screen, back to the library, reason
     # only in the debug log. We hold the session up just long enough to read the notice.
     # Only paid when the launch is aborting anyway, and only when a notifier exists.
-    readonly ORCHESTRATOR_NO_CONTROLLER_NOTICE_S=8
+    # Env-overridable so an on-Deck test can hold the notice long enough to
+    # photograph without editing the deployed tree (which would break
+    # deploy.sh --check freshness). 8s is the shipped value.
+    readonly ORCHESTRATOR_NO_CONTROLLER_NOTICE_S="${ORCHESTRATOR_NO_CONTROLLER_NOTICE_S:-8}"
     _ORCHESTRATOR_CONSTANTS_LOCKED=1   # process-local — NOT exported
 fi
 
