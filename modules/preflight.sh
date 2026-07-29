@@ -75,28 +75,11 @@ mcss_notify_user() {
     # stderr — a backgrounded child holding a capture pipe is what hung CI in
     # #80/#103 and #133 (PRINCIPLES #8).
     local _nlog="${SPLITSCREEN_DEBUG_LOG:-${LOG:-/dev/null}}"
-    # Inside the nested session, force the dialog onto XWayland ($DISPLAY) instead
-    # of letting Qt/GTK pick the native Wayland backend.
-    #
-    # Measured on-Deck 2026-07-29 (#125): a Wayland-native kdialog ran for its full
-    # 7.76s with no error and was NEVER VISIBLE. gamescope presents the focused game
-    # surface, and the Minecraft instances that DO reach the screen are XWayland
-    # clients on the nested :2 display — so XWayland is the only channel proven to be
-    # presented. Matching it is the point; do not "simplify" this away.
-    # MCSS_NESTED_SESSION is NOT a boolean: it is "0" in the host and a session
-    # TYPE inside ours ("plasma" from minecraftSplitscreen.sh:264, "kwin" for the
-    # test path, with "1" also accepted per runtime_context.sh:27). Test it the way
-    # minecraftSplitscreen.sh:1144 does — `!= "0"`. An earlier draft compared
-    # `== "1"`, so on-Deck the branch silently never fired ([[ plasma == 1 ]]).
-    local -a _env=()
-    if [[ "${MCSS_NESTED_SESSION:-0}" != "0" && -n "${DISPLAY:-}" ]]; then
-        _env=(env "QT_QPA_PLATFORM=xcb" "GDK_BACKEND=x11" "DISPLAY=$DISPLAY")
-    fi
     if command -v kdialog >/dev/null 2>&1; then
-        "${_env[@]}" kdialog --title "$title" --error "$body" >/dev/null 2>>"$_nlog" &
+        kdialog --title "$title" --error "$body" >/dev/null 2>>"$_nlog" &
         pid=$!
     elif command -v zenity >/dev/null 2>&1; then
-        "${_env[@]}" zenity --error --title="$title" --text="$body" >/dev/null 2>>"$_nlog" &
+        zenity --error --title="$title" --text="$body" >/dev/null 2>>"$_nlog" &
         pid=$!
     else
         return 1
