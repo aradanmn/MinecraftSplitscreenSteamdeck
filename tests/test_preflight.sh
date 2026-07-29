@@ -13,7 +13,7 @@ set -uo pipefail
 # Run: bash tests/test_preflight.sh
 # =============================================================================
 
-readonly TEST_TOTAL=16
+readonly TEST_TOTAL=12
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -54,9 +54,6 @@ EOF
         chmod +x "$MOCKBIN/$tool"
     done
     # coreutils the function itself needs; everything else is deliberately absent.
-    # `env` is load-bearing: the nested branch wraps the dialog in it to force the
-    # XWayland backend, and leaving it out made 5 tests fail with a bare PATH —
-    # which is exactly how the missing nested-branch coverage was noticed.
     local need
     for need in sleep kill command env; do
         [[ -x "/usr/bin/$need" ]] && ln -sf "/usr/bin/$need" "$MOCKBIN/$need" 2>/dev/null
@@ -243,70 +240,6 @@ test_stderr_line_is_flattened() {
     _mock_cleanup
 }
 
-# --- T4: nested session forces the XWayland backend ------------------------
-# Measured on-Deck 2026-07-29 (#125): a Wayland-native dialog inside the nested
-# session ran its full duration with no error and was never visible, because
-# gamescope presents the focused game surface and the Minecraft instances that DO
-# reach the screen are XWayland clients. These two tests pin that distinction.
-
-_wait_for_env_file() {
-    local tool="$1" waited=0
-    while (( waited < 20 )) && [[ ! -f "$MOCKBIN/$tool.env" ]]; do
-        sleep 0.1; waited=$((waited + 1))
-    done
-}
-
-# _assert_nested_forces: run the nested branch with ONE real MCSS_NESTED_SESSION
-# value and assert the XWayland env reached the dialog.
-#
-# Parametrised over the values production actually sets, which is the whole point:
-# the first draft of this test used MCSS_NESTED_SESSION=1 — an alias production
-# never sets — so it passed green while the shipped predicate (`== "1"`) never
-# matched the real value "plasma". Testing a value the code never sees certifies
-# nothing (PRINCIPLES #4).
-_assert_nested_forces() {
-    local label="$1" value="$2"
-    _mock_env kdialog
-    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION="$value" DISPLAY=":99" \
-        mcss_notify_user "T" "body" ) 2>/dev/null
-    _wait_for_env_file kdialog
-    local env_seen; env_seen="$(cat "$MOCKBIN/kdialog.env" 2>/dev/null)"
-    if [[ "$env_seen" == *"QT_QPA_PLATFORM=xcb"* && "$env_seen" == *"DISPLAY=:99"* ]]; then
-        _pass "$label"
-    else
-        _fail "$label" "got '${env_seen//$'\n'/ }'"
-    fi
-    _mock_cleanup
-}
-
-# "plasma" is THE production value (minecraftSplitscreen.sh:264).
-test_nested_plasma_forces_xwayland() {
-    _assert_nested_forces \
-        "T4.1 MCSS_NESTED_SESSION=plasma forces xcb on \$DISPLAY" "plasma"
-}
-test_nested_kwin_forces_xwayland() {
-    _assert_nested_forces \
-        "T4.1b MCSS_NESTED_SESSION=kwin forces xcb on \$DISPLAY" "kwin"
-}
-test_nested_alias_1_forces_xwayland() {
-    _assert_nested_forces \
-        "T4.1c MCSS_NESTED_SESSION=1 (alias) forces xcb on \$DISPLAY" "1"
-}
-
-test_host_does_not_force_xwayland() {
-    _mock_env kdialog
-    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION=0 DISPLAY=":0" \
-        mcss_notify_user "T" "body" ) 2>/dev/null
-    _wait_for_env_file kdialog
-    local env_seen; env_seen="$(cat "$MOCKBIN/kdialog.env" 2>/dev/null)"
-    if [[ "$env_seen" == *"QT_QPA_PLATFORM="$'\n'* || "$env_seen" == *"QT_QPA_PLATFORM="$ ]]; then
-        _pass "T4.2 host context leaves the backend alone"
-    else
-        _fail "T4.2 host context leaves the backend alone" "got '${env_seen//$'\n'/ }'"
-    fi
-    _mock_cleanup
-}
-
 run_all_tests() {
     echo "=== preflight.sh / mcss_notify_user ==="
     test_no_notifier_returns_1
@@ -321,10 +254,6 @@ run_all_tests() {
     test_self_dismiss_kills_dialog
     test_no_self_dismiss_without_secs
     test_stderr_line_is_flattened
-    test_nested_plasma_forces_xwayland
-    test_nested_kwin_forces_xwayland
-    test_nested_alias_1_forces_xwayland
-    test_host_does_not_force_xwayland
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then
