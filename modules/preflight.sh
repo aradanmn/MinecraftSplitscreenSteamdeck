@@ -16,15 +16,81 @@
 #
 # Public API:
 #   _preflight_deps <install|launch>   -> 0 if OK, 1 (after printing) if a HARD STOP
+#   mcss_notify_user <title> <body> [secs] -> 0 if a notifier was shown, 1 if none
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   LOG — launcher entry script; appended with a HARD STOP line if set
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-07-29  #125: mcss_notify_user — the ONE encoding of "tell the
+#                    user something when there is no terminal to print to"
 #   v1.1 2026-07-01  v1.1 batch: env-guard + audit fixes bundled with 14
 #                    other issues (no preflight-specific behavior change)
 #   v1.0 2026-06-23  Initial: distro-aware hints, dual install/launch gate
 # =============================================================================
+
+# mcss_notify_user: best-effort, NON-BLOCKING, user-visible message.
+#
+# Fix #125: the Game Mode and nested-session paths have NO terminal, so an abort
+# that only writes to a log reads to the user as a crash. Three copies of the
+# kdialog→zenity ladder had grown by the time #125 needed a fourth (preflight's
+# own launch popup, minecraftSplitscreen's bare-invocation refusal, and the
+# no-controller abort) — this is the single encoding (PRINCIPLES #9).
+#
+# Lives in preflight.sh because it is the first runtime module sourced (see
+# modules/runtime_modules.list) and because "tell the user why the launch cannot
+# proceed" is already this module's job. utilities.sh — the installer's UX home —
+# is not deployed at runtime.
+#
+# NEVER blocks the caller: the dialog is always backgrounded. When `secs` is given,
+# a reaper self-dismisses it by killing ONLY the PID we started (PRINCIPLES #7),
+# which matters for #125 specifically — a user with no controller connected may
+# have no way to dismiss a modal dialog, so an undismissable one would be an
+# unbounded wait (PRINCIPLES #6).
+#
+# Uses a real dialog window rather than kdialog --passivepopup / notify-send on
+# purpose: passive popups need a notification daemon, and the host Game Mode
+# context (gamescope, no Plasma shell) has none — a passive popup would silently
+# show nothing there, which is the exact failure this function exists to fix.
+#
+# Fail open (PRINCIPLES #5): with no notifier installed the message still reaches
+# stderr and the caller proceeds. A missing kdialog must never fail a launch.
+#
+# Inputs:
+#   $1 — title
+#   $2 — body (may contain newlines)
+#   $3 — seconds after which to self-dismiss; omit/0 to leave it up until dismissed
+# Outputs:
+#   stderr — the message, always, so the debug log keeps the diagnostic
+#   side effects — backgrounds a dialog (and, with $3, a reaper for it); writes
+#     NOTHING to stdout (callers' stdout is captured)
+#   return — 0 if a notifier was launched, 1 if none is installed
+mcss_notify_user() {
+    local title="$1" body="$2" secs="${3:-0}" pid=""
+    echo "[notify] ${title}: ${body//$'\n'/ }" >&2
+    # The notifier's OWN stderr goes to the debug log, not /dev/null: a dialog that
+    # fails to reach a display ("cannot connect to display", missing Wayland socket)
+    # is precisely the failure this function exists to prevent, and swallowing it
+    # made the first on-Deck test of #125 undiagnosable. A FILE, never the inherited
+    # stderr — a backgrounded child holding a capture pipe is what hung CI in
+    # #80/#103 and #133 (PRINCIPLES #8).
+    local _nlog="${SPLITSCREEN_DEBUG_LOG:-${LOG:-/dev/null}}"
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "$title" --error "$body" >/dev/null 2>>"$_nlog" &
+        pid=$!
+    elif command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="$title" --text="$body" >/dev/null 2>>"$_nlog" &
+        pid=$!
+    else
+        return 1
+    fi
+    if (( secs > 0 )); then
+        # Redirected off any capture pipe — an orphaned child holding stdout is
+        # what hung CI twice before (PRINCIPLES #8).
+        ( sleep "$secs"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    fi
+    return 0
+}
 
 # _mcss_distro_hint: Print a package-install hint tailored to the detected
 # distro (SteamOS/Holo, CachyOS/Arch, Bazzite/Fedora, else generic).
@@ -114,12 +180,10 @@ _preflight_deps() {
     [[ -n "${LOG:-}" ]] && echo "[preflight] HARD STOP (${ctx}): missing ${missing[*]}" >> "$LOG" 2>/dev/null || true
 
     # At launch (Game Mode has no terminal) try a best-effort visible popup.
+    # No self-dismiss: this is a hard stop the user should read at their own pace.
     if [[ "$ctx" == "launch" ]]; then
-        if command -v kdialog >/dev/null 2>&1; then
-            kdialog --error "${m1}"$'\n\n'"${m2}"$'\n\n'"See the README → Supported platforms." >/dev/null 2>&1 &
-        elif command -v zenity >/dev/null 2>&1; then
-            zenity --error --text="${m1}"$'\n\n'"${m2}" >/dev/null 2>&1 &
-        fi
+        mcss_notify_user "Minecraft Splitscreen" \
+            "${m1}"$'\n\n'"${m2}"$'\n\n'"See the README → Supported platforms."
     fi
     return 1
 }

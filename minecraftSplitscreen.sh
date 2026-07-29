@@ -1159,10 +1159,12 @@ r.lower(); r.mainloop()
             # crash silently (#40, _set_mode) or spawn a runaway (#42). Now it's refused
             # safely, but give visible feedback instead of "nothing happens" — Game Mode
             # has no terminal to see the log in.
-            if command -v kdialog >/dev/null 2>&1; then
-                kdialog --error "Minecraft Splitscreen only runs from the Steam library (Game Mode)." >/dev/null 2>&1 &
-            elif command -v zenity >/dev/null 2>&1; then
-                zenity --error --text="Minecraft Splitscreen only runs from the Steam library (Game Mode)." >/dev/null 2>&1 &
+            # type-guarded: preflight.sh is sourced from the manifest above, but a
+            # partial deploy could leave it absent and this path must still exit
+            # cleanly rather than dying on a missing function.
+            if type mcss_notify_user >/dev/null 2>&1; then
+                mcss_notify_user "Minecraft Splitscreen" \
+                    "Minecraft Splitscreen only runs from the Steam library (Game Mode)."
             fi
             exit 1
         fi
