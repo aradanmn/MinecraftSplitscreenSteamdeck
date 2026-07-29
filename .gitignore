@@ -4,5 +4,10 @@ token.enc
 *.log
 *.tmp
 
+# Deck-side scratch: probes/tests write artifacts here so one wipe clears them
+# (#122). Ignored so a Deck checkout can never accidentally commit its own run
+# output — the convention is only a convention if git enforces it.
+.workdir/
+
 # private security holding doc — must never be committed (public repo)
 ISSUES.md
