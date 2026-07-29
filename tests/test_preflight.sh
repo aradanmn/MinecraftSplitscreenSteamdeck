@@ -13,7 +13,7 @@ set -uo pipefail
 # Run: bash tests/test_preflight.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=14
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -45,14 +45,20 @@ _mock_env() {
         cat > "$MOCKBIN/$tool" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "$MOCKBIN/$tool.args"
+{ echo "QT_QPA_PLATFORM=\${QT_QPA_PLATFORM:-}"
+  echo "GDK_BACKEND=\${GDK_BACKEND:-}"
+  echo "DISPLAY=\${DISPLAY:-}"; } > "$MOCKBIN/$tool.env"
 echo running > "$MOCKBIN/$tool.started"
 sleep 30
 EOF
         chmod +x "$MOCKBIN/$tool"
     done
     # coreutils the function itself needs; everything else is deliberately absent.
+    # `env` is load-bearing: the nested branch wraps the dialog in it to force the
+    # XWayland backend, and leaving it out made 5 tests fail with a bare PATH —
+    # which is exactly how the missing nested-branch coverage was noticed.
     local need
-    for need in sleep kill command; do
+    for need in sleep kill command env; do
         [[ -x "/usr/bin/$need" ]] && ln -sf "/usr/bin/$need" "$MOCKBIN/$need" 2>/dev/null
     done
 }
@@ -237,6 +243,48 @@ test_stderr_line_is_flattened() {
     _mock_cleanup
 }
 
+# --- T4: nested session forces the XWayland backend ------------------------
+# Measured on-Deck 2026-07-29 (#125): a Wayland-native dialog inside the nested
+# session ran its full duration with no error and was never visible, because
+# gamescope presents the focused game surface and the Minecraft instances that DO
+# reach the screen are XWayland clients. These two tests pin that distinction.
+
+_wait_for_env_file() {
+    local tool="$1" waited=0
+    while (( waited < 20 )) && [[ ! -f "$MOCKBIN/$tool.env" ]]; do
+        sleep 0.1; waited=$((waited + 1))
+    done
+}
+
+test_nested_forces_xwayland() {
+    _mock_env kdialog
+    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION=1 DISPLAY=":99" \
+        mcss_notify_user "T" "body" ) 2>/dev/null
+    _wait_for_env_file kdialog
+    local env_seen; env_seen="$(cat "$MOCKBIN/kdialog.env" 2>/dev/null)"
+    if [[ "$env_seen" == *"QT_QPA_PLATFORM=xcb"* && "$env_seen" == *"DISPLAY=:99"* ]]; then
+        _pass "T4.1 nested session forces QT_QPA_PLATFORM=xcb on \$DISPLAY"
+    else
+        _fail "T4.1 nested session forces QT_QPA_PLATFORM=xcb on \$DISPLAY" \
+            "got '${env_seen//$'\n'/ }'"
+    fi
+    _mock_cleanup
+}
+
+test_host_does_not_force_xwayland() {
+    _mock_env kdialog
+    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION=0 DISPLAY=":0" \
+        mcss_notify_user "T" "body" ) 2>/dev/null
+    _wait_for_env_file kdialog
+    local env_seen; env_seen="$(cat "$MOCKBIN/kdialog.env" 2>/dev/null)"
+    if [[ "$env_seen" == *"QT_QPA_PLATFORM="$'\n'* || "$env_seen" == *"QT_QPA_PLATFORM="$ ]]; then
+        _pass "T4.2 host context leaves the backend alone"
+    else
+        _fail "T4.2 host context leaves the backend alone" "got '${env_seen//$'\n'/ }'"
+    fi
+    _mock_cleanup
+}
+
 run_all_tests() {
     echo "=== preflight.sh / mcss_notify_user ==="
     test_no_notifier_returns_1
@@ -251,6 +299,8 @@ run_all_tests() {
     test_self_dismiss_kills_dialog
     test_no_self_dismiss_without_secs
     test_stderr_line_is_flattened
+    test_nested_forces_xwayland
+    test_host_does_not_force_xwayland
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then
