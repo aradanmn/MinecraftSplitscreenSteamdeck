@@ -59,8 +59,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODULES="${MCSS_MODULES:-$REPO_ROOT/modules}"
 PAD_PY="$REPO_ROOT/tests/lib/uhid_pad.py"
 WAIT_S="${MCSS_PROBE_WAIT_S:-10}"
-RESULTS="${MCSS_PROBE_RESULTS:-$HOME/uhid-probe-$(date +%Y%m%d-%H%M%S).txt}"
 WORKDIR="$REPO_ROOT/.workdir/uhid-probe"
+# Results live under .workdir/ too: Deck-side artifacts must stay inside the repo
+# so a single wipe clears them (#122). An earlier default dropped them in $HOME.
+RESULTS="${MCSS_PROBE_RESULTS:-$WORKDIR/results-$(date +%Y%m%d-%H%M%S).txt}"
 
 PROC_DEVICES="/proc/bus/input/devices"
 UNIQ_1="aa:bb:cc:00:00:01"
@@ -255,6 +257,20 @@ phase0_environment() {
         _verdict V1_UHID_ACCESS "SUDO" "needs passwordless sudo — rig must elevate"
     else
         _verdict V1_UHID_ACCESS "DENIED" "not openable as user and sudo -n failed"
+        # Actionable, not just a verdict: /dev/uinput already carries uaccess on
+        # this hardware and uhid does not, so the fix is one udev rule granting
+        # the seat's logged-in user the same ACL. No setuid helper, and no sudo
+        # in the rig's own path (an unattended rig cannot answer a password
+        # prompt). SteamOS's rootfs is immutable, hence the readonly dance.
+        _note ""
+        _note "To grant access (one-time, as root — then re-run this probe):"
+        _note "  sudo steamos-readonly disable"
+        _note "  printf 'KERNEL==\"uhid\", TAG+=\"uaccess\"\\n' \\"
+        _note "    | sudo tee /etc/udev/rules.d/99-mcss-uhid.rules"
+        _note "  sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uhid"
+        _note "  sudo steamos-readonly enable"
+        _note ""
+        _note "Treat it as re-installable: a SteamOS update may clear it."
         return 1
     fi
     return 0
