@@ -82,6 +82,7 @@ jobs:
             [tests/test_proxy_launch.sh]=7
             [tests/test_uhid_pad.sh]=18
             [tests/test_preflight.sh]=12
+            [tests/test_version_stamp.sh]=15
           )
 
           for suite in "${!BASELINE[@]}"; do

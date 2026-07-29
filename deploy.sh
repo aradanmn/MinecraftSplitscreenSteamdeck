@@ -29,6 +29,7 @@
 # older deploy of IDENTICAL code is not reported as drift.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-29  #89: stamp format via modules/version_stamp.sh (one encoding)
 #   v1.3 2026-07-19  #89: documented as a deliberate duplicate reader (#38
 #                    PR2 adds controller_proxy.sh to the manifest)
 #   v1.2 2026-07-10  #45 PR3/#49: runtime_modules.list is the one manifest
@@ -60,6 +61,20 @@ MODULES_SRC_DIR="$SCRIPT_DIR/modules"
 MODULES_DST_DIR="$TARGET_DIR/modules"
 MANIFEST_SOURCE="$MODULES_SRC_DIR/runtime_modules.list"
 
+# #89: the ONLY module this script sources, and a deliberate narrow exception to
+# its otherwise standalone stance. It carries the launcher's stamp FORMAT, which
+# the installer writes and this script's --check has to un-write; duplicating it
+# is precisely the drift #89 was filed about. Hard error rather than a silent
+# fallback: a checkout missing this file is broken, and quietly skipping stamps
+# would make --check report phantom drift forever.
+_STAMP_LIB="$MODULES_SRC_DIR/version_stamp.sh"
+if [[ ! -f "$_STAMP_LIB" ]]; then
+    echo "deploy.sh: FATAL: $_STAMP_LIB missing — incomplete checkout" >&2
+    exit 1
+fi
+# shellcheck source=modules/version_stamp.sh
+source "$_STAMP_LIB"
+
 # --- Runtime module manifest (#49: the ONE manifest, shared with the launcher,
 # the installer entry, and launcher_setup.sh — no more parsing a bash array
 # out of launcher_setup with sed) ---
@@ -90,13 +105,7 @@ fi
 # BOTH sides for symmetry.
 # Inputs: $1 — path to the file to normalize
 # Outputs: stdout — the file's contents with stamps replaced by placeholders
-normalize_stamps() {
-    sed -E \
-        -e 's/^(MCSS_VERSION=).*/\1"__MCSS_VERSION__"/' \
-        -e 's/^(MCSS_COMMIT=).*/\1"__MCSS_COMMIT__"/' \
-        -e 's/^(MCSS_BUILD_DATE=).*/\1"__MCSS_BUILD_DATE__"/' \
-        "$1"
-}
+normalize_stamps() { mcss_stamp_normalize "$1"; }
 
 # files_differ: Check whether DST is missing or differs from SRC.
 # Inputs:
@@ -196,17 +205,11 @@ if [[ "$launcher_differs" == true || $changed -gt 0 || ! -f "$LAUNCHER_DST" ]]; 
     cp "$LAUNCHER_SRC" "$LAUNCHER_DST"
     chmod +x "$LAUNCHER_DST"
     changed=$((changed + 1))
-    _ver=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "dev")
-    _commit=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    if ! git -C "$SCRIPT_DIR" diff --quiet HEAD -- minecraftSplitscreen.sh modules/ 2>/dev/null; then
-        _commit="${_commit}+dirty"
-    fi
-    _date=$(date -Iseconds 2>/dev/null || date)
-    sed -i \
-        -e "s/__MCSS_VERSION__/${_ver}/" \
-        -e "s/__MCSS_COMMIT__/${_commit}/" \
-        -e "s|__MCSS_BUILD_DATE__|${_date}|" \
-        "$LAUNCHER_DST"
+    # #89: same format + resolution as the installer, via modules/version_stamp.sh.
+    # mark_dirty is ours alone — a dev checkout is routinely uncommitted.
+    IFS=$'\t' read -r _ver _commit _date \
+        < <(mcss_stamp_resolve "$SCRIPT_DIR" mark_dirty)
+    mcss_stamp_apply "$LAUNCHER_DST" "$_ver" "$_commit" "$_date" || true
     echo "  → minecraftSplitscreen.sh ($status; stamped version=${_ver} commit=${_commit})"
 else
     unchanged=$((unchanged + 1))
