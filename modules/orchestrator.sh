@@ -31,6 +31,8 @@ set -euo pipefail
 #                                            exit grace (ticks)
 #   ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S — readonly, docked startup
 #                                            controller acquisition window
+#   ORCHESTRATOR_NO_CONTROLLER_NOTICE_S   — readonly, #125 on-screen notice
+#                                            hold before the no-pad teardown
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   MCSS_MODE, MCSS_MAX_PLAYERS, MCSS_SCREEN_W/H,
@@ -42,6 +44,9 @@ set -euo pipefail
 #                                            controller_monitor.sh
 #   Mode AUTHORITY lives in SPLITSCREEN_STATE's `.mode`, written only by
 #   _set_mode; MCSS_MODE is its exported same-process mirror.
+#
+# Functions CONSUMED from other modules (all `type`-guarded — absent is survivable):
+#   mcss_notify_user — preflight.sh (#125 on-screen no-controller notice)
 #
 # Inputs:  SPLITSCREEN_FIFO messages (CONTROLLER_ADD/REMOVE, SLOT_DIED,
 #          DISPLAY_MODE_CHANGE), SPLITSCREEN_STATE JSON.
@@ -79,6 +84,12 @@ if [[ -z "${_ORCHESTRATOR_CONSTANTS_LOCKED:-}" ]]; then
     # Input creates its 28de:11ff virtual pads with a delay and staggered. If NONE appear in
     # this window, docked has no player (can't play on the built-in pad) → clean exit.
     readonly ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=5
+    # Fix #125: how long the "no controller" notice stays on screen before teardown.
+    # The abort itself is correct — docked with no external pad has no player — but it
+    # used to look like a crash: error sounds, black screen, back to the library, reason
+    # only in the debug log. We hold the session up just long enough to read the notice.
+    # Only paid when the launch is aborting anyway, and only when a notifier exists.
+    readonly ORCHESTRATOR_NO_CONTROLLER_NOTICE_S=8
     _ORCHESTRATOR_CONSTANTS_LOCKED=1   # process-local — NOT exported
 fi
 
@@ -788,6 +799,20 @@ docked_flow() {
     done
     if (( ${#_acquired[@]} == 0 )); then
         echo "[orchestrator] No controller within ${ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S}s — docked needs an external controller; exiting to Steam" >&2
+        # Fix #125: say so on screen. Without this the user sees a black screen and a
+        # bounce back to the library with no explanation — indistinguishable from a
+        # crash. Hold teardown only if a notice actually went up: with no notifier
+        # installed, an extra 8s of black screen would be strictly worse than exiting.
+        if type mcss_notify_user >/dev/null 2>&1 && \
+           mcss_notify_user "No controller detected" \
+"Splitscreen needs at least one external controller when docked.
+
+Connect a controller (Bluetooth or USB), then launch again.
+
+The Steam Deck's built-in controls can't be used as a player." \
+                "$ORCHESTRATOR_NO_CONTROLLER_NOTICE_S"; then
+            sleep "$ORCHESTRATOR_NO_CONTROLLER_NOTICE_S"
+        fi
         cleanup
         return 0
     fi
