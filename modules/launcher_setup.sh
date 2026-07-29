@@ -36,6 +36,7 @@
 #          under $TARGET_DIR; version-stamp sed substitution on the launcher.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-29  #89: stamping moves to modules/version_stamp.sh
 #   v1.5 2026-07-19  #89: manifest parse -> shared read_runtime_manifest
 #   v1.4 2026-07-17  Fix #90: delete vestigial Phase-A/JDK/bwrap shims
 #   v1.3 2026-07-17  Fix #87: canonical heap-default home + paired guard
@@ -188,17 +189,16 @@ setup_splitscreen_launcher_script() {
     # Stamp build provenance into the deployed copy (version / commit / date).
     # The launcher carries __MCSS_*__ placeholders; replace them here. A failure
     # is non-fatal — the launcher falls back to dev/unknown if left un-stamped.
+    # #89: format owned by modules/version_stamp.sh — deploy.sh applies the same
+    # one. No mark_dirty here: the installer stamps a freshly fetched tree.
     local _ver _commit _date
-    _ver=$(cat "${SCRIPT_DIR:-}/VERSION" 2>/dev/null || echo "dev")
-    _commit=$(git -C "${SCRIPT_DIR:-.}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    _date=$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo "unknown")
-    sed -i \
-        -e "s/__MCSS_VERSION__/${_ver}/" \
-        -e "s/__MCSS_COMMIT__/${_commit}/" \
-        -e "s|__MCSS_BUILD_DATE__|${_date}|" \
-        "$launcher_script" 2>/dev/null \
-        && print_info "Stamped launcher: version=${_ver} commit=${_commit}" \
-        || print_warning "Could not stamp launcher version (will report as dev/unknown)"
+    IFS=$'\t' read -r _ver _commit _date \
+        < <(mcss_stamp_resolve "${SCRIPT_DIR:-.}")
+    if mcss_stamp_apply "$launcher_script" "$_ver" "$_commit" "$_date"; then
+        print_info "Stamped launcher: version=${_ver} commit=${_commit}"
+    else
+        print_warning "Could not stamp launcher version (will report as dev/unknown)"
+    fi
 
     print_success "Splitscreen launcher script installed: $launcher_script"
     return 0
