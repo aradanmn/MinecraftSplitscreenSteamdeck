@@ -4,7 +4,7 @@ Play Minecraft **splitscreen with up to 4 people on one screen** — each player
 
 It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone a controller, the screen splits between you, and you all play together on one device. No second computer needed.
 
-> ℹ️ **Personal-use project (v1).** For people who **already own Minecraft** (see [Requirements](#requirements)). The Steam Deck is the supported device; other Linux + KDE devices are experimental.
+> ℹ️ **Personal-use project (v1.2).** For people who **already own Minecraft** (see [Requirements](#requirements)). The Steam Deck is the supported device; other Linux + KDE devices are experimental.
 
 ---
 
@@ -13,6 +13,8 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 - Splits the screen so **1 to 4 players** can play Minecraft at once on a single Steam Deck.
 - Each player uses **their own controller** — your section of the screen is yours.
 - **Join/leave on the fly:** connect another controller and a new player's view appears; disconnect it and the screen re-tiles for whoever's left.
+- **Dead battery doesn't end your game:** reconnect the same controller and you pick up where you left off — same world, same screen, no relaunch.
+- **Frame rate matched to your screen:** each player's game caps to the display's actual refresh rate instead of rendering frames nobody sees, which is what keeps four games at once comfortable.
 - **Sets itself up:** installs Minecraft (via PolyMC), Java, the controller mod, and the behind-the-scenes pieces it needs.
 
 ---
@@ -36,8 +38,10 @@ It's couch co-op for Minecraft: dock your Deck to a TV or monitor, hand everyone
 ### If a controller disconnects mid-game (dead battery, idle power-off)
 
 - That player's game **keeps running** — a dropped controller never tears your session down, so nobody loses the world.
-- To get back in, **reconnect the controller**; that player's screen relaunches and rejoins.
-- ⚠️ **If that player is *hosting* a LAN world** (rather than everyone joining a server), reconnecting relaunches their game, which **ends the LAN world for everyone**. So **whoever hosts a LAN world should use a wired controller** (or one that won't sleep/die mid-session). Players connecting to a Minecraft server are unaffected — they just rejoin. *(Seamless reconnect that keeps a host's world alive is planned for a later version.)*
+- To get back in, **reconnect the same controller.** It reclaims its own screen and you carry on: the world stays loaded, nothing relaunches, and the other players never notice. This works because each player's game is bound to a stand-in controller that stays put while the real pad comes and goes.
+- Because nothing relaunches, **a player hosting a LAN world can drop and come back without ending the world** for everyone else. (Earlier versions relaunched on reconnect and needed a wired pad for the host — that caveat is gone as of v1.2.)
+- ➖ **Reconnect a *different* controller** and it's treated as a new arrival: it takes over a screen that was just freed, or starts a new player if there's room. Substituting a different *kind* of pad (say an Xbox pad for a PS4 one) is the rough edge — coming back with the pad you left with is the smooth path.
+- ⚠️ **If two or more controllers drop at the same time** and then reconnect, they can land on each other's screens — one player may end up unable to control their game. Restart that player's instance to sort it out. Reconnecting one pad at a time (the usual case) is unaffected.
 
 ---
 
@@ -61,6 +65,8 @@ chmod +x install-minecraft-splitscreen.sh
 
 The installer downloads Minecraft and the splitscreen pieces and adds a **"Minecraft Splitscreen"** shortcut to your Steam library. It asks a couple of simple yes/no questions as it goes, and stops with a clear message if your device is missing something it needs.
 
+Part way through it builds a small input helper (`evsieve` — the piece that keeps your controller's slot alive across a disconnect) in a container, which takes a couple of minutes and prints progress while it works.
+
 ---
 
 ## How to play
@@ -78,16 +84,21 @@ The installer downloads Minecraft and the splitscreen pieces and adds a **"Minec
 
 ## Current status
 
-v1. What works on the Deck, validated on real hardware:
+v1.2. What works on the Deck, validated on real hardware:
 
 - ✅ Launching from the Steam shortcut into the splitscreen environment.
 - ✅ Window tiling for 1–4 players (full / half / quad) that re-flows as players join and leave — confirmed scaling 1→4.
 - ✅ Per-player controller assignment — each external pad maps to its own player and only that player; the Deck's built-in controls and the Steam Controller are excluded by design. Confirmed with 4 controllers.
+- ✅ **Seamless reconnect** — a controller that dies or powers off mid-game reclaims its own screen when it comes back, with the world still loaded and nothing relaunched. Confirmed in a live 4-player game.
+- ✅ Per-player frame rate capped to the live display refresh, which is what makes four simultaneous games sit comfortably inside the Deck's budget.
 - ✅ Single-player handheld (undocked) mode.
 
 Known limitations:
 
 - 🚧 On exit, you may need to pick **Abort Game** to get back to the Steam library. The session itself tears down cleanly — this is gamescope's game-end overlay not always clearing on its own.
+- 🚧 Two or more controllers dropping *at the same time* can swap screens on reconnect ([#151](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/151)) — restart the affected player's instance.
+- 🚧 Launching docked with **no external controller connected** exits without saying why ([#125](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/125)). Connect a pad before launching.
+- 🚧 Undocking mid-session moves the game to the Deck's screen, but re-docking does not move it back ([#134](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/134)). Dock before you launch and stay docked.
 
 If you hit a rough edge, check back — fixes land in point releases.
 
@@ -107,6 +118,11 @@ pulling or editing, sync the deployed tree before testing:
 `tests/hardware/run_all.sh` runs the `--check` automatically and refuses to
 start against a stale tree (`HW_SKIP_FRESHNESS=1` overrides, e.g. when stage0b
 is about to run the full installer anyway).
+
+**Escape hatch.** Seamless reconnect is on by default (`MCSS_CONTROLLER_PROXY=1`).
+Setting `MCSS_CONTROLLER_PROXY=0` reverts to binding each player's physical pad
+directly — no reconnect, a dropped controller stays dropped until relaunch — which
+is useful for isolating whether a controller problem comes from the proxy layer.
 
 ---
 
