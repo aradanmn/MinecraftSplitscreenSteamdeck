@@ -13,7 +13,7 @@ set -uo pipefail
 # Run: bash tests/test_preflight.sh
 # =============================================================================
 
-readonly TEST_TOTAL=14
+readonly TEST_TOTAL=16
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -256,19 +256,41 @@ _wait_for_env_file() {
     done
 }
 
-test_nested_forces_xwayland() {
+# _assert_nested_forces: run the nested branch with ONE real MCSS_NESTED_SESSION
+# value and assert the XWayland env reached the dialog.
+#
+# Parametrised over the values production actually sets, which is the whole point:
+# the first draft of this test used MCSS_NESTED_SESSION=1 — an alias production
+# never sets — so it passed green while the shipped predicate (`== "1"`) never
+# matched the real value "plasma". Testing a value the code never sees certifies
+# nothing (PRINCIPLES #4).
+_assert_nested_forces() {
+    local label="$1" value="$2"
     _mock_env kdialog
-    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION=1 DISPLAY=":99" \
+    ( PATH="$MOCKBIN" MCSS_NESTED_SESSION="$value" DISPLAY=":99" \
         mcss_notify_user "T" "body" ) 2>/dev/null
     _wait_for_env_file kdialog
     local env_seen; env_seen="$(cat "$MOCKBIN/kdialog.env" 2>/dev/null)"
     if [[ "$env_seen" == *"QT_QPA_PLATFORM=xcb"* && "$env_seen" == *"DISPLAY=:99"* ]]; then
-        _pass "T4.1 nested session forces QT_QPA_PLATFORM=xcb on \$DISPLAY"
+        _pass "$label"
     else
-        _fail "T4.1 nested session forces QT_QPA_PLATFORM=xcb on \$DISPLAY" \
-            "got '${env_seen//$'\n'/ }'"
+        _fail "$label" "got '${env_seen//$'\n'/ }'"
     fi
     _mock_cleanup
+}
+
+# "plasma" is THE production value (minecraftSplitscreen.sh:264).
+test_nested_plasma_forces_xwayland() {
+    _assert_nested_forces \
+        "T4.1 MCSS_NESTED_SESSION=plasma forces xcb on \$DISPLAY" "plasma"
+}
+test_nested_kwin_forces_xwayland() {
+    _assert_nested_forces \
+        "T4.1b MCSS_NESTED_SESSION=kwin forces xcb on \$DISPLAY" "kwin"
+}
+test_nested_alias_1_forces_xwayland() {
+    _assert_nested_forces \
+        "T4.1c MCSS_NESTED_SESSION=1 (alias) forces xcb on \$DISPLAY" "1"
 }
 
 test_host_does_not_force_xwayland() {
@@ -299,7 +321,9 @@ run_all_tests() {
     test_self_dismiss_kills_dialog
     test_no_self_dismiss_without_secs
     test_stderr_line_is_flattened
-    test_nested_forces_xwayland
+    test_nested_plasma_forces_xwayland
+    test_nested_kwin_forces_xwayland
+    test_nested_alias_1_forces_xwayland
     test_host_does_not_force_xwayland
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
