@@ -28,7 +28,8 @@
 #
 # Version history (one line per version; details live in git; max 6 lines):
 #   v1.7 2026-07-30  #91: lwjgl_management.sh -> version_management.sh;
-#                    steam_integration+desktop_launcher -> system_integration
+#                    steam_integration+desktop_launcher -> system_integration;
+#                    launcher_setup split -> +runtime_deploy.sh
 #   v1.6 2026-07-29  #89: version_stamp.sh added to INSTALLER_MODULE_FILES
 #   v1.5 2026-07-19  #89: read_runtime_manifest documented as the canonical
 #                    reader (launcher_setup.sh now reuses it; #38 PR2)
@@ -123,6 +124,7 @@ readonly INSTALLER_MODULE_FILES=(
     "java_management.sh"
     "evsieve_management.sh"
     "launcher_setup.sh"
+    "runtime_deploy.sh"
     "version_management.sh"
     "mod_management.sh"
     "instance_creation.sh"
@@ -310,6 +312,7 @@ source "$MODULES_DIR/preflight.sh"
 source "$MODULES_DIR/java_management.sh"
 source "$MODULES_DIR/evsieve_management.sh"
 source "$MODULES_DIR/launcher_setup.sh"
+source "$MODULES_DIR/runtime_deploy.sh"
 source "$MODULES_DIR/version_management.sh"
 source "$MODULES_DIR/mod_management.sh"
 source "$MODULES_DIR/instance_creation.sh"

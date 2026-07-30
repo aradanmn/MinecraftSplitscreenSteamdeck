@@ -39,6 +39,7 @@ INSTALLER_MODULES=(
     java_management.sh
     evsieve_management.sh
     launcher_setup.sh
+    runtime_deploy.sh
     version_management.sh
     mod_management.sh
     instance_creation.sh
