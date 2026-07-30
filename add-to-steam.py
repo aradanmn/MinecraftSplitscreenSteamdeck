@@ -58,13 +58,25 @@ print(f"📱 Detected launcher: {LAUNCHER_NAME}")
 print(f"🚀 Launch script: {EXE}")
 print(f"📁 Working directory: {STARTDIR}")
 
-# SteamGridDB artwork URLs for custom grid images, hero, logo, and icon
+# SteamGridDB artwork URLs for custom grid images, hero, logo, and icon.
+#
+# #91: the ICON url is owned by modules/system_integration.sh
+# (MCSS_STEAMGRIDDB_ICON_URL) and handed over on the env channel, the same way
+# MCSS_TARGET_DIR is (#51/D16) — the desktop-entry half of that module needs the
+# very same icon, and it used to be hardcoded in both places with no
+# cross-reference. The literal below is the standalone-run fallback ONLY; the
+# installer always supplies the env var. PAIRED with system_integration.sh.
+_ICON_URL = os.environ.get(
+    "MCSS_STEAMGRIDDB_ICON_URL",
+    "https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico",
+)
+
 STEAMGRIDDB_IMAGES = {
     "p": "https://cdn2.steamgriddb.com/grid/a73027901f88055aaa0fd1a9e25d36c7.png",  # Portrait grid
     "": "https://cdn2.steamgriddb.com/grid/e353b610e9ce20f963b4cca5da565605.jpg",      # Main grid
     "_hero": "https://cdn2.steamgriddb.com/hero/ecd812da02543c0269cfc2c56ab3c3c0.png", # Hero image
     "_logo": "https://cdn2.steamgriddb.com/logo/90915208c601cc8c86ad01250ee90c12.png", # Logo
-    "_icon": "https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"   # Icon
+    "_icon": _ICON_URL,                                                                    # Icon (see above)
 }
 
 # --- Locate Steam shortcuts file for the current user ---

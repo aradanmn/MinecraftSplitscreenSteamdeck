@@ -27,7 +27,8 @@
 # not an oversight.
 #
 # Version history (one line per version; details live in git; max 6 lines):
-#   v1.7 2026-07-30  #91: lwjgl_management.sh folded into version_management.sh
+#   v1.7 2026-07-30  #91: lwjgl_management.sh -> version_management.sh;
+#                    steam_integration+desktop_launcher -> system_integration
 #   v1.6 2026-07-29  #89: version_stamp.sh added to INSTALLER_MODULE_FILES
 #   v1.5 2026-07-19  #89: read_runtime_manifest documented as the canonical
 #                    reader (launcher_setup.sh now reuses it; #38 PR2)
@@ -125,8 +126,7 @@ readonly INSTALLER_MODULE_FILES=(
     "version_management.sh"
     "mod_management.sh"
     "instance_creation.sh"
-    "steam_integration.sh"
-    "desktop_launcher.sh"
+    "system_integration.sh"
     "main_workflow.sh"
 )
 
@@ -313,8 +313,7 @@ source "$MODULES_DIR/launcher_setup.sh"
 source "$MODULES_DIR/version_management.sh"
 source "$MODULES_DIR/mod_management.sh"
 source "$MODULES_DIR/instance_creation.sh"
-source "$MODULES_DIR/steam_integration.sh"
-source "$MODULES_DIR/desktop_launcher.sh"
+source "$MODULES_DIR/system_integration.sh"
 source "$MODULES_DIR/main_workflow.sh"
 
 # =============================================================================

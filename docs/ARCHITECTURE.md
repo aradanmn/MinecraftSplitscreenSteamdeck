@@ -16,7 +16,7 @@ home*, not missing homes. The homes exist; this file makes them findable.
 
 | Product | Entry | Modules | Constants root |
 |---|---|---|---|
-| Installer (runs once) | `install-minecraft-splitscreen.sh` → `main()` in `main_workflow.sh` | `utilities, version_stamp, preflight*, java_management, launcher_setup, version_management, mod_management, instance_creation, steam_integration, desktop_launcher, main_workflow` | installer entry constants block (`install-minecraft-splitscreen.sh` ~:85–:296) |
+| Installer (runs once) | `install-minecraft-splitscreen.sh` → `main()` in `main_workflow.sh` | `utilities, version_stamp, preflight*, java_management, launcher_setup, version_management, mod_management, instance_creation, system_integration, main_workflow` | installer entry constants block (`install-minecraft-splitscreen.sh` ~:85–:296) |
 | Runtime (every launch) | `minecraftSplitscreen.sh` → `main()` in `orchestrator.sh` | exactly what `modules/runtime_modules.list` says | `modules/runtime_context.sh` |
 
 `preflight.sh` is deliberately dual-use (in the runtime manifest AND sourced by
@@ -62,7 +62,7 @@ knowing about slots).
 | Mod platform APIs (Modrinth/CurseForge) | `mod_management.sh` | version-match policy lives here ONCE (`match_modrinth_version`/`match_curseforge_version`/`_version_fallback_allowed`, Fix #88); token *handling* (fetch+decrypt) lives in utilities.sh instead — see the Network transport row; mod_management.sh only consumes `get_curseforge_api_token`. version_management.sh calls both, doesn't re-implement. |
 | Launcher build-stamp format (apply/normalize/resolve) | `version_stamp.sh` | #89: the ONE encoding. Installer module (not runtime) — install-time only. `deploy.sh` sources it from the checkout, its single deliberate module dependency, because the installer writes the stamp and `--check` must un-write it |
 | Tool-version resolution (MC→Fabric/LWJGL) | `version_management.sh` | #91: `lwjgl_management.sh` folded in. Java-major stays in `java_management.sh` (it owns JDK discovery too) — its yearly-scheme regex and the LWJGL table cross-reference each other and must stay in step |
-| Steam/desktop registration | `steam_integration.sh`/`desktop_launcher.sh` (→ one module per #91) | Python gets values via env (`MCSS_*`), never re-derives paths |
+| Steam/desktop registration | `system_integration.sh` | #91: the two merged. Owns `MCSS_STEAMGRIDDB_ICON_URL`, the one encoding of the icon URL — `add-to-steam.py` receives it via env (`MCSS_*`) and never re-derives paths or artwork URLs |
 
 **Name collisions:** `main()` and `cleanup()` exist in both products (scope-safe,
 never co-sourced). Grandfathered; do not add new cross-product collisions — every
