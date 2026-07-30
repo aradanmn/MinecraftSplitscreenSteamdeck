@@ -78,7 +78,7 @@ _mc_version_to_java_major() {
     if [[ "$mc_version" =~ ^[2-9][0-9]+\. ]]; then
         # 2026 yearly scheme (26.x+): ships against Java 25 (verified: MC 26.1.2
         # installs jdk-25 via the manifest path). Same scheme test as
-        # lwjgl_management.sh:get_lwjgl_version_by_mapping.
+        # version_management.sh:get_lwjgl_version_by_mapping (#91).
         echo "25"
     elif [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
         echo "21"  # 1.21+ requires Java 21

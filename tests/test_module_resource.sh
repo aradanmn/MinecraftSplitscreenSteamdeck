@@ -40,7 +40,6 @@ INSTALLER_MODULES=(
     evsieve_management.sh
     launcher_setup.sh
     version_management.sh
-    lwjgl_management.sh
     mod_management.sh
     instance_creation.sh
     steam_integration.sh
