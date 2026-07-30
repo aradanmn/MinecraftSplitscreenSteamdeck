@@ -33,7 +33,7 @@ test_t7_1() {
     mkdir -p "$tmpdir/modules"
     for mod in utilities.sh java_management.sh launcher_setup.sh version_management.sh \
                 mod_management.sh instance_creation.sh \
-                steam_integration.sh desktop_launcher.sh main_workflow.sh \
+                system_integration.sh main_workflow.sh \
                 dock_detection.sh controller_monitor.sh window_manager.sh \
                 instance_lifecycle.sh watchdog.sh; do
         # Stub: define a no-op main() so a runaway call would be detectable
@@ -65,7 +65,7 @@ test_t7_1() {
 }
 
 # =============================================================================
-# T7.2 — MODULE_FILES contains all 23 modules (11 installer + 12 runtime)
+# T7.2 — MODULE_FILES contains all 22 modules (10 installer + 12 runtime)
 # NOTE: this count has drifted upward over time as runtime/installer modules
 # were added (preflight/kwin_positioner/orchestrator/dex/runtime_context,
 # evsieve_management #38 D4/PR1, controller_proxy.sh #38 M1/PR2, slot_manager.sh
@@ -76,8 +76,8 @@ test_t7_1() {
 #
 # It HAD gone stale: this asserted 22 while main carried 23, so the canary was
 # failing and being ignored (the suite is informational in CI). Corrected in #89
-# (+version_stamp.sh) and again in #91 (-lwjgl_management.sh, folded into
-# version_management.sh) so it can catch the next one.
+# (+version_stamp.sh) and again in #91 (-lwjgl_management.sh -> version_management.sh,
+# -steam_integration.sh/-desktop_launcher.sh -> +system_integration.sh) so it can catch the next one.
 # =============================================================================
 test_t7_2() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
@@ -89,10 +89,10 @@ test_t7_2() {
     runtime_count=$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/modules/runtime_modules.list" || true)
     local total=$(( installer_count + runtime_count ))
 
-    if (( total == 23 )); then
-        _pass "T7.2 — MODULE_FILES has 23 entries (11 installer + 12 runtime)"
+    if (( total == 22 )); then
+        _pass "T7.2 — MODULE_FILES has 22 entries (10 installer + 12 runtime)"
     else
-        local msg="expected 23 total entries (INSTALLER_MODULE_FILES +"
+        local msg="expected 22 total entries (INSTALLER_MODULE_FILES +"
         msg+=" runtime_modules.list), found ${total}"
         msg+=" (${installer_count} + ${runtime_count})"
         _fail "T7.2" "$msg"
@@ -426,11 +426,13 @@ test_t7_12() {
 # =============================================================================
 # T7.13 — create_desktop_launcher() is gated behind
 # MCSS_ENABLE_DESKTOP_LAUNCHER (default off, Desktop Mode unsupported as of
-# v1.2) in main_workflow.sh, and the module itself is NOT deleted.
+# v1.2) in main_workflow.sh, and the function itself is NOT deleted.
+# #91: it now lives in system_integration.sh (merged with steam_integration.sh);
+# the assertion is about the FUNCTION surviving, not about which file holds it.
 # =============================================================================
 test_t7_13() {
     local workflow="$REPO_ROOT/modules/main_workflow.sh"
-    local desktop_mod="$REPO_ROOT/modules/desktop_launcher.sh"
+    local desktop_mod="$REPO_ROOT/modules/system_integration.sh"
 
     local has_gate=0 has_skip_msg=0 has_function=0
     if grep -Eq 'MCSS_ENABLE_DESKTOP_LAUNCHER:-0.*==.*"1"' "$workflow"; then

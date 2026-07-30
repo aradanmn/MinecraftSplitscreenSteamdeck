@@ -1,36 +1,52 @@
 #!/bin/bash
 # =============================================================================
-# STEAM INTEGRATION MODULE
+# SYSTEM INTEGRATION MODULE
 # =============================================================================
-# Adds the Minecraft Splitscreen launcher to the user's Steam library as a
-# non-Steam shortcut, with SteamGridDB artwork, so it's reachable from Steam
-# Big Picture / Game Mode with controller input and Steam's own UI.
+# Makes the splitscreen launcher reachable from the places a user actually
+# looks: the Steam library (non-Steam shortcut, so Game Mode / Big Picture can
+# launch it with controller input) and the desktop environment (a
+# freedesktop.org .desktop entry for menus and search).
+#
+# #91: merged from steam_integration.sh + desktop_launcher.sh. Both were single
+# interactive y/N functions with one caller each, both ran at the same point in
+# the install, and both fetched the SAME SteamGridDB icon — which was hardcoded
+# in desktop_launcher.sh AND add-to-steam.py. One module, one icon constant.
 #
 # Public API:
 #   setup_steam_integration() — prompts the user, then shuts down Steam
 #     (only if running), edits shortcuts.vdf via add-to-steam.py, downloads
 #     artwork, and leaves Steam stopped for the user to restart
+#   create_desktop_launcher() — prompts the user, then writes the .desktop
+#     file to both the desktop and the applications directory
+#
+# Globals PROVIDED (set here, read elsewhere):
+#   MCSS_STEAMGRIDDB_ICON_URL — readonly; the ONE encoding of the icon URL.
+#                               Read by create_desktop_launcher and exported
+#                               to add-to-steam.py on the env channel
 #
 # Globals CONSUMED (set elsewhere, read here):
-#   TARGET_DIR         — installer entry
-#   MCSS_REPO_RAW_URL  — installer entry; add-to-steam.py download base
-#   MCSS_TARGET_DIR    — set here for add-to-steam.py's own root probe (#45/
-#                         D16 residual): the script defaults to hardcoded
-#                         $HOME probes without it
+#   TARGET_DIR           — installer entry; icon storage + launcher path
+#   MCSS_INSTANCE_PREFIX — installer entry; PolyMC instance-icon fallback path
+#   MCSS_REPO_RAW_URL    — installer entry; add-to-steam.py download base
+#   SCRIPT_DIR           — installer entry; local add-to-steam.py copy
+#   MCSS_TARGET_DIR      — set here for add-to-steam.py's own root probe (#45/
+#                           D16 residual): the script defaults to hardcoded
+#                           $HOME probes without it
 #
 # Inputs:  Steam userdata/shortcuts.vdf, add-to-steam.py (local repo copy or
-#          downloaded — out of scope for this module, only invoked here),
-#          SteamGridDB artwork.
-# Outputs: modifies shortcuts.vdf, downloads artwork, leaves Steam stopped.
+#          downloaded), SteamGridDB artwork, PolyMC instance icon (fallback).
+# Outputs: modifies shortcuts.vdf, downloads artwork, leaves Steam stopped;
+#          writes ~/Desktop/MinecraftSplitscreen.desktop and
+#          ~/.local/share/applications/MinecraftSplitscreen.desktop.
 #
 # Version history (one line per version; details live in git; max 6 lines):
-#   v1.3 2026-07-17  Fix #86: named shutdown/poll-wait constants
-#   v1.2 2026-07-15  Fix #51/D16 residual: pass TARGET_DIR to add-to-steam.py
-#   v1.1 2026-07-10  Fix #45/D15: MCSS_REPO_RAW_URL for script download
-#   v1.0 2025-06-27  Initial extraction; #56 no auto-restart of Steam
+#   v1.0 2026-07-30  #91: merged steam_integration.sh + desktop_launcher.sh;
+#                    SteamGridDB icon URL hoisted to one constant
 # =============================================================================
 
 # --- Module-level constants ---
+# Guard name kept as _STEAM_INTEGRATION_CONSTANTS_LOCKED (#91): renaming it would
+# break re-sourcing for anything that already set it in-process.
 # Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED):
 # modules are re-sourceable within one process, so an unguarded readonly
 # would abort on the second source.
@@ -45,6 +61,12 @@ if [[ -z "${_STEAM_INTEGRATION_CONSTANTS_LOCKED:-}" ]]; then
     # Max poll iterations (~10s at the interval above) before giving up and
     # proceeding anyway.
     readonly STEAM_INTEGRATION_SHUTDOWN_MAX_ATTEMPTS=10
+    # #91: the ONE encoding of the SteamGridDB icon URL. It was hardcoded in
+    # desktop_launcher.sh:82 AND add-to-steam.py:67 — two files, two languages,
+    # no cross-reference. create_desktop_launcher reads it directly;
+    # add-to-steam.py receives it on the env channel (same pattern as
+    # MCSS_TARGET_DIR, #51/D16).
+    readonly MCSS_STEAMGRIDDB_ICON_URL="https://cdn2.steamgriddb.com/icon/add7a048049671970976f3e18f21ade3.ico"
     _STEAM_INTEGRATION_CONSTANTS_LOCKED=1   # process-local — NOT exported
 fi
 
@@ -240,7 +262,11 @@ setup_steam_integration() {
                 # override existed but no caller passed it — a relocated
                 # TARGET_DIR install always fell through to the script's
                 # hardcoded $HOME probes. Hand it the real root.
+                # #91: MCSS_STEAMGRIDDB_ICON_URL joins MCSS_TARGET_DIR on the
+                # same env channel — the icon URL was hardcoded in BOTH this
+                # module's desktop half and add-to-steam.py.
                 if MCSS_TARGET_DIR="$TARGET_DIR" \
+                    MCSS_STEAMGRIDDB_ICON_URL="$MCSS_STEAMGRIDDB_ICON_URL" \
                     python3 "$steam_script_temp" 2>/dev/null; then
                     print_success "✅ Minecraft Splitscreen successfully added to Steam library"
                     print_info "   → Custom artwork downloaded and applied"
@@ -298,5 +324,221 @@ setup_steam_integration() {
         print_info "⏭️  Skipping Steam integration"
         print_info "   → You can still launch Minecraft Splitscreen manually or from desktop launcher"
         print_info "   → To add to Steam later, run this installer again or use the add-to-steam.py script"
+    fi
+}
+
+# create_desktop_launcher: Write a .desktop entry for system integration.
+# ICON HIERARCHY: SteamGridDB custom icon (downloaded) > PolyMC instance icon
+# (fallback) > generic system executable icon (ultimate fallback).
+# FILE LOCATIONS: desktop shortcut at ~/Desktop/MinecraftSplitscreen.desktop;
+# application-menu entry at
+# ~/.local/share/applications/MinecraftSplitscreen.desktop.
+# Inputs:
+#   Globals: TARGET_DIR, MCSS_INSTANCE_PREFIX (read)
+# Outputs:
+#   side effects — .desktop files written (see FILE LOCATIONS above),
+#     icon downloaded, desktop database refreshed if the tool is present
+create_desktop_launcher() {
+    print_header "🖥️ DESKTOP LAUNCHER SETUP"
+    
+    # =============================================================================
+    # DESKTOP LAUNCHER USER PROMPT
+    # =============================================================================
+    
+    # USER PREFERENCE GATHERING: Ask if they want desktop integration
+    # Desktop launchers provide convenient access without terminal or Steam
+    # Particularly useful for users who don't use Steam or prefer native desktop integration
+    print_info "Desktop launcher creates a native shortcut for your desktop environment."
+    print_info "Benefits: Desktop shortcut, application menu entry, search integration"
+    echo ""
+    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop
+    if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
+        
+        # =============================================================================
+        # DESKTOP FILE CONFIGURATION AND PATHS
+        # =============================================================================
+        
+        # DESKTOP FILE SETUP: Define paths and filenames following Linux standards
+        # .desktop files follow the freedesktop.org Desktop Entry Specification
+        # Standard locations ensure compatibility across all Linux desktop environments
+        local desktop_file_name="MinecraftSplitscreen.desktop"
+        local desktop_file_path="$HOME/Desktop/$desktop_file_name"  # User desktop shortcut
+        local app_dir="$HOME/.local/share/applications"              # System integration directory
+        
+        # APPLICATIONS DIRECTORY CREATION: Ensure the applications directory exists
+        # This directory is where desktop environments look for user-installed applications
+        mkdir -p "$app_dir"
+        print_info "Desktop file will be created at: $desktop_file_path"
+        print_info "Application menu entry will be registered in: $app_dir"
+        
+        # =============================================================================
+        # ICON ACQUISITION AND CONFIGURATION
+        # =============================================================================
+        
+        # CUSTOM ICON DOWNLOAD: Get professional SteamGridDB icon for consistent branding
+        # This provides the same visual identity as the Steam integration
+        # SteamGridDB provides high-quality gaming artwork used by many Steam applications
+        # Stored under TARGET_DIR (#41 home hygiene): the old $PWD dir dropped an icon
+        # folder wherever the installer happened to be run from, and the .desktop
+        # Icon= then pointed at that transient location.
+        local icon_dir="$TARGET_DIR/minecraft-splitscreen-icons"
+        local icon_path="$icon_dir/minecraft-splitscreen-steamgriddb.ico"
+        # #91: one encoding, shared with add-to-steam.py via the env var below.
+        local icon_url="$MCSS_STEAMGRIDDB_ICON_URL"
+        
+        print_progress "Configuring desktop launcher icon..."
+        mkdir -p "$icon_dir"  # Ensure icon storage directory exists
+        
+        # ICON DOWNLOAD: Fetch SteamGridDB icon if not already present
+        # This provides a professional-looking icon that matches Steam integration
+        if [[ ! -f "$icon_path" ]]; then
+            print_progress "Downloading custom icon from SteamGridDB..."
+            # Fix #51 (D14): fetch_url replaces the bare wget call.
+            if fetch_url "$icon_url" "$icon_path" >/dev/null 2>&1; then
+                print_success "✅ Custom icon downloaded successfully"
+            else
+                print_warning "⚠️  Custom icon download failed - will use fallback icons"
+            fi
+        else
+            print_info "   → Custom icon already present"
+        fi
+        
+        # =============================================================================
+        # ICON SELECTION WITH FALLBACK HIERARCHY
+        # =============================================================================
+        
+        # ICON SELECTION: Determine the best available icon with intelligent fallbacks
+        # Priority system ensures we always have a functional icon, preferring custom over generic
+        local icon_desktop
+        if [[ -f "$icon_path" ]]; then
+            icon_desktop="$icon_path"  # Best: Custom SteamGridDB icon
+            print_info "   → Using custom SteamGridDB icon for consistent branding"
+        elif [[ -f "$TARGET_DIR/instances/${MCSS_INSTANCE_PREFIX}1/icon.png" ]]; then
+            icon_desktop="$TARGET_DIR/instances/${MCSS_INSTANCE_PREFIX}1/icon.png"  # Acceptable: PolyMC instance icon
+            print_info "   → Using PolyMC instance icon"
+        else
+            icon_desktop="application-x-executable"  # Fallback: Generic system executable icon
+            print_info "   → Using system default executable icon"
+        fi
+        
+        # =============================================================================
+        # LAUNCHER SCRIPT PATH CONFIGURATION
+        # =============================================================================
+        
+        # LAUNCHER SCRIPT PATH: Always point to PolyMC splitscreen script.
+        local launcher_script_path
+        local launcher_comment
+        launcher_script_path="$TARGET_DIR/minecraftSplitscreen.sh"
+        # #42: splitscreen requires Steam Game Mode (gamescope) — a bare invocation from
+        # this Desktop-Mode shortcut is refused by the launcher's runtime_context guard
+        # (see #43) rather than crashing (#40) or spawning a runaway. Say so up front.
+        launcher_comment="Splitscreen setup only (requires Steam Game Mode to actually play — launch 'Minecraft Splitscreen' from your Steam library)"
+        print_info "   → Desktop launcher configured for PolyMC"
+        
+        # =============================================================================
+        # DESKTOP ENTRY FILE GENERATION
+        # =============================================================================
+        
+        # DESKTOP FILE CREATION: Generate .desktop file following freedesktop.org specification
+        # This creates a proper desktop entry that integrates with all Linux desktop environments
+        # The file contains metadata, execution parameters, and display information
+        print_progress "Generating desktop entry file..."
+        
+        # Desktop Entry Specification fields:
+        # - Type=Application: Indicates this is an application launcher
+        # - Name: Display name in menus and desktop
+        # - Comment: Tooltip/description text
+        # - Exec: Command to execute when launched
+        # - Icon: Icon file path or theme icon name
+        # - Terminal: Whether to run in terminal (false for GUI applications)
+        # - Categories: Menu categories for proper organization
+        
+        cat > "$desktop_file_path" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Minecraft Splitscreen
+Comment=$launcher_comment
+Exec=$launcher_script_path
+Icon=$icon_desktop
+Terminal=false
+Categories=Game;
+EOF
+        
+        print_success "✅ Desktop entry file created successfully"
+        
+        # =============================================================================
+        # DESKTOP FILE PERMISSIONS AND VALIDATION
+        # =============================================================================
+        
+        # DESKTOP FILE PERMISSIONS: Make the .desktop file executable
+        # Many desktop environments require .desktop files to be executable
+        # This ensures the launcher appears and functions properly across all DEs
+        chmod +x "$desktop_file_path"
+        print_info "   → Desktop file permissions set to executable"
+        
+        # DESKTOP FILE VALIDATION: Basic syntax check
+        # Verify the generated .desktop file has required fields
+        if [[ -f "$desktop_file_path" ]] && grep -q "Type=Application" "$desktop_file_path"; then
+            print_success "✅ Desktop file validation passed"
+        else
+            print_warning "⚠️  Desktop file validation failed - file may not work properly"
+        fi
+        
+        # =============================================================================
+        # SYSTEM INTEGRATION AND REGISTRATION
+        # =============================================================================
+        
+        # SYSTEM INTEGRATION: Copy to applications directory for system-wide access
+        # This makes the launcher appear in application menus, search results, and launchers
+        # The ~/.local/share/applications directory is the standard location for user applications
+        print_progress "Registering application with desktop environment..."
+        
+        if cp "$desktop_file_path" "$app_dir/$desktop_file_name"; then
+            print_success "✅ Application registered in system applications directory"
+        else
+            print_warning "⚠️  Failed to register application system-wide"
+        fi
+        
+        # =============================================================================
+        # DESKTOP DATABASE UPDATE
+        # =============================================================================
+        
+        # DATABASE UPDATE: Refresh desktop database to register new application immediately
+        # This ensures the launcher appears in menus without requiring logout/reboot
+        # The update-desktop-database command updates the application cache
+        print_progress "Updating desktop application database..."
+        
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database "$app_dir" 2>/dev/null || true
+            print_success "✅ Desktop database updated - launcher available immediately"
+        else
+            print_info "   → Desktop database update tool not found (launcher may need logout to appear)"
+        fi
+        
+        # =============================================================================
+        # DESKTOP LAUNCHER COMPLETION SUMMARY
+        # =============================================================================
+        
+        print_success "🖥️ Desktop launcher setup complete!"
+        print_info ""
+        print_info "📋 Desktop Integration Summary:"
+        print_info "   → Desktop shortcut: $desktop_file_path"
+        print_info "   → Application menu: $app_dir/$desktop_file_name"
+        print_info "   → Icon: $(basename "$icon_desktop")"
+        print_info "   → Target launcher: $(basename "$launcher_script_path")"
+        print_info ""
+        print_info "🚀 Access Methods:"
+        print_info "   → Double-click desktop shortcut"
+        print_info "   → Search for 'Minecraft Splitscreen' in application menu"
+        print_info "   → Launch from desktop environment's application launcher"
+    else
+        # =============================================================================
+        # DESKTOP LAUNCHER DECLINED
+        # =============================================================================
+        
+        print_info "⏭️  Skipping desktop launcher creation"
+        print_info "   → You can still launch via Steam (if configured) or manually run the script"
+        print_info "   → Manual launch command:"
+        print_info "     $TARGET_DIR/minecraftSplitscreen.sh"
     fi
 }

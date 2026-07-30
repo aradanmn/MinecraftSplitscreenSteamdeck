@@ -42,8 +42,7 @@ INSTALLER_MODULES=(
     version_management.sh
     mod_management.sh
     instance_creation.sh
-    steam_integration.sh
-    desktop_launcher.sh
+    system_integration.sh
     main_workflow.sh
 )
 
