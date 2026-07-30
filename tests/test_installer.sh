@@ -32,7 +32,7 @@ test_t7_1() {
     # Provide a local modules/ dir so the installer doesn't try to download anything
     mkdir -p "$tmpdir/modules"
     for mod in utilities.sh java_management.sh launcher_setup.sh version_management.sh \
-                lwjgl_management.sh mod_management.sh instance_creation.sh \
+                mod_management.sh instance_creation.sh \
                 steam_integration.sh desktop_launcher.sh main_workflow.sh \
                 dock_detection.sh controller_monitor.sh window_manager.sh \
                 instance_lifecycle.sh watchdog.sh; do
@@ -65,7 +65,7 @@ test_t7_1() {
 }
 
 # =============================================================================
-# T7.2 — MODULE_FILES contains all 24 modules (12 installer + 12 runtime)
+# T7.2 — MODULE_FILES contains all 23 modules (11 installer + 12 runtime)
 # NOTE: this count has drifted upward over time as runtime/installer modules
 # were added (preflight/kwin_positioner/orchestrator/dex/runtime_context,
 # evsieve_management #38 D4/PR1, controller_proxy.sh #38 M1/PR2, slot_manager.sh
@@ -75,8 +75,9 @@ test_t7_1() {
 # rather than letting it silently go stale.
 #
 # It HAD gone stale: this asserted 22 while main carried 23, so the canary was
-# failing and being ignored (the suite is informational in CI). Corrected to 24
-# — the pre-existing drift plus version_stamp.sh — so it can catch the next one.
+# failing and being ignored (the suite is informational in CI). Corrected in #89
+# (+version_stamp.sh) and again in #91 (-lwjgl_management.sh, folded into
+# version_management.sh) so it can catch the next one.
 # =============================================================================
 test_t7_2() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
@@ -88,10 +89,10 @@ test_t7_2() {
     runtime_count=$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/modules/runtime_modules.list" || true)
     local total=$(( installer_count + runtime_count ))
 
-    if (( total == 24 )); then
-        _pass "T7.2 — MODULE_FILES has 24 entries (12 installer + 12 runtime)"
+    if (( total == 23 )); then
+        _pass "T7.2 — MODULE_FILES has 23 entries (11 installer + 12 runtime)"
     else
-        local msg="expected 24 total entries (INSTALLER_MODULE_FILES +"
+        local msg="expected 23 total entries (INSTALLER_MODULE_FILES +"
         msg+=" runtime_modules.list), found ${total}"
         msg+=" (${installer_count} + ${runtime_count})"
         _fail "T7.2" "$msg"
