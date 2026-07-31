@@ -224,21 +224,44 @@ get_curseforge_api_token() {
     return 1
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Fix #167 / #98 item 2: every print_* helper writes to STDERR.
+#
+# These are installer UX text, and stdout is for DATA (STYLE-GUIDE §7.10). While
+# they wrote to stdout, any function that returned a value via stdout and also
+# called a print_* helper silently corrupted its own return value — and the
+# corruption was invisible, because the UX text vanished into the caller's
+# command substitution instead of reaching the terminal.
+#
+# That is not hypothetical: handle_instance_update returns "true"/"false" and is
+# captured by create_minecraft_instances. It (and the install_fabric_and_mods it
+# calls) emitted ~15 print_* lines first, so the caller received a multi-line
+# blob, `[[ "$preserve_options" == "true" ]]` failed, and options.txt was
+# overwritten with defaults — losing user video settings and keybinds on every
+# instance update. Confirmed on-Deck 2026-07-31 (#167).
+#
+# A per-call-site `>&2` was the alternative and does NOT work: the corruption
+# came partly from a NESTED call's prints, so only moving the stream at the
+# source fixes it. get_supported_minecraft_versions had already hand-written
+# `>&2` on all 8 of its calls for exactly this reason — those are now redundant
+# but harmless.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # print_header: Display a section header with visual separation
 print_header() {
-    echo "=========================================="
-    echo "$1"
-    echo "=========================================="
+    echo "==========================================" >&2
+    echo "$1" >&2
+    echo "==========================================" >&2
 }
 
 # print_success: Display successful operation with green checkmark
 print_success() {
-    echo "✅ $1"
+    echo "✅ $1" >&2
 }
 
 # print_warning: Display warning message with yellow warning symbol
 print_warning() {
-    echo "⚠️  $1"
+    echo "⚠️  $1" >&2
 }
 
 # print_error: Display error message with red X symbol (sent to stderr)
@@ -248,18 +271,18 @@ print_error() {
 
 # print_info: Display informational message with blue info symbol
 print_info() {
-    echo "💡 $1"
+    echo "💡 $1" >&2
 }
 
 # print_progress: Display in-progress operation with spinning arrow
 print_progress() {
-    echo "🔄 $1"
+    echo "🔄 $1" >&2
 }
 
 # print_debug: Display debug message only when --debug flag is enabled
 print_debug() {
     if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
-        echo "🐛 $1"
+        echo "🐛 $1" >&2
     fi
 }
 
