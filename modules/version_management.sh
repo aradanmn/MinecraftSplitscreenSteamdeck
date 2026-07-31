@@ -19,10 +19,16 @@
 #                                         stdout contract (prompts on stdin)
 #   get_fabric_version()               — sets FABRIC_VERSION; no stdout
 #                                         contract (print_* progress only)
+#   get_lwjgl_version()                — sets LWJGL_VERSION; no stdout
+#                                         contract (print_* progress only)
+#   get_lwjgl_version_by_mapping(mc)   — stdout: LWJGL version string
 #
 # Globals PROVIDED (set here, read elsewhere):
 #   MC_VERSION                — set by get_minecraft_version
 #   FABRIC_VERSION            — set by get_fabric_version
+#   LWJGL_VERSION             — set by get_lwjgl_version (#91: folded in from
+#                               lwjgl_management.sh; PAIRED with the installer
+#                               entry's globals block, which also declares it)
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   MC_VERSION                 — installer globals; also read back here
@@ -40,6 +46,8 @@
 #          where noted above
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-07-30  #91: lwjgl_management.sh folded in — all three "MC version
+#                    -> pinned tool version" ladders now live here
 #   v1.3 2026-07-17  Standard perf mod set; #47/#88 shared match policy
 #   v1.2 2026-07-15  #51 D14: fetch_url/fetch_url_status transport adopted
 #   v1.1 2026-07-10  #45 PR3: API base constants adopted
@@ -398,4 +406,95 @@ get_fabric_version() {
     fi
     
     print_success "Using Fabric loader version: $FABRIC_VERSION"
+}
+
+# =============================================================================
+# LWJGL resolution (#91: folded in from lwjgl_management.sh)
+# =============================================================================
+# This module is the home for every "Minecraft version -> pinned tool version"
+# mapping. Fabric and LWJGL live here; java_management.sh keeps the Java-major
+# ladder because it also owns JDK discovery and install, and its
+# _mc_version_to_java_major already cross-references the LWJGL table below —
+# the two yearly-scheme regexes must stay in step.
+#
+# validate_lwjgl_version() was NOT carried over: it had zero callers anywhere in
+# the repo or tests (the 2026-07-17 audit flagged it, and re-verified at merge).
+# =============================================================================
+
+# Global variable to store detected LWJGL version (PROVIDED — see header).
+LWJGL_VERSION=""
+
+# get_lwjgl_version: Detect the appropriate LWJGL version for MC_VERSION.
+# Tries the Fabric Meta API first, then falls back to
+# get_lwjgl_version_by_mapping, then a hardcoded default.
+# Inputs:
+#   Globals: MC_VERSION (read), FABRIC_META_BASE (read)
+# Outputs:
+#   side effect — sets global LWJGL_VERSION (this IS the return channel;
+#                 not called via command substitution, so its print_*
+#                 progress text on stdout is never captured)
+get_lwjgl_version() {
+    print_progress "Detecting LWJGL version for Minecraft $MC_VERSION..."
+    
+    # First try to get LWJGL version from Fabric Meta API
+    local fabric_game_url="${FABRIC_META_BASE}/versions/game"
+    local temp_file="/tmp/fabric_versions_$$.json"
+    
+    # Fix #51 (D14): fetch_url replaces the duplicated wget/curl branches.
+    if fetch_url "$fabric_game_url" "$temp_file" 2>/dev/null; then
+        if command -v jq >/dev/null 2>&1 && [[ -s "$temp_file" ]]; then
+            # Try to find LWJGL version for our Minecraft version
+            LWJGL_VERSION=$(jq -r --arg mc_ver "$MC_VERSION" '
+                .[] | select(.version == $mc_ver) | .lwjgl // empty
+            ' "$temp_file" 2>/dev/null)
+        fi
+    fi
+    
+    # Clean up temp file
+    [[ -f "$temp_file" ]] && rm -f "$temp_file"
+    
+    # If API lookup failed, use version mapping logic
+    if [[ -z "$LWJGL_VERSION" || "$LWJGL_VERSION" == "null" ]]; then
+        LWJGL_VERSION=$(get_lwjgl_version_by_mapping "$MC_VERSION")
+    fi
+    
+    # Final fallback
+    if [[ -z "$LWJGL_VERSION" ]]; then
+        print_warning "Could not detect LWJGL version, using fallback"
+        LWJGL_VERSION="3.4.1"
+    fi
+    
+    print_success "Using LWJGL version: $LWJGL_VERSION"
+}
+
+# get_lwjgl_version_by_mapping: Map a Minecraft version to its LWJGL version
+# via a static, ordered range table (used when the Fabric Meta API lookup in
+# get_lwjgl_version fails or has no entry for this MC version).
+# Inputs:
+#   $1 — mc_version (e.g., "1.21.3", or "26.1" 2026 yearly scheme)
+# Outputs:
+#   stdout — LWJGL version string (e.g., "3.4.1")
+get_lwjgl_version_by_mapping() {
+    local mc_version="$1"
+    
+    # LWJGL version mapping based on Minecraft releases
+    # Source: https://minecraft.wiki/w/Tutorials/Update_LWJGL
+    # MC 26.x.x is the new (2026) versioning scheme; 3.4.1 required by Sodium.
+    if [[ "$mc_version" =~ ^[2-9][0-9]+\. ]]; then
+        echo "3.4.1"  # MC 26.x.x+ (new 2026 versioning) uses LWJGL 3.4.1
+    elif [[ "$mc_version" =~ ^1\.2[1-9](\.|$) ]]; then
+        echo "3.4.1"  # MC 1.21+ uses LWJGL 3.4.1 (Sodium requirement)
+    elif [[ "$mc_version" =~ ^1\.(19|20)(\.|$) ]]; then
+        echo "3.3.1"  # MC 1.19-1.20 uses LWJGL 3.3.1
+    elif [[ "$mc_version" =~ ^1\.18(\.|$) ]]; then
+        echo "3.2.2"  # MC 1.18 uses LWJGL 3.2.2
+    elif [[ "$mc_version" =~ ^1\.(16|17)(\.|$) ]]; then
+        echo "3.2.1"  # MC 1.16-1.17 uses LWJGL 3.2.1
+    elif [[ "$mc_version" =~ ^1\.(14|15)(\.|$) ]]; then
+        echo "3.1.6"  # MC 1.14-1.15 uses LWJGL 3.1.6
+    elif [[ "$mc_version" =~ ^1\.13(\.|$) ]]; then
+        echo "3.1.2"  # MC 1.13 uses LWJGL 3.1.2
+    else
+        echo "3.3.3"  # Default to latest for unknown versions
+    fi
 }
