@@ -36,6 +36,10 @@ set -euo pipefail
 #   MCSS_LAUNCHER_ROOT, MCSS_GEOM_DIR, MCSS_PULSE_SERVER,
 #   MCSS_STATE_LOCK_TIMEOUT_S, SPLITSCREEN_STATE, LOG (launcher entry script).
 #   MCSS_CAP_FPS_TO_REFRESH, MCSS_MAX_REFRESH_HZ (#70: host-sampled maxFps cap).
+#
+# Functions CONSUMED from other modules (type-guarded — absent is survivable):
+#   proxy_start_slot/proxy_virtual_nodes — controller_proxy.sh (#38 PR-b spawn)
+#   proxy_stop_slot                      — controller_proxy.sh (#174 teardown)
 #   CONTROLLER_MONITOR_STEAM_VENDOR — legacy alias for MCSS_STEAM_VENDOR_ID,
 #   still read by _build_bwrap_command's vendor comparison.
 #   Test-only overrides: SPLITSCREEN_MOCK_SPAWN, BWRAP_CMD.
@@ -1185,6 +1189,27 @@ teardown_instance() {
     fi
     if [[ -n "$java_pid" ]] && kill -0 "$java_pid" 2>/dev/null; then
         kill -9 "$java_pid" 2>/dev/null || true
+    fi
+
+    # 3b. Fix #174: stop this slot's controller proxy — symmetric with
+    # spawn_instance's _maybe_proxy_swap, which STARTS it.
+    #
+    # Before this, proxy_stop_slot was reachable ONLY from the orchestrator's
+    # SLOT_DIED handler, so a slot that died unexpectedly cleaned up but a NORMAL
+    # quit left one evsieve per slot running. Orphaned, it reparents to Steam's
+    # `reaper`, which blocks in do_wait until its children exit — wedging the
+    # session on the Abort Game black screen. Confirmed on-Deck 2026-07-31:
+    # killing the single orphaned proxy released the reaper instantly. A leaked
+    # proxy also keeps a `grab` on the physical pad.
+    #
+    # Runs AFTER the game processes are gone, so the instance never sees its
+    # input source vanish while still alive.
+    #
+    # type-guarded because unit tests source this module standalone; and
+    # proxy_stop_slot is itself a no-op for an untracked slot, so raw-binding
+    # sessions (MCSS_CONTROLLER_PROXY=0) are unaffected (PRINCIPLES #5).
+    if type proxy_stop_slot >/dev/null 2>&1; then
+        proxy_stop_slot "$slot" 2>/dev/null || true
     fi
 
     # 4. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
