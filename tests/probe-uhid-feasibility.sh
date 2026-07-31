@@ -248,11 +248,16 @@ phase0_environment() {
 
     # Openability decides whether the rig needs sudo or a udev rule — the one
     # open question the research doc flagged as likely friction.
-    if python3 -c 'open("/dev/uhid","rb+").close()' 2>/dev/null; then
+    # os.open, NOT the buffered open(): a character device is not seekable, so
+    # Python's buffered wrapper raises UnsupportedOperation even when the open
+    # SUCCEEDED. Measured on-Deck 2026-07-31 — with the ACL correctly in place,
+    # the buffered form still failed and would have reported DENIED. This mirrors
+    # exactly what uhid_pad.py does.
+    if python3 -c 'import os; os.close(os.open("/dev/uhid", os.O_RDWR|os.O_NONBLOCK))' 2>/dev/null; then
         SUDO=""
         _verdict V1_UHID_ACCESS "USER" "openable as $USER, no sudo needed"
     elif sudo -n true 2>/dev/null && \
-         sudo -n python3 -c 'open("/dev/uhid","rb+").close()' 2>/dev/null; then
+         sudo -n python3 -c 'import os; os.close(os.open("/dev/uhid", os.O_RDWR|os.O_NONBLOCK))' 2>/dev/null; then
         SUDO="sudo -n"
         _verdict V1_UHID_ACCESS "SUDO" "needs passwordless sudo — rig must elevate"
     else
