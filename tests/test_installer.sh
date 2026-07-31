@@ -31,9 +31,9 @@ test_t7_1() {
 
     # Provide a local modules/ dir so the installer doesn't try to download anything
     mkdir -p "$tmpdir/modules"
-    for mod in utilities.sh java_management.sh launcher_setup.sh version_management.sh \
-                lwjgl_management.sh mod_management.sh instance_creation.sh \
-                steam_integration.sh desktop_launcher.sh main_workflow.sh \
+    for mod in utilities.sh java_management.sh launcher_setup.sh runtime_deploy.sh version_management.sh \
+                mod_management.sh instance_creation.sh \
+                system_integration.sh main_workflow.sh \
                 dock_detection.sh controller_monitor.sh window_manager.sh \
                 instance_lifecycle.sh watchdog.sh; do
         # Stub: define a no-op main() so a runaway call would be detectable
@@ -65,7 +65,7 @@ test_t7_1() {
 }
 
 # =============================================================================
-# T7.2 — MODULE_FILES contains all 24 modules (12 installer + 12 runtime)
+# T7.2 — MODULE_FILES contains all 23 modules (11 installer + 12 runtime)
 # NOTE: this count has drifted upward over time as runtime/installer modules
 # were added (preflight/kwin_positioner/orchestrator/dex/runtime_context,
 # evsieve_management #38 D4/PR1, controller_proxy.sh #38 M1/PR2, slot_manager.sh
@@ -75,8 +75,10 @@ test_t7_1() {
 # rather than letting it silently go stale.
 #
 # It HAD gone stale: this asserted 22 while main carried 23, so the canary was
-# failing and being ignored (the suite is informational in CI). Corrected to 24
-# — the pre-existing drift plus version_stamp.sh — so it can catch the next one.
+# failing and being ignored (the suite is informational in CI). Corrected in #89
+# (+version_stamp.sh) and again in #91 (-lwjgl_management.sh -> version_management.sh,
+# -steam_integration.sh/-desktop_launcher.sh -> +system_integration.sh,
+# launcher_setup split -> +runtime_deploy.sh) so it can catch the next one.
 # =============================================================================
 test_t7_2() {
     local installer="$REPO_ROOT/install-minecraft-splitscreen.sh"
@@ -88,10 +90,10 @@ test_t7_2() {
     runtime_count=$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/modules/runtime_modules.list" || true)
     local total=$(( installer_count + runtime_count ))
 
-    if (( total == 24 )); then
-        _pass "T7.2 — MODULE_FILES has 24 entries (12 installer + 12 runtime)"
+    if (( total == 23 )); then
+        _pass "T7.2 — MODULE_FILES has 23 entries (11 installer + 12 runtime)"
     else
-        local msg="expected 24 total entries (INSTALLER_MODULE_FILES +"
+        local msg="expected 23 total entries (INSTALLER_MODULE_FILES +"
         msg+=" runtime_modules.list), found ${total}"
         msg+=" (${installer_count} + ${runtime_count})"
         _fail "T7.2" "$msg"
@@ -139,13 +141,14 @@ test_t7_4() {
 }
 
 # =============================================================================
-# T7.5 — install_runtime_modules() is defined in launcher_setup.sh
+# T7.5 — install_runtime_modules() is defined in runtime_deploy.sh
+# #91: moved out of launcher_setup.sh when its four jobs were split.
 # =============================================================================
 test_t7_5() {
-    if grep -q '^install_runtime_modules()' "$REPO_ROOT/modules/launcher_setup.sh"; then
-        _pass "T7.5 — install_runtime_modules() is defined in launcher_setup.sh"
+    if grep -q '^install_runtime_modules()' "$REPO_ROOT/modules/runtime_deploy.sh"; then
+        _pass "T7.5 — install_runtime_modules() is defined in runtime_deploy.sh"
     else
-        _fail "T7.5" "install_runtime_modules() not found in launcher_setup.sh"
+        _fail "T7.5" "install_runtime_modules() not found in runtime_deploy.sh"
     fi
 }
 
@@ -194,7 +197,10 @@ test_t7_7() {
         print_info() { :; }
         print_warning() { :; }
 
-        source "$REPO_ROOT/modules/launcher_setup.sh"
+        # #91: install_runtime_modules lives in runtime_deploy.sh now. It is
+        # sourced standalone here (no installer entry), which also exercises the
+        # read_runtime_manifest soft guard that path depends on.
+        source "$REPO_ROOT/modules/runtime_deploy.sh"
         install_runtime_modules
     )
 
@@ -425,11 +431,13 @@ test_t7_12() {
 # =============================================================================
 # T7.13 — create_desktop_launcher() is gated behind
 # MCSS_ENABLE_DESKTOP_LAUNCHER (default off, Desktop Mode unsupported as of
-# v1.2) in main_workflow.sh, and the module itself is NOT deleted.
+# v1.2) in main_workflow.sh, and the function itself is NOT deleted.
+# #91: it now lives in system_integration.sh (merged with steam_integration.sh);
+# the assertion is about the FUNCTION surviving, not about which file holds it.
 # =============================================================================
 test_t7_13() {
     local workflow="$REPO_ROOT/modules/main_workflow.sh"
-    local desktop_mod="$REPO_ROOT/modules/desktop_launcher.sh"
+    local desktop_mod="$REPO_ROOT/modules/system_integration.sh"
 
     local has_gate=0 has_skip_msg=0 has_function=0
     if grep -Eq 'MCSS_ENABLE_DESKTOP_LAUNCHER:-0.*==.*"1"' "$workflow"; then
