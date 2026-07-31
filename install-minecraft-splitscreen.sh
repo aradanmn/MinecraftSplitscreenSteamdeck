@@ -27,6 +27,7 @@
 # not an oversight.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-07-29  #89: version_stamp.sh added to INSTALLER_MODULE_FILES
 #   v1.5 2026-07-19  #89: read_runtime_manifest documented as the canonical
 #                    reader (launcher_setup.sh now reuses it; #38 PR2)
 #   v1.4 2026-07-18  Account prefix "P" -> "Player" for MC account names
@@ -116,6 +117,7 @@ readonly REPO_BASE_URL="${MCSS_REPO_RAW_URL}/modules"
 # Installer modules — sourced during installation to run the setup workflow.
 readonly INSTALLER_MODULE_FILES=(
     "utilities.sh"
+    "version_stamp.sh"
     "java_management.sh"
     "evsieve_management.sh"
     "launcher_setup.sh"
@@ -299,6 +301,8 @@ done
 # Runtime orchestrator modules (dock_detection, controller_monitor, etc.) are
 # deployed to TARGET_DIR/modules/ by install_runtime_modules() — not sourced here.
 source "$MODULES_DIR/utilities.sh"
+# #89: launcher_setup.sh's stamping calls into this — must load before it.
+source "$MODULES_DIR/version_stamp.sh"
 # preflight.sh is a runtime module, but we source it at INSTALL time too so the dependency
 # hard-stop (_preflight_deps install) actually runs before we download/install anything
 # (G1: it was previously never sourced, so the install-time check silently no-op'd).
