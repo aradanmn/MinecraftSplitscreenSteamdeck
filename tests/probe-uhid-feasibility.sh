@@ -262,12 +262,20 @@ phase0_environment() {
         # the seat's logged-in user the same ACL. No setuid helper, and no sudo
         # in the rig's own path (an unattended rig cannot answer a password
         # prompt). SteamOS's rootfs is immutable, hence the readonly dance.
+        #
+        # THE 60- PREFIX IS LOAD-BEARING (measured on-Deck 2026-07-31). uaccess
+        # ACLs are applied by 70-uaccess.rules / 73-seat-late.rules, so a rule
+        # that adds TAG+="uaccess" must run BEFORE them. A first attempt at
+        # 99-mcss-uhid.rules parsed fine, reloaded fine, and did nothing at all:
+        # /dev/uhid kept crw------- root root with no ACL. SteamOS tags its own
+        # uinput at 60 (60-cecd-uinput.rules) and 70 for the same reason.
         _note ""
         _note "To grant access (one-time, as root — then re-run this probe):"
         _note "  sudo steamos-readonly disable"
-        _note "  printf 'KERNEL==\"uhid\", TAG+=\"uaccess\"\\n' \\"
-        _note "    | sudo tee /etc/udev/rules.d/99-mcss-uhid.rules"
-        _note "  sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uhid"
+        _note "  printf 'SUBSYSTEM==\"misc\", KERNEL==\"uhid\", TAG+=\"uaccess\"\\n' \\"
+        _note "    | sudo tee /etc/udev/rules.d/60-mcss-uhid.rules"
+        _note "  sudo udevadm control --reload-rules"
+        _note "  sudo udevadm trigger --subsystem-match=misc --sysname-match=uhid"
         _note "  sudo steamos-readonly enable"
         _note ""
         _note "Treat it as re-installable: a SteamOS update may clear it."

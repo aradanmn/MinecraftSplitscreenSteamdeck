@@ -125,9 +125,25 @@ dependency-free Python helper is if anything simpler than the uinput
 equivalent, and needs no compiler or container on the immutable SteamOS
 rootfs. Injection is packing a few bytes per report.
 
-**Open item: `/dev/uhid` is typically root-only.** The rig likely needs `sudo`
-(the `deck` user has passwordless sudo from the #124 work) or a udev rule.
-Confirm before building **[needs-Deck]**.
+**RESOLVED on-Deck 2026-07-31: `/dev/uhid` is root-only and `sudo -n` fails on
+this Deck**, so the rig needs a udev rule. One rule grants the seat user the same
+ACL `/dev/uinput` already has:
+
+```
+# /etc/udev/rules.d/60-mcss-uhid.rules
+SUBSYSTEM=="misc", KERNEL=="uhid", TAG+="uaccess"
+```
+
+**The `60-` prefix is load-bearing.** uaccess ACLs are applied by
+`70-uaccess.rules` / `73-seat-late.rules`, so a rule adding `TAG+="uaccess"` must
+run *before* them. A first attempt at `99-mcss-uhid.rules` parsed and reloaded
+cleanly and did nothing at all — `/dev/uhid` kept `crw------- root root` with no
+ACL. SteamOS tags its own uinput at 60 (`60-cecd-uinput.rules`) and 70 for exactly
+this reason.
+
+**This is rig-only.** Nothing shipped touches `/dev/uhid` — it appears only under
+`tests/`. The runtime proxy uses evsieve against `/dev/uinput`, which already
+carries uaccess. **End users installing the product never need this rule.**
 
 ---
 
