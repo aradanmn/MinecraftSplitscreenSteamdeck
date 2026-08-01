@@ -4,7 +4,7 @@
 going.** It supersedes the per-campaign `PLAN-V1.x` docs (now archived — see
 [Versioning](#versioning) and [Document map](#document-map)).
 
-**Last updated:** 2026-08-01 (Sat, night) · **Repo:** `aradanmn/MinecraftSplitscreenSteamdeck`
+**Last updated:** 2026-08-01 (Sat morning) · **Repo:** `aradanmn/MinecraftSplitscreenSteamdeck`
 · **Active cycle:** v1.2.4 install-path polish, then the virtual pad rig
 
 ---
@@ -51,7 +51,7 @@ Three constraints that shape *how* Deck work can be done:
 
 ---
 
-## Status snapshot (2026-08-01, evening)
+## Status snapshot (2026-08-01 morning)
 
 | Release | State |
 |---------|-------|
@@ -132,7 +132,7 @@ the Abort Game black screen it describes. Check after a few more sessions.
 
 **#122 SHIPPED and hardware-validated.** #184/#185/#186 — the three bugs that
 validation found — are also **SHIPPED and hardware-validated** (2026-08-01
-night): a real `--yes` install ran with zero stdin, hit no readonly-var error,
+morning): a real `--yes` install ran with zero stdin, hit no readonly-var error,
 and built evsieve successfully via the fuse-overlayfs fallback (confirmed
 live-running, not a lucky native pass).
 
@@ -237,7 +237,7 @@ can cost a reboot per attempt. The rig does not help with any of it.
 
 ---
 
-## Deck state (2026-08-01, night)
+## Deck state (2026-08-01 morning)
 
 - **Fully validated, working install on `main` @ `18c6dfb`.** Three
   purge/reinstall cycles run today (agent, Scott manually, agent again
