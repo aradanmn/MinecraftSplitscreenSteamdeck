@@ -23,7 +23,7 @@ set -euo pipefail
 # Run: bash tests/test_evsieve_management.sh
 # =============================================================================
 
-readonly TEST_TOTAL=11
+readonly TEST_TOTAL=14
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 readonly REPO_ROOT
@@ -225,6 +225,37 @@ case "$1" in
     *)
         exit 1
         ;;
+esac
+EOF
+    chmod +x "$dir/distrobox"
+}
+
+# _stub_distrobox_overlay: `distrobox create` FAILS unless its LAST argument
+# is EXACTLY the expected storage-opt value — simulates the real #186
+# failure (native overlay driver rejects an ID-mapped mount) and the
+# verified fix (retry with --additional-flags carrying the fuse-overlayfs
+# storage-opt). An exact match, not a loose substring check: a typo'd path
+# (e.g. a trailing "-WRONG") would still CONTAIN "fuse-overlayfs" and must
+# NOT be accepted as if it were the real, working flag. list/enter/rm always
+# succeed so _evsieve_ensure_box's own verify-and-heal logic doesn't
+# interfere with isolating _evsieve_create_box's behavior specifically.
+_stub_distrobox_overlay() {
+    local dir="$1"
+    rm -f "$dir/distrobox"
+    cat > "$dir/distrobox" <<'EOF'
+#!/bin/bash
+echo "distrobox $*" >> "$CALLS"
+case "$1" in
+    list) exit 0 ;;
+    create)
+        last="${@: -1}"
+        if [[ "$last" == "--storage-opt overlay.mount_program=/usr/bin/fuse-overlayfs" ]]; then
+            exit 0
+        fi
+        exit 1
+        ;;
+    enter|rm) exit 0 ;;
+    *) exit 1 ;;
 esac
 EOF
     chmod +x "$dir/distrobox"
@@ -589,6 +620,123 @@ test_t11() {
 }
 
 # =============================================================================
+# T12 — #186: a HEALTHY host (plain create succeeds) never attempts the
+# fuse-overlayfs fallback, even when fuse-overlayfs is available. A host
+# where the native overlay driver already works must see NO behavior
+# change — no extra flag, no risk of a fuse-overlayfs-specific quirk on a
+# host that never needed one.
+# =============================================================================
+test_t12() {
+    local tmp bindir calls
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    bindir=$(_isolated_bindir)
+    _stub_distrobox_build "$bindir"     # plain create always succeeds
+    _placeholder_tool "$bindir" fuse-overlayfs
+    calls="$tmp/calls.log"; : > "$calls"
+
+    if (
+        export CALLS="$calls"
+        export PATH="$bindir"
+        TARGET_DIR="$tmp/target"
+        print_header() { :; }
+        print_progress() { :; }
+        print_success() { :; }
+        print_warning() { :; }
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        _evsieve_ensure_box
+    ); then
+        local create_count
+        create_count=$(grep -c '^distrobox create' "$calls")
+        if [[ "$create_count" == "1" ]] \
+            && ! grep -q 'fuse-overlayfs' "$calls"; then
+            _pass "T12 — a healthy host never attempts the fuse-overlayfs fallback"
+        else
+            _fail "T12" "expected exactly 1 plain create, no fallback (see $calls)"
+        fi
+    else
+        _fail "T12" "_evsieve_ensure_box unexpectedly failed on a healthy host"
+    fi
+}
+
+# =============================================================================
+# T13 — #186: plain create fails (simulated overlay-mount rejection) and
+# fuse-overlayfs is NOT available -> degrades exactly as before the fix
+# (single attempt, clean failure, no retry loop).
+# =============================================================================
+test_t13() {
+    local tmp bindir calls
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    bindir=$(_isolated_bindir)
+    _stub_distrobox_overlay "$bindir"   # create needs the flag to succeed
+    calls="$tmp/calls.log"; : > "$calls"
+
+    local rc=0
+    (
+        export CALLS="$calls"
+        export PATH="$bindir"
+        TARGET_DIR="$tmp/target"
+        print_header() { :; }
+        print_progress() { :; }
+        print_success() { :; }
+        print_warning() { :; }
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        _evsieve_ensure_box
+    ) || rc=$?
+
+    local create_count
+    create_count=$(grep -c '^distrobox create' "$calls")
+    if [[ "$rc" -ne 0 ]] && [[ "$create_count" == "1" ]]; then
+        _pass "T13 — no fuse-overlayfs available -> fails once, no retry loop"
+    else
+        _fail "T13" "rc=$rc create_count=$create_count (see $calls)"
+    fi
+}
+
+# =============================================================================
+# T14 — #186: plain create fails (simulated overlay-mount rejection) and
+# fuse-overlayfs IS available -> the fallback retry succeeds. This is the
+# actual fix: on the affected Deck, the plain form failed every time and
+# fuse-overlayfs was never tried at all.
+# =============================================================================
+test_t14() {
+    local tmp bindir calls
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    bindir=$(_isolated_bindir)
+    _stub_distrobox_overlay "$bindir"
+    _placeholder_tool "$bindir" fuse-overlayfs
+    calls="$tmp/calls.log"; : > "$calls"
+
+    if (
+        export CALLS="$calls"
+        export PATH="$bindir"
+        TARGET_DIR="$tmp/target"
+        print_header() { :; }
+        print_progress() { :; }
+        print_success() { :; }
+        print_warning() { :; }
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        _evsieve_ensure_box
+    ); then
+        local create_count
+        create_count=$(grep -c '^distrobox create' "$calls")
+        if [[ "$create_count" == "2" ]] \
+            && grep -q 'overlay.mount_program=/usr/bin/fuse-overlayfs' "$calls"; then
+            _pass "T14 — fuse-overlayfs fallback retry succeeds when the plain create fails"
+        else
+            _fail "T14" "expected 2 create attempts, 2nd carrying the storage-opt (see $calls)"
+        fi
+    else
+        _fail "T14" "_evsieve_ensure_box should have succeeded via the fallback"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== evsieve_management test suite ==="
@@ -604,6 +752,9 @@ test_t8
 test_t9
 test_t10
 test_t11
+test_t12
+test_t13
+test_t14
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

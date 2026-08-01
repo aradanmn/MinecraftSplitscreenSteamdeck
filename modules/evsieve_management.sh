@@ -17,9 +17,9 @@
 #
 # (Internal: _evsieve_bin, _evsieve_stamp, _evsieve_stamp_matches,
 #  _evsieve_check_toolchain, _evsieve_acquire_source, _evsieve_resolve_patch,
-#  _evsieve_apply_patch, _evsieve_ensure_box, _evsieve_build_in_box,
-#  _evsieve_install_binary, _evsieve_host_verify, _evsieve_write_stamp,
-#  _evsieve_degrade.)
+#  _evsieve_apply_patch, _evsieve_create_box, _evsieve_ensure_box,
+#  _evsieve_build_in_box, _evsieve_install_binary, _evsieve_host_verify,
+#  _evsieve_write_stamp, _evsieve_degrade.)
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   TARGET_DIR         — install root; binary lands in $TARGET_DIR/bin
@@ -41,6 +41,8 @@
 #   EVSIEVE_SKIP_BUILD       — (tests) never invoked; stubs live on PATH
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-08-01  Fix #186: box create retries with fuse-overlayfs when
+#                    the native overlay driver rejects an ID-mapped mount
 #   v1.0 2026-07-19  #38 D4/PR1: build-at-install evsieve, GPL-clean,
 #                    fail-open
 # =============================================================================
@@ -238,6 +240,43 @@ _evsieve_apply_patch() {
     return 0
 }
 
+# _evsieve_create_box: `distrobox create` the build box, with one fallback.
+#
+# #186: on some hosts (confirmed on a SteamOS Deck kernel) podman's native
+# overlay driver rejects an ID-mapped mount outright ("...userxattr: invalid
+# argument") — a real, fast (~4s) error, not a timeout. fuse-overlayfs
+# sidesteps the kernel driver entirely and is already present on affected
+# Decks; verified fix: `podman --storage-opt
+# overlay.mount_program=/usr/bin/fuse-overlayfs run --rm debian:12 true`
+# succeeds where the plain form fails.
+#
+# Tried ONLY as a fallback, never by default: a host where the native driver
+# already works must see no behavior change (no extra flag, no risk of a
+# fuse-overlayfs-specific quirk on a host that never needed one).
+# Inputs:
+#   Globals: EVSIEVE_DISTROBOX_NAME, EVSIEVE_DISTROBOX_IMAGE,
+#            EVSIEVE_BOX_CREATE_TIMEOUT_S (read)
+# Outputs:
+#   return — 0 on success (either attempt); 1 if both fail, or the plain
+#            attempt fails and fuse-overlayfs is unavailable to retry with
+#   side effects — creates the distrobox
+_evsieve_create_box() {
+    if timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
+        --name "$EVSIEVE_DISTROBOX_NAME" \
+        --image "$EVSIEVE_DISTROBOX_IMAGE" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    command -v fuse-overlayfs >/dev/null 2>&1 || return 1
+
+    timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
+        --name "$EVSIEVE_DISTROBOX_NAME" \
+        --image "$EVSIEVE_DISTROBOX_IMAGE" \
+        --additional-flags \
+            "--storage-opt overlay.mount_program=/usr/bin/fuse-overlayfs" \
+        >/dev/null 2>&1
+}
+
 # _evsieve_ensure_box: Create the build box if missing; heal a broken one.
 # A box that `distrobox list`s but fails a cheap `-- true` probe is
 # treated as broken (e.g. left behind by an interrupted earlier create) —
@@ -254,9 +293,7 @@ _evsieve_ensure_box() {
     # Create the box if it does not exist yet.
     if ! distrobox list 2>/dev/null \
         | grep -q "[[:space:]]${EVSIEVE_DISTROBOX_NAME}[[:space:]]"; then
-        timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
-            --name "$EVSIEVE_DISTROBOX_NAME" \
-            --image "$EVSIEVE_DISTROBOX_IMAGE" >/dev/null 2>&1 || return 1
+        _evsieve_create_box || return 1
     fi
 
     # Verify usable AND trigger the first-run init. #124: `distrobox create`
@@ -276,9 +313,7 @@ _evsieve_ensure_box() {
     # Broken/uninitialized box (e.g. an interrupted earlier create): heal ONCE,
     # then re-enter to initialize before returning success.
     distrobox rm -f "$EVSIEVE_DISTROBOX_NAME" >/dev/null 2>&1 || true
-    timeout "$EVSIEVE_BOX_CREATE_TIMEOUT_S" distrobox create --yes \
-        --name "$EVSIEVE_DISTROBOX_NAME" \
-        --image "$EVSIEVE_DISTROBOX_IMAGE" >/dev/null 2>&1 || return 1
+    _evsieve_create_box || return 1
     distrobox enter --name "$EVSIEVE_DISTROBOX_NAME" -- true \
         </dev/null >/dev/null 2>&1 || return 1
     return 0
