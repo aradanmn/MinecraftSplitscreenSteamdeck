@@ -1,6 +1,25 @@
-# Release workflow for Minecraft Splitscreen Steamdeck installer
-# This workflow creates a GitHub release and uploads the install-minecraft-splitscreen.sh script as an asset
-# whenever a new tag starting with 'v' is pushed (e.g., v1.0.0).
+# Release workflow for Minecraft Splitscreen Steamdeck installer.
+#
+# On every 'v*' tag push: creates a GitHub release, uploads
+# install-minecraft-splitscreen.sh, and (#126) builds + uploads a prebuilt
+# evsieve binary as a release asset so most installs never touch
+# git/podman/distrobox/cargo at all — the installer verifies it against the
+# SAME pin this job reads before trusting it (evsieve_management.sh's
+# _evsieve_try_prebuilt), with the existing build-at-install path as fallback.
+#
+# runs-on: ubuntu-22.04, not -latest — #126a's decision. SteamOS (holo, the
+# Deck's OS) currently ships glibc 2.41, newer than even ubuntu-24.04's 2.39;
+# glibc's ABI is backward-compatible (older-built binaries run fine on newer
+# glibc), so building on the OLDER 22.04 (glibc 2.35) buys the widest margin
+# for Decks that haven't updated in a while, at zero cost.
+#
+# The evsieve source is fetched, verified, and patched by SOURCING
+# evsieve_management.sh and calling its own _evsieve_acquire_source/
+# _evsieve_resolve_patch/_evsieve_apply_patch directly — the exact same pin
+# + SHA-verification + patch-apply logic the build-at-install path uses, not
+# a second copy re-typed into this YAML (PRINCIPLES #9). Only the container
+# (distrobox/debian:12, needed because SteamOS's host has no apt) is skipped
+# here: a GitHub Actions runner already has apt directly.
 
 name: Release Minecraft Splitscreen Installer
 
@@ -8,19 +27,129 @@ on:
   push:
     tags:
       - 'v*'  # Trigger on version tags like v1.0, v2.0.1, etc.
+  workflow_dispatch:  # manual runs — validates the evsieve build in isolation
+                      # (see the `if: github.event_name == 'push'` guards
+                      # below); never creates/modifies a real release.
 
 jobs:
+  build-evsieve:
+    runs-on: ubuntu-22.04
+    outputs:
+      built: ${{ steps.build.outcome == 'success' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libevdev-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Acquire, verify, and patch evsieve (reuses evsieve_management.sh)
+        id: build
+        run: |
+          set -euo pipefail
+          # print_* stubs: the functions below don't call them, but staying
+          # source-compatible with the real module costs nothing.
+          print_header() { :; }; print_progress() { :; }
+          print_success() { :; }; print_warning() { :; }; print_info() { :; }
+
+          SCRIPT_DIR="$GITHUB_WORKSPACE"
+          # shellcheck source=modules/evsieve_management.sh
+          source modules/evsieve_management.sh
+
+          src_dir="$RUNNER_TEMP/evsieve-src"
+          patch_file="$RUNNER_TEMP/evsieve.patch"
+
+          echo "Acquiring pinned evsieve source (commit ${EVSIEVE_PINNED_COMMIT})..."
+          _evsieve_acquire_source "$src_dir"
+
+          echo "Resolving and verifying the persist-reopen patch..."
+          _evsieve_resolve_patch "$patch_file"
+
+          echo "Applying patch..."
+          _evsieve_apply_patch "$src_dir" "$patch_file"
+
+          echo "Building (cargo build --release)..."
+          (cd "$src_dir" && cargo build --release)
+
+          built_bin="$src_dir/target/release/evsieve"
+          echo "Sanity check: does the freshly built binary even run here?"
+          "$built_bin" --version
+
+          # Package under the exact asset names the installer's
+          # _evsieve_try_prebuilt() fetches (EVSIEVE_PREBUILT_*_NAME).
+          out_dir="$RUNNER_TEMP/out"
+          mkdir -p "$out_dir"
+          cp "$built_bin" "$out_dir/${EVSIEVE_PREBUILT_BIN_NAME}"
+          chmod +x "$out_dir/${EVSIEVE_PREBUILT_BIN_NAME}"
+          ( cd "$out_dir" && sha256sum "${EVSIEVE_PREBUILT_BIN_NAME}" \
+              > "${EVSIEVE_PREBUILT_SHA_NAME}" )
+          {
+            echo "commit=${EVSIEVE_PINNED_COMMIT}"
+            echo "patch_sha256=${EVSIEVE_PATCH_SHA256}"
+          } > "$out_dir/${EVSIEVE_PREBUILT_STAMP_NAME}"
+
+          echo "asset_dir=$out_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload evsieve build artifacts
+        # #126: fail-open at the WORKFLOW level too — if this job's build step
+        # ever fails (upstream evsieve source unreachable, a future Ubuntu
+        # image drops libevdev-dev, etc.), the release still ships with the
+        # installer script alone. The installer's own _evsieve_try_prebuilt()
+        # already degrades to build-at-install when no prebuilt asset exists,
+        # so a partial release here is a supported, not a broken, state.
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evsieve-release-assets
+          path: ${{ steps.build.outputs.asset_dir }}
+          retention-days: 1
+
   release:
+    needs: build-evsieve
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Upload installer script as release asset
+      - name: Download evsieve build artifacts
+        if: needs.build-evsieve.outputs.built == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: evsieve-release-assets
+          path: evsieve-assets
+
+      # Two separate upload steps, not one `files:` glob covering both: a
+      # glob that matches zero files (evsieve-assets/ absent because the
+      # build failed) risks the whole step erroring, which would take the
+      # installer-script upload down with it — exactly the coupling #126's
+      # fail-open design exists to avoid. softprops/action-gh-release has
+      # upsert semantics (`overwrite: true`), so calling it twice against
+      # the same tag is safe: the second call finds the release the first
+      # one created and adds to it.
+      # Both upload steps are guarded to real tag pushes — a manual
+      # workflow_dispatch run (see the `on:` trigger above) exercises the
+      # build-evsieve job for real without ever touching the GitHub Releases
+      # page, so the risky new logic (cargo build, patch/checksum/stamp) can
+      # be validated on demand between actual releases.
+      - name: Upload installer script (always)
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: install-minecraft-splitscreen.sh
           generate_release_notes: true
+          overwrite: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload evsieve release assets (only if the build succeeded)
+        if: github.event_name == 'push' && needs.build-evsieve.outputs.built == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: evsieve-assets/*
           overwrite: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
