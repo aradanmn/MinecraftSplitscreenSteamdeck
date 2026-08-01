@@ -40,6 +40,8 @@
 #          the generated Python script under $XDG_RUNTIME_DIR (or /tmp).
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.6 2026-08-01  #98 item 3: [dex] prefix on all stderr messages (stdout
+#                    data prints deliberately left bare — window_manager parses them)
 #   v1.4 2026-07-17  Fix #90: API trim — 8 zero-reference dex_* wrappers gone
 #   v1.3 2026-07-09  #45: no source-time DISPLAY capture; helper off /tmp
 #   v1.2 2026-07-06  #19/#28: backend temp-file lifecycle; Java-25/MC-26.x
@@ -155,7 +157,7 @@ display_name = os.environ.get('DEX_DISPLAY', os.environ.get('DISPLAY', ':0'))
 _lib.XOpenDisplay.restype = ctypes.c_void_p
 _dpy = _lib.XOpenDisplay(display_name.encode() if isinstance(display_name, str) else display_name)
 if not _dpy:
-    print(f"ERROR: Cannot open display '{display_name}'", file=sys.stderr)
+    print(f"[dex] ERROR: Cannot open display '{display_name}'", file=sys.stderr)
     sys.exit(1)
 dpy = ctypes.c_void_p(_dpy)
 
@@ -487,8 +489,8 @@ ACTIONS = {
 }
 
 if len(sys.argv) < 2:
-    print(f"Usage: {sys.argv[0]} <action> [args...]", file=sys.stderr)
-    print(f"Actions: {', '.join(sorted(ACTIONS.keys()))}", file=sys.stderr)
+    print(f"[dex] Usage: {sys.argv[0]} <action> [args...]", file=sys.stderr)
+    print(f"[dex] Actions: {', '.join(sorted(ACTIONS.keys()))}", file=sys.stderr)
     sys.exit(1)
 
 action_name = sys.argv[1]
@@ -502,10 +504,10 @@ if action_name in ACTIONS:
     try:
         ACTIONS[action_name](action_args)
     except (IndexError, ValueError) as e:
-        print(f"dex: bad or missing arguments for '{action_name}': {e}", file=sys.stderr)
+        print(f"[dex] bad or missing arguments for '{action_name}': {e}", file=sys.stderr)
         sys.exit(2)
 else:
-    print(f"Unknown action: {action_name}", file=sys.stderr)
+    print(f"[dex] Unknown action: {action_name}", file=sys.stderr)
     sys.exit(1)
 
 _lib.XCloseDisplay(dpy)
@@ -544,7 +546,7 @@ dex_search() {
     case "$mode" in
         --name) _dex_run search_name "$value" ;;
         --pid)  _dex_run search_pid "$value"  ;;
-        *)      echo "Usage: dex_search --name <pattern> | --pid <pid>" >&2; return 1 ;;
+        *)      echo "[dex] Usage: dex_search --name <pattern> | --pid <pid>" >&2; return 1 ;;
     esac
 }
 
