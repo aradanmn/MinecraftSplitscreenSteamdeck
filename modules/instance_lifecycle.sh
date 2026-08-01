@@ -163,7 +163,15 @@ _ensure_state_file() {
             "4": {active: false, pid: null, event_node: null, js_node: null, bwrap_pid: null, wid: null}
         }
     }')"
-    echo "[instance_lifecycle] Reset state file: $state_file" >&2
+    # Fix #172: the per-slot geom cache is session-scoped and must not outlive
+    # the state file it describes. Teardown clears each slot's entry, but a
+    # session that crashes or is killed never runs teardown at all — and a
+    # surviving entry mispositions the NEXT session, because X11 recycles window
+    # ids so the cache's WID key matches a different window instance and
+    # apply_layout skips repositioning. Resetting state is exactly the moment
+    # any prior session's geometry stops being true.
+    rm -f "${MCSS_GEOM_DIR:-/tmp/mcss-geom}"/slot* 2>/dev/null || true
+    echo "[instance_lifecycle] Reset state file: $state_file (geom cache cleared)" >&2
 }
 
 # _atomic_write: Write JSON content atomically to a file.
@@ -1142,6 +1150,29 @@ spawn_instance() {
 teardown_instance() {
     local slot="$1"
 
+    # Fix #172/#174: the IDEMPOTENT cleanups run BEFORE the active-slot guard.
+    #
+    # The guard below is correct about processes — an inactive slot has none to
+    # kill — but it was also skipping two cleanups that must happen regardless,
+    # because by the time a session ends the slot is USUALLY already inactive:
+    # the SLOT_DIED handler marks it so before cleanup() calls this. Measured
+    # on-Deck 2026-07-31, a normal quit logged only "Slot 1 is not active,
+    # nothing to tear down" and left both behind.
+    #
+    #   - the per-slot geom cache: a stale entry mispositions the NEXT session
+    #     (#172 — X11 recycles window ids, so the cache's WID key matches a
+    #     different window instance and apply_layout skips repositioning,
+    #     leaving Minecraft at its default 854x480)
+    #   - the controller proxy: #174's stop belongs here too, or it only ever
+    #     runs in the rarer still-active case
+    #
+    # Both are no-ops when there is nothing to clean, so running them
+    # unconditionally is free (PRINCIPLES #5 — idempotent, degrade safely).
+    if type proxy_stop_slot >/dev/null 2>&1; then
+        proxy_stop_slot "$slot" 2>/dev/null || true
+    fi
+    rm -f "${MCSS_GEOM_DIR:-/tmp/mcss-geom}/slot${slot}" 2>/dev/null || true
+
     if ! slot_is_active "$slot"; then
         echo "[teardown_instance] Slot $slot is not active, nothing to tear down" >&2
         return 0
@@ -1191,32 +1222,9 @@ teardown_instance() {
         kill -9 "$java_pid" 2>/dev/null || true
     fi
 
-    # 3b. Fix #174: stop this slot's controller proxy — symmetric with
-    # spawn_instance's _maybe_proxy_swap, which STARTS it.
-    #
-    # Before this, proxy_stop_slot was reachable ONLY from the orchestrator's
-    # SLOT_DIED handler, so a slot that died unexpectedly cleaned up but a NORMAL
-    # quit left one evsieve per slot running. Orphaned, it reparents to Steam's
-    # `reaper`, which blocks in do_wait until its children exit — wedging the
-    # session on the Abort Game black screen. Confirmed on-Deck 2026-07-31:
-    # killing the single orphaned proxy released the reaper instantly. A leaked
-    # proxy also keeps a `grab` on the physical pad.
-    #
-    # Runs AFTER the game processes are gone, so the instance never sees its
-    # input source vanish while still alive.
-    #
-    # type-guarded because unit tests source this module standalone; and
-    # proxy_stop_slot is itself a no-op for an untracked slot, so raw-binding
-    # sessions (MCSS_CONTROLLER_PROXY=0) are unaffected (PRINCIPLES #5).
-    if type proxy_stop_slot >/dev/null 2>&1; then
-        proxy_stop_slot "$slot" 2>/dev/null || true
-    fi
-
     # 4. Update state file: mark slot inactive (including WID so layout doesn't find a stale window)
     update_slot_state "$slot" "{\"active\": false, \"pid\": null, \"bwrap_pid\": null, \"event_node\": null, \"js_node\": null, \"wid\": null}"
-    # Clear apply_layout's per-slot geom cache so a fresh instance reusing this slot is
-    # always repositioned (belt-and-suspenders; the cache is also WID-keyed). See apply_layout.
-    rm -f "${MCSS_GEOM_DIR:-/tmp/mcss-geom}/slot${slot}" 2>/dev/null || true
+    # (geom cache + proxy already cleared above, before the active-slot guard)
 
     # Layout reflow is the caller's responsibility (e.g. SLOT_DIED handler calls
     # _reflow_layout after teardown_instance returns). Calling sync_apply_layout
