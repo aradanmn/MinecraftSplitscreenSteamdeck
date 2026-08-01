@@ -18,7 +18,7 @@
 # block below). Globals PROVIDED: REPO_REF, MCSS_REPO_RAW_URL,
 # MODRINTH_API_BASE, CURSEFORGE_API_BASE, FABRIC_META_BASE,
 # MCSS_MAX_PLAYERS, MCSS_INSTANCE_PREFIX, MCSS_ACCOUNT_PREFIX,
-# MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB, TARGET_DIR, and the
+# MCSS_MAX_MEM_MB, MCSS_MIN_MEM_MB, TARGET_DIR, ASSUME_YES, and the
 # MODS/SUPPORTED_MODS/MOD_* arrays (populated by load_mods_config()).
 #
 # Note: installer modules are SOURCED (not executed standalone) and
@@ -44,6 +44,10 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # Runtime flags
 DEBUG_MODE=false
+# #185: was accepted and silently discarded — every prompt still blocked on
+# stdin regardless. Now consumed by mcss_prompt (utilities.sh) at every
+# installer prompt; see that function for what each one defaults to.
+ASSUME_YES=false
 
 # Parse installer flags early so startup/module logs can respect debug mode.
 declare -a FORWARDED_ARGS=()
@@ -51,6 +55,9 @@ for arg in "$@"; do
     case "$arg" in
         --debug)
             DEBUG_MODE=true
+            ;;
+        --yes)
+            ASSUME_YES=true
             ;;
         *)
             FORWARDED_ARGS+=("$arg")

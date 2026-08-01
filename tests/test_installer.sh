@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_installer.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=15
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -461,6 +461,125 @@ test_t7_13() {
 }
 
 # =============================================================================
+# T7.14 — install-minecraft-splitscreen.sh's --yes flag actually sets
+# ASSUME_YES=true (#185: it used to be silently forwarded and never checked
+# anywhere — a real flag with zero effect). Same stub-modules/TESTING_MODE
+# technique as T7.1, with --yes on argv before sourcing.
+# =============================================================================
+test_t7_14() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    mkdir -p "$tmpdir/modules"
+    for mod in utilities.sh java_management.sh launcher_setup.sh runtime_deploy.sh version_management.sh \
+                mod_management.sh instance_creation.sh \
+                system_integration.sh main_workflow.sh \
+                dock_detection.sh controller_monitor.sh window_manager.sh \
+                instance_lifecycle.sh watchdog.sh; do
+        printf '#!/bin/bash\n' > "$tmpdir/modules/$mod"
+    done
+    printf '#!/bin/bash\nmain() { echo "MAIN_CALLED"; }\n' > "$tmpdir/modules/main_workflow.sh"
+
+    local out
+    out=$(
+        cd "$tmpdir"
+        bash -c "
+            export TESTING_MODE=1
+            set -- --yes
+            source '${REPO_ROOT}/install-minecraft-splitscreen.sh'
+            echo \"ASSUME_YES=\${ASSUME_YES:-unset}\"
+        " 2>/dev/null || true
+    )
+
+    if echo "$out" | grep -q "^ASSUME_YES=true$"; then
+        _pass "T7.14 — --yes on argv sets ASSUME_YES=true"
+    else
+        _fail "T7.14" "expected ASSUME_YES=true, got: ${out}"
+    fi
+}
+
+# =============================================================================
+# T7.15 — select_user_mods under ASSUME_YES=true never touches stdin (real
+# EOF, no --yes-aware guard would previously have been irrelevant here since
+# this specific read WAS already EOF-guarded — but --yes itself was a no-op,
+# so it could not skip a LIVE terminal's prompt). With at least one optional
+# mod present (unlike T7.12's all-required case, which never reaches the
+# prompt at all), this exercises the real mcss_prompt call site end to end.
+# =============================================================================
+test_t7_15() {
+    local result
+    result=$(
+        bash -c "
+            set -euo pipefail
+            source '${REPO_ROOT}/modules/utilities.sh'
+
+            print_header()   { :; }
+            print_info()     { echo \"[INFO] \$*\"; }
+            print_progress() { :; }
+            print_success()  { :; }
+            print_error()    { echo \"[ERROR] \$*\" >&2; }
+            print_warning()  { :; }
+            print_debug()    { :; }
+
+            declare -a SUPPORTED_MODS=(\"Controlify\" \"Sodium\" \"OptionalMod\")
+            declare -a REQUIRED_SPLITSCREEN_MODS=(\"Controlify\" \"Sodium\")
+            declare -a MOD_IDS=(\"id1\" \"id2\" \"id3\")
+            declare -a MOD_TYPES=(\"modrinth\" \"modrinth\" \"modrinth\")
+            declare -a MOD_DEPENDENCIES=(\"\" \"\" \"\")
+            declare -A MOD_DEPS_BY_NAME=()
+            declare -a FINAL_MOD_INDEXES=()
+            MC_VERSION=\"1.21.6\"
+
+            source '${REPO_ROOT}/modules/mod_management.sh' 2>/dev/null \
+                || true
+
+            resolve_conf_dependencies() { :; }
+            resolve_all_dependencies()  { :; }
+            prompt_custom_mods()        { :; }
+
+            ASSUME_YES=true select_user_mods < /dev/null
+
+            echo \"MOD_SELECTION=\${mod_selection:-unset}\"
+        " 2>&1
+    )
+
+    if echo "$result" | grep -q "Installing all available mods" \
+        && ! echo "$result" | grep -qi "Your choice"; then
+        _pass "T7.15 — select_user_mods under ASSUME_YES=true skips straight to install-all"
+    else
+        _fail "T7.15" "expected the --yes skip path (result: ${result})"
+    fi
+}
+
+# =============================================================================
+# T7.16 — the Steam-integration prompt's two mcss_prompt defaults are "y"
+# (ASSUME_YES) then "n" (bare EOF), in that order — a STRUCTURAL check, not
+# an execution one, because exercising the real function needs a live Steam
+# userdata tree. The asymmetry is deliberate and safety-relevant (#185): an
+# unintended EOF must never silently rewrite shortcuts.vdf, but an explicit
+# --yes should do the recommended thing without asking. A future edit that
+# swaps the two literals, or changes the desktop-launcher prompt to match
+# (it should NOT — see the comment at that call site), breaks this.
+# =============================================================================
+test_t7_16() {
+    local mod="$REPO_ROOT/modules/system_integration.sh"
+    local steam_line desktop_line
+
+    steam_line=$(grep -A1 'add Minecraft Splitscreen launcher to Steam' "$mod" \
+        | grep -oE '"[yn]" "[yn]" add_to_steam')
+    desktop_line=$(grep -A1 'create a desktop launcher for Minecraft Splitscreen' "$mod" \
+        | grep -oE '"[yn]" "[yn]" create_desktop')
+
+    if [[ "$steam_line" == '"y" "n" add_to_steam' ]] \
+        && [[ "$desktop_line" == '"n" "n" create_desktop' ]]; then
+        _pass "T7.16 — Steam prompt defaults y/n; desktop prompt defaults n/n"
+    else
+        _fail "T7.16" "steam=[${steam_line}] desktop=[${desktop_line}]"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== installer test suite ==="
@@ -477,6 +596,9 @@ test_t7_10
 test_t7_11
 test_t7_12
 test_t7_13
+test_t7_14
+test_t7_15
+test_t7_16
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

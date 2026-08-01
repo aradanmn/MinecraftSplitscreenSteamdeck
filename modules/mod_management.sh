@@ -1742,11 +1742,13 @@ prompt_custom_mods() {
 
     echo ""
     print_warning "Custom mods are untested in this splitscreen setup. Add at your own risk."
+    # #185: --yes now genuinely skips this (declines — custom mods are
+    # explicitly "untested... at your own risk" above, so --yes should not
+    # quietly opt into them). mcss_prompt replaces the old bare EOF guard
+    # here too, one encoding instead of two.
     local add_custom_choice="n"
-    if ! read -r -p "Do you want to add custom mods from Modrinth/CurseForge? (y/N): " add_custom_choice; then
-        print_warning "No input available for custom mod prompt, skipping custom mods."
-        return 0
-    fi
+    mcss_prompt "Do you want to add custom mods from Modrinth/CurseForge? (y/N): " \
+        "n" "n" add_custom_choice
 
     case "${add_custom_choice,,}" in
         y|yes) ;;
@@ -2014,7 +2016,9 @@ select_user_mods() {
         echo "  -1 = Install only required mods ($(_required_mods_summary))"
         echo ""
 
-        read -p "Your choice [0]: " mod_selection
+        # #185: was a bare read under set -e; --yes and a real EOF both now
+        # land on "0" (install all available), the prompt's own default.
+        mcss_prompt "Your choice [0]: " "0" "0" mod_selection
 
         # Process user selection
         if [[ -z "$mod_selection" || "$mod_selection" == "0" ]]; then

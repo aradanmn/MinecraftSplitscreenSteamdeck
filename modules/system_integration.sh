@@ -94,7 +94,16 @@ setup_steam_integration() {
     print_info "Steam integration adds Minecraft Splitscreen to your Steam library."
     print_info "Benefits: Easy access from Steam, Big Picture mode support, Steam Deck Game Mode integration"
     echo ""
-    read -p "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " add_to_steam
+    # #185: was a bare read under set -e — a real EOF killed the whole
+    # install with no error message, right at this step. --yes now defaults
+    # to YES here on purpose (Steam integration is "highly recommended" per
+    # the print_info above, and --yes means "do the recommended thing,
+    # don't ask"); an ACCIDENTAL bare EOF still defaults to NO, because an
+    # unintended EOF must never silently perform an action with real side
+    # effects (editing shortcuts.vdf) nobody explicitly asked for.
+    local add_to_steam=""
+    mcss_prompt "Do you want to add Minecraft Splitscreen launcher to Steam? [y/N]: " \
+        "y" "n" add_to_steam
     if [[ "$add_to_steam" =~ ^[Yy]$ ]]; then
         
         # =============================================================================
@@ -351,7 +360,13 @@ create_desktop_launcher() {
     print_info "Desktop launcher creates a native shortcut for your desktop environment."
     print_info "Benefits: Desktop shortcut, application menu entry, search integration"
     echo ""
-    read -p "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " create_desktop
+    # #185: was a bare read under set -e; --yes and a bare EOF both default
+    # to NO here (unlike Steam integration above) — a desktop shortcut is a
+    # niche convenience, not the installer's main recommended action, and
+    # Deck runtime already reports "desktop mode unsupported" regardless.
+    local create_desktop=""
+    mcss_prompt "Do you want to create a desktop launcher for Minecraft Splitscreen? [y/N]: " \
+        "n" "n" create_desktop
     if [[ "$create_desktop" =~ ^[Yy]$ ]]; then
         
         # =============================================================================
