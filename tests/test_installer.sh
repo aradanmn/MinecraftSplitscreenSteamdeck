@@ -11,7 +11,7 @@ set -euo pipefail
 # Run: bash tests/test_installer.sh
 # =============================================================================
 
-readonly TEST_TOTAL=15
+readonly TEST_TOTAL=17
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
@@ -500,6 +500,39 @@ test_t7_14() {
 }
 
 # =============================================================================
+# T7.17 — a bash prefix-assignment to a name that is readonly in the CURRENT
+# shell does not deliver the value to a real child process at all (#184).
+# This is the exact mechanism that silently broke MCSS_STEAMGRIDDB_ICON_URL's
+# handoff to add-to-steam.py: it looks child-scoped ("VAR=val cmd" is usually
+# safe even for names never declared readonly), but bash still touches the
+# PARENT's own variable-table entry for that name first, and refuses if it's
+# readonly — the child then runs anyway (this is NOT `set -e`-fatal) but never
+# receives the intended value. A real subprocess is used here (not a builtin),
+# because a builtin like `echo` reads the parent's own variable through normal
+# scoping and would misleadingly appear to work.
+# =============================================================================
+test_t7_17() {
+    local prefix_result env_result
+
+    prefix_result=$(bash -c '
+        readonly ICON_URL="original"
+        ICON_URL="attempted-override" bash -c "echo \"child saw: [\$ICON_URL]\""
+    ' 2>/dev/null)
+
+    env_result=$(bash -c '
+        readonly ICON_URL="original"
+        env ICON_URL="attempted-override" bash -c "echo \"child saw: [\$ICON_URL]\""
+    ' 2>/dev/null)
+
+    if [[ "$prefix_result" == "child saw: []" ]] \
+        && [[ "$env_result" == "child saw: [attempted-override]" ]]; then
+        _pass "T7.17 — env delivers a value past a readonly var; a prefix assignment silently does not"
+    else
+        _fail "T7.17" "prefix=[${prefix_result}] env=[${env_result}]"
+    fi
+}
+
+# =============================================================================
 # T7.15 — select_user_mods under ASSUME_YES=true never touches stdin (real
 # EOF, no --yes-aware guard would previously have been irrelevant here since
 # this specific read WAS already EOF-guarded — but --yes itself was a no-op,
@@ -580,6 +613,25 @@ test_t7_16() {
 }
 
 # =============================================================================
+# T7.18 — the real call site (system_integration.sh, add-to-steam.py handoff)
+# uses `env` for MCSS_STEAMGRIDDB_ICON_URL, not a bare prefix assignment.
+# Structural, not an execution test: exercising the real function needs a
+# live Steam userdata tree and a real add-to-steam.py run. T7.17 proves WHY
+# this line has to be this way; this pins that it stays this way.
+# =============================================================================
+test_t7_18() {
+    local mod="$REPO_ROOT/modules/system_integration.sh"
+
+    if grep -qE '^\s*if env MCSS_TARGET_DIR="\$TARGET_DIR" \\$' "$mod" \
+        && grep -A1 'if env MCSS_TARGET_DIR' "$mod" \
+            | grep -q 'MCSS_STEAMGRIDDB_ICON_URL="\$MCSS_STEAMGRIDDB_ICON_URL" \\'; then
+        _pass "T7.18 — the add-to-steam.py handoff uses env, not a prefix assignment"
+    else
+        _fail "T7.18" "expected 'if env MCSS_TARGET_DIR=...' at the add-to-steam.py call site"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== installer test suite ==="
@@ -599,6 +651,8 @@ test_t7_13
 test_t7_14
 test_t7_15
 test_t7_16
+test_t7_17
+test_t7_18
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 
