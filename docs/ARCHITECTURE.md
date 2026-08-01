@@ -33,10 +33,14 @@ Rules:
   commented (existing examples: `setInstanceCfgValue` in instance_lifecycle,
   `_kill_tree` in orchestrator).
 - **Standalone scripts** (`uninstall-minecraft-splitscreen.sh`, `deploy.sh`,
-  `add-to-steam.py`) get a *documented duplication budget*: they may carry
-  private copies of `print_*`, TARGET_DIR, and the manifest parse ONLY with a
-  `# PAIRED WITH <canonical site>` comment at the copy. Undocumented copies are
-  bugs.
+  `add-to-steam.py`, `remove-from-steam.py`) get a *documented duplication
+  budget*: they may carry private copies of `print_*`, TARGET_DIR, and the
+  manifest parse ONLY with a `# PAIRED WITH <canonical site>` comment at the
+  copy. Undocumented copies are bugs.
+- `add-to-steam.py` and `remove-from-steam.py` are **inverses and must stay
+  paired**: the app name, the appid derivation, and the grid-artwork naming are
+  the same facts read in both directions. A change to how a shortcut is written
+  is a change to how it is found and removed.
 
 ## 2. Domain ownership (functions)
 
