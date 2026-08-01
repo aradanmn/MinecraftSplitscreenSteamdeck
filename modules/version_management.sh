@@ -364,8 +364,13 @@ get_minecraft_version() {
     echo "  1-${#supported_versions[@]} = Select a specific version from the list above"
     echo "  [Enter] = Use latest supported version ($latest_supported) [RECOMMENDED]"
     
-    local user_choice
-    read -p "Your choice [latest]: " user_choice
+    # #185: was a bare read under set -e — a real EOF (no terminal, or --yes
+    # with no non-interactive handling) killed the whole install with no
+    # error message. mcss_prompt closes both: --yes and EOF land here on the
+    # same empty-string default, which the check below already treats as
+    # "use latest".
+    local user_choice=""
+    mcss_prompt "Your choice [latest]: " "" "" user_choice
     
     if [[ -z "$user_choice" || "$user_choice" == "latest" ]]; then
         # Use latest supported version
