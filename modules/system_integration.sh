@@ -274,7 +274,19 @@ setup_steam_integration() {
                 # #91: MCSS_STEAMGRIDDB_ICON_URL joins MCSS_TARGET_DIR on the
                 # same env channel — the icon URL was hardcoded in BOTH this
                 # module's desktop half and add-to-steam.py.
-                if MCSS_TARGET_DIR="$TARGET_DIR" \
+                #
+                # #184: MUST go through `env`, not a bash prefix-assignment
+                # (`VAR=val cmd`). MCSS_STEAMGRIDDB_ICON_URL is `readonly` in
+                # THIS shell (line 69) — a prefix assignment still touches the
+                # parent shell's own variable-table entry for that name before
+                # handing the environment to the child, and bash refuses that
+                # for anything already readonly ("readonly variable"), even
+                # though the assignment looks child-scoped. `env` spawns a
+                # genuinely separate process and never touches our binding at
+                # all. This was silently failing behind the `2>/dev/null`
+                # below — add-to-steam.py's own hardcoded fallback URL matches
+                # this one today, which is the only reason nothing broke.
+                if env MCSS_TARGET_DIR="$TARGET_DIR" \
                     MCSS_STEAMGRIDDB_ICON_URL="$MCSS_STEAMGRIDDB_ICON_URL" \
                     python3 "$steam_script_temp" 2>/dev/null; then
                     print_success "✅ Minecraft Splitscreen successfully added to Steam library"
