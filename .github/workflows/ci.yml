@@ -84,6 +84,7 @@ jobs:
             [tests/test_preflight.sh]=12
             [tests/test_version_stamp.sh]=18
             [tests/test_workdir.sh]=15
+            [tests/test_uninstall_purge.sh]=22
           )
 
           for suite in "${!BASELINE[@]}"; do
