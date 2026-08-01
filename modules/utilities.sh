@@ -27,17 +27,26 @@
 #   run_with_spinner(label, cmd...) — run a long quiet command with a live
 #                                    busy indicator on a TTY (stderr); inline
 #                                    on a pipe. Returns the command's status
+#   mcss_prompt(prompt, yes_default, eof_default, outvar) — the ONE
+#                                    encoding of "ask, but never hang or die
+#                                    silently" (#185): ASSUME_YES=true skips
+#                                    straight to yes_default, a real EOF on
+#                                    stdin falls back to eof_default, only a
+#                                    live answer actually prompts
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   TARGET_DIR          — installer entry (get_prism_executable)
 #   CURSEFORGE_API_KEY  — user env, optional (BYOK) — a real key wins
 #   CURSEFORGE_KEY_FILE — optional (BYOK), defaults under ~/.config
+#   ASSUME_YES          — installer entry --yes flag (mcss_prompt)
 #
 # Inputs:  network (curl/wget), CurseForge token material.
 # Outputs: stdout body for fetch_url("-", ...); colored UX to stderr/stdout
 #          per the print_* helper.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-08-01  Fix #185: mcss_prompt — --yes was a no-op and two bare
+#                    reads under set -e died silently on EOF with no message
 #   v1.3 2026-07-17  Fix #47/#88: one CurseForge token fetch + policy split
 #   v1.2 2026-07-16  Fix #51 D14: restore tolerance — a slow call must not
 #                    kill the whole version scan
@@ -283,6 +292,43 @@ print_progress() {
 print_debug() {
     if [[ "${DEBUG_MODE:-false}" == "true" ]]; then
         echo "🐛 $1" >&2
+    fi
+}
+
+# mcss_prompt: Ask a yes/no-or-value question with a safe, non-hanging path.
+#
+# #185: `--yes` used to be a no-op (silently forwarded, never checked) and
+# two prompts were bare `read`s under `set -euo pipefail` — a real EOF (no
+# terminal, or stdin already exhausted by an earlier prompt) made `read`
+# return non-zero, and `set -e` killed the WHOLE install right there with no
+# error message. This is the one place that risk is closed, for every
+# installer prompt.
+#
+# The two defaults are allowed to differ ON PURPOSE. `--yes` is an explicit
+# request to do the RECOMMENDED thing without asking — see the Steam
+# integration call site, the one place this matters, for why its yes_default
+# is "y" while a bare accidental EOF (nobody asked for anything) still
+# defaults to "n": an unintended EOF must never silently perform an action
+# with real side effects that nobody explicitly requested.
+# Inputs:
+#   $1 — prompt string, passed straight to `read -p`
+#   $2 — value to use when ASSUME_YES=true (skips the read entirely)
+#   $3 — value to use when `read` hits a genuine EOF
+#   $4 — name of the caller's variable to assign the result into
+#   Globals: ASSUME_YES (read)
+# Outputs:
+#   side effect — sets the named variable; logs which path was taken
+mcss_prompt() {
+    local prompt="$1" yes_default="$2" eof_default="$3"
+    local -n _mcss_prompt_out="$4"
+    if [[ "${ASSUME_YES:-false}" == "true" ]]; then
+        print_info "--yes: skipping prompt, using default."
+        _mcss_prompt_out="$yes_default"
+        return 0
+    fi
+    if ! read -r -p "$prompt" _mcss_prompt_out; then
+        print_info "No input available — using default."
+        _mcss_prompt_out="$eof_default"
     fi
 }
 
