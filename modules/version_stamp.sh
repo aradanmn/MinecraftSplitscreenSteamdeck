@@ -33,13 +33,15 @@
 #                                       sed failure (callers decide severity)
 #   mcss_stamp_normalize <file>       — stdout: contents with stamps returned
 #                                       to placeholder form
-#   mcss_stamp_resolve <checkout_dir> [mark_dirty]
+#   mcss_stamp_resolve <checkout_dir> [mark_dirty] [fallback_ref]
 #                                     — stdout: "<version>\t<commit>\t<date>"
 #
 # Globals CONSUMED: none. Deliberately self-contained — both callers source it
 # from different trees, so it must not depend on installer or runtime globals.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-07-31  #170: trust git HEAD only when the checkout is the
+#                    source; fall back to the fetched ref, then "unknown"
 #   v1.0 2026-07-29  #89: extracted from launcher_setup.sh + deploy.sh
 # =============================================================================
 
@@ -92,12 +94,26 @@ mcss_stamp_normalize() {
         "$1"
 }
 
-# mcss_stamp_resolve: Compute the three stamp values for a checkout.
+# mcss_stamp_resolve: Compute the three stamp values for an install.
 #
 # Every component degrades to a literal rather than failing: an installed tree
 # may have no VERSION file, no git, or no `date -Iseconds`, and none of those
 # should abort an install (PRINCIPLES #5 — the launcher just reports
 # dev/unknown).
+#
+# COMMIT RESOLUTION (#170). `git -C "$checkout" rev-parse HEAD` alone is unsafe:
+# git walks UP from that directory, so if the installer happens to run from
+# inside an unrelated repository it returns THAT repo's HEAD and stamps a
+# confident, authoritative-looking SHA describing code which was never
+# installed. Measured 2026-07-31: a REPO_REF=refactor/91-pr-c install run from
+# .workdir/fresh-install/ (nested in the project checkout) stamped the enclosing
+# checkout's branch instead.
+#
+# So the HEAD is trusted only when this checkout really is the source — i.e. it
+# carries the modules/ tree the install would have used. Otherwise the ref the
+# install actually fetched from is the honest answer, prefixed `ref:` so it can
+# never be mistaken for a SHA. Failing both, "unknown" — which is the correct
+# answer and strictly better than a wrong one.
 #
 # The `+dirty` marker is a PARAMETER, not a second copy: deploy.sh wants it (a
 # dev tree is routinely dirty), the installer does not (it stamps a clean
@@ -108,18 +124,32 @@ mcss_stamp_normalize() {
 #   $1 — checkout dir to read VERSION and git metadata from
 #   $2 — "mark_dirty" to append "+dirty" when the launcher or modules/ have
 #        uncommitted changes; anything else (or omitted) to skip the check
+#   $3 — fallback ref (the installer's REPO_REF) used when $1 is not the source;
+#        omitted for deploy.sh, which always runs from the real checkout
 # Outputs:
 #   stdout — "<version>\t<commit>\t<date>", one line, tab-separated
 mcss_stamp_resolve() {
-    local checkout="${1:-.}" mark_dirty="${2:-}"
+    local checkout="${1:-.}" mark_dirty="${2:-}" fallback_ref="${3:-}"
     local version commit date
     version=$(cat "$checkout/VERSION" 2>/dev/null || echo "dev")
-    commit=$(git -C "$checkout" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    if [[ "$mark_dirty" == "mark_dirty" ]] \
-        && ! git -C "$checkout" diff --quiet HEAD \
-            -- minecraftSplitscreen.sh modules/ 2>/dev/null; then
-        commit="${commit}+dirty"
+
+    # Trust the git HEAD only if this directory is plausibly the source tree.
+    commit=""
+    if [[ -d "$checkout/modules" ]]; then
+        commit=$(git -C "$checkout" rev-parse --short HEAD 2>/dev/null || echo "")
     fi
+    if [[ -n "$commit" ]]; then
+        if [[ "$mark_dirty" == "mark_dirty" ]] \
+            && ! git -C "$checkout" diff --quiet HEAD \
+                -- minecraftSplitscreen.sh modules/ 2>/dev/null; then
+            commit="${commit}+dirty"
+        fi
+    elif [[ -n "$fallback_ref" ]]; then
+        commit="ref:${fallback_ref}"
+    else
+        commit="unknown"
+    fi
+
     date=$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo "unknown")
     printf '%s\t%s\t%s\n' "$version" "$commit" "$date"
 }

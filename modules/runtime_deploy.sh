@@ -90,8 +90,10 @@ setup_splitscreen_launcher_script() {
     # #89: format owned by modules/version_stamp.sh — deploy.sh applies the same
     # one. No mark_dirty here: the installer stamps a freshly fetched tree.
     local _ver _commit _date
+    # #170: hand over REPO_REF so a curl|bash install (no local checkout) stamps
+    # the ref it actually fetched instead of an unrelated repo's HEAD.
     IFS=$'\t' read -r _ver _commit _date \
-        < <(mcss_stamp_resolve "${SCRIPT_DIR:-.}")
+        < <(mcss_stamp_resolve "${SCRIPT_DIR:-.}" "" "${REPO_REF:-}")
     if mcss_stamp_apply "$launcher_script" "$_ver" "$_commit" "$_date"; then
         print_info "Stamped launcher: version=${_ver} commit=${_commit}"
     else

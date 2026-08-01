@@ -16,7 +16,7 @@ set -uo pipefail
 # Run: bash tests/test_version_stamp.sh
 # =============================================================================
 
-readonly TEST_TOTAL=15
+readonly TEST_TOTAL=18
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -240,6 +240,58 @@ test_resolve_no_dirty_marker_without_flag() {
     _teardown
 }
 
+
+# --- T4: commit provenance (#170) ------------------------------------------
+# git rev-parse walks UP, so an installer running from inside an unrelated repo
+# used to stamp THAT repo's HEAD — a confident SHA describing code that was
+# never installed. Measured on-Deck 2026-07-31.
+
+# T4.1: a directory that is NOT a source tree must not borrow an ambient HEAD,
+# even though `git rev-parse` there would succeed (this repo is the ambient one).
+test_resolve_ignores_ambient_repo() {
+    _setup
+    local sub="$REPO_ROOT/.workdir/stamp-ambient-test"
+    mkdir -p "$sub"
+    local c
+    IFS=$'\t' read -r _ c _ < <(mcss_stamp_resolve "$sub")
+    rmdir "$sub" 2>/dev/null || true
+    if [[ "$c" == "unknown" ]]; then
+        _pass "T4.1 non-source dir inside a repo resolves 'unknown', not the ambient HEAD"
+    else
+        _fail "T4.1 non-source dir inside a repo resolves 'unknown', not the ambient HEAD" \
+            "got '$c'"
+    fi
+    _teardown
+}
+
+# T4.2: given the ref the install actually fetched, say so — honest provenance
+# beats "unknown", and `ref:` makes it unmistakable for a SHA.
+test_resolve_uses_fallback_ref() {
+    _setup
+    local sub="$REPO_ROOT/.workdir/stamp-ambient-test2"
+    mkdir -p "$sub"
+    local c
+    IFS=$'\t' read -r _ c _ < <(mcss_stamp_resolve "$sub" "" "refactor/91-pr-c")
+    rmdir "$sub" 2>/dev/null || true
+    _expect "T4.2 falls back to the fetched ref when not a source tree" \
+        "$c" "ref:refactor/91-pr-c"
+    _teardown
+}
+
+# T4.3: a real source tree (this checkout) still resolves its own HEAD.
+test_resolve_trusts_real_checkout() {
+    _setup
+    local c expected
+    IFS=$'\t' read -r _ c _ < <(mcss_stamp_resolve "$REPO_ROOT")
+    expected=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null)
+    if [[ "$c" == "$expected" ]]; then
+        _pass "T4.3 a real checkout still resolves its own HEAD"
+    else
+        _fail "T4.3 a real checkout still resolves its own HEAD" "got '$c' want '$expected'"
+    fi
+    _teardown
+}
+
 run_all_tests() {
     echo "=== version_stamp.sh ==="
     test_apply_replaces_all_three
@@ -257,6 +309,9 @@ run_all_tests() {
     test_resolve_degrades_without_version_or_git
     test_resolve_reads_version_file
     test_resolve_no_dirty_marker_without_flag
+    test_resolve_ignores_ambient_repo
+    test_resolve_uses_fallback_ref
+    test_resolve_trusts_real_checkout
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then
