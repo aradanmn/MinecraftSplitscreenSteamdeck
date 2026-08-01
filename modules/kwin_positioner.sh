@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # =============================================================================
 # kwin_positioner.sh — position windows by working WITH KWin (Plasma 6)
 # =============================================================================
@@ -44,6 +45,7 @@
 #          `[kwin_positioner]` prefix.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.4 2026-08-01  #98 item 1: set -euo pipefail (last runtime module without it)
 #   v1.3 2026-07-09  #45: generated scripts move to $MCSS_HELPER_DIR (N6/N7)
 #   v1.2 2026-07-01  v1.1 batch: env guard, nested-session teardown, audits
 #   v1.1 2026-06-27  Tried raise/jiggle/minimize-toggle repaints; all
