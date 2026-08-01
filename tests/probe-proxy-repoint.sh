@@ -50,8 +50,8 @@
 #                        $MCSS_LAUNCHER_ROOT/bin/evsieve)
 #   MCSS_MODULES       — deployed module dir (default the house path; same
 #                        override as probe-evsieve-reconnect.sh)
-#   MCSS_PROBE_RESULTS — results file (default $HOME/proxy-repoint-probe-
-#                        <timestamp>.txt; set BEFORE sourcing the shared
+#   MCSS_PROBE_RESULTS — results file (default .workdir/probes/proxy-repoint-
+#                        probe-<timestamp>.txt; set BEFORE sourcing the shared
 #                        probe file below so its RESULTS default honors it)
 #
 # Version history:
@@ -78,11 +78,15 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES="${MCSS_MODULES:-$HOME/.local/share/PolyMC/modules}"
+# shellcheck source=tests/lib/workdir.sh
+source "$HERE/lib/workdir.sh"
 
 # Repoint-probe-specific results filename — set BEFORE sourcing the shared
 # probe file so its own RESULTS="${MCSS_PROBE_RESULTS:-...}" default picks
 # this up instead of its evsieve-probe-<ts>.txt name.
-: "${MCSS_PROBE_RESULTS:=$HOME/proxy-repoint-probe-$(date +%Y%m%d-%H%M%S).txt}"
+mcss_workdir_init probes || true
+: "${MCSS_PROBE_RESULTS:=$(mcss_workdir probes)/proxy-repoint-probe-\
+$(date +%Y%m%d-%H%M%S).txt}"
 export MCSS_PROBE_RESULTS
 
 # --- Shared probe harness (SOURCED, not copied — its Main flow is guarded

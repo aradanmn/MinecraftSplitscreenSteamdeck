@@ -325,7 +325,7 @@ Multi-agent audit, adversarially verified: 27 distinct confirmed bugs (2 Critica
 
 - [ ] Complete Phase B test run (Tests 1–7) on Deck — never finished cleanly
   - Deck: `ssh deck@192.168.1.131` → `git pull origin feat/gamescope-windowing`
-  - Launch Steam shortcut; watch `~/splitscreen-phase-b-test-latest.log` + `/tmp/splitscreen-debug-latest.log`
+  - Launch Steam shortcut; watch `.workdir/phase-b/splitscreen-phase-b-test-latest.log` + `/tmp/splitscreen-debug-latest.log`
   - Expected first failure: SingleApplication forwarding — slots 2-4 PolyMC bwrap exits after
     forwarding to slot 1 primary; watchdog may fire spurious SLOT_DIED. Check `modules/watchdog.sh:64-74`
     (already checks EITHER bwrap_pid OR java_pid — may already handle it).

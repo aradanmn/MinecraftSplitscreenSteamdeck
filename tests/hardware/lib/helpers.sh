@@ -6,7 +6,8 @@
 # diagnostic dumps, and orchestrator lifecycle helpers.
 #
 # Expected exported variables (set by run_all.sh before sourcing):
-#   HW_LOG            — path to the master log file
+#   HW_LOG            — path to the master log file. OPTIONAL: left unset, this
+#                       library defaults it under .workdir/hardware/ (#122).
 #   REPO_ROOT         — absolute path to the repo
 #   HW_PASSED         — running pass counter (integer)
 #   HW_FAILED         — running fail counter (integer)
@@ -18,6 +19,40 @@
 # Guard against double-sourcing
 [[ -n "${_HW_HELPERS_LOADED:-}" ]] && return 0
 readonly _HW_HELPERS_LOADED=1
+
+# ---------------------------------------------------------------------------
+# Log location (#122)
+# ---------------------------------------------------------------------------
+# Every stage used to compute its own "$HOME/splitscreen-hwtest-<stamp>.log" in
+# a standalone-bootstrap block — the same path spelled eight times, dropping
+# logs loose in $HOME. The path is decided HERE now, once, and the stage
+# bootstraps just leave HW_LOG unset.
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../lib" && pwd)/workdir.sh"
+
+# hw_log_path: Answer the log path for a hardware run. Creates nothing.
+# Inputs:
+#   $1 — optional stage suffix ("stage3"), for stages that keep their own log
+#        when run standalone rather than appending to the master one
+# Outputs:
+#   stdout — absolute path (data only)
+# shellcheck disable=SC2120  # the suffix arg IS passed, by stage3/stage6's
+# standalone blocks; shellcheck can't see across files.
+hw_log_path() {
+    local suffix="${1:-}"
+    local stamp
+    stamp="$(date +%Y%m%d_%H%M%S)"
+    [[ -n "$suffix" ]] && suffix="-$suffix"
+    echo "$(mcss_workdir hardware)/splitscreen-hwtest-${stamp}${suffix}.log"
+}
+
+# Default HW_LOG for a standalone stage. run_all.sh exports its own master log
+# before sourcing this, and that must win — hence the unset check.
+if [[ -z "${HW_LOG:-}" ]]; then
+    mcss_workdir_init hardware || true
+    HW_LOG="$(hw_log_path)"
+    export HW_LOG
+fi
 
 # ---------------------------------------------------------------------------
 # Logging

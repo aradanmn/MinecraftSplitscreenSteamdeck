@@ -1,6 +1,6 @@
 # Benchmark Results — baseline vs. standard mod set + JVM flags
 
-> Working copy lives at `~/mcss-benchmark/RESULTS.md` on the Deck. The driver fills it
+> Working copy lives at `.workdir/benchmark/RESULTS.md` on the Deck. The driver fills it
 > in **after every cycle**. After the run, the summary tables + verdict are committed
 > to the repo as `docs/BENCH-AB-<date>.md` (see RUNBOOK.md "Post-run recording").
 

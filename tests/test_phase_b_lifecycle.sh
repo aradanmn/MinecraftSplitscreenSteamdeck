@@ -23,10 +23,15 @@
 set -uo pipefail   # no -e: individual test failures must not abort the harness
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/lib/workdir.sh
+source "$REPO_ROOT/tests/lib/workdir.sh"
 # Per-run timestamped log so runs never get interleaved (the old single file
 # made diagnosis hard). A stable -latest symlink points at the current run.
-LOG="${SPLITSCREEN_TEST_LOG:-$HOME/splitscreen-phase-b-test-$(date +%Y%m%d-%H%M%S).log}"
-ln -sfn "$LOG" "$HOME/splitscreen-phase-b-test-latest.log" 2>/dev/null || true
+mcss_workdir_init phase-b || true
+LOG="${SPLITSCREEN_TEST_LOG:-$(mcss_workdir phase-b)/splitscreen-phase-b-test-\
+$(date +%Y%m%d-%H%M%S).log}"
+ln -sfn "$LOG" "$(mcss_workdir phase-b)/splitscreen-phase-b-test-latest.log" \
+    2>/dev/null || true
 
 # ── Orchestrator FIFO path (must match what orchestrator.sh uses) ──────────
 FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"

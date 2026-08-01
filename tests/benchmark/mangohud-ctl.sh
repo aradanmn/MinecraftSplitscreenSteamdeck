@@ -12,7 +12,7 @@
 #   mangohud-ctl.sh status
 #   mangohud-ctl.sh probe-check <since-epoch>
 #       After a probe run (RUNBOOK step): verify a MangoHud CSV newer than
-#       <since-epoch> exists under ~/mcss-benchmark/mangohud with >10 numeric
+#       <since-epoch> exists under .workdir/benchmark/mangohud with >10 numeric
 #       fps rows → prints PROBE PASS / PROBE FAIL (exit 0/1).
 #
 # Env: MCSS_LAUNCHER_ROOT (default ~/.local/share/PolyMC)
@@ -26,7 +26,9 @@ set -euo pipefail
 LAUNCHER_ROOT="${MCSS_LAUNCHER_ROOT:-$HOME/.local/share/PolyMC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 WRAPPER="$SCRIPT_DIR/mangohud-wrapper.sh"
-MANGOHUD_LOG_DIR="$HOME/mcss-benchmark/mangohud"
+# shellcheck source=tests/lib/workdir.sh
+source "$SCRIPT_DIR/../lib/workdir.sh"
+MANGOHUD_LOG_DIR="$(mcss_workdir benchmark/mangohud)"
 INSTANCE_PREFIX="latestUpdate-"
 
 usage() {

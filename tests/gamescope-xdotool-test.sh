@@ -13,7 +13,7 @@
 #   5. After 5 seconds, a result window appears for 15 seconds
 #      showing PASS (green) or FAIL (red) + xdotool geometry readback
 #   6. After the test, exit the game/session (Steam+B)
-#   7. Read ~/splitscreen-xdotool-result.txt for the full log
+#   7. Read .workdir/gamescope/splitscreen-xdotool-result.txt for the full log
 #
 # WHAT THE COLORS MEAN:
 #   - You see RED on the left and BLUE on the right side-by-side
@@ -24,7 +24,10 @@
 #     → Read the text for exact geometry data
 # =============================================================================
 
-RESULT_FILE="$HOME/splitscreen-xdotool-result.txt"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/workdir.sh"
+mcss_workdir_init gamescope || true
+RESULT_FILE="$(mcss_workdir gamescope)/splitscreen-xdotool-result.txt"
 
 echo "=== Gamescope xdotool Geometry Test ===" | tee "$RESULT_FILE"
 echo "DISPLAY=${DISPLAY:-:0}" | tee -a "$RESULT_FILE"

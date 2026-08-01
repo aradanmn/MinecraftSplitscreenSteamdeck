@@ -436,7 +436,8 @@ run_stage3_hotplug() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    export HW_LOG="$HOME/splitscreen-hwtest-$(date +%Y%m%d_%H%M%S)-stage3.log"
+    mcss_workdir_init hardware || true
+    HW_LOG="$(hw_log_path stage3)"; export HW_LOG
     export REPO_ROOT
     export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
     export SPLITSCREEN_FIFO="$HOME/.local/share/PolyMC/splitscreen.fifo"

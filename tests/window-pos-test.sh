@@ -4,7 +4,10 @@
 set -euo pipefail
 
 DISPLAY="${DISPLAY:-:0}"
-LOG="$HOME/splitscreen-pos-test.log"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/workdir.sh"
+mcss_workdir_init gamescope || true
+LOG="$(mcss_workdir gamescope)/splitscreen-pos-test.log"
 echo "$(date) === WINDOW POSITION TEST START ===" > "$LOG"
 
 echo "DISPLAY=$DISPLAY" | tee -a "$LOG"
