@@ -99,6 +99,7 @@ Known limitations:
 - 🚧 Two or more controllers dropping *at the same time* can swap screens on reconnect ([#151](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/151)) — restart the affected player's instance.
 - 🚧 Launching docked with **no external controller connected** exits without saying why ([#125](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/125)). Connect a pad before launching.
 - 🚧 Undocking mid-session moves the game to the Deck's screen, but re-docking does not move it back ([#134](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/134)). Dock before you launch and stay docked.
+- 🚧 Controlify's on-screen button prompts can show the wrong glyphs (e.g. SNES icons for a DualShock 4) — cosmetic only, input is unaffected ([#36](https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/issues/36)). Steam's virtual pad doesn't reliably expose the real controller type; if it bothers you, set the correct type manually per profile in Controlify's own controller settings.
 
 If you hit a rough edge, check back — fixes land in point releases.
 
