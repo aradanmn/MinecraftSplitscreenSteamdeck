@@ -87,7 +87,10 @@ Units in names (`_TIMEOUT_S`, `_INTERVAL_S`); ALL-CAPS mnemonic heredoc delimite
 
 ## 7. Bash rules
 
-1. `set -euo pipefail` in every module/entry script; explicit `set +e` windows where flow must survive failures. Known gaps to fix on next touch: `kwin_positioner.sh`, `minecraftSplitscreen.sh`.
+1. `set -euo pipefail` in every module/entry script; explicit `set +e` windows where flow must survive failures.
+   - **`kwin_positioner.sh`** — gap closed in #98; all 12 runtime modules except the two below now set it.
+   - **`minecraftSplitscreen.sh` is a deliberate EXEMPTION, not an outstanding gap** (#98, 2026-08-01). It already runs strict for everything after its module-source loop, because sourced modules set `-e` on the sourcing shell — `dock_detection.sh` (3rd in the manifest) flips it. Adding it at the top would newly subject the prologue to `-e` *and* `-u`, in a file with a documented scar: an `((_waited++))` returning 1 "killed this supervisor at second one on every run" (see the comment at the launchFromPlasma boot wait). The benefit is stylistic; the failure mode is no session at all. Revisit only with a real reason and a hardware test.
+   - **`preflight.sh` / `runtime_context.sh`** — the launcher's first two sources, so adding it there changes *when* the launcher becomes strict. Same decision as above, deferred for the same reason.
 2. `|| true` and `2>/dev/null` only with intent, made obvious by context or comment.
 3. Quote everything; unquoted only for deliberate word-splitting, with a comment.
 4. `local` for every function variable; `local -a/-A` for arrays; `local -n` namerefs for out-params.
