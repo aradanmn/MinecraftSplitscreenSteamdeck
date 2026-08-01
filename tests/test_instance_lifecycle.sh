@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_instance_lifecycle.sh
 # =============================================================================
 
-readonly TEST_TOTAL=14
+readonly TEST_TOTAL=16
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -516,7 +516,53 @@ test_t4_15() {
 
 test_t4_13
 test_t4_14
+
+# =============================================================================
+# T4.16/T4.17 — Fix #172: the idempotent cleanups must run even when the slot
+# is ALREADY INACTIVE, which is the normal case at session end (SLOT_DIED marks
+# it inactive before cleanup() calls teardown). Measured on-Deck 2026-07-31: a
+# normal quit logged only "Slot 1 is not active, nothing to tear down" and left
+# a stale geom cache entry behind, which mispositioned the NEXT session.
+# =============================================================================
+test_t4_16() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    mkdir -p "$tmpdir/geom"
+    echo "20971527 0 0 1280 720 full" > "$tmpdir/geom/slot1"
+    (
+        slot_is_active() { return 1; }        # INACTIVE — the normal end-of-session state
+        _get_slot_field() { echo ""; }
+        update_slot_state() { :; }
+        MCSS_GEOM_DIR="$tmpdir/geom"
+        teardown_instance 1 >/dev/null 2>&1
+    ) || true
+    if [[ ! -f "$tmpdir/geom/slot1" ]]; then
+        _pass "T4.16 — geom cache cleared even when the slot is already inactive (#172)"
+    else
+        _fail "T4.16" "stale entry survived: $(cat "$tmpdir/geom/slot1")"
+    fi
+}
+
+test_t4_17() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local record="$tmpdir/stop.calls"; : > "$record"
+    (
+        proxy_stop_slot() { echo "$1" >> "$record"; }
+        slot_is_active() { return 1; }        # INACTIVE
+        _get_slot_field() { echo ""; }
+        update_slot_state() { :; }
+        MCSS_GEOM_DIR="$tmpdir/geom"
+        teardown_instance 2 >/dev/null 2>&1
+    ) || true
+    if [[ "$(cat "$record" 2>/dev/null)" == "2" ]]; then
+        _pass "T4.17 — proxy stopped even when the slot is already inactive (#174 gap)"
+    else
+        _fail "T4.17" "proxy_stop_slot not called for an inactive slot"
+    fi
+}
+
 test_t4_15
+test_t4_16
+test_t4_17
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
