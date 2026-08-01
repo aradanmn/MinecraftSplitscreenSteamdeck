@@ -9,7 +9,7 @@ set -euo pipefail
 # Run: bash tests/test_instance_lifecycle.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=14
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -452,7 +452,71 @@ test_t4_9
 test_t4_10
 test_t4_11
 test_t4_12
+
+# =============================================================================
+# T4.14/T4.15 — Fix #174: teardown_instance stops the slot's controller proxy.
+#
+# The bug these guard: proxy_stop_slot was reachable ONLY from the orchestrator's
+# SLOT_DIED handler, so an unexpected slot death cleaned up but a NORMAL quit
+# left one evsieve per slot running. Orphaned, it reparents to Steam's `reaper`,
+# which blocks in do_wait until its children exit — wedging the session on the
+# Abort Game black screen (confirmed on-Deck 2026-07-31).
+#
+# Note what the old suites asserted: the SLOT_DIED path — the one path that
+# ALREADY stopped the proxy. Testing only the working path is why this shipped.
+# =============================================================================
+test_t4_14() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local record="$tmpdir/proxy_stop.calls"
+    : > "$record"
+    (
+        proxy_stop_slot() { echo "$1" >> "$record"; }
+        slot_is_active()  { return 0; }
+        _get_slot_field() { echo ""; }
+        update_slot_state() { :; }
+        MCSS_GEOM_DIR="$tmpdir/geom"
+        teardown_instance 2 >/dev/null 2>&1
+    )
+    local got; got="$(cat "$record" 2>/dev/null)"
+    if [[ "$got" == "2" ]]; then
+        _pass "T4.14 — teardown_instance stops the slot's proxy (#174)"
+    else
+        _fail "T4.14" "expected proxy_stop_slot called with slot 2, got '$got'"
+    fi
+}
+
+test_t4_15() {
+    local tmpdir; tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' RETURN
+    local marker="$tmpdir/reached_state_update"
+    local err="$tmpdir/stderr"
+    (
+        unset -f proxy_stop_slot 2>/dev/null || true
+        slot_is_active()  { return 0; }
+        _get_slot_field() { echo ""; }
+        update_slot_state() { echo ok > "$marker"; }
+        MCSS_GEOM_DIR="$tmpdir/geom"
+        teardown_instance 3 >/dev/null
+    ) 2>"$err" || true
+
+    # Two assertions, because the marker alone is not discriminating: assert the
+    # state update was REACHED *and* that nothing tried to call a function that
+    # does not exist. An unguarded proxy_stop_slot shows up as "command not
+    # found" and, under the production -e, aborts teardown before the state
+    # update — the exact regression this guards.
+    local reached=0 clean=0
+    [[ -f "$marker" ]] && reached=1
+    grep -q "command not found" "$err" || clean=1
+    if (( reached == 1 && clean == 1 )); then
+        _pass "T4.15 — teardown completes cleanly when proxy_stop_slot is absent"
+    else
+        _fail "T4.15" "reached_state_update=$reached no_missing_cmd=$clean; stderr: $(head -2 "$err" | tr '\n' ' ')"
+    fi
+}
+
+
 test_t4_13
+test_t4_14
+test_t4_15
 
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
