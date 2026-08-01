@@ -41,8 +41,11 @@ ls -la ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/saves/
 
 ### 1.2  Archive it (timestamped)
 ```bash
+# Run from the repo checkout — .workdir/ is the git-ignored scratch tree (#122),
+# so one `rm -rf .workdir` clears every artifact this runbook creates.
+mkdir -p .workdir/backups
 STAMP=$(date +%Y%m%d-%H%M%S)
-BK=~/mcss-benchmark-world-$STAMP.tar.gz
+BK=.workdir/backups/world-$STAMP.tar.gz
 tar czf "$BK" -C ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft saves
 echo "wrote $BK"
 ```
@@ -189,7 +192,7 @@ printf 'y\n394468\ndone\n' | ./install-minecraft-splitscreen.sh
 - [ ] If you tested into the **real** target (not a throwaway) and the benchmark world
   looks changed, restore it:
   ```bash
-  tar xzf ~/mcss-benchmark-world-<STAMP>.tar.gz \
+  tar xzf .workdir/backups/world-<STAMP>.tar.gz \
       -C ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft
   ```
 - [ ] Return the checkout to `main`:
@@ -220,5 +223,5 @@ printf 'y\n394468\ndone\n' | ./install-minecraft-splitscreen.sh
 | Key file | `~/.config/minecraft-splitscreen/curseforge-api-key` |
 | Env override | `CURSEFORGE_API_KEY` (a real key wins) · `CURSEFORGE_KEY_FILE` (path) |
 | Benchmark world | `~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/<world>` |
-| World backup | `~/mcss-benchmark-world-<STAMP>.tar.gz` (+ off-Deck copy) |
+| World backup | `.workdir/backups/world-<STAMP>.tar.gz` (+ off-Deck copy) |
 | CF test mod ID | any curseforge.com numeric project ID (e.g. `394468`) |

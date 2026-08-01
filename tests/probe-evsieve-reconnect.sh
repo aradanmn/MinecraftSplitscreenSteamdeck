@@ -44,10 +44,11 @@
 #   Follow the on-screen prompts with ONE external DS4.
 #
 # Environment overrides (for testing):
-#   MCSS_EVSIEVE_BIN   — path to evsieve (default ~/evsieve-src/target/
-#                        release/evsieve)
+#   MCSS_EVSIEVE_BIN   — path to evsieve (default .workdir/evsieve-src/
+#                        target/release/evsieve)
 #   MCSS_MODULES       — deployed module dir (default the house path)
-#   MCSS_PROBE_RESULTS — results file (default $HOME/evsieve-probe-<ts>.txt)
+#   MCSS_PROBE_RESULTS — results file (default .workdir/probes/evsieve-probe-
+#                        <ts>.txt)
 #
 # evsieve CLI note: this script targets evsieve 1.4.0's REAL flags --
 # grab[=auto|force], persist=none|reopen|exit, create-link=PATH,
@@ -67,6 +68,10 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULES="${MCSS_MODULES:-$HOME/.local/share/PolyMC/modules}"
+# #122: artifacts (results file, the evsieve source checkout) resolve through
+# the one scratch-root encoding instead of landing loose in $HOME.
+# shellcheck source=tests/lib/workdir.sh
+source "$HERE/lib/workdir.sh"
 # shellcheck source=/dev/null
 source "$MODULES/controller_monitor.sh" 2>/dev/null \
     || source "$HERE/../modules/controller_monitor.sh"
@@ -91,8 +96,8 @@ set +e
 set -uo pipefail
 
 # --- Constants ---
-readonly EVSIEVE_BIN="${MCSS_EVSIEVE_BIN:-$HOME/evsieve-src/target/release/\
-evsieve}"
+readonly EVSIEVE_BIN="${MCSS_EVSIEVE_BIN:-$(mcss_workdir evsieve-src)/target/\
+release/evsieve}"
 readonly DS4_VENDOR="054c"                        # Sony; the ONLY grab target
 readonly STEAM_VENDOR="${MCSS_STEAM_VENDOR_ID:-28de}"  # NEVER a grab target
 readonly CAPTURE_SECONDS=4       # per stream-capture window
@@ -100,7 +105,9 @@ readonly RECONNECT_WAIT_S=30     # max wait for the DS4 to reappear
 LINK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcss-evsieve-probe.XXXXXX")"
 readonly LINK_DIR
 readonly CAPTURE_READER="$LINK_DIR/capture_reader.py"
-RESULTS="${MCSS_PROBE_RESULTS:-$HOME/evsieve-probe-$(date +%Y%m%d-%H%M%S).txt}"
+mcss_workdir_init probes || true
+RESULTS="${MCSS_PROBE_RESULTS:-$(mcss_workdir probes)/evsieve-probe-\
+$(date +%Y%m%d-%H%M%S).txt}"
 readonly RESULTS
 
 # Module-private mutable array: every evsieve PID launched, tracked here.

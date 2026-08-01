@@ -141,7 +141,8 @@ run_stage6_teardown() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    export HW_LOG="$HOME/splitscreen-hwtest-$(date +%Y%m%d_%H%M%S)-stage6.log"
+    mcss_workdir_init hardware || true
+    HW_LOG="$(hw_log_path stage6)"; export HW_LOG
     export REPO_ROOT
     export SPLITSCREEN_STATE="${SPLITSCREEN_STATE:-$HOME/.local/share/PolyMC/splitscreen_state.json}"
     export SPLITSCREEN_FIFO="${SPLITSCREEN_FIFO:-/tmp/minecraft-splitscreen.fifo}"
