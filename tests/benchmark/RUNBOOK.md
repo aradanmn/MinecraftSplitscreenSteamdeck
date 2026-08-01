@@ -9,7 +9,7 @@ and smoothness at 1–4 concurrent players on a 16GB Steam Deck — before mergi
 from the repo checkout and executes this runbook top to bottom; the **human** plays the
 game, plugs controllers, reads F3, and answers the driver's questions. The driver runs
 `tests/benchmark/sampler.sh` in the background during every cycle and records results
-incrementally into `~/mcss-benchmark/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
+incrementally into `$BENCH/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
 
 **Driver operating rules**
 - Update RESULTS.md after **every** cycle, never batch at the end — a crash mid-run
@@ -24,8 +24,21 @@ incrementally into `~/mcss-benchmark/RESULTS.md` (copied from `RESULTS-TEMPLATE.
 
 ## Phase 0 — Setup (once, before Phase A)
 
-1. `mkdir -p ~/mcss-benchmark/{phaseA,phaseC}/{1p,2p,3p,4p} ~/mcss-benchmark/{mangohud,world-backup,options-backup,baseline-manifest,branch-manifest}`
-2. `cp tests/benchmark/RESULTS-TEMPLATE.md ~/mcss-benchmark/RESULTS.md` and fill the
+0. **Set `$BENCH` first — every path below depends on it.** From the repo checkout:
+
+   ```bash
+   cd /path/to/MinecraftSplitscreenSteamdeck
+   export BENCH="$PWD/.workdir/benchmark"
+   ```
+
+   Benchmark output lives under the checkout's git-ignored `.workdir/`, not in
+   `$HOME` (#122), so the whole run is cleared by one `rm -rf .workdir`. Export it
+   in every shell you drive the run from — an unset `$BENCH` would silently write
+   to `/phaseA/...` and fail. `tests/benchmark/*.sh` resolve the same root on
+   their own, so they need no argument.
+
+1. `mkdir -p $BENCH/{phaseA,phaseC}/{1p,2p,3p,4p} $BENCH/{mangohud,world-backup,options-backup,baseline-manifest,branch-manifest}`
+2. `cp tests/benchmark/RESULTS-TEMPLATE.md $BENCH/RESULTS.md` and fill the
    run-metadata block (date, SteamOS version `cat /etc/os-release`, dock/display model +
    resolution `xrandr | grep '*'` from Desktop Mode, controller models).
 3. Verify tools: `jq --version`, `command -v mangohud` (absence is fine — F3-only path).
@@ -38,9 +51,9 @@ incrementally into `~/mcss-benchmark/RESULTS.md` (copied from `RESULTS-TEMPLATE.
 ```
 for n in 1 2 3 4; do
   d=~/.local/share/PolyMC/instances/latestUpdate-$n
-  mkdir -p ~/mcss-benchmark/baseline-manifest/instance-$n
-  ls -la "$d/.minecraft/mods" > ~/mcss-benchmark/baseline-manifest/instance-$n/mods.txt 2>&1
-  cp "$d/instance.cfg" "$d/mmc-pack.json" ~/mcss-benchmark/baseline-manifest/instance-$n/ 2>/dev/null
+  mkdir -p $BENCH/baseline-manifest/instance-$n
+  ls -la "$d/.minecraft/mods" > $BENCH/baseline-manifest/instance-$n/mods.txt 2>&1
+  cp "$d/instance.cfg" "$d/mmc-pack.json" $BENCH/baseline-manifest/instance-$n/ 2>/dev/null
 done
 ```
 
@@ -75,7 +88,7 @@ for n in 1 2 3 4; do
          -e 's/^enableVsync:.*/enableVsync:false/' \
          -e 's/^maxFps:.*/maxFps:260/' "$o"
 done
-cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt ~/mcss-benchmark/options-backup/ 2>/dev/null || true
+cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/options-backup/ 2>/dev/null || true
 ```
 
 (If a setting key is absent — e.g. options.txt not yet generated — launch the instance
@@ -84,7 +97,7 @@ once to a menu, quit, and re-run the sed. Note: Sodium instances may also carry
 
 ## Test cycle protocol (identical for every N and both phases)
 
-Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=~/mcss-benchmark/<phase>/<N>p`.
+Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 
 1. **Prepare players.** Docked. Human plugs in exactly N controllers. Launch via the
    Steam shortcut. Slot 1 opens `BenchWorld` → Esc → **Open to LAN** (cheats on);
@@ -144,13 +157,13 @@ chunk-cache reload) despite reusing the same world.
 0. Inventory (above). 1. MangoHud probe. 2. World + settings standardization.
 3–6. Cycles `phaseA/1p` → `2p` → `3p` → `4p` per the protocol.
 7. **Back up the world + options** (MUST happen before Phase B):
-   `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld ~/mcss-benchmark/world-backup/`
-   Verify: `du -sh ~/mcss-benchmark/world-backup/BenchWorld` is non-trivial (>1MB).
+   `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/`
+   Verify: `du -sh $BENCH/world-backup/BenchWorld` is non-trivial (>1MB).
 
 ## Phase B — Torch + fresh install from the branch
 
 1. **Pre-torch checklist** — driver verifies ALL, then asks the human to type `TORCH`:
-   - [ ] `~/mcss-benchmark/world-backup/BenchWorld` exists, >1MB
+   - [ ] `$BENCH/world-backup/BenchWorld` exists, >1MB
    - [ ] `baseline-manifest/` populated for all instances that existed
    - [ ] Phase A `sampler.csv`/`events.csv`/`summary.txt` present under `phaseA/*/`
    - [ ] RESULTS.md filled through Phase A
@@ -173,13 +186,13 @@ chunk-cache reload) despite reusing the same world.
    - Custom mods → `N`.  Steam integration → `N` (shortcut still exists).
      Desktop launcher → `N`.
 6. **Restore world + settings:**
-   `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r ~/mcss-benchmark/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
+   `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r $BENCH/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
    then re-run the options.txt pinning block (launch each instance to menu once first
    if options.txt doesn't exist yet).
 7. **Re-run the MangoHud probe** (fresh instance.cfg reset the wrapper) — same
    PASS/FAIL handling; the choice must match Phase A's (both phases MangoHud, or both
    F3-only; if the verdicts differ, use F3-only for the comparison and note it).
-8. **Branch inventory** to `~/mcss-benchmark/branch-manifest/` (same commands as
+8. **Branch inventory** to `$BENCH/branch-manifest/` (same commands as
    Phase A step 0). **Verify before proceeding:** each instance's `mods/` contains
    Sodium, Lithium, FerriteCore, ModernFix, EntityCulling, ImmediatelyFast (+
    Controlify + Fabric API); `instance.cfg` `JvmArgs` contains `-XX:+UseG1GC`. If
@@ -191,7 +204,7 @@ Cycles `phaseC/1p` → `2p` → `3p` → `4p`, identical protocol, Phase C fligh
 
 ## Phase D — Comparison + merge decision
 
-For each N: `bash tests/benchmark/summarize.sh ~/mcss-benchmark/phaseA/<N>p --compare ~/mcss-benchmark/phaseC/<N>p`
+For each N: `bash tests/benchmark/summarize.sh $BENCH/phaseA/<N>p --compare $BENCH/phaseC/<N>p`
 → paste tables into RESULTS.md, then evaluate the gates:
 
 **Hard gates — ALL must hold in Phase C, else NO merge:**
@@ -221,4 +234,4 @@ no merge; record the failing metric + cycle in RESULTS.md and open an issue.
   the D6 item "4 instances run concurrently without OOM (RAM within budget)".
 - MEMORY.md: flip the two 2026-07-17 entries' Status lines with the verdict.
 - `sessions/SESSION-<date>.md`: narrative of the run.
-- Raw CSVs stay on the Deck under `~/mcss-benchmark/` (not committed).
+- Raw CSVs stay on the Deck under `$BENCH/` (not committed).

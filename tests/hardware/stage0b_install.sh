@@ -31,7 +31,6 @@ set -euo pipefail
 _STAGE0B_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 if [[ -z "${HW_LOG:-}" ]]; then
-    export HW_LOG="$HOME/splitscreen-hwtest-$(date +%Y%m%d_%H%M%S).log"
     export REPO_ROOT="$(cd "$_STAGE0B_SCRIPT_DIR/../.." && pwd)"
     export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
     export SPLITSCREEN_FIFO="$HOME/.local/share/PolyMC/splitscreen.fifo"

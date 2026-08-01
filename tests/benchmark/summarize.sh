@@ -12,7 +12,7 @@
 #                                                 the other phase
 #   summarize.sh <cycle-dir> --mangohud-dir <dir> where MangoHud frametime CSVs
 #                                                 live (default
-#                                                 ~/mcss-benchmark/mangohud);
+#                                                 .workdir/benchmark/mangohud);
 #                                                 files whose mtime falls inside
 #                                                 the cycle's sample window are
 #                                                 reported (p50 / 1%-low FPS)
@@ -37,7 +37,9 @@ CYCLE_DIR="${1:-}"
 shift
 
 COMPARE_DIR=""
-MANGOHUD_DIR="$HOME/mcss-benchmark/mangohud"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../lib" && pwd)/workdir.sh"
+MANGOHUD_DIR="$(mcss_workdir benchmark/mangohud)"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --compare)      COMPARE_DIR="${2:?--compare requires a dir}"; shift 2 ;;

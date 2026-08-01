@@ -12,10 +12,13 @@
 #   --with-dex      Use DEX (Python ctypes X11) instead of xdotool
 #   (default)       Plain xdotool override_redirect unmap/remap
 #
-# Results saved to: ~/splitscreen-override-redirect-test.txt
+# Results saved to: .workdir/gamescope/splitscreen-override-redirect-test.txt
 # =============================================================================
 
-RESULT_FILE="$HOME/splitscreen-override-redirect-test.txt"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/workdir.sh"
+mcss_workdir_init gamescope || true
+RESULT_FILE="$(mcss_workdir gamescope)/splitscreen-override-redirect-test.txt"
 USE_DEX=false
 DISPLAY="${DISPLAY:-:0}"
 

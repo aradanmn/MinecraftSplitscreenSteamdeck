@@ -1,7 +1,10 @@
 #!/bin/bash
 # Bare minimum: create ONE window, try every position method, report back
 DISPLAY="${DISPLAY:-:0}"
-LOG="$HOME/splitscreen-diagnose.log"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/workdir.sh"
+mcss_workdir_init gamescope || true
+LOG="$(mcss_workdir gamescope)/splitscreen-diagnose.log"
 
 echo "=== DIAGNOSE: $(date) ===" > "$LOG"
 echo "DISPLAY=$DISPLAY" >> "$LOG"

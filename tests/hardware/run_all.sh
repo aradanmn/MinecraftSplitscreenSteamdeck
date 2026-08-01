@@ -9,7 +9,7 @@ set -euo pipefail
 #   bash run_all.sh stage2       # run only stage 2
 #   bash run_all.sh --help       # print usage
 #
-# All output is logged to ~/splitscreen-hwtest-TIMESTAMP.log
+# All output is logged to .workdir/hardware/splitscreen-hwtest-TIMESTAMP.log
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -44,9 +44,6 @@ USAGE
     exit 0
 fi
 
-# --- Log file ---
-export HW_LOG="$HOME/splitscreen-hwtest-$(date +%Y%m%d_%H%M%S).log"
-
 # --- Exported variables ---
 export REPO_ROOT
 export SPLITSCREEN_STATE="$HOME/.local/share/PolyMC/splitscreen_state.json"
@@ -55,7 +52,8 @@ export HW_PASSED=0
 export HW_FAILED=0
 export HW_SKIPPED=0
 
-# Source helpers
+# Source helpers. HW_LOG is deliberately left unset: helpers.sh owns the log
+# path now (#122), and this master run wants exactly the default it produces.
 source "$SCRIPT_DIR/lib/helpers.sh"
 
 # --- Banner ---

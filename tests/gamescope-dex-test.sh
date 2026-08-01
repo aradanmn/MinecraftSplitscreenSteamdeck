@@ -16,18 +16,21 @@
 #   3. Run: bash tests/gamescope-dex-test.sh
 #   4. Two colored windows appear (red left, blue right)
 #   5. After ~5 seconds, a summary is printed
-#   6. Full log: ~/splitscreen-dex-result.txt
+#   6. Full log: .workdir/gamescope/splitscreen-dex-result.txt
 #
 # HOW TO USE (Steam shortcut in Game Mode):
 #   1. In Steam, edit "Minecraft Splitscreen" shortcut → LAUNCH OPTIONS
 #   2. Add: --dex-test
 #   3. Launch from Game Mode — result overlay appears after test
-#   4. Read ~/splitscreen-dex-result.txt for full log
+#   4. Read .workdir/gamescope/splitscreen-dex-result.txt for full log
 # =============================================================================
 
 set -euo pipefail
 
-RESULT_FILE="$HOME/splitscreen-dex-result.txt"
+# shellcheck source=tests/lib/workdir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)/workdir.sh"
+mcss_workdir_init gamescope || true
+RESULT_FILE="$(mcss_workdir gamescope)/splitscreen-dex-result.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export DEX_DISPLAY="${DEX_DISPLAY:-${DISPLAY:-:0}}"

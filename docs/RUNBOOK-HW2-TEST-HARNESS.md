@@ -5,7 +5,7 @@
 
 **How to use.** Non-interactive commands can run over `ssh steamdeck`; the staged suite's
 own prompts and the Game-Mode launch happen at the Deck. Check each `- [ ]`; record
-PASS/FAIL. Logs land at `~/splitscreen-hwtest-<ts>.log`.
+PASS/FAIL. Logs land at `.workdir/hardware/splitscreen-hwtest-<ts>.log`.
 
 **What this run closes:** #111 (stage4), #83/#84 (stage3 re-confirm), #60 / #71 / #62(b)
 (confirm/measure). #80/#103 already closed in CI — Part 1 is the belt-and-suspenders smoke.
@@ -108,7 +108,7 @@ Repro the party scenario: connect **all 4 pads BEFORE launch**, then launch dock
 | Orchestrator smoke | `bash tests/test_orchestrator.sh` → 8/8, session survives |
 | Single stage | `bash tests/hardware/run_all.sh stage3` \| `stage4` |
 | Full suite | `bash tests/hardware/run_all.sh` (stage0→5) |
-| Logs | `~/splitscreen-hwtest-<ts>.log` |
+| Logs | `.workdir/hardware/splitscreen-hwtest-<ts>.log` |
 | stage3 needs | docked, Steam-shortcut launch, exactly 1 external pad pre-connected |
 | stage4 needs | active instances (run after stage3) |
 | Closes on green | #111 (stage4), #83/#84 (stage3), #60/#71 (checks), #62(b) measured |

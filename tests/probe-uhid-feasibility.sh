@@ -46,7 +46,8 @@ set -uo pipefail
 #
 # Environment overrides:
 #   MCSS_MODULES        — module dir to source (default: this checkout's modules/)
-#   MCSS_PROBE_RESULTS  — results file (default $HOME/uhid-probe-<stamp>.txt)
+#   MCSS_PROBE_RESULTS  — results file (default
+#                         .workdir/probes/uhid/results-<stamp>.txt)
 #   MCSS_PROBE_WAIT_S   — per-wait bound in seconds (default 10)
 #
 # Version history:
@@ -59,9 +60,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODULES="${MCSS_MODULES:-$REPO_ROOT/modules}"
 PAD_PY="$REPO_ROOT/tests/lib/uhid_pad.py"
 WAIT_S="${MCSS_PROBE_WAIT_S:-10}"
-WORKDIR="$REPO_ROOT/.workdir/uhid-probe"
 # Results live under .workdir/ too: Deck-side artifacts must stay inside the repo
 # so a single wipe clears them (#122). An earlier default dropped them in $HOME.
+# shellcheck source=tests/lib/workdir.sh
+source "$REPO_ROOT/tests/lib/workdir.sh"
+WORKDIR="$(mcss_workdir probes/uhid)"
 RESULTS="${MCSS_PROBE_RESULTS:-$WORKDIR/results-$(date +%Y%m%d-%H%M%S).txt}"
 
 PROC_DEVICES="/proc/bus/input/devices"
@@ -420,7 +423,7 @@ phase4_steam() {
 # --- main --------------------------------------------------------------------
 
 main() {
-    mkdir -p "$WORKDIR"
+    mcss_workdir_init probes/uhid
     : > "$RESULTS"
     _log "uhid feasibility probe — $(date)"
     _log "results: $RESULTS"
