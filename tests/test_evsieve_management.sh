@@ -23,7 +23,7 @@ set -euo pipefail
 # Run: bash tests/test_evsieve_management.sh
 # =============================================================================
 
-readonly TEST_TOTAL=14
+readonly TEST_TOTAL=20
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 readonly REPO_ROOT
@@ -272,6 +272,7 @@ test_t1() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -355,6 +356,7 @@ test_t4() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -388,6 +390,7 @@ test_t5() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { echo "$*" >> "$warn"; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -425,6 +428,7 @@ test_t6() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -462,6 +466,7 @@ test_t7() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -502,6 +507,7 @@ test_t8() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -561,6 +567,7 @@ test_t10() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -605,6 +612,7 @@ test_t11() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -642,6 +650,7 @@ test_t12() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -681,6 +690,7 @@ test_t13() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -718,6 +728,7 @@ test_t14() {
         print_header() { :; }
         print_progress() { :; }
         print_success() { :; }
+        print_info()     { :; }
         print_warning() { :; }
         # shellcheck disable=SC1090
         source "$MODULE"
@@ -733,6 +744,303 @@ test_t14() {
         fi
     else
         _fail "T14" "_evsieve_ensure_box should have succeeded via the fallback"
+    fi
+}
+
+# =============================================================================
+# #126 — _evsieve_try_prebuilt / install_evsieve's prebuilt-first path.
+#
+# fetch_url is a bash FUNCTION (utilities.sh), not an external command, so
+# each test below defines its own inline stub rather than a PATH binary —
+# same idea as the git/distrobox stubs above, different mechanism because
+# fetch_url is never sourced in this suite (utilities.sh is never sourced,
+# per this file's own header note).
+# =============================================================================
+
+# =============================================================================
+# T15 — full success: stamp matches, checksum matches, binary runs -> installs
+# from the prebuilt asset and NEVER reaches the build-at-install code at all.
+# Proven structurally (an early `return 0` in install_evsieve makes the build
+# path unreachable on this branch), confirmed behaviorally by an empty calls
+# log — git/distrobox are on PATH here (unlike T16-18) specifically so an
+# accidental fall-through would be visible instead of masked by "missing
+# toolchain -> degraded" looking similar to "the code never got there".
+# =============================================================================
+test_t15() {
+    local tmp bindir target calls remote_bin remote_sha
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    bindir=$(_isolated_bindir)
+    _write_logging_stub "$bindir" git
+    _write_logging_stub "$bindir" distrobox
+    _placeholder_tool "$bindir" podman
+    ln -sf "$_REAL_SHA256SUM" "$bindir/sha256sum"
+    target="$tmp/target"; mkdir -p "$target"
+    calls="$tmp/calls.log"; : > "$calls"
+
+    remote_bin="$tmp/remote-bin"
+    printf '#!/bin/bash\necho "1.4.0"\n' > "$remote_bin"
+    chmod +x "$remote_bin"
+    remote_sha=$(sha256sum "$remote_bin" | cut -d' ' -f1)
+
+    if (
+        export PATH="$bindir"
+        export CALLS="$calls"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() {
+            local url="$1" out="$2"
+            case "$url" in
+                *.stamp)
+                    { echo "commit=${_PINNED_COMMIT}"
+                      echo "patch_sha256=${_PATCH_SHA}"; } > "$out" ;;
+                *.sha256)
+                    echo "${remote_sha}  evsieve-x86_64-linux" > "$out" ;;
+                *)
+                    # A real download tool does NOT preserve/set the
+                    # executable bit — `cat` here (not `cp`, which would
+                    # copy remote_bin's mode too) so the code's own
+                    # `chmod +x` is genuinely load-bearing, not incidental.
+                    cat "$remote_bin" > "$out" ;;
+            esac
+        }
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "installed-prebuilt" ]] || exit 1
+        [[ -x "$(_evsieve_bin)" ]] || exit 1
+        [[ "$("$(_evsieve_bin)")" == "1.4.0" ]] || exit 1
+        [[ ! -s "$calls" ]] || exit 1
+        exit 0
+    ); then
+        _pass "T15 — prebuilt succeeds end-to-end; build-at-install never reached"
+    else
+        _fail "T15" "expected installed-prebuilt with zero toolchain calls (see $calls)"
+    fi
+}
+
+# =============================================================================
+# T16 — stamp fetch fails outright (network down) -> falls through cleanly
+# to the existing build-at-install path (still absent here -> degraded).
+# =============================================================================
+test_t16() {
+    local tmp target
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    target="$tmp/target"; mkdir -p "$target"
+
+    if (
+        PATH="$(_isolated_bindir)"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() { return 1; }   # total network failure
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "degraded-no-toolchain" ]]
+    ); then
+        _pass "T16 — stamp fetch failure falls through to build-at-install"
+    else
+        _fail "T16" "expected a clean fall-through to degraded-no-toolchain"
+    fi
+}
+
+# =============================================================================
+# T17 — stamp fetches fine but its commit does NOT match our pin (this
+# checkout's EVSIEVE_PINNED_COMMIT has moved past the latest tagged release)
+# -> refuses BEFORE fetching the (much larger) binary at all.
+# =============================================================================
+test_t17() {
+    local tmp target calls
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    target="$tmp/target"; mkdir -p "$target"
+    calls="$tmp/fetch-calls.log"; : > "$calls"
+
+    if (
+        export CALLS_LOG="$calls"
+        PATH="$(_isolated_bindir)"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() {
+            local url="$1" out="$2"
+            echo "$url" >> "$CALLS_LOG"
+            case "$url" in
+                *.stamp)
+                    { echo "commit=0000000000000000000000000000000000000000"
+                      echo "patch_sha256=${_PATCH_SHA}"; } > "$out" ;;
+                *) return 1 ;;   # should never be reached
+            esac
+        }
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "degraded-no-toolchain" ]] || exit 1
+        grep -q '\.sha256$\|x86_64-linux$' "$CALLS_LOG" && exit 1
+        exit 0
+    ); then
+        _pass "T17 — pin mismatch refuses before fetching the binary"
+    else
+        _fail "T17" "expected refusal without a binary/sha fetch (see $calls)"
+    fi
+}
+
+# =============================================================================
+# T18 — stamp matches but the downloaded bytes don't match the published
+# checksum (corrupted/tampered download) -> the corrupt binary is NEVER
+# installed as $(_evsieve_bin).
+# =============================================================================
+test_t18() {
+    local tmp target bindir
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    target="$tmp/target"; mkdir -p "$target"
+    bindir=$(_isolated_bindir)
+    ln -sf "$_REAL_SHA256SUM" "$bindir/sha256sum"
+
+    if (
+        PATH="$bindir"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() {
+            local url="$1" out="$2"
+            case "$url" in
+                *.stamp)
+                    { echo "commit=${_PINNED_COMMIT}"
+                      echo "patch_sha256=${_PATCH_SHA}"; } > "$out" ;;
+                *.sha256)
+                    echo "${_WRONG_SHA}  evsieve-x86_64-linux" > "$out" ;;
+                *)
+                    printf 'not the real binary' > "$out" ;;
+            esac
+        }
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "degraded-no-toolchain" ]] || exit 1
+        [[ ! -e "$(_evsieve_bin)" ]] || exit 1
+        exit 0
+    ); then
+        _pass "T18 — checksum mismatch never installs the corrupt binary"
+    else
+        _fail "T18" "expected the corrupt download to be refused, not installed"
+    fi
+}
+
+# =============================================================================
+# T19 — prebuilt matches pin+checksum but the binary won't RUN on this host
+# (e.g. wrong arch) -> still falls through to build-at-install, same as any
+# other prebuilt failure. Proves _evsieve_host_verify gates the prebuilt
+# path exactly as it already gates the build-at-install path.
+# =============================================================================
+test_t19() {
+    local tmp target broken_bin broken_sha bindir
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    target="$tmp/target"; mkdir -p "$target"
+    bindir=$(_isolated_bindir)
+    ln -sf "$_REAL_SHA256SUM" "$bindir/sha256sum"
+
+    broken_bin="$tmp/broken-bin"
+    printf '#!/bin/bash\nexit 1\n' > "$broken_bin"   # "runs" but --version fails
+    chmod +x "$broken_bin"
+    broken_sha=$(sha256sum "$broken_bin" | cut -d' ' -f1)
+
+    if (
+        PATH="$bindir"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() {
+            local url="$1" out="$2"
+            case "$url" in
+                *.stamp)
+                    { echo "commit=${_PINNED_COMMIT}"
+                      echo "patch_sha256=${_PATCH_SHA}"; } > "$out" ;;
+                *.sha256)
+                    echo "${broken_sha}  evsieve-x86_64-linux" > "$out" ;;
+                *)
+                    cp "$broken_bin" "$out" ;;
+            esac
+        }
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "degraded-no-toolchain" ]]
+    ); then
+        _pass "T19 — a prebuilt binary that won't run falls through to build-at-install"
+    else
+        _fail "T19" "expected a host-verify failure to fall through cleanly"
+    fi
+}
+
+# =============================================================================
+# T20 — the commit matches but the PATCH sha does not (upstream evsieve
+# commit unchanged, but our patch itself changed) -> refuses before
+# fetching the binary, same as T17's commit-mismatch case. The two pin
+# fields gate independently — this is the one T17 doesn't cover.
+# =============================================================================
+test_t20() {
+    local tmp target calls
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+    target="$tmp/target"; mkdir -p "$target"
+    calls="$tmp/fetch-calls.log"; : > "$calls"
+
+    if (
+        export CALLS_LOG="$calls"
+        PATH="$(_isolated_bindir)"
+        TARGET_DIR="$target"
+        SCRIPT_DIR="$REPO_ROOT"
+        MCSS_REPO_RAW_URL="https://example.invalid/repo"
+        print_header() { :; }; print_progress() { :; }; print_success() { :; }
+        print_info()   { :; }; print_warning()  { :; }
+
+        fetch_url() {
+            local url="$1" out="$2"
+            echo "$url" >> "$CALLS_LOG"
+            case "$url" in
+                *.stamp)
+                    { echo "commit=${_PINNED_COMMIT}"
+                      echo "patch_sha256=${_WRONG_SHA}"; } > "$out" ;;
+                *) return 1 ;;   # should never be reached
+            esac
+        }
+
+        # shellcheck disable=SC1090
+        source "$MODULE"
+        install_evsieve
+        [[ "$EVSIEVE_INSTALL_STATUS" == "degraded-no-toolchain" ]] || exit 1
+        grep -q '\.sha256$\|x86_64-linux$' "$CALLS_LOG" && exit 1
+        exit 0
+    ); then
+        _pass "T20 — patch-sha mismatch refuses before fetching the binary"
+    else
+        _fail "T20" "expected refusal without a binary/sha fetch (see $calls)"
     fi
 }
 
@@ -755,6 +1063,12 @@ test_t11
 test_t12
 test_t13
 test_t14
+test_t15
+test_t16
+test_t17
+test_t18
+test_t19
+test_t20
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

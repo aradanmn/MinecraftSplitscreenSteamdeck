@@ -2,13 +2,15 @@
 # =============================================================================
 # EVSIEVE MANAGEMENT MODULE
 # =============================================================================
-# Build-at-install of a pinned, patched evsieve (#38 D4). Clones the pinned
-# upstream commit, verifies it two ways (rev-parse + git-archive SHA-256),
-# SHA-verifies and applies our GPL-2.0 bounded-retry patch, then
-# `cargo build --release` inside a debian:12 distrobox and installs the
-# binary under $TARGET_DIR/bin. Every failure path is FAIL-OPEN: the v1.1
-# install is never harmed and the v1.2 controller-proxy feature simply
-# stays unavailable (it is OFF by default anyway).
+# Installs a pinned, patched evsieve (#38 D4). #126: tries a prebuilt,
+# checksum- and pin-verified release asset FIRST (no toolchain needed at
+# all); on any failure, falls back to the original path — clone the pinned
+# upstream commit, verify it two ways (rev-parse + git-archive SHA-256),
+# SHA-verify and apply our GPL-2.0 bounded-retry patch, then
+# `cargo build --release` inside a debian:12 distrobox — and installs the
+# binary under $TARGET_DIR/bin either way. Every failure path is FAIL-OPEN:
+# the v1.1 install is never harmed and the v1.2 controller-proxy feature
+# simply stays unavailable (it is OFF by default anyway).
 #
 # Public API:
 #   install_evsieve()   — exit 0 ALWAYS (fail-open, §D6); sets
@@ -16,10 +18,10 @@
 #                         $TARGET_DIR/bin/evsieve + stamp on success
 #
 # (Internal: _evsieve_bin, _evsieve_stamp, _evsieve_stamp_matches,
-#  _evsieve_check_toolchain, _evsieve_acquire_source, _evsieve_resolve_patch,
-#  _evsieve_apply_patch, _evsieve_create_box, _evsieve_ensure_box,
-#  _evsieve_build_in_box, _evsieve_install_binary, _evsieve_host_verify,
-#  _evsieve_write_stamp, _evsieve_degrade.)
+#  _evsieve_check_toolchain, _evsieve_try_prebuilt, _evsieve_acquire_source,
+#  _evsieve_resolve_patch, _evsieve_apply_patch, _evsieve_create_box,
+#  _evsieve_ensure_box, _evsieve_build_in_box, _evsieve_install_binary,
+#  _evsieve_host_verify, _evsieve_write_stamp, _evsieve_degrade.)
 #
 # Globals CONSUMED (set elsewhere, read here):
 #   TARGET_DIR         — install root; binary lands in $TARGET_DIR/bin
@@ -28,11 +30,14 @@
 #
 # Globals PROVIDED (set here, read elsewhere):
 #   EVSIEVE_INSTALL_STATUS  — outcome token for tests/UX (values below)
-#   EVSIEVE_* readonly constants (pin, SHAs, box name/image, timeouts)
+#   EVSIEVE_* readonly constants (pin, SHAs, box name/image, timeouts,
+#                                 #126's release-asset base URL + names)
 #
-# Inputs:  github.com/KarsMulder/evsieve.git (git clone at a pinned commit);
-#          third_party/evsieve/evsieve-persist-reopen.patch (local or raw);
-#          podman/distrobox (debian:12 container) for the toolchain.
+# Inputs:  the prebuilt release asset (#126, .github/workflows/release.yml
+#          builds it); falling that back, github.com/KarsMulder/evsieve.git
+#          (git clone at a pinned commit) + third_party/evsieve/
+#          evsieve-persist-reopen.patch (local or raw) + podman/distrobox
+#          (debian:12 container) for the toolchain.
 # Outputs: print_* progress/status to stdout/stderr; $TARGET_DIR/bin/evsieve
 #          + $TARGET_DIR/bin/.evsieve.stamp on success.
 #
@@ -41,6 +46,8 @@
 #   EVSIEVE_SKIP_BUILD       — (tests) never invoked; stubs live on PATH
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.2 2026-08-01  #126: try a prebuilt, pin- and checksum-verified
+#                    release asset before ever touching the build toolchain
 #   v1.1 2026-08-01  Fix #186: box create retries with fuse-overlayfs when
 #                    the native overlay driver rejects an ID-mapped mount
 #   v1.0 2026-07-19  #38 D4/PR1: build-at-install evsieve, GPL-clean,
@@ -76,6 +83,25 @@ if [[ -z "${_EVSIEVE_CONSTANTS_LOCKED:-}" ]]; then
 "${EVSIEVE_DISTROBOX_NAME:-mcss-evsieve-build}"
     readonly EVSIEVE_DISTROBOX_IMAGE="debian:12"
 
+    # #126: prebuilt release asset, tried BEFORE the build-at-install path
+    # (no git/podman/distrobox/cargo needed at all when this works — most
+    # installs never need to touch a container again). Always the LATEST
+    # GitHub release, regardless of REPO_REF: the release.yml CI job attaches
+    # a fresh asset to every tag, so "latest" always has one matching
+    # whatever is currently pinned. Trust is never based on the tag name —
+    # only on the .stamp file (same commit=/patch_sha256= shape
+    # _evsieve_write_stamp already writes) matching THIS module's own
+    # EVSIEVE_PINNED_COMMIT/EVSIEVE_PATCH_SHA256 exactly, then a SHA-256 of
+    # the binary bytes. A checkout whose pin has moved past the latest
+    # tagged release correctly fails that comparison and falls through to
+    # build-at-install — never a wrong-but-plausible binary.
+    readonly EVSIEVE_RELEASE_ASSET_BASE_URL=\
+"https://github.com/aradanmn/MinecraftSplitscreenSteamdeck/releases/latest/download"
+    readonly EVSIEVE_PREBUILT_BIN_NAME="evsieve-x86_64-linux"
+    readonly EVSIEVE_PREBUILT_SHA_NAME="${EVSIEVE_PREBUILT_BIN_NAME}.sha256"
+    readonly EVSIEVE_PREBUILT_STAMP_NAME="${EVSIEVE_PREBUILT_BIN_NAME}.stamp"
+    readonly EVSIEVE_PREBUILT_FETCH_TIMEOUT_S=15
+
     # Timeouts (units in name, STYLE-GUIDE §6). Box create pulls an image;
     # cargo build of evsieve is the long pole.
     readonly EVSIEVE_BOX_CREATE_TIMEOUT_S=300
@@ -92,9 +118,12 @@ fi
 # EVSIEVE_INSTALL_STATUS: module-provided mutable global, set by
 # install_evsieve(). Exactly one of these lowercase tokens after the call
 # returns:
+#   installed-prebuilt     — #126: fetched a verified release asset, no
+#                            build toolchain touched at all
 #   installed              — freshly built, verified, binary written
 #   skipped                — good stamp + executable binary → no-op
-#   degraded-no-toolchain  — git/podman/distrobox missing → fail-open
+#   degraded-no-toolchain  — prebuilt unusable AND git/podman/distrobox
+#                            missing → fail-open
 #   degraded-verify-failed — commit/archive/patch SHA mismatch → refuse
 #   degraded-build-failed  — box-create/apt/cargo/copy-out failure
 #   degraded-host-exec     — built binary won't run on the host
@@ -158,6 +187,58 @@ _evsieve_check_toolchain() {
     command -v podman >/dev/null 2>&1 || return 1
     command -v distrobox >/dev/null 2>&1 || return 1
     return 0
+}
+
+# _evsieve_try_prebuilt: #126 — fetch, verify, and install the release-asset
+# binary. Every failure is a plain `return 1`; the caller falls through to
+# build-at-install unchanged. Never partially trusts a download: the STAMP
+# is checked before the (larger) binary is even fetched, and the CHECKSUM is
+# checked before the binary is installed — a network hiccup that corrupts
+# one byte, or a release whose pin has drifted past ours, is caught before
+# anything is written to $(_evsieve_bin).
+# Inputs:
+#   $1 — work_dir: scratch directory to download into (caller's build_root)
+#   Globals: EVSIEVE_RELEASE_ASSET_BASE_URL, EVSIEVE_PREBUILT_BIN_NAME,
+#            EVSIEVE_PREBUILT_SHA_NAME, EVSIEVE_PREBUILT_STAMP_NAME,
+#            EVSIEVE_PREBUILT_FETCH_TIMEOUT_S, EVSIEVE_PINNED_COMMIT,
+#            EVSIEVE_PATCH_SHA256 (read)
+# Outputs:
+#   return — 0 iff a byte-verified, pin-matched binary was installed via
+#            _evsieve_install_binary; 1 on any failure (network, stamp
+#            mismatch, checksum mismatch, or the copy-out itself failing)
+_evsieve_try_prebuilt() {
+    local work_dir="$1"
+    local stamp_file="$work_dir/prebuilt.stamp"
+    local sha_file="$work_dir/prebuilt.sha256"
+    local bin_file="$work_dir/prebuilt-bin"
+
+    fetch_url "${EVSIEVE_RELEASE_ASSET_BASE_URL}/${EVSIEVE_PREBUILT_STAMP_NAME}" \
+        "$stamp_file" "$EVSIEVE_PREBUILT_FETCH_TIMEOUT_S" >/dev/null 2>&1 \
+        || return 1
+
+    local remote_commit remote_patch_sha
+    remote_commit=$(grep -m1 '^commit=' "$stamp_file" | cut -d= -f2)
+    remote_patch_sha=$(grep -m1 '^patch_sha256=' "$stamp_file" | cut -d= -f2)
+    [[ -n "$remote_commit" && "$remote_commit" == "$EVSIEVE_PINNED_COMMIT" ]] \
+        || return 1
+    [[ -n "$remote_patch_sha" \
+        && "$remote_patch_sha" == "$EVSIEVE_PATCH_SHA256" ]] || return 1
+
+    fetch_url "${EVSIEVE_RELEASE_ASSET_BASE_URL}/${EVSIEVE_PREBUILT_SHA_NAME}" \
+        "$sha_file" "$EVSIEVE_PREBUILT_FETCH_TIMEOUT_S" >/dev/null 2>&1 \
+        || return 1
+    fetch_url "${EVSIEVE_RELEASE_ASSET_BASE_URL}/${EVSIEVE_PREBUILT_BIN_NAME}" \
+        "$bin_file" "$EVSIEVE_PREBUILT_FETCH_TIMEOUT_S" >/dev/null 2>&1 \
+        || return 1
+
+    local expected_sha actual_sha
+    expected_sha=$(grep -oE '^[0-9a-f]{64}' "$sha_file")
+    [[ -n "$expected_sha" ]] || return 1
+    actual_sha=$(sha256sum "$bin_file" 2>/dev/null | cut -d' ' -f1)
+    [[ "$actual_sha" == "$expected_sha" ]] || return 1
+
+    chmod +x "$bin_file" 2>/dev/null || return 1
+    _evsieve_install_binary "$bin_file"
 }
 
 # _evsieve_acquire_source: Clone the pinned upstream commit and verify it
@@ -352,19 +433,21 @@ _evsieve_build_in_box() {
         ' </dev/null >/dev/null 2>&1
 }
 
-# _evsieve_install_binary: Atomically copy the built binary into place.
+# _evsieve_install_binary: Atomically copy a binary into place.
 # Copy-out only — the host-exec gate and stamp are separate steps (see
 # _evsieve_host_verify, _evsieve_write_stamp), so a binary that copies but
-# won't run on the host is diagnosed distinctly from a build failure.
+# won't run on the host is diagnosed distinctly from a build/fetch failure.
+# Shared by BOTH the build-at-install path and #126's prebuilt-download
+# path — the atomic-copy contract is identical either way, only where the
+# bytes came from differs, so this takes a concrete file path rather than
+# a source tree (PRINCIPLES #9: one encoding, not two near-identical copies).
 # Inputs:
-#   $1 — src_dir: the built source tree (src_dir/target/release/evsieve
-#        must exist)
+#   $1 — built_bin: path to an executable evsieve binary
 # Outputs:
 #   return — 0 on a successful atomic install; 1 otherwise
 #   side effects — tmp file + mv into $(dirname "$(_evsieve_bin)")
 _evsieve_install_binary() {
-    local src_dir="$1"
-    local built_bin="$src_dir/target/release/evsieve"
+    local built_bin="$1"
     local bin_dir bin_path tmp_path
 
     [[ -x "$built_bin" ]] || return 1
@@ -446,15 +529,11 @@ install_evsieve() {
     fi
 
     local msg
-    if ! _evsieve_check_toolchain; then
-        msg="evsieve build toolchain not found (need git, podman,"
-        msg+=" distrobox, all on PATH); ${EVSIEVE_FAIL_OPEN_NOTE}"
-        _evsieve_degrade "degraded-no-toolchain" "$msg"
-        return 0
-    fi
 
     # Guarded assignment: a bare failing $(mktemp) under the entry script's
     # set -e would abort the whole installer — violating fail-open (#38 D4).
+    # Created BEFORE the toolchain check: #126's prebuilt path (tried first,
+    # below) needs scratch space too, and needs none of git/podman/distrobox.
     local build_root
     if ! build_root=$(mktemp -d \
         "${TARGET_DIR:-$HOME/.local/share/PolyMC}/.evsieve-build.XXXXXX" \
@@ -467,6 +546,27 @@ install_evsieve() {
     # STYLE-GUIDE §7 rule 9: trap the temp build tree, every exit path.
     # shellcheck disable=SC2064  # build_root is fixed now, intentional.
     trap "rm -rf '$build_root'" RETURN
+
+    # #126: try the prebuilt release asset FIRST. On success this never
+    # touches git/podman/distrobox/cargo at all — the common case for most
+    # installs. Any failure (network, pin mismatch, checksum mismatch, or
+    # the downloaded binary not running on this host) falls straight through
+    # to the existing build-at-install path below, unchanged.
+    if _evsieve_try_prebuilt "$build_root" && _evsieve_host_verify; then
+        _evsieve_write_stamp || true
+        # shellcheck disable=SC2034  # PROVIDED global: read by callers/tests.
+        EVSIEVE_INSTALL_STATUS="installed-prebuilt"
+        print_success "evsieve installed from prebuilt release asset: $(_evsieve_bin)"
+        return 0
+    fi
+    print_info "Prebuilt evsieve unavailable or unusable — building from source instead."
+
+    if ! _evsieve_check_toolchain; then
+        msg="evsieve build toolchain not found (need git, podman,"
+        msg+=" distrobox, all on PATH); ${EVSIEVE_FAIL_OPEN_NOTE}"
+        _evsieve_degrade "degraded-no-toolchain" "$msg"
+        return 0
+    fi
 
     print_progress "Fetching pinned evsieve source (git clone)..."
     if ! _evsieve_acquire_source "$build_root/src"; then
@@ -510,7 +610,7 @@ install_evsieve() {
         return 0
     fi
 
-    if ! _evsieve_install_binary "$build_root/src"; then
+    if ! _evsieve_install_binary "$build_root/src/target/release/evsieve"; then
         msg="evsieve binary copy-out failed; ${EVSIEVE_FAIL_OPEN_NOTE}"
         _evsieve_degrade "degraded-build-failed" "$msg"
         return 0
