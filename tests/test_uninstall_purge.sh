@@ -18,7 +18,7 @@ set -uo pipefail
 # Run: bash tests/test_uninstall_purge.sh
 # =============================================================================
 
-readonly TEST_TOTAL=19
+readonly TEST_TOTAL=22
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -373,6 +373,96 @@ test_vdf_refuses_unparseable_file() {
     _teardown
 }
 
+# --- T6: podman store accounting ---------------------------------------------
+# Found on the Deck 2026-08-01: because a dry run removes nothing, the
+# "is the store empty?" counts still included OUR OWN container and image, so
+# the dry run announced "kept — you have other containers" on a machine where
+# the real run finds nothing left and removes the store. A dry run that
+# predicts the opposite of the real outcome is worse than one that says
+# nothing. Neither podman nor distrobox exists in CI, so both are faked.
+
+# _fake_podman: Put a stub podman (and distrobox) on PATH.
+# Inputs:
+#   $1 — total containers reported by `podman ps -aq`
+#   $2 — total images reported by `podman images -q`
+#   (both INCLUDING our own box/image, as the real thing would report them)
+# Outputs: stdout — a directory to prepend to PATH
+_fake_podman() {
+    local containers="$1" images="$2"
+    local bin="$TMPDIR_TEST/bin"
+    mkdir -p "$bin"
+    cat > "$bin/podman" <<EOF
+#!/bin/bash
+case "\$1 \$2" in
+  "ps -aq")      for i in \$(seq 1 $containers); do echo "c\$i"; done ;;
+  "images -q")   for i in \$(seq 1 $images);     do echo "i\$i"; done ;;
+  "container exists") exit 0 ;;
+  "image exists")     exit 0 ;;
+  "rm -f")       exit 0 ;;
+  "rmi "*|"rmi") exit 0 ;;
+  "unshare rm")  shift 2; rm -rf "\$@" 2>/dev/null; exit 0 ;;
+  *)             exit 0 ;;
+esac
+EOF
+    cat > "$bin/distrobox" <<'EOF'
+#!/bin/bash
+[[ "$1" == "list" ]] && echo "ID | NAME              | STATUS" && \
+    echo "abc123 | mcss-evsieve-build | Up"
+exit 0
+EOF
+    chmod +x "$bin/podman" "$bin/distrobox"
+    echo "$bin"
+}
+
+test_dry_run_predicts_store_removal() {
+    # Ours are the ONLY container and image, so the real run would leave the
+    # store empty — the dry run must say so.
+    _setup
+    local h; h="$(_fake_install)"
+    local bin; bin="$(_fake_podman 1 1)"
+    mkdir -p "$h/.local/share/containers"
+    local out
+    out="$(PATH="$bin:$PATH" HOME="$h" bash "$UNINSTALL" --purge --dry-run --yes 2>&1)"
+    if grep -q 'Would remove empty podman store' <<<"$out"; then
+        _pass "T6.1 dry run predicts removing the store when only ours remain"
+    else
+        _fail "T6.1 dry run predicts removing the store when only ours remain" \
+              "got: $(grep -i 'podman store\|Kept /' <<<"$out" | head -1)"
+    fi
+    _teardown
+}
+
+test_dry_run_predicts_keeping_a_shared_store() {
+    # A foreign container exists, so the store must be kept — and the dry run
+    # must not claim otherwise.
+    _setup
+    local h; h="$(_fake_install)"
+    local bin; bin="$(_fake_podman 2 2)"
+    mkdir -p "$h/.local/share/containers"
+    local out
+    out="$(PATH="$bin:$PATH" HOME="$h" bash "$UNINSTALL" --purge --dry-run --yes 2>&1)"
+    if grep -q 'Kept .*containers — you have other podman' <<<"$out"; then
+        _pass "T6.2 dry run keeps the store when a foreign container exists"
+    else
+        _fail "T6.2 dry run keeps the store when a foreign container exists" \
+              "got: $(grep -i 'podman store\|Kept /' <<<"$out" | head -1)"
+    fi
+    _teardown
+}
+
+test_real_run_never_touches_a_shared_store() {
+    # The blast-radius rule (PRINCIPLES #7): someone else's containers are not
+    # ours to delete, so a populated store survives a REAL purge.
+    _setup
+    local h; h="$(_fake_install)"
+    local bin; bin="$(_fake_podman 3 3)"
+    mkdir -p "$h/.local/share/containers/storage"
+    PATH="$bin:$PATH" HOME="$h" bash "$UNINSTALL" --purge --yes >/dev/null 2>&1
+    _expect_exists "T6.3 a populated podman store survives a real purge" \
+        "$h/.local/share/containers/storage"
+    _teardown
+}
+
 # --- T5: the Steam-is-running guard ------------------------------------------
 
 test_refuses_while_steam_runs() {
@@ -426,6 +516,9 @@ run_all_tests() {
     test_vdf_round_trip_guard_blocks_the_write
     test_vdf_is_idempotent
     test_vdf_refuses_unparseable_file
+    test_dry_run_predicts_store_removal
+    test_dry_run_predicts_keeping_a_shared_store
+    test_real_run_never_touches_a_shared_store
     test_refuses_while_steam_runs
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."

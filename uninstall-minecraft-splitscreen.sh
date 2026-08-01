@@ -349,13 +349,16 @@ remove_evsieve_container() {
     # The base image is only ours to remove if nothing else is using it —
     # podman rmi refuses while a container still references it, which is the
     # safety we want, so let it refuse rather than forcing.
+    local image_existed=false
     if podman image exists "$EVSIEVE_BOX_IMAGE" 2>/dev/null; then
+        image_existed=true
         if [[ "$DRY_RUN" == true ]]; then
             print_info "[dry-run] Would remove image: $EVSIEVE_BOX_IMAGE"
         elif podman rmi "$EVSIEVE_BOX_IMAGE" >/dev/null 2>&1; then
             print_success "Removed image: $EVSIEVE_BOX_IMAGE"
         else
             print_info "Kept image $EVSIEVE_BOX_IMAGE — another container uses it"
+            image_existed=false      # still there; it must count as a leftover
         fi
         ((removed_count+=1))
     fi
@@ -364,6 +367,15 @@ remove_evsieve_container() {
     local left_c left_i
     left_c=$(podman ps -aq 2>/dev/null | wc -l)
     left_i=$(podman images -q 2>/dev/null | wc -l)
+    # A dry run has removed NOTHING, so these counts still include our own box
+    # and image — and would then report "kept, you have other containers" on a
+    # machine where the real run finds nothing left and removes the store.
+    # Found on the Deck 2026-08-01: the dry run predicted the OPPOSITE of the
+    # real outcome, which is worse than no prediction. Discount our own.
+    if [[ "$DRY_RUN" == true ]]; then
+        [[ "$box_exists"    == true ]] && left_c=$(( left_c > 0 ? left_c - 1 : 0 ))
+        [[ "$image_existed" == true ]] && left_i=$(( left_i > 0 ? left_i - 1 : 0 ))
+    fi
     if (( left_c == 0 && left_i == 0 )) \
         && [[ -d "$HOME/.local/share/containers" ]]; then
         if [[ "$DRY_RUN" == true ]]; then
