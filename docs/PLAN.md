@@ -4,7 +4,7 @@
 going.** It supersedes the per-campaign `PLAN-V1.x` docs (now archived — see
 [Versioning](#versioning) and [Document map](#document-map)).
 
-**Last updated:** 2026-08-01 (Sat, evening) · **Repo:** `aradanmn/MinecraftSplitscreenSteamdeck`
+**Last updated:** 2026-08-01 (Sat, night) · **Repo:** `aradanmn/MinecraftSplitscreenSteamdeck`
 · **Active cycle:** v1.2.4 install-path polish, then the virtual pad rig
 
 ---
@@ -60,7 +60,7 @@ Three constraints that shape *how* Deck work can be done:
 | **v1.2.1** | Shipped 2026-07-29 — docs + test tooling only. |
 | **v1.2.2** | Shipped 2026-07-31 — installer consolidation (#89, #91), validated through a real `curl\|bash` install. |
 | **v1.2.3** | Shipped 2026-08-01 — #167, #170, #172, #174, #98. Two silent data-loss bugs and a session wedge. |
-| **v1.2.4** | **In progress.** #122 shipped (#182, #183). #184/#185/#186 found + fixed today, hardware-validating three open PRs (#187/#188/#189) next. #126, #36 remain. |
+| **v1.2.4** | **In progress.** #122 shipped (#182, #183). #184/#185/#186 found, fixed, merged, AND hardware-validated today (#187/#188/#189) — a real `--yes` install completed non-interactively end to end. #126's design decided (CI cross-build); #126b/c/d + #36 remain. |
 | **v1.3** | Virtual pad rig. **Unblocked** — all ten probe verdicts green on hardware. |
 | **v1.4** | Docking + visibility. Blocked on a design question, not code. |
 
@@ -89,9 +89,13 @@ caught, none related to the `--purge` work itself:
    overlay.mount_program=/usr/bin/fuse-overlayfs` only on failure — a
    healthy host sees no behavior change. **PR #189.**
 
-All three CI-green, mutation-tested, not yet re-validated on the Deck with
-the fix applied (the bugs were found and worked around live; these PRs are
-the permanent fixes). One Deck sitting can validate all three together.
+All three merged and **hardware-validated 2026-08-01**: a real
+`./install-minecraft-splitscreen.sh --yes < /dev/null` run (zero stdin)
+completed end to end — no readonly-var error, no silent death at the Steam
+prompt, and the evsieve build succeeded via the fuse-overlayfs fallback
+(confirmed live: `fuse-overlayfs` was the actual running mount process, not
+a coincidental native success — the plain path still fails on this Deck's
+kernel, the fallback is what's carrying it).
 
 ### The load-bearing open question
 
@@ -114,7 +118,7 @@ restated with evidence.
 
 | Milestone | Open | Theme |
 |-----------|------|-------|
-| **v1.2.4** | #126, #36 (+ #184/#185/#186 fixes awaiting merge+validation) | Install-path polish + cosmetics |
+| **v1.2.4** | #126 (design decided, plumbing left), #36 | Install-path polish + cosmetics |
 | **v1.3** | #157, #136, #151, #71, #70 | Automated multi-player testing + the bugs only it can reproduce |
 | **v1.4** | #125, #134, #135, #79, #160 | Docking end to end + "the user can see what happened" |
 | **backlog** | #179, #15, #14 | Documented, not scheduled |
@@ -126,20 +130,31 @@ the Abort Game black screen it describes. Check after a few more sessions.
 
 ## v1.2.4 — install-path polish
 
-**#122 SHIPPED** (#182 workdir consolidation, #183 uninstaller `--purge`), both
-hardware-validated on a real destructive purge + reinstall cycle. That validation
-found #184/#185/#186 (see the status snapshot above) — three fixes now open as
-PRs, CI-green, awaiting one batched Deck sitting before merge.
+**#122 SHIPPED and hardware-validated.** #184/#185/#186 — the three bugs that
+validation found — are also **SHIPPED and hardware-validated** (2026-08-01
+night): a real `--yes` install ran with zero stdin, hit no readonly-var error,
+and built evsieve successfully via the fuse-overlayfs fallback (confirmed
+live-running, not a lucky native pass).
+
+**#126a decided:** CI cross-build, not build-on-Deck-and-upload. Full
+reasoning on the issue (2026-08-01 comment). Short version: `_evsieve_host_verify`
+has passed on every build-at-install run since PR1, including today's — direct,
+repeated proof that stock SteamOS already ships `libevdev.so.2`, so the ABI-skew
+worry in the original issue only applies to glibc, and SteamOS's glibc (2.41) is
+*newer* than even `ubuntu-24.04`'s (2.39) — an ordinary GH Actions build is
+already forward-compatible. Static-linking libevdev (floated in the issue) is
+therefore not needed. `release.yml` already builds on `v*` tags; this is one more
+job in that workflow, not new infrastructure, and costs zero recurring Deck time
+— unlike a manual build-on-Deck step, which would cost one every time the pinned
+evsieve commit or patch changes.
 
 | Chunk | Notes | Estimate |
 |---|---|---|
-| **#184/#185/#186** merge + Deck-validate | Real install with `--yes`, real Steam integration, real evsieve build via the fuse-overlayfs fallback | **Deck 20–30 min** |
-| **#126a** decide how the binary is produced | Real design content: CI cross-build against a SteamOS-compatible glibc vs. build-on-Deck-and-upload | agent 1h |
-| **#126b/c** release-asset plumbing + installer fetch with checksum and fallback | Must degrade cleanly to the existing build path (PRINCIPLES #5) | agent 2.5h |
+| **#126b/c** release-asset plumbing + installer fetch with checksum and fallback | Extract the existing clone-pin-patch-build sequence into something the CI job and the build-at-install path share (PRINCIPLES #9) rather than a second copy in workflow YAML. Must degrade cleanly to the existing build path (PRINCIPLES #5) | agent 2.5h |
 | **#126d** validate fetch path **and** forced-fallback path | | **Deck 30 min** |
 | **#36** Controlify SNES glyphs | Investigation-first; likely bounded by upstream Controlify behaviour against our virtual device-id | agent 1–2h · **Deck 20 min** |
 
-**Remaining: agent ~4.5–5h · Deck ~1.5h.**
+**Remaining: agent ~3.5–4.5h · Deck ~50 min.**
 
 ---
 
@@ -193,10 +208,9 @@ question, not two bugs.**
 
 ## Suggested sequencing
 
-1. **Merge #187/#188/#189, one batched Deck sitting to validate all three**,
-   then finish v1.2.4 (#126, #36) — low risk, ~1.5h of remaining Deck time,
-   and #126 removes the multi-minute container build from every fresh
-   install.
+1. **#187/#188/#189 merged and hardware-validated — done.** Finish v1.2.4
+   (#126b/c/d, #36) — low risk, ~50 min of remaining Deck time, and #126
+   removes the multi-minute container build from every fresh install.
 2. **v1.3 through PR-3** — the rig starts paying back Deck time the moment
    `stage3_hotplug` automates.
 3. **v1.4 last.**
@@ -223,27 +237,26 @@ can cost a reboot per attempt. The rig does not help with any of it.
 
 ---
 
-## Deck state (2026-08-01, evening)
+## Deck state (2026-08-01, night)
 
-- **Full `--purge` + reinstall cycle run twice today** (once by the agent, once
-  by Scott manually) as part of #122 hardware validation. Checkout is on
-  `main`, current at the time.
-- Minecraft is back on **26.1.2**, matching the home-server pin — Scott's manual
-  reinstall selected it directly (previously drifted to 26.2 during the #167
-  test; that drift is now resolved).
-- Live-reproduced #184 (readonly-var warning, fail-open) and #186 (evsieve
-  build box failed) during Scott's manual run — expected, since it ran before
-  their fixes merged. Steam integration succeeded regardless (shortcut +
-  artwork present); evsieve/seamless-reconnect is OFF until #186 merges and
-  is re-validated.
-- Pre-`--purge` backups from today's validation:
-  `.workdir/prepurge-backup-20260801-071531/` (world, accounts, four
-  `options.txt` — not yet restored onto the fresh install; do this before
-  playing) and a July backup at
-  `.workdir/preinstall-backup-20260731-175532/` (older, keep for now).
+- **Fully validated, working install on `main` @ `18c6dfb`.** Three
+  purge/reinstall cycles run today (agent, Scott manually, agent again
+  post-fix); the last one was a real `--yes < /dev/null` non-interactive run,
+  confirming #184/#185/#186 all fixed on hardware.
+- **evsieve/seamless reconnect is ON** — built successfully via the
+  fuse-overlayfs fallback (confirmed live-running as the container's mount
+  process, not a coincidental native pass). `MCSS_CONTROLLER_PROXY` default
+  applies normally.
+- Steam shortcut + artwork present. World/accounts/options restored from the
+  pre-purge backup — all 4 player accounts and the world are back.
+- Minecraft is on **26.1.2**, matching the home-server pin (resolved the
+  earlier drift to 26.2 from the #167 test).
+- `.workdir` cleaned of old MC world/account/options backups (the
+  post-restore one and two July ones) — nothing left to restore from if a
+  future purge is run; back up again first.
 - `60-mcss-uhid.rules` installed; `/dev/uhid` carries `user:deck:rw-`.
-- `.workdir/mcss-benchmark*` (the July A/B campaign's raw data, ~394M) is
-  being kept for now — Scott's call to revisit, not urgent.
+- `.workdir/mcss-benchmark*` (the July A/B campaign's raw data + world
+  backup, ~394M) is deliberately kept — Scott's call, not urgent.
 
 ---
 
