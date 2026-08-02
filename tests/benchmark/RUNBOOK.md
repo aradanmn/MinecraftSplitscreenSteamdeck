@@ -95,6 +95,115 @@ cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/
 once to a menu, quit, and re-run the sed. Note: Sodium instances may also carry
 `sodium-options.json`; leave it at defaults, just record it in the manifest.)
 
+## Pre-flight — flight path scouting (once, before the first scored cycle)
+
+**Why:** the flight bearings table below assumes every ~90s flight is "fast and
+level" — uninterrupted. `BenchWorld` is a fixed seed (`4815162342`), so the
+terrain along any given start-point + bearing is deterministic: it only needs
+checking once, not once per cycle. This pass produces the **real** start
+coordinates that replace the placeholder table further down.
+
+**Roles, same as the rest of this runbook:** the driver (this session, SSH'd
+into the Deck) creates virtual pads, injects teleport commands, and tracks
+progress; the human pilots each flight and makes the "clear / blocked by a
+mountain" call — the driver has no way to see the screen.
+
+**Mechanism — read before starting, this is why the steps below are ordered
+the way they are:**
+- A virtual pad's `CONTROLLER_ADD` claims a slot by its own `phys_uniq`
+  (`slot_claim`, `modules/slot_manager.sh`) and that slot stays claimed by
+  that same identity for as long as the pad stays connected — so pads are
+  created **first**, one at a time, and left running for the rest of the
+  session. A different device (e.g. a physical controller used instead) can
+  never resume into a slot it didn't originally claim.
+- **No physical controller is connected at any point in this pass** — only
+  virtual pads (for slot identity) plus a real mouse (for menu clicks). The
+  mouse is invisible to `controller_monitor.sh`'s gamepad-capability gate, so
+  clicking through menus never touches slot ownership.
+- Teleports are injected by the driver via `hw_xdo xdotool` into **P1's**
+  window (`SplitscreenP1` — P1 has cheats/op in `BenchWorld`), not typed by a
+  human. Two rules from earlier benchmark sessions apply here too:
+  1. **Space every `/tp` a couple of blocks apart per player** — never stack
+     everyone at one point, even when only one player is actually flying.
+  2. **Inject only in a hands-off window** — nobody's actively moving a stick.
+     Racing live input can eat the command or fire it into the wrong context
+     (an Escape once opened the pause menu mid-flight instead of reaching
+     chat). Confirm "hands off" with the human before sending.
+- Flight altitude in the existing bearing table is Y=120 — confirm this
+  actually clears terrain during scouting rather than assuming it; Minecraft
+  mountain peaks can exceed that in some biomes. Note the working altitude in
+  the results table below, it doesn't have to stay 120 if a bearing needs more
+  clearance.
+- A scouting flight doesn't need the full ~90s a scored segment does — fly far
+  enough in the bearing to be confident the terrain ahead is clear (or isn't),
+  then turn back. Use the full duration if a stretch looks ambiguous.
+
+**Stages — one player added at a time, session stays up the whole pass:**
+
+Every player's bearing is different at every N (see the table below — P1 flies
+`N` in the 1P cycle but `E` in the 2P cycle and `S` in the 3P cycle). So each
+stage below re-checks *every currently-loaded* player's bearing for that
+stage's N, not just the newly-added one.
+
+0. **Setup once:** docked, external display connected, no physical
+   controllers plugged in, a mouse connected. `BenchWorld` already exists (the
+   world + settings standardization step above). Deploy latest code to the
+   Deck if it isn't already current.
+1. **1P stage — P1 only.**
+   - `rig_create_pad 1` → slot 1 SPAWNs → instance 1 launches.
+   - Mouse: open `BenchWorld`, Esc → Open to LAN (cheats on).
+   - Hands-off window: driver `/tp`s P1 to a candidate start point for the 1P
+     Phase A bearing (`N`). Human flies it, confirms clear or reports where it
+     broke.
+   - If blocked: adjust the start X/Z (keeping the bearing itself unchanged —
+     see the earlier coordinate-axis note: X=east/west, Z=south/north, Y=up),
+     re-inject, re-fly. Record the confirmed coordinate once clear.
+   - Repeat for the 1P Phase C bearing (`NE`).
+2. **2P stage — P2 joins.**
+   - `rig_create_pad 2` → slot 2 SPAWNs → instance 2 launches.
+   - Mouse: instance 2 → Multiplayer → LAN → join P1's game.
+   - Hands-off window: driver `/tp`s P1 and P2 to their *2P-cycle* candidate
+     points (spaced apart per the rule above) for Phase A (`E`, `W`). Human
+     flies each one in turn (one screen at a time), confirms or adjusts.
+   - Repeat for Phase C (`SE`, `NW`).
+3. **3P stage — P3 joins.** Same pattern: `rig_create_pad 3`, mouse-join LAN,
+   then scout all three players' 3P-cycle bearings — Phase A (`S`,
+   `NE-far`, `SW-far`), Phase C (`SW`, `N-far`, `E-far`). The `-far` ones need
+   an initial teleport out to unexplored territory before the bearing flight
+   starts (same mechanism, just a bigger first hop) — see the existing `-far`
+   footnote below for the shape of that.
+4. **4P stage — P4 joins.** Same pattern: `rig_create_pad 4`, mouse-join LAN,
+   scout all four players' 4P-cycle bearings — Phase A (`NW-far`, `SE-far`,
+   `W-far`, `S-far`), Phase C (`NE-far`, `E-far2`, `S-far2`, `W-far2`).
+5. **Teardown.** `rig_cleanup`, then the normal session-end steps from the
+   test cycle protocol below.
+
+**Output — fill in as you go, then fold the confirmed values into the flight
+bearings table below (replacing the placeholder coordinates in its footnote):**
+
+| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
+|---|---|---|---|---|---|---|---|
+| 1P | A | P1 | N | | | | |
+| 1P | C | P1 | NE | | | | |
+| 2P | A | P1 | E | | | | |
+| 2P | A | P2 | W | | | | |
+| 2P | C | P1 | SE | | | | |
+| 2P | C | P2 | NW | | | | |
+| 3P | A | P1 | S | | | | |
+| 3P | A | P2 | NE-far | | | | |
+| 3P | A | P3 | SW-far | | | | |
+| 3P | C | P1 | SW | | | | |
+| 3P | C | P2 | N-far | | | | |
+| 3P | C | P3 | E-far | | | | |
+| 4P | A | P1 | NW-far | | | | |
+| 4P | A | P2 | SE-far | | | | |
+| 4P | A | P3 | W-far | | | | |
+| 4P | A | P4 | S-far | | | | |
+| 4P | C | P1 | NE-far | | | | |
+| 4P | C | P2 | E-far2 | | | | |
+| 4P | C | P3 | S-far2 | | | | |
+| 4P | C | P4 | W-far2 | | | | |
+
 ## Test cycle protocol (identical for every N and both phases)
 
 Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
