@@ -154,8 +154,16 @@ _recon_run_one_iteration() {
         hw_wait_for "iter ${i} P${n} window visible" 120 hw_slot_window_visible "$n" || \
             hw_warn "iter ${i}: slot ${n} window never became visible — proceeding anyway, but this iteration's result may be unreliable"
     done
-    hw_info "iter ${i} — settling briefly after all windows visible before forcing the swap..."
-    sleep 5
+    # Operator-observed live 2026-08-02: the forced disconnect fired the
+    # instant the 4th window appeared, with essentially no settle — and
+    # evsieve's own reconnect logs (captured separately) show a
+    # permission-denied retry loop against freshly-created uhid nodes
+    # (plausibly udev's uaccess ACL tagging lagging the device node's own
+    # appearance) that can run for TENS of seconds before self-healing.
+    # 5s was nowhere near enough headroom for the whole proxy pipeline
+    # (not just Minecraft) to settle after a cold 4-up launch.
+    hw_info "iter ${i} — settling after all windows visible before forcing the swap..."
+    sleep 15
 
     local uniq2 uniq4
     uniq2="$(rig_default_uniq 2)"
@@ -207,11 +215,30 @@ _recon_run_one_iteration() {
     fi
 
     # Give the FIFO event loop + slot_claim RESUME + _reconnect_repoint +
-    # proxy_repoint_slot time to actually process both CONTROLLER_ADDs.
-    hw_info "iter ${i} — waiting for the orchestrator to process the reconnect..."
-    sleep 8
-
+    # proxy_repoint_slot time to actually process both CONTROLLER_ADDs —
+    # POLL for it, don't guess a sleep. Live evidence (evsieve's own logs,
+    # captured separately) showed a permission-denied retry loop against
+    # freshly-created uhid nodes running for tens of seconds before
+    # self-healing — a fixed 8s was reading this mid-flight and reporting a
+    # false "still mismatched" against something that was still settling,
+    # not actually stuck. Poll up to 60s for BOTH links to resolve to their
+    # expected targets; if they get there, check 2 below passes; if not,
+    # THAT'S the real finding, not a premature snapshot.
     mcss_resolve_paths
+    local want2="/dev/input/event${node2_1:-X}" want4="/dev/input/event${node4_1:-X}"
+    local link2="" link4="" link_ok=0
+    local _link_deadline=$(( SECONDS + 60 ))
+    hw_info "iter ${i} — waiting (up to 60s) for both proxy symlinks to resolve..."
+    while (( SECONDS < _link_deadline )); do
+        link2=$(readlink -f "${MCSS_PROXY_PADS_DIR}/slot2" 2>/dev/null || true)
+        link4=$(readlink -f "${MCSS_PROXY_PADS_DIR}/slot4" 2>/dev/null || true)
+        if [[ "$link2" == "$want2" && "$link4" == "$want4" ]]; then
+            link_ok=1
+            break
+        fi
+        sleep 2
+    done
+
     hw_dump_state
 
     # Check 1: state-file identity sanity (expected correct per the issue).
@@ -225,19 +252,11 @@ _recon_run_one_iteration() {
     fi
 
     # Check 2: symlink target — does each slot's proxy-pads symlink actually
-    # point at THAT slot's own current physical node?
-    local link2 link4 want2 want4
-    link2=$(readlink -f "${MCSS_PROXY_PADS_DIR}/slot2" 2>/dev/null || true)
-    link4=$(readlink -f "${MCSS_PROXY_PADS_DIR}/slot4" 2>/dev/null || true)
-    want2="/dev/input/event${node2_1:-X}"
-    want4="/dev/input/event${node4_1:-X}"
-    local link_ok=1
-    [[ "$link2" == "$want2" ]] || link_ok=0
-    [[ "$link4" == "$want4" ]] || link_ok=0
+    # point at THAT slot's own current physical node? (polled above)
     if (( link_ok )); then
         hw_pass "iter ${i}: symlink targets correct (slot2->${link2}, slot4->${link4})"
     else
-        hw_fail "iter ${i}: symlink target MISMATCH — slot2->${link2:-<none>} (want ${want2}), slot4->${link4:-<none>} (want ${want4})"
+        hw_fail "iter ${i}: symlink target MISMATCH after 60s — slot2->${link2:-<none>} (want ${want2}), slot4->${link4:-<none>} (want ${want4})"
     fi
 
     # Check 3: evsieve's own log for the issue's exact diagnostic signature.
