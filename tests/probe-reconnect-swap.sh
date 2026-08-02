@@ -120,6 +120,12 @@ _recon_run_one_iteration() {
     local n
     for n in 1 2 3 4; do
         rig_create_pad "$n" || { hw_fail "iter ${i}: pad ${n} failed to create"; rig_cleanup; return 1; }
+        # Operator-observed 2026-08-02: creating all 4 pads back-to-back (and,
+        # more broadly, the whole cycle's rapid connect/disconnect churn) is
+        # plausibly hard on the machine — a Steam-triggered watchdog restart
+        # was observed during a run. Give udev/the kernel a couple seconds
+        # between each pad's creation rather than slamming all 4 through at once.
+        (( n < 4 )) && sleep 2
     done
     for n in 1 2 3 4; do
         rig_wait_for_pad "$n" 15 || hw_warn "iter ${i}: pad ${n} slow to enumerate pre-launch"
@@ -193,6 +199,12 @@ _recon_run_one_iteration() {
 
     hw_info "iter ${i} — dropping both (higher-node pad, slot ${first_idx}, first — matches the issue's own trace)..."
     rig_destroy_pad "$first_idx" || hw_warn "iter ${i}: slot ${first_idx} pad destroy reported trouble"
+    # Operator-observed 2026-08-02: a couple seconds between disconnects (and
+    # reconnects, below) rather than back-to-back — the swap mechanism only
+    # needs BOTH freed before the first recreate (kernel hands out the
+    # lowest-free number at create time, not destroy time), so this spacing
+    # doesn't defeat the swap, it just stops hammering the machine.
+    sleep 2
     rig_destroy_pad "$second_idx" || hw_warn "iter ${i}: slot ${second_idx} pad destroy reported trouble"
     local _gone_deadline=$(( SECONDS + 15 ))
     while (( SECONDS < _gone_deadline )); do
@@ -203,6 +215,7 @@ _recon_run_one_iteration() {
     hw_info "iter ${i} — reconnecting slot ${first_idx} first, then slot ${second_idx} (forcing the swap)..."
     rig_create_pad "$first_idx" || { hw_fail "iter ${i}: slot ${first_idx} recreate failed"; rig_cleanup; return 1; }
     _recon_wait_node "$first_uniq" 10 "$first_node0" >/dev/null || true
+    sleep 2   # operator-observed pacing — see the destroy side's comment above
     rig_create_pad "$second_idx" || { hw_fail "iter ${i}: slot ${second_idx} recreate failed"; rig_cleanup; return 1; }
     _recon_wait_node "$second_uniq" 10 "$second_node0" >/dev/null || true
 
@@ -351,6 +364,17 @@ main() {
         if ! _recon_teardown_and_recover "$i"; then
             hw_skip "reconnect-swap probe stopped early by operator after iteration ${i}/${iterations}"
             break
+        fi
+
+        # Operator-observed 2026-08-02: iterations were launching again
+        # almost the instant the previous one's teardown finished — four
+        # real JVMs spun up and torn down, three times in a row, back to
+        # back. A Steam-triggered watchdog restart was observed during a
+        # run. Give the machine a real rest between iterations, not just
+        # the teardown's own reaper-released check.
+        if (( i < iterations )); then
+            hw_info "iter ${i} — resting 20s before the next iteration..."
+            sleep 20
         fi
     done
 
