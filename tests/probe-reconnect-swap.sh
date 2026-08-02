@@ -139,13 +139,23 @@ _recon_run_one_iteration() {
             hw_warn "iter ${i}: slot ${n} never went active"
     done
 
-    # Let the proxy virtual nodes actually come up before touching anything
-    # — proxy_start_slot polls up to CONTROLLER_PROXY_START_TIMEOUT_S itself
-    # inside the orchestrator's own spawn path; a generous flat wait here is
-    # simpler than re-deriving that timeout and is cheap next to the JVM
-    # boot time already spent above.
-    hw_info "iter ${i} — settling before forcing the swap..."
-    sleep 10
+    # WRONG in an earlier draft, caught live 2026-08-02 (operator question:
+    # "how much time between loading MC and starting the controller
+    # tests?"): "slot active" fires the instant the controller is CLAIMED,
+    # at the very start of spawn_instance — not when Minecraft has actually
+    # finished booting. A flat 10s here was starting the reconnect dance
+    # while the JVMs were plausibly still mid-boot (probe-burst-spawn.sh
+    # separately measured ~48-54s from slot-active to window-visible for
+    # the SAME kind of cold launch). Wait for each slot's actual WINDOW
+    # instead — the same hw_slot_window_visible check every other hardware
+    # probe in this build plan already trusts for "is this instance really
+    # up," not a guessed sleep.
+    for n in 1 2 3 4; do
+        hw_wait_for "iter ${i} P${n} window visible" 120 hw_slot_window_visible "$n" || \
+            hw_warn "iter ${i}: slot ${n} window never became visible — proceeding anyway, but this iteration's result may be unreliable"
+    done
+    hw_info "iter ${i} — settling briefly after all windows visible before forcing the swap..."
+    sleep 5
 
     local uniq2 uniq4
     uniq2="$(rig_default_uniq 2)"
