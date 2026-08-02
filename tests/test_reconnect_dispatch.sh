@@ -12,7 +12,7 @@ set -euo pipefail
 # is unchanged. Run: bash tests/test_reconnect_dispatch.sh
 # =============================================================================
 
-readonly TEST_TOTAL=13
+readonly TEST_TOTAL=15
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -45,6 +45,7 @@ _reflow_layout()    { return 0; }
 _collect_mask_pairs() { return 0; }
 proxy_repoint_slot() { echo "repoint:$1:$2" >> "$RECORD"; return 0; }
 proxy_stop_slot()    { echo "stop:$1" >> "$RECORD"; return 0; }
+proxy_quiesce_slot() { echo "quiesce:$1" >> "$RECORD"; return 0; }
 
 _slot() {
     jq -cn --argjson a "$1" --arg u "$2" --argjson d "$3" --argjson t "$4" \
@@ -140,6 +141,11 @@ test_on_remove_marks_abandoned() {
         "flag on CONTROLLER_REMOVE → slot marked disconnected"
     assert_equals "$(_get_slot_field 3 disconnected_at null)" "1000000" \
         "flag on CONTROLLER_REMOVE → disconnected_at stamped"
+    # #151 fix: quiesce must run BEFORE the abandon-mark, closing the
+    # window where this slot's evsieve would otherwise keep watching the
+    # now-stale symlink.
+    assert_equals "$(_rec)" "quiesce:3" \
+        "flag on CONTROLLER_REMOVE → proxy_quiesce_slot called for the slot"
     _cleanup
 }
 
@@ -150,6 +156,8 @@ test_off_remove_does_not_mark() {
     _handle_msg "CONTROLLER_REMOVE /dev/input/event7" >/dev/null 2>&1
     assert_equals "$(_get_slot_field 3 disconnected false)" "false" \
         "flag off CONTROLLER_REMOVE → unchanged (no abandoned mark)"
+    assert_equals "$(_rec)" "" \
+        "flag off CONTROLLER_REMOVE → proxy_quiesce_slot NOT called (behavior-neutral)"
     _cleanup
 }
 

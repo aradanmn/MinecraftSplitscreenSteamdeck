@@ -32,7 +32,7 @@ set -euo pipefail
 # Run: bash tests/test_controller_proxy.sh
 # =============================================================================
 
-readonly TEST_TOTAL=15
+readonly TEST_TOTAL=16
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 readonly REPO_ROOT
@@ -862,6 +862,72 @@ resolution: proxy_start_slot still succeeds cleanly"
 }
 
 # =============================================================================
+# T16 — #151 fix: proxy_quiesce_slot removes ONLY the pads symlink (evsieve
+#       process and virt symlink untouched), and is idempotent both on a
+#       re-call and on a slot that was never started.
+# =============================================================================
+test_t16() {
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' RETURN
+
+    if (
+        _configure_env "$tmp"
+        export MCSS_EVSIEVE_BIN="$tmp/evsieve"
+        _write_evsieve_stub "$MCSS_EVSIEVE_BIN"
+        export CALLS="$tmp/calls.log"; : > "$CALLS"
+        export FAKE_NODE="$tmp/fake-node"; : > "$FAKE_NODE"
+        # shellcheck disable=SC1090
+        source "$CONTROLLER_MONITOR_MODULE"
+        # shellcheck disable=SC1090
+        source "$MODULE"
+
+        ok=1
+        pid=$(proxy_start_slot 1 /dev/input/event7 054c 09cc)
+        [[ -L "$MCSS_PROXY_PADS_DIR/slot1" ]] \
+            || { ok=0; echo "  pads link missing before quiesce" >&2; }
+        [[ -L "$MCSS_PROXY_VIRT_DIR/slot1" ]] \
+            || { ok=0; echo "  virt link missing before quiesce" >&2; }
+
+        rc=0
+        proxy_quiesce_slot 1 || rc=$?
+        [[ "$rc" -eq 0 ]] || { ok=0; echo "  quiesce rc=$rc" >&2; }
+        # -L, NOT -e: the pads symlink's TARGET is a fixture device
+        # (/dev/input/event7) that doesn't really exist in this sandbox, so
+        # it was already a dangling link before quiesce ever ran — -e
+        # follows symlinks and would read "absent" either way, silently
+        # passing even against a mutated no-op quiesce (caught by mutation
+        # testing, PRINCIPLES #4, before this test was ever trusted). -L
+        # checks the symlink FILE itself, which is the thing quiesce
+        # actually removes.
+        [[ -L "$MCSS_PROXY_PADS_DIR/slot1" ]] \
+            && { ok=0; echo "  pads link still present after quiesce" >&2; }
+        [[ -L "$MCSS_PROXY_VIRT_DIR/slot1" ]] \
+            || { ok=0; echo "  virt link removed by quiesce (should be untouched)" >&2; }
+        kill -0 "$pid" 2>/dev/null \
+            || { ok=0; echo "  evsieve stub died from quiesce (should be untouched)" >&2; }
+
+        # Idempotent: quiescing an already-quiesced slot is a harmless no-op.
+        rc=0
+        proxy_quiesce_slot 1 || rc=$?
+        [[ "$rc" -eq 0 ]] || { ok=0; echo "  second quiesce rc=$rc" >&2; }
+
+        # Idempotent: quiescing a slot that was never started is also a no-op.
+        rc=0
+        proxy_quiesce_slot 3 || rc=$?
+        [[ "$rc" -eq 0 ]] || { ok=0; echo "  never-started quiesce rc=$rc" >&2; }
+
+        proxy_stop_all >/dev/null 2>&1 || true
+        (( ok == 1 ))
+    ); then
+        _pass "T16 — proxy_quiesce_slot: removes only the pads link, \
+leaves evsieve+virt link untouched, idempotent"
+    else
+        _fail "T16" "see stderr above"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== controller_proxy test suite ==="
@@ -881,6 +947,7 @@ test_t12
 test_t13
 test_t14
 test_t15
+test_t16
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

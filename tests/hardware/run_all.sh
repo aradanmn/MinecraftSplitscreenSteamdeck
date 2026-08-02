@@ -34,12 +34,19 @@ Stages (full name / short form):
                                 automated) — run before stage1
   stage1_modules   / stage1    Module smoke tests (automated)
   stage2_handheld  / stage2    Handheld mode (operator prompts)
-  stage3_hotplug   / stage3    Docked hot-plug (operator prompts)
+  stage3_hotplug   / stage3    Docked hot-plug (operator prompts; or
+                                virtual pads — see MCSS_VIRTUAL_PADS below)
   stage4_isolation / stage4    Controller isolation verification
   stage5_crash     / stage5    Crash recovery (mostly automated)
 
 Environment:
-  DISPLAY      X display to use (auto-detected if not set)
+  DISPLAY             X display to use (auto-detected if not set)
+  MCSS_VIRTUAL_PADS    1 = stage3_hotplug drives its "plug in a controller"
+                       steps with tests/lib/uhid_rig.sh virtual pads instead
+                       of an operator's physical gamepads. Default (unset/0)
+                       is the original human-prompted path, unchanged. The
+                       dock and external display are still real hardware —
+                       this only removes the controllers from the loop.
 USAGE
     exit 0
 fi

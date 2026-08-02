@@ -26,7 +26,7 @@ set -euo pipefail
 # Run: bash tests/test_orchestrator.sh   (safe to run un-namespaced)
 # =============================================================================
 
-readonly TEST_TOTAL=8
+readonly TEST_TOTAL=9
 
 # Fixture PIDs for the mock state-file JSON below. teardown_instance (in
 # modules/instance_lifecycle.sh) sends process-GROUP kills — kill -TERM
@@ -419,6 +419,62 @@ JSON
 }
 
 # =============================================================================
+# T6.9 — _open_fifo_reader closes the back-to-back FIFO write race (#151-adjacent)
+# =============================================================================
+test_t6_9() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local fifo="$tmpdir/fifo"
+    mkfifo "$fifo"
+    local result_file="$tmpdir/result"
+
+    (
+        export SPLITSCREEN_FIFO="$fifo"
+        _open_fifo_reader || { echo "FIFO_OPEN_FAILED" > "$result_file"; exit 1; }
+
+        # #151-adjacent (2026-08-02): two independent short-lived writers, each
+        # its own open-write-close — the EXACT shape controller_monitor.sh uses
+        # for two back-to-back CONTROLLER_REMOVE messages when 2+ pads drop in
+        # the same debounce window. Before _open_fifo_reader existed, the
+        # SECOND of two such writes reliably never reached the orchestrator
+        # (confirmed live on Deck hardware, 3/3 iterations of the #151
+        # reconnect-swap probe) because the reader's fd closed right after
+        # consuming the first message, leaving a gap for the second write to
+        # race into. With a persistent reader fd held open the whole time,
+        # both writers find a reader present and neither write can be lost.
+        ( echo "MSG_A" >> "$fifo" ) &
+        local w1=$!
+        _wait_bounded "$w1" 3 >/dev/null 2>&1 || true
+        ( echo "MSG_B" >> "$fifo" ) &
+        local w2=$!
+        _wait_bounded "$w2" 3 >/dev/null 2>&1 || true
+
+        local got_a got_b
+        got_a=$(_read_fifo_msg 2) || got_a="<timeout>"
+        got_b=$(_read_fifo_msg 2) || got_b="<timeout>"
+
+        if [[ "$got_a" == "MSG_A" && "$got_b" == "MSG_B" ]]; then
+            echo "OK" > "$result_file"
+        else
+            echo "MISMATCH got_a=$got_a got_b=$got_b" > "$result_file"
+        fi
+    ) &
+    local outer_pid=$!
+    _wait_bounded "$outer_pid" 10 >/dev/null 2>&1 || true
+
+    local result
+    result=$(cat "$result_file" 2>/dev/null || echo "<no result — test subshell likely hung/killed>")
+
+    if [[ "$result" == "OK" ]]; then
+        _pass "T6.9 — _open_fifo_reader closes the back-to-back-write race (#151-adjacent)"
+    else
+        _fail "T6.9" "expected both back-to-back FIFO writes to arrive in order, got: $result"
+    fi
+}
+
+# =============================================================================
 # Run all tests
 # =============================================================================
 echo "=== orchestrator test suite ==="
@@ -431,6 +487,7 @@ test_t6_5
 test_t6_6
 test_t6_7
 test_t6_8
+test_t6_9
 echo ""
 echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
 

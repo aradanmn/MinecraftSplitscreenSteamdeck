@@ -727,7 +727,20 @@ hw_reap_stale_session() {
     pkill -9 -f 'SteamLaunch.*minecraftSplitscreen' 2>/dev/null || true
     pkill -9 -f 'latestUpdate' 2>/dev/null || true
     pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
-    for _name in startplasma-wayland kwin_wayland plasma_session baloo_file Xwayland 'udevadm monitor' inotifywait; do
+    # kwin_wayland unconditionally, NOT marker-gated (2026-08-02, live-diagnosed
+    # during PR-4): its own /proc/$pid/environ never carries SPLITSCREEN_DEBUG_LOG=
+    # — the launcher exports that var to ITSELF partway through launchFromPlasma,
+    # which only affects children forked AFTER that point, and kwin_wayland is
+    # spawned by kwin_wayland_wrapper via a fresh exec that doesn't carry it either
+    # (confirmed live: kwin_wayland_wrapper IS marked, kwin_wayland itself is not).
+    # The marker-gated loop below therefore can NEVER match it, which is exactly
+    # what left an orphaned kwin_wayland behind (black screen, Steam stuck
+    # thinking the game was still running) across multiple incidents this session
+    # — see memory [[no-remote-steam-restart]]. Safe unconditionally on this
+    # platform: kwin_wayland only ever runs as this project's OWN nested session
+    # (Game Mode itself runs gamescope directly, never kwin_wayland).
+    pkill -9 -f 'kwin_wayland' 2>/dev/null || true
+    for _name in startplasma-wayland plasma_session baloo_file Xwayland 'udevadm monitor' inotifywait; do
         for _pid in $(pgrep -f "$_name" 2>/dev/null || true); do
             grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
                 && kill -9 "$_pid" 2>/dev/null || true
