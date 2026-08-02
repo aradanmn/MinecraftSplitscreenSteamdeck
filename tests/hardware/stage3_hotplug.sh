@@ -446,9 +446,10 @@ run_stage3_hotplug() {
         hw_info "D3.8 — recreating virtual pad 2 with its original uniq (simulated P2 reconnect)..."
         rig_create_pad 2 || hw_warn "D3.8 virtual pad 2 recreate reported trouble"
     elif ! hw_prompt "Re-plug the P2 controller you just disconnected.
-  Expected (owner design): input REATTACHES to the still-running P2 instance.
-  KNOWN ISSUE #62: static dev-binds cannot reattach — the gameplay check below
-  is an EXPECTED FAIL until the #38 uinput proxy lands. Wait 5s, press Enter."; then
+  Expected (owner design): input REATTACHES to the still-running P2 instance,
+  via the MCSS_CONTROLLER_PROXY seamless-reconnect path (#38, default ON
+  since v1.2.0) — #62's static dev-bind limitation predates that and no
+  longer applies. Wait 5s, press Enter."; then
         hw_skip "D3.8-D3.9 — operator skipped"
         return 0
     fi
@@ -469,7 +470,7 @@ run_stage3_hotplug() {
   Press Enter for D3.8 checklist, or type 'skip'."; then
         hw_checklist "D3.8 Slot 2 reuse after reconnect" \
             "Top-right quadrant still shows the SAME P2 game (no respawn, no black)" \
-            "P2 controller controls the running instance again (#62 EXPECTED FAIL until #38)" \
+            "P2 controller controls the running instance again (seamless reconnect, #38)" \
             "All four slots are running (no black placeholder)"
     else
         hw_skip "D3.8 checklist skipped"
@@ -530,15 +531,20 @@ run_stage3_hotplug() {
                 rig_destroy_pad 3 || hw_warn "D3.10 virtual pad 3 destroy reported trouble"
                 sleep 3
                 rig_create_pad 3 || hw_warn "D3.10 virtual pad 3 recreate reported trouble"
-                # No validated automated verdict for "did the slot cycle correctly"
+                # No validated automated verdict for "did input reattach correctly"
                 # exists yet — inventing one without hardware validation would be
                 # a confidently-wrong pass/fail (PRINCIPLES #3/#4). Cycle the pad
                 # programmatically, record it as open rather than guess a verdict.
-                hw_skip "D3.10 (#16) slot-cycle verdict — virtual-pad mode has no validated automated check yet; pad 3 cycled programmatically, needs a Deck look until one exists"
+                hw_skip "D3.10 (#16) reattach verdict — virtual-pad mode has no validated automated check yet; pad 3 cycled programmatically, needs a Deck look until one exists"
             else
-                hw_prompt "Unplug ANY one pad, wait 3s, plug it back in — its slot should cycle
-  (game torn down, then respawned). Press Enter when you have seen the cycle, or 'skip'." \
-                    && hw_confirm "Did the slot cycle correctly after the monitor kill?" \
+                # Sticky slots (#37/#84): unplug/replug does NOT tear the game down
+                # and respawn it — only an in-game quit reaps a slot. The correct
+                # expectation here is the same as D3.7/D3.8: the game keeps running
+                # throughout, and the replugged pad's input reattaches to it.
+                hw_prompt "Unplug ANY one pad, wait 3s, plug it back in — its input should
+  reattach to the still-running game (sticky slots, #37 — NOT a teardown+respawn).
+  Press Enter when you have seen it reattach, or 'skip'." \
+                    && hw_confirm "Did input reattach correctly to that pad's slot after the monitor kill?" \
                     && hw_pass "D3.10 (#16) session survived monitor kill; hotplug still live" \
                     || hw_fail "D3.10 (#16) hotplug did not survive the monitor kill"
             fi
