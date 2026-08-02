@@ -49,12 +49,13 @@ set -euo pipefail
 #          `[orchestrator] ` prefix.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.7 2026-08-02  #151 fix: CONTROLLER_REMOVE calls proxy_quiesce_slot
+#                    before slot_release, closing the multi-pad-swap race
 #   v1.6 2026-07-19  #38 PR3: CONTROLLER_ADD gains phys_uniq (parsed,
 #                    discarded); _find_slot_by_uniq defined (unused)
 #   v1.5 2026-07-17  Fix #86: named timeouts; #85 reflow via resolve_screen
 #   v1.4 2026-07-09  #45: single MCSS_MODE/DISPLAY writers; one screen cascade
 #   v1.3 2026-07-06  #50: single state-path/lock resolution; observe-delay fix
-#   v1.2 2026-06-26  H9 heartbeats + liveness reap; raw per-slot controller bind
 # =============================================================================
 
 # #45: slot count + screen dims are runtime_context-owned; sourcing it here is
@@ -567,6 +568,13 @@ _handle_msg() {
             # pad; a returning pad (known MAC) then re-points via slot_claim→RESUME.
             # Flag off → unchanged (the pre-existing preserve-only no-op).
             if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]]; then
+                # #151 fix: quiesce BEFORE marking released — closes the window
+                # where this slot's evsieve, still watching the now-stale
+                # symlink, grabs whatever pad the kernel reuses this eventN for
+                # next (a race that only shows up when 2+ pads drop together
+                # and swap freed node numbers — see controller_proxy.sh's
+                # proxy_quiesce_slot docstring for the full trace).
+                proxy_quiesce_slot "$slot" 2>/dev/null || true
                 slot_release "$slot"
             fi
             ;;

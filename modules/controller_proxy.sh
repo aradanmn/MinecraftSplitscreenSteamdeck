@@ -20,6 +20,10 @@ set -euo pipefail
 #     — re-targets the slot's pad symlink, no process restart (D2); exit 0
 #       alive, 1 dead (link still repointed — caller escalates), 2 proxy
 #       unavailable
+#   proxy_quiesce_slot(slot)
+#     — #151 fix: removes the slot's pad symlink (evsieve idles rather than
+#       grabbing whatever the kernel reuses that eventN for next); call on
+#       every CONTROLLER_REMOVE, before any repoint; exit 0 always
 #   proxy_stop_slot(slot)
 #     — kills+reaps the slot's evsieve, removes both symlinks; ALWAYS runs
 #       regardless of MCSS_EVSIEVE_BIN; exit 0 always
@@ -92,6 +96,10 @@ set -euo pipefail
 # all already env-overridable at their runtime_context.sh home (Group B).
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.3 2026-08-02  #151 fix: proxy_quiesce_slot — remove the pad symlink
+#                    on disconnect instead of leaving it stale, closing the
+#                    window where another slot's evsieve grabs a reused
+#                    eventN before the real owner is repointed to it
 #   v1.2 2026-07-19  HW-1 fix: every public proxy_* resolves paths
 #                    directly (not via a subshell) before any path-var
 #                    access; _proxy_pidfile fails loud via ${VAR:?} now
@@ -446,6 +454,47 @@ proxy_repoint_slot() {
     echo "[controller_proxy] slot ${slot} repointed to" \
         "${phys_event_node} but no live evsieve — caller must escalate" >&2
     return 1
+}
+
+# proxy_quiesce_slot: #151 fix — remove SLOT's pad symlink WITHOUT touching
+# its evsieve process or the virt symlink. Call this the moment a slot's
+# controller disconnects (CONTROLLER_REMOVE), before any repoint.
+#
+# THE BUG this closes: evsieve's persist=reopen keeps watching whatever the
+# pads symlink currently points at. If a slot's symlink is left pointing at
+# its now-stale eventN after a disconnect, and the KERNEL reuses that same
+# number for a DIFFERENT pad before this slot's own pad reconnects
+# elsewhere (the #151 shape: two pads dropping together and swapping freed
+# numbers), that evsieve grabs the wrong physical pad the instant it
+# reappears — racing the orchestrator, which hasn't even processed the new
+# CONTROLLER_ADD yet, let alone repointed the RIGHT slot to it. Confirmed
+# live 2026-08-02 (tests/probe-reconnect-swap.sh): the victim slot's evsieve
+# log showed a device-name mismatch warning followed by "failed to grab
+# input device: received libevdev status code -16" (EBUSY) — another
+# slot's evsieve had already won the exclusive grab.
+# THE FIX: remove the symlink instead of leaving it stale. evsieve handles
+# a missing target gracefully — confirmed via that same repro's evsieve
+# logs ("persist: try_open path=... exists=false"), it just idles, never
+# grabs anything — so the slot's evsieve sits harmlessly quiesced until
+# proxy_repoint_slot gives it a real target again on RESUME/ADOPT. Safe to
+# call unconditionally on every disconnect, not just multi-pad batches: for
+# the ordinary single-pad-reconnects-on-a-new-node case this only adds a
+# brief "watching nothing" gap before the repoint, which was already going
+# to happen anyway.
+# Inputs:
+#   $1 — slot number
+#   Globals: MCSS_PROXY_PADS_DIR (read, via mcss_resolve_paths)
+# Outputs:
+#   return — 0 always (idempotent — quiescing an already-quiesced or
+#            never-started slot is a harmless no-op)
+#   side effects — rm -f ONLY the slot's pads symlink; the virt symlink
+#                  (the sandbox's stable bind target) and the evsieve
+#                  process itself are never touched
+proxy_quiesce_slot() {
+    local slot="$1"
+    mcss_resolve_paths
+    rm -f "$MCSS_PROXY_PADS_DIR/slot${slot}"
+    return 0
 }
 
 # proxy_stop_slot: Tear down SLOT's proxy. ALWAYS cleans up regardless of
