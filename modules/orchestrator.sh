@@ -49,12 +49,15 @@ set -euo pipefail
 #          `[orchestrator] ` prefix.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.8 2026-08-02  #151-adjacent fix: _open_fifo_reader holds one persistent
+#                    FIFO fd for the process lifetime, closing a message-loss
+#                    race on simultaneous writes (open-close-per-call before)
+#   v1.7 2026-08-02  #151 fix: CONTROLLER_REMOVE calls proxy_quiesce_slot
+#                    before slot_release, closing the multi-pad-swap race
 #   v1.6 2026-07-19  #38 PR3: CONTROLLER_ADD gains phys_uniq (parsed,
 #                    discarded); _find_slot_by_uniq defined (unused)
 #   v1.5 2026-07-17  Fix #86: named timeouts; #85 reflow via resolve_screen
 #   v1.4 2026-07-09  #45: single MCSS_MODE/DISPLAY writers; one screen cascade
-#   v1.3 2026-07-06  #50: single state-path/lock resolution; observe-delay fix
-#   v1.2 2026-06-26  H9 heartbeats + liveness reap; raw per-slot controller bind
 # =============================================================================
 
 # #45: slot count + screen dims are runtime_context-owned; sourcing it here is
@@ -86,6 +89,10 @@ fi
 _WATCHDOG_PID=""
 _CONTROLLER_MONITOR_PID=""
 _DOCK_MONITOR_PID=""
+# #151-adjacent: the persistent FIFO reader fd (see _open_fifo_reader / _read_fifo_msg).
+# Empty until docked_flow/handheld_flow opens it; _read_fifo_msg falls back to its
+# old open-close-per-call behavior when this is unset (e.g. a test calling it bare).
+_SPLITSCREEN_FIFO_FD=""
 # N2: PIDs of backgrounded spawn_instance brace groups. _handle_msg appends here so
 # cleanup() can kill any orphan spawn subshell that would otherwise keep polling for
 # a window (up to 120s) and map it AFTER teardown.
@@ -93,11 +100,34 @@ _SPAWN_PIDS=()
 # H10: set by _reflow_layout on failure; the event loop retries while this is 1.
 _REFLOW_NEEDED=0
 
+# _open_fifo_reader: Open SPLITSCREEN_FIFO ONCE and hold it for the life of this
+# process, in _SPLITSCREEN_FIFO_FD. #151-adjacent fix (2026-08-02): _read_fifo_msg
+# used to open/close the FIFO fresh on every single call, so between reads there
+# could be a window with ZERO fds open on it. Confirmed live: when 2 pads dropped
+# in the same debounce window, controller_monitor's _check_devices_changed detects
+# and logs BOTH CONTROLLER_REMOVEs, but only the FIRST write ever reached
+# _handle_msg — the second silently never arrived (not merely delayed: it never
+# showed up for the rest of that session, see the reconnect-swap probe's Tier 2
+# run and PLAN.md's PR-5 entry). A writer's blocking open()/write() landing in
+# that gap is the leading suspect. Call this ONCE before any writer (the
+# controller monitor) starts, so a reader is provably always present — the same
+# fix test_orchestrator.sh's own fixtures already lean on via a manual
+# `exec 9<>"$fifo"` workaround; this makes production code robust on its own
+# rather than relying on something else happening to hold the pipe open.
+# Inputs: Globals: SPLITSCREEN_FIFO (read)
+# Outputs: side effects — sets _SPLITSCREEN_FIFO_FD; return 1 if SPLITSCREEN_FIFO
+#   is unset or not a FIFO (caller proceeds with the old per-call fallback)
+_open_fifo_reader() {
+    local fifo="${SPLITSCREEN_FIFO:-}"
+    [[ -n "$fifo" && -p "$fifo" ]] || return 1
+    exec {_SPLITSCREEN_FIFO_FD}<> "$fifo"
+}
+
 # _read_fifo_msg: Read one message from SPLITSCREEN_FIFO with a timeout, so
 # the event loop can also check PID aliveness between reads.
 # Inputs:
 #   $1 — read timeout in seconds (default 5)
-#   Globals: SPLITSCREEN_FIFO (read)
+#   Globals: SPLITSCREEN_FIFO, _SPLITSCREEN_FIFO_FD (read)
 # Outputs:
 #   stdout — the message line (data only)
 #   return — 0 on a message read, 1 on timeout/no FIFO/not-a-FIFO
@@ -105,16 +135,28 @@ _read_fifo_msg() {
     local fifo="${SPLITSCREEN_FIFO:-}"
     local timeout_s="${1:-5}"
     [[ -z "$fifo" ]] && return 1
-    [[ -p "$fifo" ]] || return 1
 
-    # Open the FIFO read-WRITE (<>) rather than read-only (<).  A read-only open
-    # of a FIFO blocks in open() until some process opens the write end — and that
-    # block happens BEFORE `read -t` starts counting, so a read-only open with no
-    # writer present hangs forever (the -t timeout never engages).  This was the
-    # root cause of orchestrator iterations wedging permanently and piling up
-    # hung subshells.  Opening read-write keeps a writer reference on this fd, so
-    # open() returns immediately and the -t timeout governs the wait as intended.
-    IFS= read -r -t "$timeout_s" msg <> "$fifo" 2>/dev/null || return 1
+    if [[ -n "${_SPLITSCREEN_FIFO_FD:-}" ]]; then
+        # Preferred path: read from the persistent fd opened by _open_fifo_reader
+        # — see its docstring for why a fresh open/close per call can drop
+        # a message. Still O_RDWR under the hood (opened via <>), so the timeout
+        # behaves exactly as the comment below describes.
+        IFS= read -r -t "$timeout_s" -u "$_SPLITSCREEN_FIFO_FD" msg 2>/dev/null || return 1
+    else
+        # Fallback (no persistent reader set up — e.g. a caller that never ran
+        # _open_fifo_reader): open the FIFO read-WRITE (<>) rather than
+        # read-only (<). A read-only open of a FIFO blocks in open() until some
+        # process opens the write end — and that block happens BEFORE `read -t`
+        # starts counting, so a read-only open with no writer present hangs
+        # forever (the -t timeout never engages). This was the root cause of
+        # orchestrator iterations wedging permanently and piling up hung
+        # subshells. Opening read-write keeps a writer reference on this fd, so
+        # open() returns immediately and the -t timeout governs the wait as
+        # intended. NOTE: this path still has the message-loss gap
+        # _open_fifo_reader closes — every real caller should use that instead.
+        [[ -p "$fifo" ]] || return 1
+        IFS= read -r -t "$timeout_s" msg <> "$fifo" 2>/dev/null || return 1
+    fi
     echo "$msg"
     return 0
 }
@@ -567,6 +609,13 @@ _handle_msg() {
             # pad; a returning pad (known MAC) then re-points via slot_claim→RESUME.
             # Flag off → unchanged (the pre-existing preserve-only no-op).
             if [[ "${MCSS_CONTROLLER_PROXY:-0}" == "1" ]]; then
+                # #151 fix: quiesce BEFORE marking released — closes the window
+                # where this slot's evsieve, still watching the now-stale
+                # symlink, grabs whatever pad the kernel reuses this eventN for
+                # next (a race that only shows up when 2+ pads drop together
+                # and swap freed node numbers — see controller_proxy.sh's
+                # proxy_quiesce_slot docstring for the full trace).
+                proxy_quiesce_slot "$slot" 2>/dev/null || true
                 slot_release "$slot"
             fi
             ;;
@@ -667,6 +716,11 @@ handheld_flow() {
     # ── Write state: handheld mode
     _set_mode "handheld"
 
+    # ── Open the persistent FIFO reader BEFORE any writer (dock monitor,
+    # watchdog) starts — see _open_fifo_reader's docstring. Falls back to
+    # _read_fifo_msg's old per-call open on failure (never fatal).
+    _open_fifo_reader || echo "[orchestrator] WARNING: could not open persistent FIFO reader — falling back to per-call open (message loss under simultaneous writes is possible)" >&2
+
     # ── NO controller monitor in handheld mode (deliberate).
     # Handheld is a single FIXED player on the Deck's built-in controls, which reach the
     # game as the built-in's own Steam 28de:11ff virtual. If we ran the hotplug monitor it
@@ -750,6 +804,12 @@ docked_flow() {
 
     # ── Write state: docked mode
     _set_mode "docked"
+
+    # ── Open the persistent FIFO reader BEFORE any writer (controller
+    # monitor, dock monitor, watchdog) starts — see _open_fifo_reader's
+    # docstring. Falls back to _read_fifo_msg's old per-call open on failure
+    # (never fatal).
+    _open_fifo_reader || echo "[orchestrator] WARNING: could not open persistent FIFO reader — falling back to per-call open (message loss under simultaneous writes is possible)" >&2
 
     # ── Listen for eligible controllers already present at startup
     # If controllers are already plugged in when flow starts, they'll
@@ -1041,6 +1101,14 @@ cleanup() {
     # most for the $XDG_RUNTIME_DIR-unset fallback path (plain /tmp, not an auto-cleaned
     # per-session tmpfs).
     [[ -n "${DEX_PY_SCRIPT:-}" ]] && rm -f "$DEX_PY_SCRIPT" 2>/dev/null
+
+    # ── Close the persistent FIFO reader (_open_fifo_reader), last — writers
+    # (controller monitor, dock monitor, watchdog) are already killed above,
+    # so nothing should still be trying to write by this point.
+    if [[ -n "${_SPLITSCREEN_FIFO_FD:-}" ]]; then
+        exec {_SPLITSCREEN_FIFO_FD}<&- 2>/dev/null || true
+        _SPLITSCREEN_FIFO_FD=""
+    fi
 
     echo "[orchestrator] cleanup() complete" >&2
 }
