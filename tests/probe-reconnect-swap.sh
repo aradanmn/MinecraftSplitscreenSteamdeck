@@ -275,9 +275,13 @@ _recon_run_one_iteration() {
     # Check 3: evsieve's own log for the issue's exact diagnostic signature.
     local log2="${MCSS_HELPER_DIR}/evsieve-slot2.log" log4="${MCSS_HELPER_DIR}/evsieve-slot4.log"
     local sig_pattern='EBUSY|failed to grab input device|capabilities of the reconnected device are different'
+    # grep -c prints "0" (not nothing) on a real file with zero matches, but
+    # still exits 1 — so `|| echo 0` doubles up into "0\n0", breaking the
+    # arithmetic test below. Only a genuinely missing file yields empty
+    # output, which ${:-0} covers.
     local hit2 hit4
-    hit2=$(grep -Ec "$sig_pattern" "$log2" 2>/dev/null || echo 0)
-    hit4=$(grep -Ec "$sig_pattern" "$log4" 2>/dev/null || echo 0)
+    hit2=$(grep -Ec "$sig_pattern" "$log2" 2>/dev/null); hit2="${hit2:-0}"
+    hit4=$(grep -Ec "$sig_pattern" "$log4" 2>/dev/null); hit4="${hit4:-0}"
     if (( hit2 > 0 || hit4 > 0 )); then
         hw_fail "iter ${i}: #151 REPRODUCED — evsieve log signature found (slot2 hits=${hit2}, slot4 hits=${hit4})"
         hw_log "  --- slot2 log tail ---"; tail -n 5 "$log2" 2>/dev/null | sed 's/^/    /' >&2
