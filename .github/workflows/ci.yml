@@ -77,7 +77,8 @@ jobs:
             [tests/test_curseforge_token.sh]=7
             [tests/test_utilities.sh]=13
             [tests/test_orchestrator.sh]=8
-            [tests/test_reconnect_dispatch.sh]=13
+            [tests/test_reconnect_dispatch.sh]=15
+            [tests/test_controller_proxy.sh]=16
             [tests/test_slot_manager.sh]=17
             [tests/test_proxy_launch.sh]=7
             [tests/test_uhid_pad.sh]=18
