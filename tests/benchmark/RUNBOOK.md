@@ -183,26 +183,43 @@ bearings table below (replacing the placeholder coordinates in its footnote):**
 
 | N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
 |---|---|---|---|---|---|---|---|
-| 1P | A | P1 | N | | | | |
-| 1P | C | P1 | NE | | | | |
-| 2P | A | P1 | E | | | | |
-| 2P | A | P2 | W | | | | |
-| 2P | C | P1 | SE | | | | |
-| 2P | C | P2 | NW | | | | |
-| 3P | A | P1 | S | | | | |
-| 3P | A | P2 | NE-far | | | | |
-| 3P | A | P3 | SW-far | | | | |
-| 3P | C | P1 | SW | | | | |
-| 3P | C | P2 | N-far | | | | |
-| 3P | C | P3 | E-far | | | | |
-| 4P | A | P1 | NW-far | | | | |
-| 4P | A | P2 | SE-far | | | | |
-| 4P | A | P3 | W-far | | | | |
-| 4P | A | P4 | S-far | | | | |
-| 4P | C | P1 | NE-far | | | | |
-| 4P | C | P2 | E-far2 | | | | |
-| 4P | C | P3 | S-far2 | | | | |
-| 4P | C | P4 | W-far2 | | | | |
+**New candidate area, 2026-08-02 (supersedes the earlier (0.5,160,-10)
+candidate below it, which was never flown either)**: Scott reloaded and
+picked a fresh central point, **(-2, 94, -58)**, with each player starting
+one block away from it and flying at **Y=160**. Per-player offsets used
+below: P1 (-2,160,-59) [north of center], P2 (-1,160,-58) [east], P3
+(-2,160,-57) [south], P4 (-3,160,-58) [west] — spaced 1 block from center
+each, picked to keep the "space players apart" rule satisfied without
+guessing at exact numbers Scott didn't specify. **None of this has been
+flown/confirmed yet** — every row below is a candidate, not a result.
+
+| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
+|---|---|---|---|---|---|---|---|
+| 1P | A | P1 | N | -2 | 160 | -59 | Candidate only, not yet flown. Earlier (0.5,160,0.5) was confirmed clear 2026-08-02 but abandoned in favor of this new area |
+| 1P | C | P1 | NE | -2 | 160 | -59 | Candidate only, not yet flown |
+| 2P | A | P1 | E | -2 | 160 | -59 | Candidate only, not yet flown |
+| 2P | A | P2 | W | -1 | 160 | -58 | Candidate only, not yet flown |
+| 2P | C | P1 | SE | -2 | 160 | -59 | Candidate only, not yet flown |
+| 2P | C | P2 | NW | -1 | 160 | -58 | Candidate only, not yet flown |
+| 3P | A | P1 | S | -2 | 160 | -59 | Candidate only, not yet flown |
+| 3P | A | P2 | NE-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 3P | A | P3 | SW-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 3P | C | P1 | SW | -2 | 160 | -59 | Candidate only, not yet flown |
+| 3P | C | P2 | N-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 3P | C | P3 | E-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | A | P1 | NW-far | -2 | 160 | -59 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | A | P2 | SE-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | A | P3 | W-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | A | P4 | S-far | -3 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | C | P1 | NE-far | -2 | 160 | -59 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | C | P2 | E-far2 | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | C | P3 | S-far2 | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 4P | C | P4 | W-far2 | -3 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+
+**Superseded candidate (never flown, kept for reference only):** 1P/A and
+1P/C at (0.5, 160, -10) — proposed 2026-08-02 to dodge the (0,0) water
+hazard by moving Z, but abandoned in favor of the fresh central point above
+before ever being test-flown.
 
 ## Test cycle protocol (identical for every N and both phases)
 
