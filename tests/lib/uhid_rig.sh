@@ -119,6 +119,9 @@
 # the top of tests/test_uhid_rig.sh.
 #
 # Version history (one line per version; details live in git; max 6 lines):
+#   v1.1 2026-08-02  #136 PR-4: rig_cleanup now resets its re-entrancy guard
+#                    at the end of a pass instead of leaving it set forever
+#                    (was a silent no-op on any call after the first).
 #   v1.0 2026-08-01  #136 PR-2: initial rig control surface.
 # =============================================================================
 
@@ -711,6 +714,16 @@ rig_cleanup() {
     if [[ -n "${_MCSS_RIG_DIR:-}" ]]; then
         rm -f "$_MCSS_RIG_DIR"/*.fifo 2>/dev/null || true
     fi
+    # Reset the guard now that this pass is genuinely done. It exists to make
+    # a NESTED re-entrant call (a trap firing WHILE this pass is still
+    # running — the #146 shape) a harmless no-op, not to make rig_cleanup a
+    # run-once-per-process function — a caller doing multiple create/destroy
+    # cycles in one process (any multi-iteration test) must be able to call
+    # this again later and have it actually clean up. Confirmed on-Deck
+    # 2026-08-02 (PR-4): without this reset, a second call silently did
+    # nothing, leaving the next cycle's rig_create_pad calls fail with
+    # "already live" against pads that were, in fact, gone.
+    _MCSS_RIG_IN_CLEANUP=""
     return 0
 }
 
