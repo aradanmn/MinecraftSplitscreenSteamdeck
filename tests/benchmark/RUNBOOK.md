@@ -195,26 +195,26 @@ flown/confirmed yet** — every row below is a candidate, not a result.
 
 | N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
 |---|---|---|---|---|---|---|---|
-| 1P | A | P1 | N | -2 | 160 | -59 | Candidate only, not yet flown. Earlier (0.5,160,0.5) was confirmed clear 2026-08-02 but abandoned in favor of this new area |
-| 1P | C | P1 | NE | -2 | 160 | -59 | Candidate only, not yet flown |
-| 2P | A | P1 | E | -2 | 160 | -59 | Candidate only, not yet flown |
-| 2P | A | P2 | W | -1 | 160 | -58 | Candidate only, not yet flown |
-| 2P | C | P1 | SE | -2 | 160 | -59 | Candidate only, not yet flown |
-| 2P | C | P2 | NW | -1 | 160 | -58 | Candidate only, not yet flown |
-| 3P | A | P1 | S | -2 | 160 | -59 | Candidate only, not yet flown |
-| 3P | A | P2 | NE-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 3P | A | P3 | SW-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 3P | C | P1 | SW | -2 | 160 | -59 | Candidate only, not yet flown |
-| 3P | C | P2 | N-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 3P | C | P3 | E-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | A | P1 | NW-far | -2 | 160 | -59 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | A | P2 | SE-far | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | A | P3 | W-far | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | A | P4 | S-far | -3 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | C | P1 | NE-far | -2 | 160 | -59 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | C | P2 | E-far2 | -1 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | C | P3 | S-far2 | -2 | 160 | -57 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
-| 4P | C | P4 | W-far2 | -3 | 160 | -58 | Candidate only, not yet flown; still needs the far-teleport hop from the footnote below before flying |
+| 1P | A | P1 | N | -2 | 160 | -59 | **Confirmed clear 2026-08-02** (~6s scouting flight, no obstructions). Facing yaw 180. |
+| 1P | C | P1 | NE | -2 | 160 | -59 | **Confirmed clear 2026-08-02** (~6s scouting flight, no obstructions). Facing yaw 225. |
+| 2P | A | P1 | E | -2 | 160 | -59 | **Confirmed clear 2026-08-03** (~6s flight, no obstructions) |
+| 2P | A | P2 | W | -3 | 160 | -58 | **Confirmed clear 2026-08-03.** Start X corrected from -1 to -3 (west of P1, not east) — the original -1 start had P2 flying W back through/past P1's position instead of away from it, since P1's E bearing and P2's W bearing point at each other when P2 starts east of P1. Applies to both 2P rows below too (Phase C's SE/NW pair has the same geometry). |
+| 2P | C | P1 | SE | -2 | 160 | -59 | **Confirmed clear 2026-08-03** (~6s flight, no obstructions) |
+| 2P | C | P2 | NW | -3 | 160 | -58 | **Confirmed clear 2026-08-03.** Same corrected start X=-3 as the Phase A row above — NW bearing continues away from P1's SE bearing from this position. |
+| 3P | A | P1 | S | 20000 | 160 | 19999 | **Confirmed clear 2026-08-03.** All 3 players `/tp @a 20000 160 20000` together first (not just the `-far` ones — the footnote's `@a` moves everyone, so P1's S bearing also flies from the far region), then respaced 1 block apart and faced per bearing. |
+| 3P | A | P2 | NE-far | 20001 | 160 | 20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 3P | A | P3 | SW-far | 19999 | 160 | 20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 3P | C | P1 | SW | 40000 | 160 | 40001 | **Confirmed clear 2026-08-03.** All 3 players `/tp @a 40000 160 40000` together (new region, distinct from Phase A's), then respaced/faced per bearing. |
+| 3P | C | P2 | N-far | 39999 | 160 | 40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 3P | C | P3 | E-far | 40000 | 160 | 39999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | A | P1 | NW-far | -20000 | 160 | -20001 | **Confirmed clear 2026-08-03.** All 4 players `/tp @a -20000 160 -20000` together, then respaced 1 block apart and faced per bearing. |
+| 4P | A | P2 | SE-far | -19999 | 160 | -20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | A | P3 | W-far | -20000 | 160 | -19999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | A | P4 | S-far | -20001 | 160 | -20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | C | P1 | NE-far | -40000 | 160 | -40001 | **Confirmed clear 2026-08-03.** All 4 players `/tp @a -40000 160 -40000` together (new region, distinct from Phase A's), then respaced/faced per bearing. |
+| 4P | C | P2 | E-far2 | -39999 | 160 | -40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | C | P3 | S-far2 | -40000 | 160 | -39999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+| 4P | C | P4 | W-far2 | -40001 | 160 | -40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
 
 **Superseded candidate (never flown, kept for reference only):** 1P/A and
 1P/C at (0.5, 160, -10) — proposed 2026-08-02 to dodge the (0,0) water
