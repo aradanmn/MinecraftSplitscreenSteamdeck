@@ -6,8 +6,11 @@ ImmediatelyFast + Aikar-style JVM GC flags) actually improve FPS, memory headroo
 and smoothness at 1–4 concurrent players on a 16GB Steam Deck — before merging to main.
 
 **Who does what:** a Claude Code session (the **driver**) runs on/SSH'd into the Deck
-from the repo checkout and executes this runbook top to bottom; the **human** plays the
-game, plugs controllers, reads F3, and answers the driver's questions. The driver runs
+from the repo checkout and executes this runbook top to bottom, including creating
+virtual pads (`rig_create_pad`) for player identity — no physical controllers are used
+anywhere in this runbook, only virtual pads plus a real mouse for menu clicks (see the
+pre-flight scouting section's mechanism notes for why). The **human** pilots each
+flight, reads F3, and answers the driver's questions. The driver runs
 `tests/benchmark/sampler.sh` in the background during every cycle and records results
 incrementally into `$BENCH/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
 
@@ -40,7 +43,8 @@ incrementally into `$BENCH/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
 1. `mkdir -p $BENCH/{phaseA,phaseC}/{1p,2p,3p,4p} $BENCH/{mangohud,world-backup,options-backup,baseline-manifest,branch-manifest}`
 2. `cp tests/benchmark/RESULTS-TEMPLATE.md $BENCH/RESULTS.md` and fill the
    run-metadata block (date, SteamOS version `cat /etc/os-release`, dock/display model +
-   resolution `xrandr | grep '*'` from Desktop Mode, controller models).
+   resolution `xrandr | grep '*'` from Desktop Mode; note input method = virtual pads,
+   no physical controllers).
 3. Verify tools: `jq --version`, `command -v mangohud` (absence is fine — F3-only path).
 4. Confirm the sampler works on this Deck:
    `bash tests/benchmark/sampler.sh run /tmp/sampler-smoke & sleep 5; bash tests/benchmark/sampler.sh stop /tmp/sampler-smoke; head -3 /tmp/sampler-smoke/sampler.csv`
@@ -64,8 +68,8 @@ Record in RESULTS.md: the baseline mod list, the **Minecraft version** (from
 ## MangoHud probe (Phase A step 1; repeated as Phase B step 7)
 
 1. `SINCE=$(date +%s); bash tests/benchmark/mangohud-ctl.sh enable 1`
-2. Human: launch a **single instance** (handheld launch from the Steam shortcut, or
-   docked with one controller), enter any world, play ~60s, quit fully.
+2. Driver: `rig_create_pad 1`, launch a **single instance** docked; human (mouse)
+   enters any world, plays ~60s, quits fully; driver `rig_cleanup`.
 3. `bash tests/benchmark/mangohud-ctl.sh probe-check $SINCE`
    - **PROBE PASS** → `bash tests/benchmark/mangohud-ctl.sh enable all`. MangoHud stays
      on for ALL cycles of BOTH phases (overlay overhead must be symmetric).
@@ -225,12 +229,18 @@ before ever being test-flown.
 
 Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 
-1. **Prepare players.** Docked. Human plugs in exactly N controllers. Launch via the
-   Steam shortcut. Slot 1 opens `BenchWorld` → Esc → **Open to LAN** (cheats on);
-   slots 2..N join via Multiplayer → LAN. Everyone gathers at world spawn.
+1. **Prepare players.** Docked, no physical controllers, a mouse connected — same
+   virtual-pad mechanism as the pre-flight scouting pass above (mechanism notes there
+   apply verbatim: pads created first and left running, no physical controller ever
+   connected, mouse handles menus invisibly to slot ownership). `rig_create_pad 1`
+   through `rig_create_pad N`, one at a time: slot 1 SPAWNs → instance 1 launches →
+   mouse opens `BenchWorld` → Esc → **Open to LAN** (cheats on); each subsequent pad
+   SPAWNs its slot → mouse joins that instance via Multiplayer → LAN. Everyone
+   gathers at world spawn.
 2. **Verify slot count** (driver): all N slots active, java PIDs live —
    `jq '.slots[] | select(.active==true) | .pid' ~/.local/share/PolyMC/splitscreen_state.json`
-   If count ≠ N: fix (re-plug controller) before starting the clock.
+   If count ≠ N: `rig_create_pad` the missing slot(s) (resumes by `phys_uniq` if it
+   was previously claimed this session) before starting the clock.
 3. **Start sampling:** `bash tests/benchmark/sampler.sh run "$OUT" &` (background).
 4. **Segments** — driver marks each boundary and tells the human what to do:
    - `bash tests/benchmark/sampler.sh mark "$OUT" settle` → 180s: everyone stands at
@@ -253,12 +263,14 @@ Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
    4. "Stutters/freezes/hitches: none, occasional, or frequent? Where?"
    5. "Any audio crackling or controller input lag? (yes/no + notes)"
    6. "Anything else abnormal?"
-7. **Teardown + hygiene:** all players quit to title (session self-terminates). Driver
-   verifies: `pgrep -f latestUpdate-` empty; state file slots all inactive;
-   `sudo dmesg | grep -i -e oom -e "out of memory"` (or `journalctl -k | grep -i oom`
-   if dmesg needs root) — record any hit; grep the session debug log
-   (`/tmp/splitscreen-debug-latest.log`) for `SLOT_DIED`. 60s cool-down before the
-   next cycle.
+7. **Teardown + hygiene:** all players quit to title (mouse, session
+   self-terminates), then driver runs `rig_cleanup` to destroy all pads (each cycle
+   starts fresh — no pad carries over to the next N). Driver verifies:
+   `pgrep -f latestUpdate-` empty; state file slots all inactive; no leftover
+   `uhid_pad.py` processes; `sudo dmesg | grep -i -e oom -e "out of memory"` (or
+   `journalctl -k | grep -i oom` if dmesg needs root) — record any hit; grep the
+   session debug log (`/tmp/splitscreen-debug-latest.log`) for `SLOT_DIED`. 60s
+   cool-down before the next cycle.
 8. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste the segment lines
    into RESULTS.md.
 
