@@ -86,8 +86,19 @@ not mod/flag-determined).
 5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `2d5d321`
    supplies `modules/`/`mods.conf`/launcher, which at this ref has neither the 6 perf
    mods nor the GC flags). Prompt answers:
-   - Minecraft version → record whatever is offered; this becomes the **Phase A
-     version** other phases must match or explicitly diverge from.
+   - **Minecraft version → explicitly select the version the current `BenchWorld`
+     was saved in (26.2, if step 1 backed one up) — do NOT accept "latest".**
+     `get_supported_minecraft_versions()` queries live Mojang/Modrinth APIs at
+     install time, so "latest" can drift to a newer release than the world's
+     format if one ships between now and a later phase. 26.2 is guaranteed to be
+     offered here: `check_mod_version_compatibility` (the actual gating function)
+     is byte-identical between this ref and current `main`; pre-#94 only gates on
+     Controlify while post-#94 additionally gates on the 6 perf mods using that
+     same function, so pre-#94's supported-version set is a strict superset of
+     post-#94's — since 26.2 is supported post-#94 (it's what's currently
+     installed), it's supported here too. If no world was backed up in step 1,
+     accepting latest is fine — record whatever version is chosen as the
+     **Phase A version** the later phases must match.
    - Custom mods → `N`. Steam integration → `N` (shortcut still exists). Desktop
      launcher → `N`.
 6. **Restore the world, if step 1 backed one up:**
@@ -370,8 +381,12 @@ probe. 2. World + settings standardization.
 5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `main`
    supplies the post-#94 `modules/`/`mods.conf`/launcher — the 6 perf mods + GC
    flags). Prompt answers:
-   - Minecraft version → **the Phase A version** if listed as supported; otherwise
-     accept latest and record the version delta as a CONFOUND in RESULTS.md.
+   - **Minecraft version → explicitly select the exact Phase A version** (26.2, if
+     the same restored `BenchWorld` is being used — it will be listed, since it's
+     already what the pre-torch install was running). Do NOT accept "latest". If
+     for some reason it's genuinely absent from the list, STOP rather than
+     substituting a different version silently — that would introduce a version
+     confound between phases.
    - Custom mods → `N`.  Steam integration → `N` (shortcut still exists).
      Desktop launcher → `N`.
 6. **Restore world + settings:**
