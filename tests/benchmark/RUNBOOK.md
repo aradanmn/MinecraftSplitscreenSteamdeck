@@ -1,9 +1,18 @@
-# A/B Benchmark Runbook — baseline vs. standard mod set + JVM flags
+# A/B Benchmark Runbook — pre-#94 baseline vs. current main (standard mod set + JVM flags)
 
-**What this measures:** whether the `claude/standard-install-mods-yfox41` changes
-(required perf mods: Sodium, Lithium, FerriteCore, ModernFix-mVUS, Entity Culling,
-ImmediatelyFast + Aikar-style JVM GC flags) actually improve FPS, memory headroom,
-and smoothness at 1–4 concurrent players on a 16GB Steam Deck — before merging to main.
+**What this measures:** PR #94 (`claude/standard-install-mods-yfox41`, required perf
+mods Sodium/Lithium/FerriteCore/ModernFix-mVUS/Entity Culling/ImmediatelyFast +
+Aikar-style JVM GC flags) **already merged to `main` on 2026-07-18** and has shipped
+in every install since, without a formal before/after measurement. This runbook
+retroactively measures whether that change actually improved FPS, memory headroom,
+and smoothness at 1–4 concurrent players on a 16GB Steam Deck.
+
+**Because the change is already on `main`, "the existing install" is no longer a
+valid baseline** — it already has the mods/flags. **Both phases now require a fresh
+install from a specific git ref:** Phase A installs from commit `2d5d321` (main, the
+commit immediately before PR #94 merged); Phase C installs from current `main`/HEAD.
+There is no separate branch left to check out — PR #94's content lives permanently
+in `main` now.
 
 **Who does what:** a Claude Code session (the **driver**) runs on/SSH'd into the Deck
 from the repo checkout and executes this runbook top to bottom, including creating
@@ -50,7 +59,41 @@ incrementally into `$BENCH/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
    `bash tests/benchmark/sampler.sh run /tmp/sampler-smoke & sleep 5; bash tests/benchmark/sampler.sh stop /tmp/sampler-smoke; head -3 /tmp/sampler-smoke/sampler.csv`
    — expect populated `gpu_busy_pct` and `apu_temp_mc` columns on real Deck hardware.
 
-## Phase A step 0 — Baseline inventory (BEFORE touching anything)
+## Phase A step -1 — Back up the current world, then torch + install the pre-#94 baseline
+
+**Why this step exists:** if `BenchWorld` already exists on the currently-installed
+(post-#94) tree — e.g. from the pre-flight scouting pass — it must survive the torch
+below, since re-scouting bearings would be wasted work (the terrain is seed-determined,
+not mod/flag-determined).
+
+1. **Back up whatever world already exists, before touching anything:**
+   `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/`
+   (skip if no world exists yet — Phase A's "World + settings standardization" step
+   below creates one fresh instead). Verify: `du -sh $BENCH/world-backup/BenchWorld`
+   is non-trivial (>1MB) if it ran.
+2. **Torch:** `cd <repo checkout> && ./uninstall-minecraft-splitscreen.sh`
+   - "Keep my data?" → **`n`** (full wipe — a reinstall over surviving instances
+     silently enters *update mode*, which would invalidate the fresh-install
+     comparison).
+   - "Are you sure…" → **`y`**.
+   - Verify: `~/.local/share/PolyMC` and `~/.local/share/PrismLauncher` are gone.
+3. **Steam shortcut: leave it alone.** The uninstaller never removes it; it points at
+   `~/.local/share/PolyMC/minecraftSplitscreen.sh`, which the reinstall recreates at
+   the same path.
+4. **Checkout the pre-#94 baseline ref:**
+   `git fetch origin && git checkout 2d5d321` (detached HEAD — this is main immediately
+   before PR #94 merged; do not commit anything on it).
+5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `2d5d321`
+   supplies `modules/`/`mods.conf`/launcher, which at this ref has neither the 6 perf
+   mods nor the GC flags). Prompt answers:
+   - Minecraft version → record whatever is offered; this becomes the **Phase A
+     version** other phases must match or explicitly diverge from.
+   - Custom mods → `N`. Steam integration → `N` (shortcut still exists). Desktop
+     launcher → `N`.
+6. **Restore the world, if step 1 backed one up:**
+   `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r $BENCH/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
+
+## Phase A step 0 — Baseline inventory (after the pre-#94 install, before the first cycle)
 
 ```
 for n in 1 2 3 4; do
@@ -63,7 +106,10 @@ done
 
 Record in RESULTS.md: the baseline mod list, the **Minecraft version** (from
 `mmc-pack.json` — this is the version-match control for Phase B), and whether
-`instance.cfg` contains GC flags in `JvmArgs` (expected: **no**).
+`instance.cfg` contains GC flags in `JvmArgs` (expected: **no** — if this check
+finds them anyway, `2d5d321` was checked out wrong; STOP and re-verify the ref
+before proceeding, since the whole A/B depends on this being a real pre-change
+baseline).
 
 ## MangoHud probe (Phase A step 1; repeated as Phase B step 7)
 
@@ -78,9 +124,11 @@ Record in RESULTS.md: the baseline mod list, the **Minecraft version** (from
 
 ## World + settings standardization (Phase A, before the first cycle)
 
-- Human creates world **`BenchWorld`** on Player 1's instance: **seed `4815162342`**,
-  Creative, Normal difficulty, default world type, cheats ON. Enter it once, stand at
-  spawn ~2 min (initial worldgen), then quit.
+- **If Phase A step -1 restored a backed-up `BenchWorld`**, skip world creation —
+  it already exists with cheats on and the confirmed seed. **Otherwise** (first-ever
+  run, no prior world), human creates world **`BenchWorld`** on Player 1's instance:
+  **seed `4815162342`**, Creative, Normal difficulty, default world type, cheats ON.
+  Enter it once, stand at spawn ~2 min (initial worldgen), then quit.
 - Driver pins video settings identically in every instance (repeat after Phase B too):
 
 ```
@@ -290,15 +338,17 @@ slot 1's player (cheats are on) runs e.g. `/tp @a 20000 120 20000` (Phase A 3P),
 there. This guarantees every flight generates brand-new chunks (worldgen load, not
 chunk-cache reload) despite reusing the same world.
 
-## Phase A — Baseline (existing install, as-is)
+## Phase A — Baseline (fresh install from `2d5d321`, pre-#94)
 
-0. Inventory (above). 1. MangoHud probe. 2. World + settings standardization.
+-1. Back up existing world, torch, install pre-#94 (above). 0. Inventory. 1. MangoHud
+probe. 2. World + settings standardization.
 3–6. Cycles `phaseA/1p` → `2p` → `3p` → `4p` per the protocol.
-7. **Back up the world + options** (MUST happen before Phase B):
+7. **Back up the world + options** (MUST happen before Phase B — this re-backs-up
+   the post-cycle state, superseding step -1's pre-cycle backup):
    `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/`
    Verify: `du -sh $BENCH/world-backup/BenchWorld` is non-trivial (>1MB).
 
-## Phase B — Torch + fresh install from the branch
+## Phase B — Torch + fresh install from current `main`
 
 1. **Pre-torch checklist** — driver verifies ALL, then asks the human to type `TORCH`:
    - [ ] `$BENCH/world-backup/BenchWorld` exists, >1MB
@@ -314,11 +364,12 @@ chunk-cache reload) despite reusing the same world.
 3. **Steam shortcut: leave it alone.** The uninstaller never removes it; it points at
    `~/.local/share/PolyMC/minecraftSplitscreen.sh`, which the reinstall recreates at
    the same path.
-4. **Checkout the branch:**
-   `git fetch origin claude/standard-install-mods-yfox41 && git checkout claude/standard-install-mods-yfox41 && git pull`
-5. **Install:** `REPO_REF=claude/standard-install-mods-yfox41 ./install-minecraft-splitscreen.sh`
-   (local checkout supplies modules/mods.conf/launcher; REPO_REF points the
-   always-remote accounts.json/token.enc at the branch). Prompt answers:
+4. **Return to current `main`:**
+   `git checkout main && git fetch origin && git pull --ff-only` (undoes Phase A
+   step -1's detached-HEAD checkout at `2d5d321`).
+5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `main`
+   supplies the post-#94 `modules/`/`mods.conf`/launcher — the 6 perf mods + GC
+   flags). Prompt answers:
    - Minecraft version → **the Phase A version** if listed as supported; otherwise
      accept latest and record the version delta as a CONFOUND in RESULTS.md.
    - Custom mods → `N`.  Steam integration → `N` (shortcut still exists).
@@ -336,7 +387,7 @@ chunk-cache reload) despite reusing the same world.
    Controlify + Fabric API); `instance.cfg` `JvmArgs` contains `-XX:+UseG1GC`. If
    either check fails, STOP — the A/B delta wouldn't measure what we think.
 
-## Phase C — Branch benchmark
+## Phase C — Current-main benchmark
 
 Cycles `phaseC/1p` → `2p` → `3p` → `4p`, identical protocol, Phase C flight bearings.
 
@@ -345,7 +396,7 @@ Cycles `phaseC/1p` → `2p` → `3p` → `4p`, identical protocol, Phase C fligh
 For each N: `bash tests/benchmark/summarize.sh $BENCH/phaseA/<N>p --compare $BENCH/phaseC/<N>p`
 → paste tables into RESULTS.md, then evaluate the gates:
 
-**Hard gates — ALL must hold in Phase C, else NO merge:**
+**Hard gates — ALL must hold in Phase C, else the change does not stand as validated:**
 - 4P cycle completes with all 4 instances alive end-to-end; no oom-kill in
   dmesg/journal; no `SLOT_DIED` in the session log.
 - 4P `rss_sum_max_mb` ≤ 12288 (12 GiB); `memavail_min_mb` ≥ 1024;
@@ -362,14 +413,18 @@ For each N: `bash tests/benchmark/summarize.sh $BENCH/phaseA/<N>p --compare $BEN
 most (Sodium/Lithium/ModernFix), RSS should drop (FerriteCore), startup should feel
 faster (ModernFix). A regression in any of these deserves investigation, not hand-waving.
 
-**Decision:** all hard + soft pass → merge the branch to main. Any hard gate fails →
-no merge; record the failing metric + cycle in RESULTS.md and open an issue.
+**Decision:** all hard + soft pass → change stands validated on `main`, close #70. Any
+hard gate fails → the already-shipped change on `main` has a real regression; record
+the failing metric + cycle in RESULTS.md and open an issue (revert or fix-forward is
+a maintainer call, not a merge decision, since it's already live).
 
 ## Post-run recording (repo conventions)
 
-- Summary tables + verdict → commit as `docs/BENCH-AB-<date>.md` on the branch.
+- Summary tables + verdict → commit as `docs/BENCH-AB-<date>.md` directly on `main`
+  (there is no separate branch — PR #94 already merged; this is a retroactive
+  validation of what's already shipped).
 - Dated "Validation run" block in `docs/SPEC.md` §3b — a 4P pass also formally closes
   the D6 item "4 instances run concurrently without OOM (RAM within budget)".
-- MEMORY.md: flip the two 2026-07-17 entries' Status lines with the verdict.
+- `docs/MEMORY.md`: flip the two 2026-07-17 entries' Status lines with the verdict.
 - `sessions/SESSION-<date>.md`: narrative of the run.
 - Raw CSVs stay on the Deck under `$BENCH/` (not committed).

@@ -148,8 +148,9 @@ on 16GB) already matches the doc's memory-budget guidance, so left untouched;
 kept `MCSS_MIN_MEM_MB=512` over the doc's `-Xms2G` because `-XX:+AlwaysPreTouch`
 would commit 4×2G = 8GiB at launch.
 
-**Status:** pushed to `claude/standard-install-mods-yfox41`, awaiting Deck
-validation per this project's standing rule (SPEC §3a/§3b).
+**Status:** merged to `main` 2026-07-18 (PR #94), still awaiting the Deck A/B
+validation run per this project's standing rule (SPEC §3a/§3b) — the branch
+itself no longer exists as a separate ref; `main` already carries this change.
 
 ---
 
