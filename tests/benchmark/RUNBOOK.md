@@ -3,9 +3,28 @@
 **What this measures:** PR #94 (`claude/standard-install-mods-yfox41`, required perf
 mods Sodium/Lithium/FerriteCore/ModernFix-mVUS/Entity Culling/ImmediatelyFast +
 Aikar-style JVM GC flags) **already merged to `main` on 2026-07-18** and has shipped
-in every install since, without a formal before/after measurement. This runbook
-retroactively measures whether that change actually improved FPS, memory headroom,
-and smoothness at 1–4 concurrent players on a 16GB Steam Deck.
+in every install since. This runbook retroactively re-measures whether that change
+actually improved FPS, memory headroom, and smoothness at 1–4 concurrent players on
+a 16GB Steam Deck.
+
+**This is round 2, not the first measurement.** Round 1 (`docs/BENCH-AB-2026-07-18.md`,
+run 2026-07-17/18, MERGE verdict — the result PR #94 was actually merged on) already
+exists. Round 1 used a single human blind-teleporting each player as a proxy for
+chunk-generation load, because one person can't pilot 4 players' actual flight
+simultaneously. Round 2 exists because the virtual-pad rig (`tests/lib/uhid_rig.sh`,
+#136) now makes genuine simultaneous piloted flight possible — real chunk-load stress
+per player instead of a teleport proxy. If you're re-deriving why this second run is
+needed, that's why; don't re-litigate it.
+
+**Known gap, not yet fixed:** `download_prism_launcher()` (`modules/launcher_setup.sh`)
+always fetches `PolyMC/PolyMC/releases/latest` — this is **not pinned to any git ref**,
+so it drifts over time independent of `REPO_REF`/checkout. Confirmed 2026-08-04: current
+"latest" is PolyMC 7.1 (published 2026-07-30), which is *after* round 1's campaign —
+round 1 almost certainly ran an older PolyMC release. This means round 1 and round 2
+are not running identical launcher binaries, only identical Minecraft-side
+mods/flags/version. Record the installed PolyMC version in RESULTS.md's run-metadata
+each phase; if a close call comes down to a small delta, this is a real confound to
+flag, not to hand-wave past.
 
 **Because the change is already on `main`, "the existing install" is no longer a
 valid baseline** — it already has the mods/flags. **Both phases now require a fresh
