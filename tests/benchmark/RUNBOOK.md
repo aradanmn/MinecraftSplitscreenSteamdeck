@@ -18,12 +18,19 @@ needed, that's why; don't re-litigate it.
 
 **Known gap, not yet fixed:** `download_prism_launcher()` (`modules/launcher_setup.sh`)
 always fetches `PolyMC/PolyMC/releases/latest` — this is **not pinned to any git ref**,
-so it drifts over time independent of `REPO_REF`/checkout. Confirmed 2026-08-04: current
-"latest" is PolyMC 7.1 (published 2026-07-30), which is *after* round 1's campaign —
-round 1 almost certainly ran an older PolyMC release. This means round 1 and round 2
-are not running identical launcher binaries, only identical Minecraft-side
-mods/flags/version. Record the installed PolyMC version in RESULTS.md's run-metadata
-each phase; if a close call comes down to a small delta, this is a real confound to
+so it drifts over time independent of `REPO_REF`/checkout. Worse: the GitHub release's
+`target_commitish` is `"develop"`, a moving branch, not a fixed commit — the "7.1" tag
+itself can be silently rebuilt from a different commit without the version string ever
+changing, so the tag name alone is not a reliable fingerprint. **Exact build installed
+2026-08-04, recorded before it can drift further:** `PolyMC-Linux-amd64-7.1.AppImage`,
+34,795,325 bytes, SHA256 `b5e4c0aa15d691d0eb26fbec19e5e8794a57fcb6cc093b22b4b5885c52f82608`
+(asset `updated_at` 2026-07-30T16:00:26Z). This postdates round 1's campaign
+(2026-07-17/18) — round 1 almost certainly ran a different PolyMC build. Round 1 and
+round 2 are not running identical launcher binaries, only identical Minecraft-side
+mods/flags/version. **Record both the tag and the SHA256** in RESULTS.md's run-metadata
+each phase (`curl -s https://api.github.com/repos/PolyMC/PolyMC/releases/latest | jq -r
+'.assets[] | select(.name=="PolyMC-Linux-amd64-"+<tag>+".AppImage") | .digest'` after
+install); if a close call comes down to a small delta, this is a real confound to
 flag, not to hand-wave past.
 
 **Because the change is already on `main`, "the existing install" is no longer a
