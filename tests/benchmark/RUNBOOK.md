@@ -1,383 +1,346 @@
 # A/B Benchmark Runbook — pre-#94 baseline vs. current main (standard mod set + JVM flags)
 
-**What this measures:** PR #94 (`claude/standard-install-mods-yfox41`, required perf
-mods Sodium/Lithium/FerriteCore/ModernFix-mVUS/Entity Culling/ImmediatelyFast +
-Aikar-style JVM GC flags) **already merged to `main` on 2026-07-18** and has shipped
-in every install since. This runbook retroactively re-measures whether that change
-actually improved FPS, memory headroom, and smoothness at 1–4 concurrent players on
-a 16GB Steam Deck.
+## What this measures
 
-**This is round 2, not the first measurement.** Round 1 (`docs/BENCH-AB-2026-07-18.md`,
-run 2026-07-17/18, MERGE verdict — the result PR #94 was actually merged on) already
-exists. Round 1 used a single human blind-teleporting each player as a proxy for
-chunk-generation load, because one person can't pilot 4 players' actual flight
-simultaneously. Round 2 exists because the virtual-pad rig (`tests/lib/uhid_rig.sh`,
-#136) now makes genuine simultaneous piloted flight possible — real chunk-load stress
-per player instead of a teleport proxy. If you're re-deriving why this second run is
-needed, that's why; don't re-litigate it.
+PR #94 (`claude/standard-install-mods-yfox41`; required perf mods Sodium, Lithium,
+FerriteCore, ModernFix-mVUS, Entity Culling, ImmediatelyFast + Aikar-style JVM GC
+flags) **already merged to `main` on 2026-07-18** and has shipped in every install
+since. This runbook re-measures whether that change actually improves FPS, memory
+headroom, and smoothness at 1–4 concurrent players on a 16GB Steam Deck.
 
-**Known gap, not yet fixed:** `download_prism_launcher()` (`modules/launcher_setup.sh`)
-always fetches `PolyMC/PolyMC/releases/latest` — this is **not pinned to any git ref**,
-so it drifts over time independent of `REPO_REF`/checkout. Worse: the GitHub release's
-`target_commitish` is `"develop"`, a moving branch, not a fixed commit — the "7.1" tag
-itself can be silently rebuilt from a different commit without the version string ever
-changing, so the tag name alone is not a reliable fingerprint. **Exact build installed
-2026-08-04, recorded before it can drift further:** `PolyMC-Linux-amd64-7.1.AppImage`,
-34,795,325 bytes, SHA256 `b5e4c0aa15d691d0eb26fbec19e5e8794a57fcb6cc093b22b4b5885c52f82608`
-(asset `updated_at` 2026-07-30T16:00:26Z). This postdates round 1's campaign
-(2026-07-17/18) — round 1 almost certainly ran a different PolyMC build. Round 1 and
-round 2 are not running identical launcher binaries, only identical Minecraft-side
-mods/flags/version. **Record both the tag and the SHA256** in RESULTS.md's run-metadata
-each phase (`curl -s https://api.github.com/repos/PolyMC/PolyMC/releases/latest | jq -r
-'.assets[] | select(.name=="PolyMC-Linux-amd64-"+<tag>+".AppImage") | .digest'` after
-install); if a close call comes down to a small delta, this is a real confound to
-flag, not to hand-wave past.
+**This is round 2, not the first measurement.** Round 1
+(`docs/BENCH-AB-2026-07-18.md`, run 2026-07-17/18) already has a **MERGE verdict** —
+that result is what PR #94 was actually merged on. Round 1 used a single human
+blind-teleporting each player as a proxy for chunk-generation load, because one
+person can't pilot 4 players' actual flight simultaneously. Round 2 exists because
+the virtual-pad rig (`tests/lib/uhid_rig.sh`, #136) now makes genuine simultaneous
+piloted flight possible — real chunk-load stress per player instead of a teleport
+proxy. If you're re-deriving why this second run is needed, that's why; don't
+re-litigate it.
 
 **Because the change is already on `main`, "the existing install" is no longer a
-valid baseline** — it already has the mods/flags. **Both phases now require a fresh
-install from a specific git ref:** Phase A installs from commit `2d5d321` (main, the
-commit immediately before PR #94 merged); Phase C installs from current `main`/HEAD.
-There is no separate branch left to check out — PR #94's content lives permanently
-in `main` now.
-
-**Who does what:** a Claude Code session (the **driver**) runs on/SSH'd into the Deck
-from the repo checkout and executes this runbook top to bottom, including creating
-virtual pads (`rig_create_pad`) for player identity — no physical controllers are used
-anywhere in this runbook, only virtual pads plus a real mouse for menu clicks (see the
-pre-flight scouting section's mechanism notes for why). The **human** pilots each
-flight, reads F3, and answers the driver's questions. The driver runs
-`tests/benchmark/sampler.sh` in the background during every cycle and records results
-incrementally into `$BENCH/RESULTS.md` (copied from `RESULTS-TEMPLATE.md`).
-
-**Driver operating rules**
-- Update RESULTS.md after **every** cycle, never batch at the end — a crash mid-run
-  must not lose data.
-- Never run destructive commands outside the explicit Phase B list, and never start
-  the torch without the human literally typing `TORCH`.
-- If a cycle fails (crash, missing slot, OOM), record it as a result — do not silently
-  retry. One retry is allowed after diagnosis; note both attempts.
-- All cycles run **docked** on the same external display at the same resolution.
+valid baseline** — it already has the mods/flags. Both phases install from a
+specific git ref instead: Phase A from commit `2d5d321` (main, immediately before
+PR #94 merged), Phase C from current `main`/HEAD.
 
 ---
 
-## Phase 0 — Setup (once, before Phase A)
+## Roles
 
-0. **Set `$BENCH` first — every path below depends on it.** From the repo checkout:
+| Role | Who | Does what |
+|---|---|---|
+| **Driver** | Claude, SSH'd into the Deck from the repo checkout | Runs every command, creates virtual pads (`rig_create_pad`) for player identity, injects `/tp` and menu-navigation input, samples metrics, records results, drives all install/uninstall prompts |
+| **Human** | Scott, physically at the Deck | Pilots each flight, reads F3, answers the driver's questions, types `TORCH` to authorize a wipe, clicks through menus with a mouse |
 
+**No physical controllers or keyboard are ever connected.** Only virtual pads (for
+slot identity — `slot_claim` matches strictly by `phys_uniq`, so a real controller
+used instead could never resume into a slot a virtual pad claimed) plus a real mouse
+for menu clicks (invisible to `controller_monitor.sh`'s gamepad-capability gate, so
+it never touches slot ownership). **Because there's no keyboard, the driver must
+inject Escape via `hw_xdo` proactively before asking the human to quit to a menu —
+don't wait for "I'm stuck."** Pattern:
+
+```bash
+line=$(pgrep -a Xwayland | grep -- '-auth' | grep -oE ':[0-9]+ -auth [^ ]+' | head -1)
+export DISPLAY=$(cut -d' ' -f1 <<<"$line")
+export XAUTHORITY=$(cut -d' ' -f3 <<<"$line")
+WID=$(jq -r '.slots["<N>"].wid' ~/.local/share/PolyMC/splitscreen_state.json)
+xdotool key --window "$WID" Escape
+```
+
+---
+
+## Physical requirements — what needs Scott at the Deck, and when
+
+| Sitting | Physical presence? | Why |
+|---|---|---|
+| **1 — Setup + Phase A install** (DONE) | No, except typing `TORCH` and answering a couple of install prompts (can be done remotely via chat) | Backup/torch/install/inventory are all driver-executed over SSH; nothing on-screen needs watching until the MangoHud probe |
+| **1 — MangoHud probe** (DONE, part of sitting 1) | **Yes** | Needs eyes on the overlay + a mouse to navigate + ~60s of play |
+| **2 — Phase A cycles (1P→4P)** | **Yes, the whole sitting** | Piloting every flight, reading F3, answering the question set each cycle |
+| **3 — Phase B install + Phase C cycles** | **Yes, the whole sitting** | Same as sitting 2, plus `TORCH` confirmation for the reinstall |
+| **4 — Phase D comparison + decision + docs** | **No** | Pure data analysis from CSVs already on the Deck; driver-only |
+
+Every physical sitting needs: **docked**, external display connected, a mouse
+connected, **no physical controllers, no keyboard**.
+
+---
+
+## Known gaps (carry these into every future benchmark, not just #70)
+
+- **PolyMC's own binary is unpinned.** `download_prism_launcher()`
+  (`modules/launcher_setup.sh`) always fetches `PolyMC/PolyMC/releases/latest`,
+  independent of any git ref. Worse, the release's `target_commitish` is
+  `"develop"` — a moving branch — so a tag like "7.1" can be silently rebuilt from
+  a different commit without the version string changing. **Tag name alone is not
+  a reliable fingerprint — always record the SHA256 too.** Exact build installed
+  2026-08-04: `PolyMC-Linux-amd64-7.1.AppImage`, SHA256
+  `b5e4c0aa15d691d0eb26fbec19e5e8794a57fcb6cc093b22b4b5885c52f82608`. Round 1
+  (2026-07-17/18) almost certainly ran a different PolyMC build than round 2 —
+  they are not comparable on launcher binary, only on Minecraft-side
+  mods/flags/version. Get the current fingerprint after every install:
+  ```bash
+  curl -s https://api.github.com/repos/PolyMC/PolyMC/releases/latest | \
+    jq -r '.assets[] | select(.name | test("linux-amd64.*\\.AppImage$";"i")) | "\(.name) \(.digest)"'
+  ```
+- **`REPO_REF` is required, not optional, whenever installing from a non-`main`
+  ref.** `accounts.json` is fetched live from `${MCSS_REPO_RAW_URL}`, which
+  defaults to `main` if `REPO_REF` is unset. A same-day-but-unrelated commit
+  (`728013d`) renamed the account profile prefix `P`→`Player`; without pinning
+  `REPO_REF` to the exact ref's full SHA, the installer fetches current-`main`'s
+  accounts.json against older validation code and hard-fails before mod
+  selection.
+- **`get_supported_minecraft_versions()` queries live APIs at install time** — always
+  explicitly select the exact MC version you need (never "accept latest"), and
+  verify it's actually offered before assuming.
+
+---
+
+## Progress checkpoint
+
+- [x] **Sitting 1** (2026-08-04/05): Phase 0 setup, Phase A step −1 (backup + torch +
+      install pre-#94 baseline), Phase A step 0 (baseline inventory), MangoHud probe
+      (PASS), world + settings standardization. **Nothing here needs redoing.**
+- [ ] **Sitting 2**: Phase A scored cycles — `phaseA/1p` → `2p` → `3p` → `4p`.
+- [ ] **Sitting 3**: Phase B (torch + reinstall current `main`) + Phase C scored
+      cycles — `phaseC/1p` → `2p` → `3p` → `4p`.
+- [ ] **Sitting 4**: Phase D comparison, gate evaluation, merge/no-merge decision,
+      post-run recording.
+
+Before resuming any sitting: `git pull` the Deck checkout, and check current
+rig/slot state (`rig_list_pads`, `pgrep -fal latestUpdate-`, the state file) rather
+than assuming a clean start.
+
+---
+
+## Sitting 1 — Setup + Phase A install (reference; already done)
+
+Kept for reproducibility — do **not** repeat unless the install itself needs
+redoing (e.g. Phase A's instances got corrupted).
+
+1. **`$BENCH` first** — every path below depends on it:
    ```bash
    cd /path/to/MinecraftSplitscreenSteamdeck
    export BENCH="$PWD/.workdir/benchmark"
    ```
-
-   Benchmark output lives under the checkout's git-ignored `.workdir/`, not in
-   `$HOME` (#122), so the whole run is cleared by one `rm -rf .workdir`. Export it
-   in every shell you drive the run from — an unset `$BENCH` would silently write
-   to `/phaseA/...` and fail. `tests/benchmark/*.sh` resolve the same root on
-   their own, so they need no argument.
-
-1. `mkdir -p $BENCH/{phaseA,phaseC}/{1p,2p,3p,4p} $BENCH/{mangohud,world-backup,options-backup,baseline-manifest,branch-manifest}`
-2. `cp tests/benchmark/RESULTS-TEMPLATE.md $BENCH/RESULTS.md` and fill the
-   run-metadata block (date, SteamOS version `cat /etc/os-release`, dock/display model +
-   resolution `xrandr | grep '*'` from Desktop Mode; note input method = virtual pads,
-   no physical controllers).
-3. Verify tools: `jq --version`, `command -v mangohud` (absence is fine — F3-only path).
-4. Confirm the sampler works on this Deck:
+   Lives under the checkout's git-ignored `.workdir/` (#122) — the whole run is
+   cleared by one `rm -rf .workdir`, and nothing under it is committed.
+2. `mkdir -p $BENCH/{phaseA,phaseC}/{1p,2p,3p,4p} $BENCH/{mangohud,world-backup,options-backup,baseline-manifest,branch-manifest}`
+3. `cp tests/benchmark/RESULTS-TEMPLATE.md $BENCH/RESULTS.md`, fill run-metadata
+   (date, SteamOS version, dock/display model+resolution, input method = virtual
+   pads only, PolyMC tag+SHA256 per the known-gaps note above).
+4. Verify tools (`jq --version`, `command -v mangohud`); sampler smoke test:
    `bash tests/benchmark/sampler.sh run /tmp/sampler-smoke & sleep 5; bash tests/benchmark/sampler.sh stop /tmp/sampler-smoke; head -3 /tmp/sampler-smoke/sampler.csv`
-   — expect populated `gpu_busy_pct` and `apu_temp_mc` columns on real Deck hardware.
-
-## Phase A step -1 — Back up the current world, then torch + install the pre-#94 baseline
-
-**Why this step exists:** if `BenchWorld` already exists on the currently-installed
-(post-#94) tree — e.g. from the pre-flight scouting pass — it must survive the torch
-below, since re-scouting bearings would be wasted work (the terrain is seed-determined,
-not mod/flag-determined).
-
-1. **Back up whatever world already exists, before touching anything:**
+   — expect populated `gpu_busy_pct`/`apu_temp_mc` columns.
+5. **Back up whatever world already exists** before touching anything:
    `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/`
-   (skip if no world exists yet — Phase A's "World + settings standardization" step
-   below creates one fresh instead). Verify: `du -sh $BENCH/world-backup/BenchWorld`
-   is non-trivial (>1MB) if it ran.
-2. **Torch:** `cd <repo checkout> && ./uninstall-minecraft-splitscreen.sh`
-   - "Keep my data?" → **`n`** (full wipe — a reinstall over surviving instances
-     silently enters *update mode*, which would invalidate the fresh-install
-     comparison).
-   - "Are you sure…" → **`y`**.
-   - Verify: `~/.local/share/PolyMC` and `~/.local/share/PrismLauncher` are gone.
-3. **Steam shortcut: leave it alone.** The uninstaller never removes it; it points at
-   `~/.local/share/PolyMC/minecraftSplitscreen.sh`, which the reinstall recreates at
-   the same path.
-4. **Checkout the pre-#94 baseline ref:**
-   `git fetch origin && git checkout 2d5d321` (detached HEAD — this is main immediately
-   before PR #94 merged; do not commit anything on it).
-5. **Install:** `REPO_REF=2d5d32113a2bc29be572f5543512dd3b78f2391e ./install-minecraft-splitscreen.sh`
-   — **`REPO_REF` is required here, not optional.** `accounts.json` is fetched live
-   from `${MCSS_REPO_RAW_URL}` (`raw.githubusercontent.com/.../${REPO_REF}`), which
-   defaults to `main` if `REPO_REF` is unset — i.e. *today's* `main`, not this ref.
-   A separate commit (`728013d`, same day as PR #94 but not part of it) renamed the
-   account profile prefix from `P` to `Player`; without pinning `REPO_REF` to the
-   full baseline SHA, the installer fetches current-`main`'s `Player`-prefixed
-   accounts.json while this ref's validation code still expects `P`-prefixed
-   profiles, and **hard-fails at the accounts.json validation step** ("missing
-   player profile(s): P1, P2, P3, P4") before ever reaching mod selection —
-   confirmed live 2026-08-04. The local checkout at `2d5d321` supplies
-   `modules/`/`mods.conf`/launcher (neither the 6 perf mods nor the GC flags exist
-   at this ref); `REPO_REF` only controls the remote-fetched pieces. Prompt answers:
-   - **Minecraft version → explicitly select the version the current `BenchWorld`
-     was saved in (26.2, if step 1 backed one up) — do NOT accept "latest".**
-     `get_supported_minecraft_versions()` queries live Mojang/Modrinth APIs at
-     install time, so "latest" can drift to a newer release than the world's
-     format if one ships between now and a later phase. 26.2 is guaranteed to be
-     offered here: `check_mod_version_compatibility` (the actual gating function)
-     is byte-identical between this ref and current `main`; pre-#94 only gates on
-     Controlify while post-#94 additionally gates on the 6 perf mods using that
-     same function, so pre-#94's supported-version set is a strict superset of
-     post-#94's — since 26.2 is supported post-#94 (it's what's currently
-     installed), it's supported here too. If no world was backed up in step 1,
-     accepting latest is fine — record whatever version is chosen as the
-     **Phase A version** the later phases must match.
-   - Mod selection → `-1` (install only required mods) — a true pre-#94 baseline
-     means declining every optional QoL/Sodium-extra mod too, not just the 6 mods
-     that later became required.
-   - Custom mods → `N`. Steam integration → `N` (shortcut still exists). Desktop
-     launcher → `N`.
-6. **Restore the world, if step 1 backed one up:**
+   — skip only if no world exists yet. Verify non-trivial size (>1MB).
+6. **Torch** (human types `TORCH` first): `./uninstall-minecraft-splitscreen.sh` →
+   "Keep my data?" **`n`** → "Are you sure?" **`y`**. Verify
+   `~/.local/share/PolyMC` and `~/.local/share/PrismLauncher` are gone. The Steam
+   shortcut survives untouched (points at a path the reinstall recreates).
+7. **Checkout the pre-#94 baseline ref**: `git fetch origin && git checkout 2d5d321`
+   (detached HEAD — commit yourself into nothing here).
+8. **Install**:
+   `REPO_REF=2d5d32113a2bc29be572f5543512dd3b78f2391e ./install-minecraft-splitscreen.sh`
+   — `REPO_REF` is mandatory (see known gaps). Prompt answers:
+   - Minecraft version → explicitly select the version the backed-up world was
+     saved in (26.2). Never "accept latest".
+   - Mod selection → `-1` (required mods only — Controlify and its deps; a true
+     pre-#94 baseline declines every optional QoL/Sodium-extra mod too).
+   - Custom mods → `N`. Steam integration → `N`. Desktop launcher → `N`.
+9. **Restore the world** (if step 5 backed one up):
    `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r $BENCH/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
-7. **Return the driver checkout to `main`:** `git checkout main && git pull --ff-only`.
-   The benchmark tooling (`sampler.sh`, `mangohud-ctl.sh`, `summarize.sh`) doesn't
-   exist at `2d5d321` — it was added later. The install in steps 4-6 already ran and
-   copied everything needed onto the Deck's target dir, so switching the driver's
-   own checkout back doesn't touch the installed instances.
+10. **Return the driver checkout to `main`**: `git checkout main && git pull --ff-only`
+    — the benchmark tooling (`sampler.sh`, `mangohud-ctl.sh`) doesn't exist at
+    `2d5d321`. The install already ran; switching the driver's own checkout back
+    doesn't touch the installed instances.
+11. **Baseline inventory** (`$BENCH/baseline-manifest/`, per instance:
+    `ls -la mods/`, copy `instance.cfg` + `mmc-pack.json`). Record mod list, MC
+    version, and confirm **no** GC flags in any `JvmArgs` — if found, `2d5d321`
+    was checked out wrong; stop and re-verify.
+12. **MangoHud probe** — physical sitting starts here:
+    1. `SINCE=$(date +%s); bash tests/benchmark/mangohud-ctl.sh enable 1`
+    2. Driver: `rig_create_pad 1`; human launches the Steam shortcut, enters any
+       world (BenchWorld is fine), plays ~60s, quits (driver injects Escape).
+    3. `bash tests/benchmark/mangohud-ctl.sh probe-check $SINCE` — PASS →
+       `enable all` for both phases; FAIL → `disable all`, F3-only for both
+       phases. Either way, record the verdict; do not block on it.
+    4. `rig_cleanup`.
+13. **World + settings standardization**: world already restored with cheats on
+    (skip creation). Pin video settings identically across all 4 instances:
+    ```bash
+    for n in 1 2 3 4; do
+      o=~/.local/share/PolyMC/instances/latestUpdate-$n/.minecraft/options.txt
+      [ -f "$o" ] || continue
+      sed -i -e 's/^renderDistance:.*/renderDistance:8/' \
+             -e 's/^simulationDistance:.*/simulationDistance:8/' \
+             -e 's/^enableVsync:.*/enableVsync:false/' \
+             -e 's/^maxFps:.*/maxFps:260/' "$o"
+    done
+    cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/options-backup/ 2>/dev/null || true
+    ```
 
-## Phase A step 0 — Baseline inventory (after the pre-#94 install, before the first cycle)
+---
 
-```
-for n in 1 2 3 4; do
-  d=~/.local/share/PolyMC/instances/latestUpdate-$n
-  mkdir -p $BENCH/baseline-manifest/instance-$n
-  ls -la "$d/.minecraft/mods" > $BENCH/baseline-manifest/instance-$n/mods.txt 2>&1
-  cp "$d/instance.cfg" "$d/mmc-pack.json" $BENCH/baseline-manifest/instance-$n/ 2>/dev/null
-done
-```
+## Sitting 2 — Phase A scored cycles
 
-Record in RESULTS.md: the baseline mod list, the **Minecraft version** (from
-`mmc-pack.json` — this is the version-match control for Phase B), and whether
-`instance.cfg` contains GC flags in `JvmArgs` (expected: **no** — if this check
-finds them anyway, `2d5d321` was checked out wrong; STOP and re-verify the ref
-before proceeding, since the whole A/B depends on this being a real pre-change
-baseline).
+**Physical, the whole sitting.** Docked, mouse only, no controllers/keyboard.
 
-## MangoHud probe (Phase A step 1; repeated as Phase B step 7)
+Before starting: confirm rig/slot state is clean (nothing live from sitting 1).
 
-1. `SINCE=$(date +%s); bash tests/benchmark/mangohud-ctl.sh enable 1`
-2. Driver: `rig_create_pad 1`, launch a **single instance** docked; human (mouse)
-   enters any world, plays ~60s, quits fully; driver `rig_cleanup`.
-3. `bash tests/benchmark/mangohud-ctl.sh probe-check $SINCE`
-   - **PROBE PASS** → `bash tests/benchmark/mangohud-ctl.sh enable all`. MangoHud stays
-     on for ALL cycles of BOTH phases (overlay overhead must be symmetric).
-   - **PROBE FAIL** → `bash tests/benchmark/mangohud-ctl.sh disable all`. F3-only for
-     BOTH phases. Do not block; record the verdict in RESULTS.md either way.
+Run the **Test cycle protocol** (below) four times: `phaseA/1p` → `2p` → `3p` →
+`4p`, using the **Phase A bearings** from the flight-bearings table.
 
-## World + settings standardization (Phase A, before the first cycle)
-
-- **If Phase A step -1 restored a backed-up `BenchWorld`**, skip world creation —
-  it already exists with cheats on and the confirmed seed. **Otherwise** (first-ever
-  run, no prior world), human creates world **`BenchWorld`** on Player 1's instance:
-  **seed `4815162342`**, Creative, Normal difficulty, default world type, cheats ON.
-  Enter it once, stand at spawn ~2 min (initial worldgen), then quit.
-- Driver pins video settings identically in every instance (repeat after Phase B too):
-
-```
-for n in 1 2 3 4; do
-  o=~/.local/share/PolyMC/instances/latestUpdate-$n/.minecraft/options.txt
-  [ -f "$o" ] || continue
-  sed -i -e 's/^renderDistance:.*/renderDistance:8/' \
-         -e 's/^simulationDistance:.*/simulationDistance:8/' \
-         -e 's/^enableVsync:.*/enableVsync:false/' \
-         -e 's/^maxFps:.*/maxFps:260/' "$o"
-done
-cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/options-backup/ 2>/dev/null || true
+After the 4th cycle, **back up the world + options** (this supersedes sitting 1's
+pre-cycle backup — it now captures the post-cycle state that Phase B/C restore
+from):
+```bash
+cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/
+du -sh $BENCH/world-backup/BenchWorld   # verify non-trivial
 ```
 
-(If a setting key is absent — e.g. options.txt not yet generated — launch the instance
-once to a menu, quit, and re-run the sed. Note: Sodium instances may also carry
-`sodium-options.json`; leave it at defaults, just record it in the manifest.)
+---
 
-## Pre-flight — flight path scouting (once, before the first scored cycle)
+## Sitting 3 — Phase B install + Phase C scored cycles
 
-**Why:** the flight bearings table below assumes every ~90s flight is "fast and
-level" — uninterrupted. `BenchWorld` is a fixed seed (`4815162342`), so the
-terrain along any given start-point + bearing is deterministic: it only needs
-checking once, not once per cycle. This pass produces the **real** start
-coordinates that replace the placeholder table further down.
+**Physical, the whole sitting.** Same setup as sitting 2.
 
-**Roles, same as the rest of this runbook:** the driver (this session, SSH'd
-into the Deck) creates virtual pads, injects teleport commands, and tracks
-progress; the human pilots each flight and makes the "clear / blocked by a
-mountain" call — the driver has no way to see the screen.
+### Phase B — torch + reinstall current `main`
 
-**Mechanism — read before starting, this is why the steps below are ordered
-the way they are:**
-- A virtual pad's `CONTROLLER_ADD` claims a slot by its own `phys_uniq`
-  (`slot_claim`, `modules/slot_manager.sh`) and that slot stays claimed by
-  that same identity for as long as the pad stays connected — so pads are
-  created **first**, one at a time, and left running for the rest of the
-  session. A different device (e.g. a physical controller used instead) can
-  never resume into a slot it didn't originally claim.
-- **No physical controller is connected at any point in this pass** — only
-  virtual pads (for slot identity) plus a real mouse (for menu clicks). The
-  mouse is invisible to `controller_monitor.sh`'s gamepad-capability gate, so
-  clicking through menus never touches slot ownership.
-- Teleports are injected by the driver via `hw_xdo xdotool` into **P1's**
-  window (`SplitscreenP1` — P1 has cheats/op in `BenchWorld`), not typed by a
-  human. Two rules from earlier benchmark sessions apply here too:
-  1. **Space every `/tp` a couple of blocks apart per player** — never stack
-     everyone at one point, even when only one player is actually flying.
-  2. **Inject only in a hands-off window** — nobody's actively moving a stick.
-     Racing live input can eat the command or fire it into the wrong context
-     (an Escape once opened the pause menu mid-flight instead of reaching
-     chat). Confirm "hands off" with the human before sending.
-- Flight altitude in the existing bearing table is Y=120 — confirm this
-  actually clears terrain during scouting rather than assuming it; Minecraft
-  mountain peaks can exceed that in some biomes. Note the working altitude in
-  the results table below, it doesn't have to stay 120 if a bearing needs more
-  clearance.
-- A scouting flight doesn't need the full ~90s a scored segment does — fly far
-  enough in the bearing to be confident the terrain ahead is clear (or isn't),
-  then turn back. Use the full duration if a stretch looks ambiguous.
+1. **Pre-torch checklist** (driver verifies all, then human types `TORCH`):
+   - [ ] `$BENCH/world-backup/BenchWorld` exists, >1MB (from end of sitting 2)
+   - [ ] `baseline-manifest/` populated
+   - [ ] Phase A `sampler.csv`/`events.csv`/`summary.txt` present under `phaseA/*/`
+   - [ ] RESULTS.md filled through Phase A
+2. **Torch**: same as sitting 1 step 6 (`n` then `y`).
+3. **Return to current `main`**: `git checkout main && git fetch origin && git pull --ff-only`.
+4. **Install**: `./install-minecraft-splitscreen.sh` (no `REPO_REF` needed — `main`
+   is already the default and matches the checkout). Prompt answers:
+   - Minecraft version → explicitly select the exact Phase A version (26.2). Never
+     "accept latest"; if genuinely absent from the list, STOP rather than
+     substitute silently.
+   - Custom mods → `N`. Steam integration → `N`. Desktop launcher → `N`.
+5. **Restore world + settings**: same restore command as sitting 1 step 9, then
+   re-run the options.txt pinning block from sitting 1 step 13.
+6. **Re-run the MangoHud probe** (fresh `instance.cfg` resets the wrapper) — same
+   PASS/FAIL handling; the choice must match Phase A's verdict (both MangoHud, or
+   both F3-only — if they differ, use F3-only for the comparison and note it).
+7. **Branch inventory** to `$BENCH/branch-manifest/` (same commands as sitting 1
+   step 11). **Verify before proceeding**: all 6 perf mods present in every
+   instance's `mods/`, `JvmArgs` contains `-XX:+UseG1GC`. Either check failing →
+   STOP, the A/B wouldn't measure what we think.
 
-**Stages — one player added at a time, session stays up the whole pass:**
+### Phase C — scored cycles
 
-Every player's bearing is different at every N (see the table below — P1 flies
-`N` in the 1P cycle but `E` in the 2P cycle and `S` in the 3P cycle). So each
-stage below re-checks *every currently-loaded* player's bearing for that
-stage's N, not just the newly-added one.
+Run the **Test cycle protocol** four times: `phaseC/1p` → `2p` → `3p` → `4p`,
+using the **Phase C bearings** from the flight-bearings table.
 
-0. **Setup once:** docked, external display connected, no physical
-   controllers plugged in, a mouse connected. `BenchWorld` already exists (the
-   world + settings standardization step above). Deploy latest code to the
-   Deck if it isn't already current.
-1. **1P stage — P1 only.**
-   - `rig_create_pad 1` → slot 1 SPAWNs → instance 1 launches.
-   - Mouse: open `BenchWorld`, Esc → Open to LAN (cheats on).
-   - Hands-off window: driver `/tp`s P1 to a candidate start point for the 1P
-     Phase A bearing (`N`). Human flies it, confirms clear or reports where it
-     broke.
-   - If blocked: adjust the start X/Z (keeping the bearing itself unchanged —
-     see the earlier coordinate-axis note: X=east/west, Z=south/north, Y=up),
-     re-inject, re-fly. Record the confirmed coordinate once clear.
-   - Repeat for the 1P Phase C bearing (`NE`).
-2. **2P stage — P2 joins.**
-   - `rig_create_pad 2` → slot 2 SPAWNs → instance 2 launches.
-   - Mouse: instance 2 → Multiplayer → LAN → join P1's game.
-   - Hands-off window: driver `/tp`s P1 and P2 to their *2P-cycle* candidate
-     points (spaced apart per the rule above) for Phase A (`E`, `W`). Human
-     flies each one in turn (one screen at a time), confirms or adjusts.
-   - Repeat for Phase C (`SE`, `NW`).
-3. **3P stage — P3 joins.** Same pattern: `rig_create_pad 3`, mouse-join LAN,
-   then scout all three players' 3P-cycle bearings — Phase A (`S`,
-   `NE-far`, `SW-far`), Phase C (`SW`, `N-far`, `E-far`). The `-far` ones need
-   an initial teleport out to unexplored territory before the bearing flight
-   starts (same mechanism, just a bigger first hop) — see the existing `-far`
-   footnote below for the shape of that.
-4. **4P stage — P4 joins.** Same pattern: `rig_create_pad 4`, mouse-join LAN,
-   scout all four players' 4P-cycle bearings — Phase A (`NW-far`, `SE-far`,
-   `W-far`, `S-far`), Phase C (`NE-far`, `E-far2`, `S-far2`, `W-far2`).
-5. **Teardown.** `rig_cleanup`, then the normal session-end steps from the
-   test cycle protocol below.
+---
 
-**Output — fill in as you go, then fold the confirmed values into the flight
-bearings table below (replacing the placeholder coordinates in its footnote):**
+## Sitting 4 — Phase D comparison + decision + docs
 
-| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
-|---|---|---|---|---|---|---|---|
-**New candidate area, 2026-08-02 (supersedes the earlier (0.5,160,-10)
-candidate below it, which was never flown either)**: Scott reloaded and
-picked a fresh central point, **(-2, 94, -58)**, with each player starting
-one block away from it and flying at **Y=160**. Per-player offsets used
-below: P1 (-2,160,-59) [north of center], P2 (-1,160,-58) [east], P3
-(-2,160,-57) [south], P4 (-3,160,-58) [west] — spaced 1 block from center
-each, picked to keep the "space players apart" rule satisfied without
-guessing at exact numbers Scott didn't specify. **None of this has been
-flown/confirmed yet** — every row below is a candidate, not a result.
+**Driver-only, no physical presence needed.** Deck just needs to be reachable.
 
-| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
-|---|---|---|---|---|---|---|---|
-| 1P | A | P1 | N | -2 | 160 | -59 | **Confirmed clear 2026-08-02** (~6s scouting flight, no obstructions). Facing yaw 180. |
-| 1P | C | P1 | NE | -2 | 160 | -59 | **Confirmed clear 2026-08-02** (~6s scouting flight, no obstructions). Facing yaw 225. |
-| 2P | A | P1 | E | -2 | 160 | -59 | **Confirmed clear 2026-08-03** (~6s flight, no obstructions) |
-| 2P | A | P2 | W | -3 | 160 | -58 | **Confirmed clear 2026-08-03.** Start X corrected from -1 to -3 (west of P1, not east) — the original -1 start had P2 flying W back through/past P1's position instead of away from it, since P1's E bearing and P2's W bearing point at each other when P2 starts east of P1. Applies to both 2P rows below too (Phase C's SE/NW pair has the same geometry). |
-| 2P | C | P1 | SE | -2 | 160 | -59 | **Confirmed clear 2026-08-03** (~6s flight, no obstructions) |
-| 2P | C | P2 | NW | -3 | 160 | -58 | **Confirmed clear 2026-08-03.** Same corrected start X=-3 as the Phase A row above — NW bearing continues away from P1's SE bearing from this position. |
-| 3P | A | P1 | S | 20000 | 160 | 19999 | **Confirmed clear 2026-08-03.** All 3 players `/tp @a 20000 160 20000` together first (not just the `-far` ones — the footnote's `@a` moves everyone, so P1's S bearing also flies from the far region), then respaced 1 block apart and faced per bearing. |
-| 3P | A | P2 | NE-far | 20001 | 160 | 20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 3P | A | P3 | SW-far | 19999 | 160 | 20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 3P | C | P1 | SW | 40000 | 160 | 40001 | **Confirmed clear 2026-08-03.** All 3 players `/tp @a 40000 160 40000` together (new region, distinct from Phase A's), then respaced/faced per bearing. |
-| 3P | C | P2 | N-far | 39999 | 160 | 40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 3P | C | P3 | E-far | 40000 | 160 | 39999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | A | P1 | NW-far | -20000 | 160 | -20001 | **Confirmed clear 2026-08-03.** All 4 players `/tp @a -20000 160 -20000` together, then respaced 1 block apart and faced per bearing. |
-| 4P | A | P2 | SE-far | -19999 | 160 | -20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | A | P3 | W-far | -20000 | 160 | -19999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | A | P4 | S-far | -20001 | 160 | -20000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | C | P1 | NE-far | -40000 | 160 | -40001 | **Confirmed clear 2026-08-03.** All 4 players `/tp @a -40000 160 -40000` together (new region, distinct from Phase A's), then respaced/faced per bearing. |
-| 4P | C | P2 | E-far2 | -39999 | 160 | -40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | C | P3 | S-far2 | -40000 | 160 | -39999 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
-| 4P | C | P4 | W-far2 | -40001 | 160 | -40000 | **Confirmed clear 2026-08-03.** Same far-teleport as the P1 row above. |
+For each N: `bash tests/benchmark/summarize.sh $BENCH/phaseA/<N>p --compare $BENCH/phaseC/<N>p`
+→ paste tables into RESULTS.md, then evaluate:
 
-**Superseded candidate (never flown, kept for reference only):** 1P/A and
-1P/C at (0.5, 160, -10) — proposed 2026-08-02 to dodge the (0,0) water
-hazard by moving Z, but abandoned in favor of the fresh central point above
-before ever being test-flown.
+**Hard gates — ALL must hold in Phase C, else the change does not stand as validated:**
+- 4P cycle completes with all 4 instances alive end-to-end; no oom-kill in
+  dmesg/journal; no `SLOT_DIED` in the session log.
+- 4P `rss_sum_max_mb` ≤ 12288 (12 GiB); `memavail_min_mb` ≥ 1024;
+  `swap_delta_mb` < 256 per cycle; `psi_mem_full_max` < 5.
+- FPS not worse than Phase A − 5%: per slot, per scored segment, per N — MangoHud
+  p50 when available, else human F3 readings.
+- No new failure class vs Phase A (crash, black screen, input loss, audio dropout).
 
-## Test cycle protocol (identical for every N and both phases)
+**Soft gates — expected to hold; mixed results = documented maintainer call:**
+- Smoothness rating ≥ Phase A at each N; stutter reports not worse.
+- `apu_temp_max_c` not sustained >95°C; 4P per-slot CPU not pinned harder than
+  baseline.
+
+**Expected direction** (so anomalies stand out): S2_flight FPS + stutter should
+improve most (Sodium/Lithium/ModernFix), RSS should drop (FerriteCore), startup
+should feel faster (ModernFix). A regression in any of these deserves
+investigation, not hand-waving.
+
+**Decision:** all hard + soft pass → change stands validated on `main`, close #70.
+Any hard gate fails → the already-shipped change has a real regression; record
+the failing metric + cycle in RESULTS.md and open an issue (revert vs. fix-forward
+is a maintainer call, not a merge decision, since it's already live).
+
+**Post-run recording:**
+- Summary tables + verdict → commit as `docs/BENCH-AB-<date>.md` directly on
+  `main` (no branch to merge — this is retroactive validation of what's already
+  shipped).
+- Dated "Validation run" block in `docs/SPEC.md` §3b — a 4P pass also formally
+  closes the D6 item "4 instances run concurrently without OOM (RAM within
+  budget)".
+- `docs/MEMORY.md`: flip the two 2026-07-17 entries' Status lines with the
+  verdict.
+- `sessions/SESSION-<date>.md`: narrative of the run.
+- Raw CSVs stay on the Deck under `$BENCH/` (not committed).
+
+---
+
+## Test cycle protocol (used by sittings 2 and 3, identical both times)
 
 Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 
-1. **Prepare players.** Docked, no physical controllers, a mouse connected — same
-   virtual-pad mechanism as the pre-flight scouting pass above (mechanism notes there
-   apply verbatim: pads created first and left running, no physical controller ever
-   connected, mouse handles menus invisibly to slot ownership). `rig_create_pad 1`
-   through `rig_create_pad N`, one at a time: slot 1 SPAWNs → instance 1 launches →
-   mouse opens `BenchWorld` → Esc → **Open to LAN** (cheats on); each subsequent pad
-   SPAWNs its slot → mouse joins that instance via Multiplayer → LAN. Everyone
-   gathers at world spawn.
+1. **Prepare players.** `rig_create_pad 1` through `rig_create_pad N`, one at a
+   time: slot 1 SPAWNs → instance 1 launches → mouse opens `BenchWorld` → Esc →
+   **Open to LAN** (cheats on); each subsequent pad SPAWNs its slot → mouse joins
+   that instance via Multiplayer → LAN. Everyone gathers at world spawn.
 2. **Verify slot count** (driver): all N slots active, java PIDs live —
    `jq '.slots[] | select(.active==true) | .pid' ~/.local/share/PolyMC/splitscreen_state.json`
-   If count ≠ N: `rig_create_pad` the missing slot(s) (resumes by `phys_uniq` if it
-   was previously claimed this session) before starting the clock.
+   If count ≠ N: `rig_create_pad` the missing slot(s) (resumes by `phys_uniq` if
+   previously claimed this session) before starting the clock.
 3. **Start sampling:** `bash tests/benchmark/sampler.sh run "$OUT" &` (background).
 4. **Segments** — driver marks each boundary and tells the human what to do:
-   - `bash tests/benchmark/sampler.sh mark "$OUT" settle` → 180s: everyone stands at
-     spawn doing nothing (JIT warmup + chunk load; not scored).
-   - `mark "$OUT" S1_idle` → 120s: all players stand still at spawn, **facing north,
-     F3 open**. Human notes each screen's FPS.
-   - `mark "$OUT" S2_flight` → 180s: chunk-generation load. Each player creative-flies
-     fast and level in their assigned bearing (table below) for ~90s, then turns around
-     and flies back. Human notes the WORST FPS seen per screen.
-   - `mark "$OUT" S3_idle2` → 60s: stand still again wherever you are (post-load steady
-     state).
+   - `sampler.sh mark "$OUT" settle` → 180s: everyone stands at spawn doing
+     nothing (JIT warmup + chunk load; not scored).
+   - `mark "$OUT" S1_idle` → 120s: all players stand still at spawn, facing
+     north, F3 open. Human notes each screen's FPS.
+   - `mark "$OUT" S2_flight` → 180s: chunk-generation load. Each player
+     creative-flies fast and level in their assigned bearing for ~90s, then
+     turns around and flies back. Human notes the WORST FPS seen per screen.
+   - `mark "$OUT" S3_idle2` → 60s: stand still again wherever you are.
    - `mark "$OUT" end`
 5. **Stop sampling:** `bash tests/benchmark/sampler.sh stop "$OUT"`
-6. **Ask the human** (verbatim, one question set per cycle; record answers in
-   RESULTS.md before anything else):
-   1. "Approximate F3 FPS on each screen during the standing segment (one number per
-      player, e.g. P1=60 P2=45)?"
+6. **Ask the human** (verbatim, record answers in RESULTS.md before anything
+   else):
+   1. "Approximate F3 FPS on each screen during the standing segment (one number
+      per player)?"
    2. "Worst F3 FPS you saw on each screen during the flight segment?"
    3. "Overall smoothness this cycle, 1 (unplayable) to 5 (perfectly smooth)?"
    4. "Stutters/freezes/hitches: none, occasional, or frequent? Where?"
-   5. "Any audio crackling or controller input lag? (yes/no + notes)"
+   5. "Any audio crackling or controller input lag?"
    6. "Anything else abnormal?"
-7. **Teardown + hygiene:** all players quit to title (mouse, session
-   self-terminates), then driver runs `rig_cleanup` to destroy all pads (each cycle
-   starts fresh — no pad carries over to the next N). Driver verifies:
-   `pgrep -f latestUpdate-` empty; state file slots all inactive; no leftover
-   `uhid_pad.py` processes; `sudo dmesg | grep -i -e oom -e "out of memory"` (or
-   `journalctl -k | grep -i oom` if dmesg needs root) — record any hit; grep the
-   session debug log (`/tmp/splitscreen-debug-latest.log`) for `SLOT_DIED`. 60s
-   cool-down before the next cycle.
-8. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste the segment lines
-   into RESULTS.md.
+7. **Teardown + hygiene:** all players quit to title (driver injects Escape,
+   mouse clicks quit; session self-terminates), then `rig_cleanup` (each cycle
+   starts fresh — no pad carries over to the next N). Verify: `pgrep -f
+   latestUpdate-` empty; state file slots all inactive; no leftover
+   `uhid_pad.py`; `sudo dmesg | grep -i -e oom -e "out of memory"` (record any
+   hit); grep session debug log for `SLOT_DIED`. 60s cool-down before the next
+   cycle.
+8. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste segment
+   lines into RESULTS.md.
 
-### Flight bearings (fresh, ungenerated chunks every cycle)
+**Injection rules** (apply to every `/tp` the driver sends, both scouting and
+scored cycles):
+1. Space every `/tp` a couple of blocks apart per player — never stack everyone
+   at one point.
+2. Inject only in a hands-off window — nobody actively moving a stick. Racing
+   live input can eat the command or misfire it (e.g. hitting a pause menu
+   mid-flight instead of chat). Confirm "hands off" with the human before
+   sending.
+
+---
+
+## Flight bearings (fresh, ungenerated chunks every cycle)
+
+Scouted and confirmed clear 2026-08-02/03 — coordinates are seed-determined
+(`BenchWorld`, seed `4815162342`), so they don't need re-checking as long as the
+same world is reused.
 
 | Cycle | Phase A bearings (P1..PN) | Phase C bearings (P1..PN) |
 |---|---|---|
@@ -386,104 +349,37 @@ Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 | 3P | S, NE-far*, SW-far* | SW, N-far*, E-far* |
 | 4P | NW-far*, SE-far*, W-far*, S-far* | NE-far*, E-far2*, S-far2*, W-far2* |
 
-\* "far": before starting the flight, teleport out to unexplored territory —
-slot 1's player (cheats are on) runs e.g. `/tp @a 20000 120 20000` (Phase A 3P),
-`/tp @a -20000 120 -20000` (Phase A 4P), `/tp @a 40000 120 40000` (Phase C 3P),
-`/tp @a -40000 120 -40000` (Phase C 4P) — then everyone flies their bearing from
-there. This guarantees every flight generates brand-new chunks (worldgen load, not
-chunk-cache reload) despite reusing the same world.
+\* "far": before starting the flight, teleport everyone out to unexplored
+territory first (`/tp @a X Y Z` moves ALL currently-loaded players, not just the
+ones whose bearing is suffixed `-far` — every player in that stage flies from the
+far region) — then respace ~1 block apart and face per bearing. This guarantees
+every flight generates brand-new chunks despite reusing the same world.
 
-## Phase A — Baseline (fresh install from `2d5d321`, pre-#94)
+| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
+|---|---|---|---|---|---|---|---|
+| 1P | A | P1 | N | -2 | 160 | -59 | Facing yaw 180. |
+| 1P | C | P1 | NE | -2 | 160 | -59 | Facing yaw 225. |
+| 2P | A | P1 | E | -2 | 160 | -59 | |
+| 2P | A | P2 | W | -3 | 160 | -58 | West of P1, not east — P2's bearing must point away from P1, not back through it. Applies to the Phase C SE/NW pair below too. |
+| 2P | C | P1 | SE | -2 | 160 | -59 | |
+| 2P | C | P2 | NW | -3 | 160 | -58 | |
+| 3P | A | P1 | S | 20000 | 160 | 19999 | All 3 players `/tp @a 20000 160 20000` together first, then respaced/faced. |
+| 3P | A | P2 | NE-far | 20001 | 160 | 20000 | Same far-teleport as the P1 row. |
+| 3P | A | P3 | SW-far | 19999 | 160 | 20000 | Same far-teleport as the P1 row. |
+| 3P | C | P1 | SW | 40000 | 160 | 40001 | All 3 players `/tp @a 40000 160 40000` (new region, distinct from Phase A's). |
+| 3P | C | P2 | N-far | 39999 | 160 | 40000 | Same far-teleport as the P1 row. |
+| 3P | C | P3 | E-far | 40000 | 160 | 39999 | Same far-teleport as the P1 row. |
+| 4P | A | P1 | NW-far | -20000 | 160 | -20001 | All 4 players `/tp @a -20000 160 -20000` together. |
+| 4P | A | P2 | SE-far | -19999 | 160 | -20000 | Same far-teleport as the P1 row. |
+| 4P | A | P3 | W-far | -20000 | 160 | -19999 | Same far-teleport as the P1 row. |
+| 4P | A | P4 | S-far | -20001 | 160 | -20000 | Same far-teleport as the P1 row. |
+| 4P | C | P1 | NE-far | -40000 | 160 | -40001 | All 4 players `/tp @a -40000 160 -40000` (new region). |
+| 4P | C | P2 | E-far2 | -39999 | 160 | -40000 | Same far-teleport as the P1 row. |
+| 4P | C | P3 | S-far2 | -40000 | 160 | -39999 | Same far-teleport as the P1 row. |
+| 4P | C | P4 | W-far2 | -40001 | 160 | -40000 | Same far-teleport as the P1 row. |
 
--1. Back up existing world, torch, install pre-#94 (above). 0. Inventory. 1. MangoHud
-probe. 2. World + settings standardization.
-3–6. Cycles `phaseA/1p` → `2p` → `3p` → `4p` per the protocol.
-7. **Back up the world + options** (MUST happen before Phase B — this re-backs-up
-   the post-cycle state, superseding step -1's pre-cycle backup):
-   `cp -r ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/BenchWorld $BENCH/world-backup/`
-   Verify: `du -sh $BENCH/world-backup/BenchWorld` is non-trivial (>1MB).
-
-## Phase B — Torch + fresh install from current `main`
-
-1. **Pre-torch checklist** — driver verifies ALL, then asks the human to type `TORCH`:
-   - [ ] `$BENCH/world-backup/BenchWorld` exists, >1MB
-   - [ ] `baseline-manifest/` populated for all instances that existed
-   - [ ] Phase A `sampler.csv`/`events.csv`/`summary.txt` present under `phaseA/*/`
-   - [ ] RESULTS.md filled through Phase A
-2. **Torch:** `cd <repo checkout> && ./uninstall-minecraft-splitscreen.sh`
-   - "Keep my data?" → **`n`** (full wipe. keep-data preserves `instances/`, and a
-     reinstall over surviving instances silently enters *update mode* — that would
-     invalidate the fresh-install comparison)
-   - "Are you sure…" → **`y`**
-   - Verify: `~/.local/share/PolyMC` and `~/.local/share/PrismLauncher` are gone.
-3. **Steam shortcut: leave it alone.** The uninstaller never removes it; it points at
-   `~/.local/share/PolyMC/minecraftSplitscreen.sh`, which the reinstall recreates at
-   the same path.
-4. **Return to current `main`:**
-   `git checkout main && git fetch origin && git pull --ff-only` (undoes Phase A
-   step -1's detached-HEAD checkout at `2d5d321`).
-5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `main`
-   supplies the post-#94 `modules/`/`mods.conf`/launcher — the 6 perf mods + GC
-   flags). Prompt answers:
-   - **Minecraft version → explicitly select the exact Phase A version** (26.2, if
-     the same restored `BenchWorld` is being used — it will be listed, since it's
-     already what the pre-torch install was running). Do NOT accept "latest". If
-     for some reason it's genuinely absent from the list, STOP rather than
-     substituting a different version silently — that would introduce a version
-     confound between phases.
-   - Custom mods → `N`.  Steam integration → `N` (shortcut still exists).
-     Desktop launcher → `N`.
-6. **Restore world + settings:**
-   `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r $BENCH/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
-   then re-run the options.txt pinning block (launch each instance to menu once first
-   if options.txt doesn't exist yet).
-7. **Re-run the MangoHud probe** (fresh instance.cfg reset the wrapper) — same
-   PASS/FAIL handling; the choice must match Phase A's (both phases MangoHud, or both
-   F3-only; if the verdicts differ, use F3-only for the comparison and note it).
-8. **Branch inventory** to `$BENCH/branch-manifest/` (same commands as
-   Phase A step 0). **Verify before proceeding:** each instance's `mods/` contains
-   Sodium, Lithium, FerriteCore, ModernFix, EntityCulling, ImmediatelyFast (+
-   Controlify + Fabric API); `instance.cfg` `JvmArgs` contains `-XX:+UseG1GC`. If
-   either check fails, STOP — the A/B delta wouldn't measure what we think.
-
-## Phase C — Current-main benchmark
-
-Cycles `phaseC/1p` → `2p` → `3p` → `4p`, identical protocol, Phase C flight bearings.
-
-## Phase D — Comparison + merge decision
-
-For each N: `bash tests/benchmark/summarize.sh $BENCH/phaseA/<N>p --compare $BENCH/phaseC/<N>p`
-→ paste tables into RESULTS.md, then evaluate the gates:
-
-**Hard gates — ALL must hold in Phase C, else the change does not stand as validated:**
-- 4P cycle completes with all 4 instances alive end-to-end; no oom-kill in
-  dmesg/journal; no `SLOT_DIED` in the session log.
-- 4P `rss_sum_max_mb` ≤ 12288 (12 GiB); `memavail_min_mb` ≥ 1024;
-  `swap_delta_mb` < 256 per cycle; `psi_mem_full_max` < 5.
-- FPS not worse than Phase A − 5%: per slot, per scored segment, per N — using
-  MangoHud p50 when available, else the human F3 readings.
-- No new failure class vs Phase A (crash, black screen, input loss, audio dropout).
-
-**Soft gates — expected to hold; mixed results = documented maintainer call:**
-- Smoothness rating ≥ Phase A at each N; stutter reports not worse.
-- `apu_temp_max_c` not sustained >95°C; 4P per-slot CPU not pinned harder than baseline.
-
-**Expected direction** (so anomalies stand out): S2_flight FPS + stutter should improve
-most (Sodium/Lithium/ModernFix), RSS should drop (FerriteCore), startup should feel
-faster (ModernFix). A regression in any of these deserves investigation, not hand-waving.
-
-**Decision:** all hard + soft pass → change stands validated on `main`, close #70. Any
-hard gate fails → the already-shipped change on `main` has a real regression; record
-the failing metric + cycle in RESULTS.md and open an issue (revert or fix-forward is
-a maintainer call, not a merge decision, since it's already live).
-
-## Post-run recording (repo conventions)
-
-- Summary tables + verdict → commit as `docs/BENCH-AB-<date>.md` directly on `main`
-  (there is no separate branch — PR #94 already merged; this is a retroactive
-  validation of what's already shipped).
-- Dated "Validation run" block in `docs/SPEC.md` §3b — a 4P pass also formally closes
-  the D6 item "4 instances run concurrently without OOM (RAM within budget)".
-- `docs/MEMORY.md`: flip the two 2026-07-17 entries' Status lines with the verdict.
-- `sessions/SESSION-<date>.md`: narrative of the run.
-- Raw CSVs stay on the Deck under `$BENCH/` (not committed).
+If a future re-scout is ever needed (different world, different seed): see
+`tests/benchmark/RUNBOOK-20260805.md` for the full scouting procedure that
+produced this table (pad-by-pad staged scouting, one player added at a time,
+driver-injected `/tp` in hands-off windows) — not reproduced here since it's a
+one-time-per-world cost, not part of the repeatable per-run protocol.
