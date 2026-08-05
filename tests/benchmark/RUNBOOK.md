@@ -83,9 +83,19 @@ not mod/flag-determined).
 4. **Checkout the pre-#94 baseline ref:**
    `git fetch origin && git checkout 2d5d321` (detached HEAD — this is main immediately
    before PR #94 merged; do not commit anything on it).
-5. **Install:** `./install-minecraft-splitscreen.sh` (local checkout at `2d5d321`
-   supplies `modules/`/`mods.conf`/launcher, which at this ref has neither the 6 perf
-   mods nor the GC flags). Prompt answers:
+5. **Install:** `REPO_REF=2d5d32113a2bc29be572f5543512dd3b78f2391e ./install-minecraft-splitscreen.sh`
+   — **`REPO_REF` is required here, not optional.** `accounts.json` is fetched live
+   from `${MCSS_REPO_RAW_URL}` (`raw.githubusercontent.com/.../${REPO_REF}`), which
+   defaults to `main` if `REPO_REF` is unset — i.e. *today's* `main`, not this ref.
+   A separate commit (`728013d`, same day as PR #94 but not part of it) renamed the
+   account profile prefix from `P` to `Player`; without pinning `REPO_REF` to the
+   full baseline SHA, the installer fetches current-`main`'s `Player`-prefixed
+   accounts.json while this ref's validation code still expects `P`-prefixed
+   profiles, and **hard-fails at the accounts.json validation step** ("missing
+   player profile(s): P1, P2, P3, P4") before ever reaching mod selection —
+   confirmed live 2026-08-04. The local checkout at `2d5d321` supplies
+   `modules/`/`mods.conf`/launcher (neither the 6 perf mods nor the GC flags exist
+   at this ref); `REPO_REF` only controls the remote-fetched pieces. Prompt answers:
    - **Minecraft version → explicitly select the version the current `BenchWorld`
      was saved in (26.2, if step 1 backed one up) — do NOT accept "latest".**
      `get_supported_minecraft_versions()` queries live Mojang/Modrinth APIs at
@@ -99,10 +109,18 @@ not mod/flag-determined).
      installed), it's supported here too. If no world was backed up in step 1,
      accepting latest is fine — record whatever version is chosen as the
      **Phase A version** the later phases must match.
+   - Mod selection → `-1` (install only required mods) — a true pre-#94 baseline
+     means declining every optional QoL/Sodium-extra mod too, not just the 6 mods
+     that later became required.
    - Custom mods → `N`. Steam integration → `N` (shortcut still exists). Desktop
      launcher → `N`.
 6. **Restore the world, if step 1 backed one up:**
    `mkdir -p ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves && cp -r $BENCH/world-backup/BenchWorld ~/.local/share/PolyMC/instances/latestUpdate-1/.minecraft/saves/`
+7. **Return the driver checkout to `main`:** `git checkout main && git pull --ff-only`.
+   The benchmark tooling (`sampler.sh`, `mangohud-ctl.sh`, `summarize.sh`) doesn't
+   exist at `2d5d321` — it was added later. The install in steps 4-6 already ran and
+   copied everything needed onto the Deck's target dir, so switching the driver's
+   own checkout back doesn't touch the installed instances.
 
 ## Phase A step 0 — Baseline inventory (after the pre-#94 install, before the first cycle)
 
