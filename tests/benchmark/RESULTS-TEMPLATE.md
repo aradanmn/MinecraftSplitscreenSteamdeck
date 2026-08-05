@@ -14,6 +14,8 @@
 | Controllers (models, connection) | |
 | Baseline (Phase A) Minecraft / Fabric version | |
 | Branch (Phase C) Minecraft / Fabric version | |
+| PolyMC version — Phase A install | (download_prism_launcher isn't pinned; record what actually got installed) |
+| PolyMC version — Phase C install | |
 | Version confound? (versions differ) | yes / no — notes: |
 | MangoHud probe verdict — Phase A | PASS / FAIL |
 | MangoHud probe verdict — Phase C | PASS / FAIL |
