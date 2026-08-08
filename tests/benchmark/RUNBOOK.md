@@ -100,11 +100,46 @@ connected, **no physical controllers, no keyboard**.
 - [x] **Sitting 1** (2026-08-04/05): Phase 0 setup, Phase A step −1 (backup + torch +
       install pre-#94 baseline), Phase A step 0 (baseline inventory), MangoHud probe
       (PASS), world + settings standardization. **Nothing here needs redoing.**
-- [ ] **Sitting 2**: Phase A scored cycles — `phaseA/1p` → `2p` → `3p` → `4p`.
+- [~] **Sitting 2** (2026-08-08, partial): `phaseA/1p` **done** — data accepted
+      (see caveats below). `2p`/`3p`/`4p` **not started**, pick up next sitting.
+      Slot 1 torn down clean at end (no live processes, state file inactive,
+      no leftover pad devices) — safe resume point, no recovery needed.
 - [ ] **Sitting 3**: Phase B (torch + reinstall current `main`) + Phase C scored
       cycles — `phaseC/1p` → `2p` → `3p` → `4p`.
 - [ ] **Sitting 4**: Phase D comparison, gate evaluation, merge/no-merge decision,
       post-run recording.
+
+**`phaseA/1p` caveats (all discovered live 2026-08-08, fixed for future cycles
+except the last):**
+- Two aborted attempts before the accepted run: (1) mid-flight chat `/tp`
+  turn-around left the chat box open, silently eating all movement input for
+  the rest of the segment; (2) redo script never called `sampler.sh run`, so
+  no metrics were captured despite correct timing. Both fixed in the protocol
+  above (RX-based turn, not chat) and in tooling discipline (verify the
+  sampler is actually running before trusting a "clean" script exit).
+- **RX-turn/camera drift, still unexplained.** Calibrated 1.0s right-stick
+  hold ≈ 170-180° turn when tested in isolation (both standing and airborne,
+  confirmed via exact F3 yaw readings). But across all three attempts, the
+  actual scored flight ended up displaced far more on the X axis than a
+  clean north/south out-and-back should ever produce — suggests the virtual
+  pad's RX "neutral" (128) isn't a true center and the camera drifts slowly
+  throughout ordinary forward flight, not just during the deliberate turn.
+  **Decided to accept anyway**: the metrics that matter (FPS/CPU/GPU/memory
+  under sustained active flight) don't depend on the flight path being a
+  clean reciprocal line, and the actual displacement (hundreds of blocks)
+  is nowhere near 2P/3P/4P's bearing offsets (20000+/40000+), so no
+  collision risk with future cycles' fresh-chunk assumptions. Root cause
+  not investigated further — if it matters later, start there.
+- **`inactivityFpsLimit` — required fix, applied to all 4 instances.** MC's
+  "Reduce FPS when: AFK" option throttled idle-segment FPS to ~30 regardless
+  of actual capability, making the idle segment meaningless until set to
+  `"minimized"` (only reduces FPS when the window is literally minimized,
+  which never happens here). Now baked into the settings-standardization
+  block (Sitting 1 step 13) for future installs.
+- **`summarize.sh`'s MangoHud percentile calc was O(n²)** (an insertion sort
+  sized for an assumed ~10 samples/s) — hung for minutes against a real
+  ~49k-row MangoHud CSV (native frame rate, not throttled). Fixed to an
+  external `sort -n` pipeline; verified against the same file post-fix.
 
 Before resuming any sitting: `git pull` the Deck checkout, and check current
 rig/slot state (`rig_list_pads`, `pgrep -fal latestUpdate-`, the state file) rather
@@ -175,7 +210,9 @@ redoing (e.g. Phase A's instances got corrupted).
       sed -i -e 's/^renderDistance:.*/renderDistance:8/' \
              -e 's/^simulationDistance:.*/simulationDistance:8/' \
              -e 's/^enableVsync:.*/enableVsync:false/' \
-             -e 's/^maxFps:.*/maxFps:260/' "$o"
+             -e 's/^maxFps:.*/maxFps:260/' \
+             -e 's/^inactivityFpsLimit:.*/inactivityFpsLimit:"minimized"/' "$o"
+      grep -q '^inactivityFpsLimit:' "$o" || echo 'inactivityFpsLimit:"minimized"' >> "$o"
     done
     cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/options-backup/ 2>/dev/null || true
     ```
@@ -296,13 +333,24 @@ Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
    previously claimed this session) before starting the clock.
 3. **Start sampling:** `bash tests/benchmark/sampler.sh run "$OUT" &` (background).
 4. **Segments** — driver marks each boundary and tells the human what to do:
-   - `sampler.sh mark "$OUT" settle` → 180s: everyone stands at spawn doing
+   - `sampler.sh mark "$OUT" settle` → 90s: everyone stands at spawn doing
      nothing (JIT warmup + chunk load; not scored).
    - `mark "$OUT" S1_idle` → 120s: all players stand still at spawn, facing
-     north, F3 open. Human notes each screen's FPS.
+     north, F3 open. Human notes each screen's FPS. **Before this segment,
+     disable any "reduce FPS when idle/AFK" option** — confirmed live
+     2026-08-08 that MC throttles to ~30fps after a period with zero input,
+     which would make this segment's reading meaningless as an idle-capacity
+     measurement.
    - `mark "$OUT" S2_flight` → 180s: chunk-generation load. Each player
      creative-flies fast and level in their assigned bearing for ~90s, then
      turns around and flies back. Human notes the WORST FPS seen per screen.
+     **Turn-around: use the virtual pad's right-stick (RX) to rotate, not a
+     mid-flight `/tp`.** Confirmed live 2026-08-08: a chat-injected `/tp`
+     between the two legs left the chat box open, silently eating all
+     subsequent movement input for the rest of the segment (flew out, never
+     flew back). Reserve `/tp` for the one-time precise pre-flight
+     positioning (done in the hands-off window before scoring starts, not
+     mid-segment).
    - `mark "$OUT" S3_idle2` → 60s: stand still again wherever you are.
    - `mark "$OUT" end`
 5. **Stop sampling:** `bash tests/benchmark/sampler.sh stop "$OUT"`
