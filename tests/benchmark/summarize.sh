@@ -178,25 +178,22 @@ _mangohud_stats() {
         # A log's mtime is its LAST write — inside or shortly after the window
         (( mt >= t0 && mt <= t1 + 300 )) || continue
         # MangoHud logs: metadata line(s), then a header row containing "fps",
-        # then numeric rows. Locate the fps column dynamically.
-        awk -F, -v fname="$(basename "$f")" '
-            hdr == 0 {
-                for (i = 1; i <= NF; i++) if ($i == "fps") { col = i; hdr = 1 }
-                next
-            }
-            hdr == 1 && $col + 0 > 0 { v[n++] = $col + 0 }
-            END {
-                if (n < 10) exit                       # too short to score
-                # insertion sort (n is small: ~10 samples/s * segment)
-                for (i = 1; i < n; i++) {
-                    x = v[i]; j = i - 1
-                    while (j >= 0 && v[j] > x) { v[j+1] = v[j]; j-- }
-                    v[j+1] = x
-                }
-                p50 = v[int(n * 0.50)]
-                p1  = v[int(n * 0.01)]
-                printf "mangohud file=%s samples=%d fps_p50=%.1f fps_1pct_low=%.1f\n", fname, n, p50, p1
-            }' "$f"
+        # then numeric rows. Locate the fps column dynamically. Real MangoHud
+        # logging runs near native frame rate (tens of thousands of rows per
+        # cycle), not the ~10 samples/s originally assumed — sort externally
+        # (O(n log n)) instead of an in-awk insertion sort (O(n^2), confirmed
+        # 2026-08-08 to hang for minutes on a ~49k-row file).
+        awk -F, 'hdr == 0 { for (i = 1; i <= NF; i++) if ($i == "fps") { col = i; hdr = 1 }; next }
+                 hdr == 1 && $col + 0 > 0 { print $col + 0 }' "$f" \
+            | sort -n \
+            | awk -v fname="$(basename "$f")" '
+                { v[n++] = $1 }
+                END {
+                    if (n < 10) exit                    # too short to score
+                    p50 = v[int(n * 0.50)]
+                    p1  = v[int(n * 0.01)]
+                    printf "mangohud file=%s samples=%d fps_p50=%.1f fps_1pct_low=%.1f\n", fname, n, p50, p1
+                }'
     done
 }
 
