@@ -106,9 +106,26 @@ connected, **no physical controllers, no keyboard**.
       after it lands. All slots torn down clean at end (no live processes,
       state file inactive, no leftover pad devices) — safe resume point, no
       recovery needed.
-- [ ] **Sitting 3**: Phase B (torch + reinstall current `main`) + Phase C scored
-      cycles — `phaseC/1p` → `2p` → `3p` → `4p`.
-- [ ] **Sitting 4**: Phase D comparison, gate evaluation, merge/no-merge decision,
+- [~] **Sitting 3** (2026-08-09, same day as Sitting 2's fix, before a full
+      Deck reboot): spent entirely on tooling, not scored cycles — solved the
+      "no keyboard, can't type chat/commands" blocker
+      (`tests/lib/mc_osk_type.sh`), upgraded the virtual pad to a full
+      15-button surface, found the `pauseOnLostFocus` + Controlify-path bugs.
+      Zero `phaseA/2p` progress banked from this sitting specifically — see
+      Sitting 4.
+- [~] **Sitting 4** (2026-08-09, after a full Deck reboot): `phaseA/2p`
+      attempted twice, **both invalidated** — see caveats below (near-miss
+      mountain collision from RX-turn drift; then a data-contaminating
+      unmarked segment during the redo). Real fixes landed for both:
+      precise-`/tp` turn-around (replaces RX-stick), `pitch=30` baked into
+      the bearing table, and the Test cycle protocol rewritten step-by-step
+      with the segment-marking requirement made explicit. **Next attempt
+      should actually produce valid data** — not yet run.
+- [ ] **Sitting 5**: actually complete `phaseA/2p` → `3p` → `4p` with the
+      corrected protocol, world+options backup (Sitting 2's step at the end
+      of "2P scored cycles"), then Phase B (torch + reinstall current
+      `main`) + Phase C scored cycles.
+- [ ] **Sitting 6**: Phase D comparison, gate evaluation, merge/no-merge decision,
       post-run recording.
 
 **`phaseA/1p` caveats (all discovered live 2026-08-08, fixed for future cycles
@@ -119,19 +136,22 @@ except the last):**
   no metrics were captured despite correct timing. Both fixed in the protocol
   above (RX-based turn, not chat) and in tooling discipline (verify the
   sampler is actually running before trusting a "clean" script exit).
-- **RX-turn/camera drift, still unexplained.** Calibrated 1.0s right-stick
-  hold ≈ 170-180° turn when tested in isolation (both standing and airborne,
-  confirmed via exact F3 yaw readings). But across all three attempts, the
-  actual scored flight ended up displaced far more on the X axis than a
-  clean north/south out-and-back should ever produce — suggests the virtual
-  pad's RX "neutral" (128) isn't a true center and the camera drifts slowly
+- **RX-turn/camera drift, still unexplained, and NO LONGER just accepted —
+  see Sitting 4.** Calibrated 1.0s right-stick hold ≈ 170-180° turn when
+  tested in isolation (both standing and airborne, confirmed via exact F3
+  yaw readings). But across all three 1P attempts, the actual scored
+  flight ended up displaced far more on the X axis than a clean north/
+  south out-and-back should ever produce — suggests the virtual pad's RX
+  "neutral" (128) isn't a true center and the camera drifts slowly
   throughout ordinary forward flight, not just during the deliberate turn.
-  **Decided to accept anyway**: the metrics that matter (FPS/CPU/GPU/memory
-  under sustained active flight) don't depend on the flight path being a
-  clean reciprocal line, and the actual displacement (hundreds of blocks)
-  is nowhere near 2P/3P/4P's bearing offsets (20000+/40000+), so no
-  collision risk with future cycles' fresh-chunk assumptions. Root cause
-  not investigated further — if it matters later, start there.
+  1P's call was to accept the drift as cosmetic (metrics don't depend on a
+  clean path, displacement was nowhere near the far-teleport offsets). On
+  2P (Sitting 4) the SAME drift nearly flew a player into a mountain range
+  — no longer cosmetic once it's a real collision risk. **The RX-turn
+  technique is now replaced entirely by a precise `/tp` turn-around** (see
+  Test cycle protocol, updated 2026-08-09) — root cause of the drift
+  itself is still unexplained and no longer needs to be, since the fix
+  sidesteps it rather than requiring a diagnosis.
 - **`inactivityFpsLimit` — required fix, applied to all 4 instances.** MC's
   "Reduce FPS when: AFK" option throttled idle-segment FPS to ~30 regardless
   of actual capability, making the idle segment meaningless until set to
@@ -341,10 +361,44 @@ is a maintainer call, not a merge decision, since it's already live).
 
 Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 
+**REWRITTEN 2026-08-09 (Sitting 4)** now that `tests/lib/mc_osk_type.sh`
+gives the driver reliable chat/command input with zero keyboard — the old
+RX-stick turn-around and "human notes FPS by eye" steps are both replaced.
+Precompute every `/tp` command for the whole cycle **before** starting
+(see the table below) rather than deciding fixes ad-hoc mid-run — that
+ad-hoc decision-making is what made Sitting 4's two attempts take most of
+a sitting each. Once a command is typed, verify only the FINAL outcome
+(did the teleport actually land right) — don't re-verify "is chat open" /
+"is the text correct" at every intermediate step; `mc_osk_type` is proven
+reliable enough now that per-character verification is wasted time, not
+safety.
+
+0. **Precompute every `/tp` for this cycle first.** For each player: initial
+   position+facing (bearing table below, `pitch=30` — see the flight-pitch
+   note), and the turn-around command (same X/Z, new Y unchanged, REVERSED
+   yaw, `pitch=30`) — the turn-around's exact X/Y/Z isn't knowable until
+   the flight actually happens (read off F3 after leg 1), but the FORM and
+   the reversed-yaw arithmetic should be decided now, not mid-flight.
+   **`/tp` syntax**: rotation ONLY works with an explicit target name —
+   `/tp <target> <x> <y> <z> <yaw> <pitch>` (e.g. `/tp P1 -2 160 -59 270
+   30`). A bare self-tp with rotation (`/tp <x> <y> <z> <yaw> <pitch>`, no
+   target) is rejected outright — don't waste a retry on it. Coordinates
+   must be **integers** — `mc_osk_type` has no `.` (decimal point) key;
+   round, don't truncate mid-command.
 1. **Prepare players.** `rig_create_pad 1` through `rig_create_pad N`, one at a
    time: slot 1 SPAWNs → instance 1 launches → mouse opens `BenchWorld` → Esc →
    **Open to LAN** (cheats on); each subsequent pad SPAWNs its slot → mouse joins
-   that instance via Multiplayer → LAN. Everyone gathers at world spawn.
+   that instance via Multiplayer → LAN. Everyone gathers wherever the world
+   last saved them (not necessarily spawn) — this is corrected by step 1b.
+1b. **Position + face every player precisely, before anything else scored.**
+   For each player, open chat (`rig_inject <pad> "hat UP"`, confirm cursor
+   on Shift), `mc_osk_type <pad> "/tp <target> <x> <y> <z> <yaw> <pitch>"
+   1` (the trailing `1` submits via `BTN_START` — no separate Escape
+   needed afterward, chat auto-closes on submit; sending Escape anyway
+   opens the PAUSE menu instead and just adds a cleanup step). Toggle
+   creative flight if needed (`BTN_SOUTH` tap-then-hold gesture — see
+   `[[benchmark-remote-piloting-mechanism]]`) so nobody falls before
+   scoring starts.
 2. **Verify slot count** (driver): all N slots active, java PIDs live —
    `jq '.slots[] | select(.active==true) | .pid' ~/.local/share/PolyMC/splitscreen_state.json`
    If count ≠ N: `rig_create_pad` the missing slot(s) (resumes by `phys_uniq` if
@@ -353,22 +407,37 @@ Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
 4. **Segments** — driver marks each boundary and tells the human what to do:
    - `sampler.sh mark "$OUT" settle` → 90s: everyone stands at spawn doing
      nothing (JIT warmup + chunk load; not scored).
-   - `mark "$OUT" S1_idle` → 120s: all players stand still at spawn, facing
-     north, F3 open. Human notes each screen's FPS. **Before this segment,
-     disable any "reduce FPS when idle/AFK" option** — confirmed live
-     2026-08-08 that MC throttles to ~30fps after a period with zero input,
-     which would make this segment's reading meaningless as an idle-capacity
-     measurement.
-   - `mark "$OUT" S2_flight` → 180s: chunk-generation load. Each player
-     creative-flies fast and level in their assigned bearing for ~90s, then
-     turns around and flies back. Human notes the WORST FPS seen per screen.
-     **Turn-around: use the virtual pad's right-stick (RX) to rotate, not a
-     mid-flight `/tp`.** Confirmed live 2026-08-08: a chat-injected `/tp`
-     between the two legs left the chat box open, silently eating all
-     subsequent movement input for the rest of the segment (flew out, never
-     flew back). Reserve `/tp` for the one-time precise pre-flight
-     positioning (done in the hands-off window before scoring starts, not
-     mid-segment).
+   - `mark "$OUT" S1_idle` → 120s: all players stand still, F3 open on
+     every screen beforehand (driver injects F3 via keyboard — this
+     always works, unlike chat). Human notes each screen's FPS. **Before
+     this segment, disable any "reduce FPS when idle/AFK" option** —
+     confirmed live 2026-08-08 that MC throttles to ~30fps after a period
+     with zero input, which would make this segment's reading meaningless
+     as an idle-capacity measurement.
+   - `mark "$OUT" S2_flight` → chunk-generation load. Each player
+     creative-flies fast and level in their assigned bearing for ~85s,
+     then turns around and flies back for ~85s (~170s total). Human notes
+     the WORST FPS seen per screen.
+     **Turn-around: use a precise `/tp <target> <x> <y> <z> <new_yaw>
+     <pitch>` with the exact reversed yaw, not the virtual pad's
+     right-stick (RX).** RX-hold-duration turns drift unpredictably during
+     real flight (root cause unknown, see the 1P caveats below) — accepted
+     as cosmetic for 1P, but on a 2P attempt this drift nearly flew a
+     player into a mountain range, which is no longer just cosmetic.
+     Precise `/tp` eliminates the drift risk entirely. Read the player's
+     actual current X/Y/Z off F3 (flight distance/speed isn't otherwise
+     known) before composing the turn-around command.
+     **CRITICAL — mark a distinct segment for the turn-around itself,
+     do not leave `S2_flight` as the active mark while typing it**: `mark
+     "$OUT" turn` before starting the `/tp` sequence, then `mark "$OUT"
+     S2_flight` again the moment both players resume forward flight.
+     Typing a `/tp` (even with `mc_osk_type`'s validated timing) takes
+     real wall-clock time — leaving it attributed to `S2_flight` silently
+     contaminates the segment's FPS/CPU/GPU stats with idle/typing time.
+     Confirmed live 2026-08-09: an unmarked turn-around inflated one
+     `S2_flight` segment from an intended ~170s to a recorded 1188s,
+     invalidating that cycle's data outright — checked directly against
+     `events.csv` timestamps, not just inferred from suspicious numbers.
    - `mark "$OUT" S3_idle2` → 60s: stand still again wherever you are.
    - `mark "$OUT" end`
 5. **Stop sampling:** `bash tests/benchmark/sampler.sh stop "$OUT"`
@@ -379,17 +448,31 @@ Cycle = `<phase>/<N>p`, e.g. `phaseA/2p`. `OUT=$BENCH/<phase>/<N>p`.
    2. "Worst F3 FPS you saw on each screen during the flight segment?"
    3. "Overall smoothness this cycle, 1 (unplayable) to 5 (perfectly smooth)?"
    4. "Stutters/freezes/hitches: none, occasional, or frequent? Where?"
-   5. "Any audio crackling or controller input lag?"
+   5. "Any audio crackling or other anomalies?" (controller input lag isn't
+      meaningfully askable — the driver flies every player, not the human)
    6. "Anything else abnormal?"
 7. **Teardown + hygiene:** all players quit to title (driver injects Escape,
    mouse clicks quit; session self-terminates), then `rig_cleanup` (each cycle
    starts fresh — no pad carries over to the next N). Verify: `pgrep -f
    latestUpdate-` empty; state file slots all inactive; no leftover
    `uhid_pad.py`; `sudo dmesg | grep -i -e oom -e "out of memory"` (record any
-   hit); grep session debug log for `SLOT_DIED`. 60s cool-down before the next
-   cycle.
+   hit, but the Deck has no passwordless sudo in these sessions so this is
+   frequently un-checkable — not a new problem, don't burn time on it); grep
+   session debug log for `SLOT_DIED` **and check which PID/timestamp it
+   references before treating it as a red flag** — it fires routinely and
+   correctly on a normal end-of-cycle quit, not just on a real crash. 60s
+   cool-down before the next cycle.
 8. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste segment
-   lines into RESULTS.md.
+   lines into RESULTS.md. **Sanity-check segment durations against
+   `events.csv` timestamps before trusting the FPS/CPU numbers** — a
+   `S2_flight` duration wildly longer than ~170s means it absorbed
+   non-flight time (see step 4) and the cycle needs redoing, not recording.
+
+**Flight camera pitch — added 2026-08-09**: flying level (`pitch=0`)
+mostly renders sky/clouds, not terrain, which undermines the whole point
+of this segment (chunk-generation stress). Every positioning `/tp` in the
+bearing table below should include `pitch=30` (angled down toward
+terrain) — confirmed live this actually shows terrain during flight.
 
 **Injection rules** (apply to every `/tp` the driver sends, both scouting and
 scored cycles):
@@ -421,28 +504,35 @@ ones whose bearing is suffixed `-far` — every player in that stage flies from 
 far region) — then respace ~1 block apart and face per bearing. This guarantees
 every flight generates brand-new chunks despite reusing the same world.
 
-| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Notes |
-|---|---|---|---|---|---|---|---|
-| 1P | A | P1 | N | -2 | 160 | -59 | Facing yaw 180. |
-| 1P | C | P1 | NE | -2 | 160 | -59 | Facing yaw 225. |
-| 2P | A | P1 | E | -2 | 160 | -59 | |
-| 2P | A | P2 | W | -3 | 160 | -58 | West of P1, not east — P2's bearing must point away from P1, not back through it. Applies to the Phase C SE/NW pair below too. |
-| 2P | C | P1 | SE | -2 | 160 | -59 | |
-| 2P | C | P2 | NW | -3 | 160 | -58 | |
-| 3P | A | P1 | S | 20000 | 160 | 19999 | All 3 players `/tp @a 20000 160 20000` together first, then respaced/faced. |
-| 3P | A | P2 | NE-far | 20001 | 160 | 20000 | Same far-teleport as the P1 row. |
-| 3P | A | P3 | SW-far | 19999 | 160 | 20000 | Same far-teleport as the P1 row. |
-| 3P | C | P1 | SW | 40000 | 160 | 40001 | All 3 players `/tp @a 40000 160 40000` (new region, distinct from Phase A's). |
-| 3P | C | P2 | N-far | 39999 | 160 | 40000 | Same far-teleport as the P1 row. |
-| 3P | C | P3 | E-far | 40000 | 160 | 39999 | Same far-teleport as the P1 row. |
-| 4P | A | P1 | NW-far | -20000 | 160 | -20001 | All 4 players `/tp @a -20000 160 -20000` together. |
-| 4P | A | P2 | SE-far | -19999 | 160 | -20000 | Same far-teleport as the P1 row. |
-| 4P | A | P3 | W-far | -20000 | 160 | -19999 | Same far-teleport as the P1 row. |
-| 4P | A | P4 | S-far | -20001 | 160 | -20000 | Same far-teleport as the P1 row. |
-| 4P | C | P1 | NE-far | -40000 | 160 | -40001 | All 4 players `/tp @a -40000 160 -40000` (new region). |
-| 4P | C | P2 | E-far2 | -39999 | 160 | -40000 | Same far-teleport as the P1 row. |
-| 4P | C | P3 | S-far2 | -40000 | 160 | -39999 | Same far-teleport as the P1 row. |
-| 4P | C | P4 | W-far2 | -40001 | 160 | -40000 | Same far-teleport as the P1 row. |
+**Yaw/pitch — added 2026-08-09.** `pitch=30` on every row (angled down
+toward terrain — flying level renders mostly sky/clouds, see above). Yaw
+per the standard convention (0=South, 90=West, 180=North, 270=East,
+diagonals split the difference). Compose each `/tp` as `/tp <target>
+<Start X> <Start Y> <Start Z> <Yaw> 30` — explicit target name required,
+a bare self-tp with rotation is rejected (see Test cycle protocol §0).
+
+| N | Phase | Player | Bearing | Start X | Start Y | Start Z | Yaw | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1P | A | P1 | N | -2 | 160 | -59 | 180 | |
+| 1P | C | P1 | NE | -2 | 160 | -59 | 225 | |
+| 2P | A | P1 | E | -2 | 160 | -59 | 270 | |
+| 2P | A | P2 | W | -3 | 160 | -58 | 90 | West of P1, not east — P2's bearing must point away from P1, not back through it. Applies to the Phase C SE/NW pair below too. |
+| 2P | C | P1 | SE | -2 | 160 | -59 | 315 | |
+| 2P | C | P2 | NW | -3 | 160 | -58 | 135 | |
+| 3P | A | P1 | S | 20000 | 160 | 19999 | 0 | All 3 players `/tp @a 20000 160 20000` together first, then respaced/faced. |
+| 3P | A | P2 | NE-far | 20001 | 160 | 20000 | 225 | Same far-teleport as the P1 row. |
+| 3P | A | P3 | SW-far | 19999 | 160 | 20000 | 45 | Same far-teleport as the P1 row. |
+| 3P | C | P1 | SW | 40000 | 160 | 40001 | 45 | All 3 players `/tp @a 40000 160 40000` (new region, distinct from Phase A's). |
+| 3P | C | P2 | N-far | 39999 | 160 | 40000 | 180 | Same far-teleport as the P1 row. |
+| 3P | C | P3 | E-far | 40000 | 160 | 39999 | 270 | Same far-teleport as the P1 row. |
+| 4P | A | P1 | NW-far | -20000 | 160 | -20001 | 135 | All 4 players `/tp @a -20000 160 -20000` together. |
+| 4P | A | P2 | SE-far | -19999 | 160 | -20000 | 315 | Same far-teleport as the P1 row. |
+| 4P | A | P3 | W-far | -20000 | 160 | -19999 | 90 | Same far-teleport as the P1 row. |
+| 4P | A | P4 | S-far | -20001 | 160 | -20000 | 0 | Same far-teleport as the P1 row. |
+| 4P | C | P1 | NE-far | -40000 | 160 | -40001 | 225 | All 4 players `/tp @a -40000 160 -40000` (new region). |
+| 4P | C | P2 | E-far2 | -39999 | 160 | -40000 | 270 | Same far-teleport as the P1 row. |
+| 4P | C | P3 | S-far2 | -40000 | 160 | -39999 | 0 | Same far-teleport as the P1 row. |
+| 4P | C | P4 | W-far2 | -40001 | 160 | -40000 | 90 | Same far-teleport as the P1 row. |
 
 If a future re-scout is ever needed (different world, different seed): see
 `tests/benchmark/RUNBOOK-20260805.md` for the full scouting procedure that
