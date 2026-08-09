@@ -637,7 +637,11 @@ textBackgroundOpacity:0.5
 backgroundForChatOnly:true
 hideServerAddress:false
 advancedItemTooltips:false
-pauseOnLostFocus:true
+# #70: splitscreen windows constantly trade OS focus (only one window can
+# be focused at a time) — pauseOnLostFocus:true was auto-opening the pause
+# menu on every non-focused instance, hanging it until manually dismissed.
+# Documented fix, never wired in: docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md.
+pauseOnLostFocus:false
 overrideWidth:0
 overrideHeight:0
 heldItemTooltips:true
