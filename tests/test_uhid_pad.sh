@@ -16,7 +16,7 @@ set -euo pipefail
 # Run: bash tests/test_uhid_pad.sh
 # =============================================================================
 
-readonly TEST_TOTAL=18
+readonly TEST_TOTAL=23
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -29,7 +29,11 @@ _pad() { python3 "$PAD_PY" "$@"; }
 # The expected descriptor, spelled out rather than recomputed. If someone edits
 # build_report_descriptor(), this suite must go red — a test that regenerates
 # the value it is checking would certify nothing (PRINCIPLES #4).
-readonly EXPECTED_DESCRIPTOR="05010905a101a10005091901290c150025017501950c810275049501810305010930093109330934150026ff00750895048102c0c0"
+# #70 v1.2: 15 buttons (adds MODE/Guide, THUMBL/THUMBR i.e. L3/R3), a Hat
+# Switch (D-pad), and LT/RT analog trigger axes alongside the original 4
+# stick axes — hand-verified byte-by-byte against the HID item stream before
+# being pasted in here.
+readonly EXPECTED_DESCRIPTOR="05010905a101a10005091901290f150025017501950f810275019501810305010939150025077504950181427504950181030501093009310933093409320935150026ff00750895068102c0c0"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -83,8 +87,8 @@ test_input2_size()  { _expect "T1.3 INPUT2 event fills the struct" \
 
 # --- T2: report descriptor ---------------------------------------------------
 
-test_descriptor_len() { _expect "T2.1 descriptor is 53 bytes" \
-                            "$(_selftest_field descriptor_len)" "53"; }
+test_descriptor_len() { _expect "T2.1 descriptor is 77 bytes" \
+                            "$(_selftest_field descriptor_len)" "77"; }
 test_descriptor_hex() { _expect "T2.2 descriptor bytes are exact" \
                             "$(_selftest_field descriptor_hex)" "$EXPECTED_DESCRIPTOR"; }
 test_descriptor_cli() { _expect "T2.3 --emit-descriptor agrees with --self-test" \
@@ -105,23 +109,32 @@ test_descriptor_gamepad_usage() {
 }
 
 # --- T3: report encoding -----------------------------------------------------
-# Layout: [buttons 1-8][buttons 9-12 + 4 pad][LX][LY][RX][RY], axes neutral 0x80.
+# Layout: [buttons 1-8][buttons 9-13 + 3 pad][hat + 4 pad][LX][LY][RX][RY]
+#         [LT][RT] — sticks neutral 0x80, hat released 0x08, triggers rest 0x00.
 
-test_report_len()     { _expect "T3.1 report is 6 bytes" \
-                            "$(_selftest_field report_len)" "6"; }
-test_report_neutral() { _expect "T3.2 neutral report has no bits, axes centred" \
-                            "$(_selftest_field report_neutral)" "000080808080"; }
+test_report_len()     { _expect "T3.1 report is 9 bytes" \
+                            "$(_selftest_field report_len)" "9"; }
+test_report_neutral() { _expect "T3.2 neutral report: no bits, hat released, sticks centred, triggers at rest" \
+                            "$(_selftest_field report_neutral)" "000008808080800000"; }
 test_report_south()   { _expect "T3.3 BTN_SOUTH is bit 0 of byte 0" \
-                            "$(_selftest_field report_south)" "010080808080"; }
+                            "$(_selftest_field report_south)" "010008808080800000"; }
 test_report_start()   { _expect "T3.4 BTN_START (12) is bit 3 of byte 1" \
-                            "$(_selftest_field report_start)" "000880808080"; }
-test_report_combined() { _expect "T3.5 two buttons + an axis coexist" \
-                            "$(_selftest_field report_south_start_lx200)" "0108c8808080"; }
+                            "$(_selftest_field report_start)" "000808808080800000"; }
+test_report_mode()    { _expect "T3.5 BTN_MODE (13, Guide/Home) is bit 4 of byte 1" \
+                            "$(_selftest_field report_mode)" "001008808080800000"; }
+test_report_thumbs()  { _expect "T3.6 BTN_THUMBL/BTN_THUMBR (14/15, L3/R3) are bits 5-6 of byte 1" \
+                            "$(_selftest_field report_thumbs)" "006008808080800000"; }
+test_report_combined() { _expect "T3.7 two buttons + an axis coexist" \
+                            "$(_selftest_field report_south_start_lx200)" "010808c88080800000"; }
+test_report_hat_up()  { _expect "T3.8 hat UP encodes as 0 in the hat nibble" \
+                            "$(_selftest_field report_hat_up)" "000000808080800000"; }
+test_report_trigger() { _expect "T3.9 LT/RT are independent trailing axes, sticks stay at rest" \
+                            "$(_selftest_field report_trigger)" "00000880808080ff40"; }
 # NB: SOUTH only — the self-test's report_south_start_lx200 also holds START, so
 # this deliberately encodes a different report and asserts its own value.
-test_encode_cli()     { _expect "T3.6 --encode-report encodes one button + axis" \
+test_encode_cli()     { _expect "T3.10 --encode-report encodes one button + axis" \
                             "$(_pad --encode-report 'BTN_SOUTH=1,LX=200')" \
-                            "0100c8808080" ; }
+                            "010008c88080800000" ; }
 
 # --- T4: spec parsing --------------------------------------------------------
 
@@ -129,6 +142,8 @@ test_spec_pressed() { _expect "T4.1 spec parses a pressed button" \
                           "$(_selftest_field spec_pressed)" "BTN_SOUTH"; }
 test_spec_axes()    { _expect "T4.2 spec parses an axis value" \
                           "$(_selftest_field spec_axes)" "LX=200"; }
+test_spec_hat()      { _expect "T4.3 spec parses HAT=NE as direction 1" \
+                          "$(_selftest_field spec_hat)" "1"; }
 
 # --- T5: input validation (must fail loudly) ---------------------------------
 
@@ -162,10 +177,15 @@ run_all_tests() {
     test_report_neutral
     test_report_south
     test_report_start
+    test_report_mode
+    test_report_thumbs
     test_report_combined
+    test_report_hat_up
+    test_report_trigger
     test_encode_cli
     test_spec_pressed
     test_spec_axes
+    test_spec_hat
     test_reject_unknown_button
     test_reject_axis_range
     test_reject_button_value

@@ -35,10 +35,30 @@
 #
 #   stdin command stream (one per line):
 #     press <BTN> | release <BTN> | hold <BTN> <ms> | axis <NAME> <0-255>
-#     neutral | destroy
+#     hat <DIR> | neutral | destroy
+#
+#   Full Xbox/8BitDo-style surface (#70 2P+ session — a bare-minimum pad
+#   couldn't reach any control that isn't bound to a face button/stick):
+#     Buttons — 4 face (SOUTH/EAST/WEST/NORTH), 2 bumpers (TL/TR), 2 digital
+#       triggers (TL2/TR2), SELECT/START, MODE (Guide/Home), 2 stick clicks
+#       (THUMBL/THUMBR, i.e. L3/R3). BTN_C/BTN_Z (3, 6) are unused positional
+#       artifacts of the sequential Button-N mapping below — real hardware
+#       leaves them unpressed too.
+#     Sticks — LX/LY (left), RX/RY (right), 0-255, neutral 128.
+#     Triggers — LT/RT analog axes, 0-255, neutral 0 (released, NOT centred —
+#       a trigger's rest state is "not pulled", unlike a stick's centre).
+#     D-pad — one HAT switch (`hat <DIR>`), not 4 separate buttons: hid-input
+#       converts a single 0-7 Hat Switch usage into ABS_HAT0X/ABS_HAT0Y
+#       automatically (ships as one field, not on the BUTTONS ladder).
 #
 # Version history:
 #   v1.0 2026-07-29  #136 PR-0: initial primitive + feasibility probe support.
+#   v1.1 2026-08-08  #70: full controller surface — D-pad (HAT), analog
+#                    LT/RT, MODE/Guide button. Prior 6-byte/12-button/4-axis
+#                    pad had no way to reach anything not bound to a face
+#                    button or stick (chat, menus, guide-button shortcuts).
+#   v1.2 2026-08-08  #70: add THUMBL/THUMBR (L3/R3 stick clicks) — 13-button
+#                    pad still had no way to reach a stick-click-bound action.
 # =============================================================================
 
 import argparse
@@ -75,24 +95,57 @@ UHID_EVENT_SIZE = 4 + struct.calcsize(_CREATE2_FMT)
 
 # --- report layout -----------------------------------------------------------
 #
-# 6 bytes: [buttons lo][buttons hi + 4 pad][X][Y][Rx][Ry]
+# 9 bytes: [buttons 1-8][buttons 9-15 + 1 pad][hat + 4 pad][LX][LY][RX][RY]
+#          [LT][RT]
 #
 # Button index N maps to BTN_GAMEPAD + (N-1) because the application collection
 # is Usage(Gamepad) — hid-input.c's HID_UP_BUTTON case. Index 1 is therefore
 # BTN_SOUTH (0x130), which is exactly the bit controller_monitor.sh's
-# _has_gamepad_buttons gates on.
+# _has_gamepad_buttons gates on. Index 13 lands on BTN_MODE (0x13c) — the
+# Guide/Home button real pads use for a menu shortcut. Indices 14/15 land on
+# BTN_THUMBL/BTN_THUMBR (0x13d/0x13e) — the left/right stick-click buttons.
+#
+# The D-pad is ONE HAT SWITCH usage (0x39), not 4 buttons: hid-input.c
+# recognizes a Generic-Desktop Hat Switch with a 0-7 logical range (+ the
+# Null State input flag for "no direction") and synthesizes ABS_HAT0X/
+# ABS_HAT0Y from it directly — the kernel does the direction math, we just
+# report 0-7 (clockwise from Up) or 8 (released, outside the valid range so
+# Null State maps it to centred).
 
-REPORT_SIZE = 6
-BUTTON_COUNT = 12
+REPORT_SIZE = 9
+BUTTON_COUNT = 15
 AXIS_NEUTRAL = 128
 
 BUTTONS = {
     "BTN_SOUTH": 1, "BTN_EAST": 2, "BTN_C": 3, "BTN_NORTH": 4,
     "BTN_WEST": 5, "BTN_Z": 6, "BTN_TL": 7, "BTN_TR": 8,
     "BTN_TL2": 9, "BTN_TR2": 10, "BTN_SELECT": 11, "BTN_START": 12,
+    "BTN_MODE": 13, "BTN_THUMBL": 14, "BTN_THUMBR": 15,
 }
 
-AXES = {"LX": 0, "LY": 1, "RX": 2, "RY": 3}
+# Declaration order matters — it is the report's byte order (byte3..byte8).
+AXIS_ORDER = ("LX", "LY", "RX", "RY", "LT", "RT")
+AXES = {name: i for i, name in enumerate(AXIS_ORDER)}
+# Sticks rest at centre (128); triggers rest at 0 — "not pulled", not "centred".
+AXIS_DEFAULT = {"LX": AXIS_NEUTRAL, "LY": AXIS_NEUTRAL,
+                 "RX": AXIS_NEUTRAL, "RY": AXIS_NEUTRAL,
+                 "LT": 0, "RT": 0}
+
+# Hat Switch: 0-7 clockwise from Up, both plain compass names and N/E/S/W-style
+# aliases (this project's own bearing convention, tests/benchmark/RUNBOOK.md).
+# 8 = released/centred (outside the 0-7 logical range → Null State).
+HAT_RELEASED = 8
+HAT_DIRECTIONS = {
+    "UP": 0, "N": 0,
+    "UP_RIGHT": 1, "NE": 1,
+    "RIGHT": 2, "E": 2,
+    "DOWN_RIGHT": 3, "SE": 3,
+    "DOWN": 4, "S": 4,
+    "DOWN_LEFT": 5, "SW": 5,
+    "LEFT": 6, "W": 6,
+    "UP_LEFT": 7, "NW": 7,
+    "RELEASED": HAT_RELEASED, "NEUTRAL": HAT_RELEASED, "CENTER": HAT_RELEASED,
+}
 
 
 def normalize_button(name):
@@ -107,14 +160,38 @@ def normalize_button(name):
 
 
 def normalize_axis(name):
-    """'lx' / 'X' -> canonical axis key. Raises ValueError if unknown."""
+    """'lx' / 'X' / 'Z' -> canonical axis key. Raises ValueError if unknown.
+
+    Accepts the raw HID usage names (X, Y, Z, RZ) as aliases for the stick/
+    trigger names actually used on the wire (LX, LY, LT, RT) — RX/RY already
+    match directly, no alias needed.
+    """
     key = name.strip().upper()
-    # Accept the HID usage names as aliases for the stick names.
-    key = {"X": "LX", "Y": "LY"}.get(key, key)
+    key = {"X": "LX", "Y": "LY", "Z": "LT", "RZ": "RT"}.get(key, key)
     if key not in AXES:
         raise ValueError("unknown axis %r (known: %s)"
                          % (name, ", ".join(sorted(AXES))))
     return key
+
+
+def normalize_hat(value):
+    """direction name / compass alias / 0-8 int -> canonical 0-8 int. Pure."""
+    if isinstance(value, int):
+        v = value
+    else:
+        s = str(value).strip()
+        if s.lstrip("-").isdigit():
+            v = int(s)
+        else:
+            key = s.upper().replace("-", "_")
+            if key not in HAT_DIRECTIONS:
+                raise ValueError(
+                    "unknown hat direction %r (known: %s)"
+                    % (value, ", ".join(sorted(HAT_DIRECTIONS))))
+            v = HAT_DIRECTIONS[key]
+    if not 0 <= v <= HAT_RELEASED:
+        raise ValueError("hat value out of range 0-%d: %r" % (HAT_RELEASED, value))
+    return v
 
 
 def build_report_descriptor():
@@ -133,56 +210,73 @@ def build_report_descriptor():
         0xA1, 0x00,        #   Collection (Physical)
         0x05, 0x09,        #     Usage Page (Button)
         0x19, 0x01,        #     Usage Minimum (Button 1)
-        0x29, BUTTON_COUNT,  #   Usage Maximum (Button 12)
+        0x29, BUTTON_COUNT,  #   Usage Maximum (Button 15)
         0x15, 0x00,        #     Logical Minimum (0)
         0x25, 0x01,        #     Logical Maximum (1)
         0x75, 0x01,        #     Report Size (1)
-        0x95, BUTTON_COUNT,  #   Report Count (12)
+        0x95, BUTTON_COUNT,  #   Report Count (15)
         0x81, 0x02,        #     Input (Data, Variable, Absolute)
-        0x75, 0x04,        #     Report Size (4)       -- pad to a byte boundary
+        0x75, 0x01,        #     Report Size (1)       -- pad to a byte boundary
         0x95, 0x01,        #     Report Count (1)
         0x81, 0x03,        #     Input (Constant, Variable, Absolute)
         0x05, 0x01,        #     Usage Page (Generic Desktop)
-        0x09, 0x30,        #     Usage (X)
-        0x09, 0x31,        #     Usage (Y)
-        0x09, 0x33,        #     Usage (Rx)
-        0x09, 0x34,        #     Usage (Ry)
+        0x09, 0x39,        #     Usage (Hat Switch)
+        0x15, 0x00,        #     Logical Minimum (0)
+        0x25, 0x07,        #     Logical Maximum (7)
+        0x75, 0x04,        #     Report Size (4)
+        0x95, 0x01,        #     Report Count (1)
+        0x81, 0x42,        #     Input (Data, Variable, Absolute, Null State)
+        0x75, 0x04,        #     Report Size (4)       -- pad the hat nibble to a byte
+        0x95, 0x01,        #     Report Count (1)
+        0x81, 0x03,        #     Input (Constant, Variable, Absolute)
+        0x05, 0x01,        #     Usage Page (Generic Desktop)
+        0x09, 0x30,        #     Usage (X)   -- LX
+        0x09, 0x31,        #     Usage (Y)   -- LY
+        0x09, 0x33,        #     Usage (Rx)  -- RX
+        0x09, 0x34,        #     Usage (Ry)  -- RY
+        0x09, 0x32,        #     Usage (Z)   -- LT
+        0x09, 0x35,        #     Usage (Rz)  -- RT
         0x15, 0x00,        #     Logical Minimum (0)
         0x26, 0xFF, 0x00,  #     Logical Maximum (255)
         0x75, 0x08,        #     Report Size (8)
-        0x95, 0x04,        #     Report Count (4)
+        0x95, 0x06,        #     Report Count (6)
         0x81, 0x02,        #     Input (Data, Variable, Absolute)
         0xC0,              #   End Collection
         0xC0,              # End Collection
     ])
 
 
-def encode_report(pressed=(), axes=None):
-    """Pack a 6-byte input report. Pure.
+def encode_report(pressed=(), axes=None, hat="RELEASED"):
+    """Pack a 9-byte input report. Pure.
 
     pressed — iterable of canonical button keys currently held.
-    axes    — {canonical axis key: 0-255}; anything absent sits at neutral.
+    axes    — {canonical axis key: 0-255}; anything absent sits at its
+              per-axis default (128 for sticks, 0 for triggers).
+    hat     — a direction name/alias or 0-8 int; default RELEASED (8).
     """
     axes = axes or {}
     bits = 0
     for name in pressed:
         bits |= 1 << (BUTTONS[normalize_button(name)] - 1)
-    values = [AXIS_NEUTRAL] * len(AXES)
+    values = [AXIS_DEFAULT[name] for name in AXIS_ORDER]
     for name, value in axes.items():
         idx = AXES[normalize_axis(name)]
         if not 0 <= int(value) <= 255:
             raise ValueError("axis %s out of range: %r" % (name, value))
         values[idx] = int(value)
-    return struct.pack("<BB4B", bits & 0xFF, (bits >> 8) & 0x0F, *values)
+    hat_value = normalize_hat(hat)
+    return struct.pack("<BBB%dB" % len(AXIS_ORDER),
+                        bits & 0xFF, (bits >> 8) & 0xFF, hat_value, *values)
 
 
 def parse_report_spec(spec):
-    """'BTN_SOUTH=1,LX=200' -> (pressed set, axes dict). Pure.
+    """'BTN_SOUTH=1,LX=200,HAT=NE' -> (pressed set, axes dict, hat). Pure.
 
-    Buttons take 0/1; axes take 0-255. Raises ValueError on anything else so a
-    typo fails loudly instead of silently encoding a neutral report.
+    Buttons take 0/1; axes take 0-255; HAT takes a direction name/alias or a
+    0-8 int. Raises ValueError on anything else so a typo fails loudly
+    instead of silently encoding a neutral report.
     """
-    pressed, axes = set(), {}
+    pressed, axes, hat = set(), {}, "RELEASED"
     for item in spec.split(","):
         item = item.strip()
         if not item:
@@ -190,12 +284,15 @@ def parse_report_spec(spec):
         if "=" not in item:
             raise ValueError("expected NAME=VALUE, got %r" % item)
         name, _, raw = item.partition("=")
+        upper = name.strip().upper()
+        if upper == "HAT":
+            hat = normalize_hat(raw.strip())
+            continue
         try:
             value = int(raw, 0)
         except ValueError:
             raise ValueError("non-numeric value in %r" % item)
-        upper = name.strip().upper()
-        if upper in AXES or upper in ("X", "Y"):
+        if upper in AXES or upper in ("X", "Y", "Z", "RZ"):
             axes[normalize_axis(upper)] = value
         else:
             key = normalize_button(upper)
@@ -203,7 +300,7 @@ def parse_report_spec(spec):
                 raise ValueError("button %s takes 0 or 1, got %r" % (key, value))
             if value:
                 pressed.add(key)
-    return pressed, axes
+    return pressed, axes, hat
 
 
 def build_create2_event(name, uniq, vendor, product, phys="", version=0,
@@ -258,6 +355,7 @@ class UhidPad(object):
         self.fd = None
         self._pressed = set()
         self._axes = {}
+        self._hat = HAT_RELEASED
 
     def create(self):
         self.fd = os.open(self.path, os.O_RDWR | os.O_NONBLOCK)
@@ -268,7 +366,7 @@ class UhidPad(object):
 
     def send(self):
         os.write(self.fd, build_input2_event(
-            encode_report(self._pressed, self._axes)))
+            encode_report(self._pressed, self._axes, self._hat)))
 
     def press(self, button):
         self._pressed.add(normalize_button(button))
@@ -282,9 +380,14 @@ class UhidPad(object):
         self._axes[normalize_axis(name)] = int(value)
         self.send()
 
+    def hat(self, direction):
+        self._hat = normalize_hat(direction)
+        self.send()
+
     def neutral(self):
         self._pressed.clear()
         self._axes.clear()
+        self._hat = HAT_RELEASED
         self.send()
 
     def drain(self):
@@ -332,6 +435,8 @@ def _run_command_loop(pad):
                 pad.release(args[0])
             elif cmd == "axis":
                 pad.axis(args[0], args[1])
+            elif cmd == "hat":
+                pad.hat(args[0])
             elif cmd == "neutral":
                 pad.neutral()
             else:
@@ -355,8 +460,13 @@ def _self_test():
     neutral = encode_report()
     south = encode_report(["BTN_SOUTH"])
     start = encode_report(["BTN_START"])
+    mode = encode_report(["BTN_MODE"])
+    thumbs = encode_report(["BTN_THUMBL", "BTN_THUMBR"])
     both = encode_report(["BTN_SOUTH", "BTN_START"], {"LX": 200})
-    pressed, axes = parse_report_spec("BTN_SOUTH=1,LX=200")
+    hat_up = encode_report(hat="UP")
+    trigger = encode_report(axes={"LT": 255, "RT": 64})
+    pressed, axes, _spec_hat = parse_report_spec("BTN_SOUTH=1,LX=200")
+    _hat_pressed, _hat_axes, spec_hat = parse_report_spec("HAT=NE")
     lines = [
         ("event_size", UHID_EVENT_SIZE),
         ("descriptor_len", len(desc)),
@@ -365,12 +475,17 @@ def _self_test():
         ("report_neutral", neutral.hex()),
         ("report_south", south.hex()),
         ("report_start", start.hex()),
+        ("report_mode", mode.hex()),
+        ("report_thumbs", thumbs.hex()),
         ("report_south_start_lx200", both.hex()),
+        ("report_hat_up", hat_up.hex()),
+        ("report_trigger", trigger.hex()),
         ("create2_event_size", len(build_create2_event(
             "MCSS Test Pad", "aa:bb:cc:00:00:01", 0x054C, 0x0001))),
         ("input2_event_size", len(build_input2_event(neutral))),
         ("spec_pressed", ",".join(sorted(pressed))),
         ("spec_axes", ",".join("%s=%d" % kv for kv in sorted(axes.items()))),
+        ("spec_hat", str(spec_hat)),
     ]
     for key, value in lines:
         print("%s=%s" % (key, value))
@@ -399,8 +514,8 @@ def main(argv=None):
         print(build_report_descriptor().hex())
         return 0
     if args.encode_report:
-        pressed, axes = parse_report_spec(args.encode_report)
-        print(encode_report(pressed, axes).hex())
+        pressed, axes, hat = parse_report_spec(args.encode_report)
+        print(encode_report(pressed, axes, hat).hex())
         return 0
     if args.self_test:
         return _self_test()
