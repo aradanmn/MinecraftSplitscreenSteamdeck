@@ -20,7 +20,7 @@ set -uo pipefail
 #   argv:  create --uniq U --name N --vendor V --product P
 #   stdin (one command per line):
 #     press <BTN> | release <BTN> | hold <BTN> <ms> | axis <NAME> <0-255>
-#     neutral | destroy | quit | exit
+#     hat <DIR> | neutral | destroy | quit | exit
 #   readiness: "created uniq=<uniq> name=<name>" on stdout (unless
 #     FAKE_PAD_NEVER_READY=1).
 #   ack: "ok <cmd>" on stdout per ACCEPTED command; a malformed/unknown
@@ -39,6 +39,9 @@ set -uo pipefail
 #
 # Version history (one line per version; details live in git; max 6 lines):
 #   v1.0 2026-08-01  #136 PR-2: initial fixture.
+#   v1.1 2026-08-08  #70: mirror uhid_pad.py v1.1's full controller surface —
+#                    BTN_MODE, LT/RT axes, the `hat` command.
+#   v1.2 2026-08-08  #70: mirror uhid_pad.py v1.2 — BTN_THUMBL/BTN_THUMBR.
 # =============================================================================
 
 # _known_button: Mirrors uhid_pad.py's BUTTONS dict keys — enough to make
@@ -47,7 +50,7 @@ set -uo pipefail
 _known_button() {
     case "$1" in
         BTN_SOUTH|BTN_EAST|BTN_C|BTN_NORTH|BTN_WEST|BTN_Z|BTN_TL|BTN_TR| \
-        BTN_TL2|BTN_TR2|BTN_SELECT|BTN_START)
+        BTN_TL2|BTN_TR2|BTN_SELECT|BTN_START|BTN_MODE|BTN_THUMBL|BTN_THUMBR)
             return 0 ;;
         *) return 1 ;;
     esac
@@ -56,7 +59,19 @@ _known_button() {
 # _known_axis: Mirrors uhid_pad.py's AXES dict keys.
 _known_axis() {
     case "$1" in
-        LX|LY|RX|RY) return 0 ;;
+        LX|LY|RX|RY|LT|RT) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _known_hat: Mirrors uhid_pad.py's HAT_DIRECTIONS keys, plus the raw 0-8
+# numeric form normalize_hat() also accepts.
+_known_hat() {
+    case "$1" in
+        UP|N|UP_RIGHT|NE|RIGHT|E|DOWN_RIGHT|SE|DOWN|S|DOWN_LEFT|SW| \
+        LEFT|W|UP_LEFT|NW|RELEASED|NEUTRAL|CENTER)
+            return 0 ;;
+        0|1|2|3|4|5|6|7|8) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -118,6 +133,13 @@ while IFS= read -r line; do
                 echo "ok $cmd"
             else
                 echo "bad command '$line': bad axis arguments" >&2
+            fi
+            ;;
+        hat)
+            if _known_hat "$arg1"; then
+                echo "ok $cmd"
+            else
+                echo "bad command '$line': unknown hat direction '$arg1'" >&2
             fi
             ;;
         neutral)
