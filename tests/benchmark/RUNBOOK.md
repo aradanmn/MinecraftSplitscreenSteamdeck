@@ -451,10 +451,23 @@ safety.
    5. "Any audio crackling or other anomalies?" (controller input lag isn't
       meaningfully askable — the driver flies every player, not the human)
    6. "Anything else abnormal?"
-7. **Teardown + hygiene:** all players quit to title (driver injects Escape,
-   mouse clicks quit; session self-terminates), then `rig_cleanup` (each cycle
-   starts fresh — no pad carries over to the next N). Verify: `pgrep -f
-   latestUpdate-` empty; state file slots all inactive; no leftover
+7. **Reset position before quitting — added 2026-08-09.** `/tp` every
+   player back to this cycle's exact starting bearing coordinates (the
+   same command used in step 1b) *before* quitting to title. The world
+   save captures wherever players are standing when they quit — leaving
+   them mid-flight/post-teleport means the next cycle (or next sitting)
+   starts by rediscovering "everyone gathers wherever the world last saved
+   them" and has to reposition from scratch, which is exactly the overhead
+   step 0's precomputation is trying to eliminate. Resetting here means
+   the next start finds players already correctly placed.
+8. **Teardown + hygiene:** all players fully EXIT the game (driver injects
+   Escape, mouse clicks "Save and Quit to Title", then **"Quit Game" from
+   the title screen itself** — confirmed live 2026-08-09: "Save and Quit
+   to Title" only exits the WORLD, the Java process and app keep running
+   at the title-screen menu; `pgrep`/state-file will still show the slot
+   active until "Quit Game" is actually clicked). Then `rig_cleanup` (each
+   cycle starts fresh — no pad carries over to the next N). Verify: `pgrep
+   -f latestUpdate-` empty; state file slots all inactive; no leftover
    `uhid_pad.py`; `sudo dmesg | grep -i -e oom -e "out of memory"` (record any
    hit, but the Deck has no passwordless sudo in these sessions so this is
    frequently un-checkable — not a new problem, don't burn time on it); grep
@@ -462,7 +475,7 @@ safety.
    references before treating it as a red flag** — it fires routinely and
    correctly on a normal end-of-cycle quit, not just on a real crash. 60s
    cool-down before the next cycle.
-8. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste segment
+9. **Summarize:** `bash tests/benchmark/summarize.sh "$OUT"` → paste segment
    lines into RESULTS.md. **Sanity-check segment durations against
    `events.csv` timestamps before trusting the FPS/CPU numbers** — a
    `S2_flight` duration wildly longer than ~170s means it absorbed
