@@ -101,9 +101,11 @@ connected, **no physical controllers, no keyboard**.
       install pre-#94 baseline), Phase A step 0 (baseline inventory), MangoHud probe
       (PASS), world + settings standardization. **Nothing here needs redoing.**
 - [~] **Sitting 2** (2026-08-08, partial): `phaseA/1p` **done** — data accepted
-      (see caveats below). `2p`/`3p`/`4p` **not started**, pick up next sitting.
-      Slot 1 torn down clean at end (no live processes, state file inactive,
-      no leftover pad devices) — safe resume point, no recovery needed.
+      (see caveats below). `2p`/`3p`/`4p` **not started**, pick up next sitting —
+      blocked twice by the `pauseOnLostFocus` bug below before the fix; retry
+      after it lands. All slots torn down clean at end (no live processes,
+      state file inactive, no leftover pad devices) — safe resume point, no
+      recovery needed.
 - [ ] **Sitting 3**: Phase B (torch + reinstall current `main`) + Phase C scored
       cycles — `phaseC/1p` → `2p` → `3p` → `4p`.
 - [ ] **Sitting 4**: Phase D comparison, gate evaluation, merge/no-merge decision,
@@ -140,6 +142,20 @@ except the last):**
   sized for an assumed ~10 samples/s) — hung for minutes against a real
   ~49k-row MangoHud CSV (native frame rate, not throttled). Fixed to an
   external `sort -n` pipeline; verified against the same file post-fix.
+- **`pauseOnLostFocus:true` — required fix, blocked `phaseA/2p` twice before
+  being caught.** Splitscreen windows constantly trade OS focus (only one
+  window can be focused at a time); with this on, whichever instance isn't
+  currently focused auto-opens its pause menu — repeatedly, if the window
+  manager touches the other window more than once while laying out the grid,
+  which can look indistinguishable from a true hang (confirmed live: neither
+  a driver-injected Escape nor a human mouse click on "Back to Game" closed
+  it, because the next focus-loss just reopened it). Was already documented
+  as the correct game-side setting in
+  `docs/RESEARCH-WINDOWING-GAMESCOPE-2026-06-27.md` but never wired into the
+  installer — `modules/instance_creation.sh`'s default template shipped
+  `pauseOnLostFocus:true`. Fixed to `false` there, and added to the
+  settings-standardization block (Sitting 1 step 13) for the 4 instances
+  already installed pre-#94-baseline this run.
 
 Before resuming any sitting: `git pull` the Deck checkout, and check current
 rig/slot state (`rig_list_pads`, `pgrep -fal latestUpdate-`, the state file) rather
@@ -211,8 +227,10 @@ redoing (e.g. Phase A's instances got corrupted).
              -e 's/^simulationDistance:.*/simulationDistance:8/' \
              -e 's/^enableVsync:.*/enableVsync:false/' \
              -e 's/^maxFps:.*/maxFps:260/' \
-             -e 's/^inactivityFpsLimit:.*/inactivityFpsLimit:"minimized"/' "$o"
+             -e 's/^inactivityFpsLimit:.*/inactivityFpsLimit:"minimized"/' \
+             -e 's/^pauseOnLostFocus:.*/pauseOnLostFocus:false/' "$o"
       grep -q '^inactivityFpsLimit:' "$o" || echo 'inactivityFpsLimit:"minimized"' >> "$o"
+      grep -q '^pauseOnLostFocus:' "$o" || echo 'pauseOnLostFocus:false' >> "$o"
     done
     cp ~/.local/share/PolyMC/instances/latestUpdate-*/.minecraft/options.txt $BENCH/options-backup/ 2>/dev/null || true
     ```
