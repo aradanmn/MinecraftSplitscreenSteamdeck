@@ -373,6 +373,23 @@ a sitting each. Once a command is typed, verify only the FINAL outcome
 reliable enough now that per-character verification is wasted time, not
 safety.
 
+**Session-level timestamping — added 2026-08-09.** `sampler.sh`'s marks
+only cover one scored cycle's own segments; they say nothing about setup,
+positioning, troubleshooting, or teardown time, which is most of a
+sitting's real length. Use `tests/benchmark/session_log.sh` (same `$BENCH`
+env var) at these checkpoints so a retrospective can be answered from real
+numbers, not reconstructed after the fact:
+- `session_log.sh mark session_start` — once, at the very start of a sitting.
+- `session_log.sh mark setup_done` — after step 1b, before step 2.
+- `session_log.sh mark attempt_start` — right before step 3 (`sampler.sh run`).
+- `session_log.sh mark attempt_end "<accepted|discarded: reason>"` — right
+  after step 9's sanity-check decides the outcome.
+- `session_log.sh mark teardown_done` — after step 8.
+- `session_log.sh mark session_end` — once, when the sitting actually ends.
+`session_log.sh show` prints the whole log with elapsed-since-previous
+deltas — run it during a retrospective instead of hand-computing from
+`events.csv`.
+
 0. **Precompute every `/tp` for this cycle first.** For each player: initial
    position+facing (bearing table below, `pitch=30` — see the flight-pitch
    note), and the turn-around command (same X/Z, new Y unchanged, REVERSED
