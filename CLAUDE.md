@@ -30,3 +30,19 @@ decisions already paid for in bugs.
 ## Reference
 `docs/DESIGN-38-RECONNECT-WIRING.md` (seamless reconnect), `docs/SPEC.md`,
 `docs/TODO.md`. Milestones tracked as GitHub issues/PRs; v1.2 shipped.
+
+## Session archive & memory
+
+Claude Code sessions in this repo are archived and distilled into memory by
+hooks in `.claude/settings.json`, but the output lives **outside this repo**:
+`origin` here is the public `aradanmn/MinecraftSplitscreenSteamdeck` fork, and
+full transcripts aren't secret-redacted, so they're written instead to the
+private `claude_sessions` repo, under
+`sessions/minecraft-splitscreen-steamdeck/` (index + details there). This
+project's own persistent memory (`~/.claude/projects/-home-claude-workspace-MinecraftSplitscreenSteamdeck/memory/`)
+is unaffected — still local, still gets distilled into on `SessionEnd`, same
+as before.
+
+The pre-existing `sessions/` dir in *this* repo (`SESSION-*.md`,
+`RAW-SESSION-*.md`, raw `.jsonl`) predates this pipeline, uses a different
+(hand-authored) convention, and isn't touched by it.
