@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "RENDER_SESSIONS_DIR=/home/claude/workspace/claude_sessions/sessions/minecraft-splitscreen-steamdeck RENDER_INDEX_FILE=/home/claude/workspace/claude_sessions/sessions/minecraft-splitscreen-steamdeck/INDEX.md RENDER_MEMORY_DIR=/home/claude/.claude/projects/-home-claude-workspace-MinecraftSplitscreenSteamdeck/memory python3 /home/claude/workspace/claude_sessions/scripts/render_session.py --incremental --push",
+            "async": true,
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "RENDER_SESSIONS_DIR=/home/claude/workspace/claude_sessions/sessions/minecraft-splitscreen-steamdeck RENDER_INDEX_FILE=/home/claude/workspace/claude_sessions/sessions/minecraft-splitscreen-steamdeck/INDEX.md RENDER_MEMORY_DIR=/home/claude/.claude/projects/-home-claude-workspace-MinecraftSplitscreenSteamdeck/memory python3 /home/claude/workspace/claude_sessions/scripts/render_session.py --push",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}
