@@ -724,10 +724,14 @@ _hw_is_marked() {
 # Outputs: stdout — one PID per line; return — always 0
 _hw_session_pids() {
     local -A _ppid_of=() _ours=()
-    local _pid _ppid _p _anc
-    while read -r _pid _ppid; do
-        [[ "$_pid" =~ ^[0-9]+$ ]] && _ppid_of[$_pid]="$_ppid"
-    done < <(ps -eo pid=,ppid= 2>/dev/null || true)
+    local _pid _ppid _stat _p _anc
+    # Zombies are skipped: they are already dead, cannot be signalled, and
+    # would keep the sweep loop below re-running until PID 1 reaps them.
+    while read -r _pid _ppid _stat; do
+        [[ "$_pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$_stat" == Z* ]] && continue
+        _ppid_of[$_pid]="$_ppid"
+    done < <(ps -eo pid=,ppid=,stat= 2>/dev/null || true)
 
     # This harness and its ancestor chain are never ours (even if an operator
     # runs a stage from a terminal inside the nested session).
