@@ -699,6 +699,80 @@ hw_detect_display() {
 # HW_ORCH_PID — exported PID of the running orchestrator
 HW_ORCH_PID=""
 
+# _hw_is_marked PID: 0 iff PID's environ carries SPLITSCREEN_DEBUG_LOG= — the
+# launcher exports it to itself at the top of every run, so every process the
+# run spawns inherits it (same marker the launcher's own #58/#60 guards use).
+_hw_is_marked() {
+    grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$1/environ" 2>/dev/null
+}
+
+# _hw_session_pids: every PID that belongs to a splitscreen run tree — MARKED
+# processes, their DESCENDANTS, and the Steam reaper that is the parent of a
+# marked launcher (plus ITS descendants) — never this harness or its
+# ancestors. One `ps` snapshot, one environ read per PID, no name matching.
+# Why descendants and the reaper, not just the marker (2026-08-02, live):
+# kwin_wayland's own environ never carries the marker (kwin_wayland_wrapper
+# IS marked; the kwin it execs is not), so a marker-only sweep left an
+# orphaned nested kwin behind (black screen, Steam stuck "running"). It is
+# still OURS by ANCESTRY — its parent is the marked wrapper, or, once the
+# wrapper died, Steam's reaper for OUR shortcut (the subreaper adopts it).
+# That is the whole justification the old unconditional
+# `pkill -9 -f kwin_wayland` had, without the blast radius: on SteamOS Desktop
+# Mode and on Bazzite/Plasma-Wayland hosts (#198/#199) kwin_wayland is the
+# operator's ENTIRE desktop session, and a name-matched kill took it down.
+# Outputs: stdout — one PID per line; return — always 0
+_hw_session_pids() {
+    local -A _ppid_of=() _ours=()
+    local _pid _ppid _p _anc
+    while read -r _pid _ppid; do
+        [[ "$_pid" =~ ^[0-9]+$ ]] && _ppid_of[$_pid]="$_ppid"
+    done < <(ps -eo pid=,ppid= 2>/dev/null || true)
+
+    # This harness and its ancestor chain are never ours (even if an operator
+    # runs a stage from a terminal inside the nested session).
+    local _chain=" $$ "
+    _p="$PPID"
+    while [[ -n "$_p" && "$_p" != 0 ]]; do
+        _chain+="$_p "
+        _p="${_ppid_of[$_p]:-}"
+    done
+
+    # 1. Marked processes.
+    for _pid in "${!_ppid_of[@]}"; do
+        if _hw_is_marked "$_pid"; then _ours[$_pid]=1; fi
+    done
+    # 2. The Steam reaper: the UNMARKED parent of a marked process whose
+    #    cmdline names our launcher. While it lives Steam thinks the game is
+    #    still running and steam://rungameid/ won't relaunch. Identified by
+    #    ancestry of a marked PID, not by name — a `SteamLaunch` string is only
+    #    the confirmation.
+    local _reaper_cmd
+    for _pid in "${!_ours[@]}"; do
+        _ppid="${_ppid_of[$_pid]:-}"
+        [[ -n "$_ppid" && "$_ppid" != 0 && "$_ppid" != 1 ]] || continue
+        [[ -n "${_ours[$_ppid]:-}" ]] && continue
+        _reaper_cmd=$(tr '\0' ' ' < "/proc/$_ppid/cmdline" 2>/dev/null || true)
+        if [[ "$_reaper_cmd" == *SteamLaunch*minecraftSplitscreen* ]]; then
+            _ours[$_ppid]=1
+        fi
+    done
+    # 3. Descendants of anything in the set (kwin_wayland via its marked
+    #    wrapper or the reaper that adopted it; java under a marked bwrap).
+    for _pid in "${!_ppid_of[@]}"; do
+        [[ -n "${_ours[$_pid]:-}" ]] && continue
+        _anc="${_ppid_of[$_pid]:-}"
+        while [[ -n "$_anc" && "$_anc" != 0 && "$_anc" != 1 ]]; do
+            if [[ -n "${_ours[$_anc]:-}" ]]; then _ours[$_pid]=1; break; fi
+            _anc="${_ppid_of[$_anc]:-}"
+        done
+    done
+
+    for _pid in "${!_ours[@]}"; do
+        [[ "$_chain" == *" $_pid "* ]] || echo "$_pid"
+    done
+    return 0
+}
+
 # hw_launch_orchestrator MODE
 # Launches minecraftSplitscreen.sh launchFromPlasma with SPLITSCREEN_MODE set.
 # Waits up to 5s for FIFO to appear. Exports HW_ORCH_PID.
@@ -709,9 +783,13 @@ HW_ORCH_PID=""
 # fails (on-Deck 2026-07-05). Reap the old session HERE, synchronously, and
 # reset the state file so every launch starts from a known-clean slate.
 # Ours-only scoping mirrors the launcher's #58 guard: a process is ours iff
-# its environ carries SPLITSCREEN_DEBUG_LOG=.
+# its environ carries SPLITSCREEN_DEBUG_LOG= — or it descends from one that
+# does (_hw_session_pids). NO name-matched kills (PRINCIPLES #7): the former
+# `pkill -9 -f kwin_wayland|latestUpdate|bwrap.*PolyMC|SteamLaunch.*` lines
+# killed the operator's whole Desktop-Mode/Bazzite compositor and any
+# `tail -f …/latestUpdate-1/latest.log` in another terminal.
 hw_reap_stale_session() {
-    local _name _pid _tries
+    local _pid _tries _left
     # Stale run trees first (#60): a prior run's orchestrator/watchdog/monitor/
     # supervisor survives its session's death and keeps acting on the shared
     # state file/FIFO — one of them killed a fresh session's instance ~25s after
@@ -719,45 +797,24 @@ hw_reap_stale_session() {
     # scenery. (This harness process doesn't match: its cmdline is the stage
     # script, not minecraftSplitscreen.sh, and it carries no marker.)
     for _pid in $(pgrep -f 'minecraftSplitscreen' 2>/dev/null || true); do
-        grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
-            && kill -9 "$_pid" 2>/dev/null || true
+        if _hw_is_marked "$_pid"; then kill -9 "$_pid" 2>/dev/null || true; fi
     done
-    # Stale Steam reaper for our shortcut: while it lives, Steam thinks the game
-    # is still running and steam://rungameid/ won't relaunch it.
-    pkill -9 -f 'SteamLaunch.*minecraftSplitscreen' 2>/dev/null || true
-    pkill -9 -f 'latestUpdate' 2>/dev/null || true
-    pkill -9 -f 'bwrap.*PolyMC' 2>/dev/null || true
-    # kwin_wayland unconditionally, NOT marker-gated (2026-08-02, live-diagnosed
-    # during PR-4): its own /proc/$pid/environ never carries SPLITSCREEN_DEBUG_LOG=
-    # — the launcher exports that var to ITSELF partway through launchFromPlasma,
-    # which only affects children forked AFTER that point, and kwin_wayland is
-    # spawned by kwin_wayland_wrapper via a fresh exec that doesn't carry it either
-    # (confirmed live: kwin_wayland_wrapper IS marked, kwin_wayland itself is not).
-    # The marker-gated loop below therefore can NEVER match it, which is exactly
-    # what left an orphaned kwin_wayland behind (black screen, Steam stuck
-    # thinking the game was still running) across multiple incidents this session
-    # — see memory [[no-remote-steam-restart]]. Safe unconditionally on this
-    # platform: kwin_wayland only ever runs as this project's OWN nested session
-    # (Game Mode itself runs gamescope directly, never kwin_wayland).
-    pkill -9 -f 'kwin_wayland' 2>/dev/null || true
-    for _name in startplasma-wayland plasma_session baloo_file Xwayland 'udevadm monitor' inotifywait; do
-        for _pid in $(pgrep -f "$_name" 2>/dev/null || true); do
-            grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null \
-                && kill -9 "$_pid" 2>/dev/null || true
-        done
-    done
-    local _left
+    # Then the whole tree — marked processes, their descendants (kwin_wayland,
+    # bwrap→PolyMC→java, Xwayland, udevadm monitor, inotifywait …) and the Steam
+    # reaper — by PID. SIGKILL in one pass so kwin_wayland_wrapper cannot
+    # respawn kwin between signals; bounded re-sweep for late stragglers.
     for _tries in 1 2 3 4 5; do
         _left=""
-        for _pid in $(pgrep -f 'startplasma-wayland' 2>/dev/null || true); do
-            if grep -qz 'SPLITSCREEN_DEBUG_LOG=' "/proc/$_pid/environ" 2>/dev/null; then
-                _left="$_pid"
-                break
-            fi
+        for _pid in $(_hw_session_pids); do
+            _left+="$_pid "
+            kill -9 "$_pid" 2>/dev/null || true
         done
         [[ -z "$_left" ]] && break
         sleep 1
     done
+    if [[ -n "$_left" ]]; then
+        hw_warn "hw_reap_stale_session: session PIDs still present after 5 sweeps: ${_left}"
+    fi
     if [[ -n "${SPLITSCREEN_STATE:-}" ]]; then
         echo '{"mode":"unknown","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"2":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null,"wid":null}}}' > "$SPLITSCREEN_STATE"
         hw_info "hw_reap_stale_session: state file reset to all-inactive"
