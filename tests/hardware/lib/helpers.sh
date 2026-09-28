@@ -398,44 +398,45 @@ hw_get_screen_resolution() {
 
 # hw_expected_slot_geometry SLOT ACTIVE_SLOTS SCREEN_W SCREEN_H
 # Prints: "X Y W H" for the expected window position of SLOT given the set
-# of active slots and screen dimensions. Matches compute_slot_geometry logic.
+# of active slots and screen dimensions.
+# ONE encoding (PRINCIPLES #9): the grid mode and the cell rectangle come from
+# the product's own pure functions (compute_grid_mode / compute_slot_geometry
+# in modules/window_manager.sh, sourced lazily — no side effects at source
+# time). The previous hand-copy here had already drifted: it said
+# `any slot>=3 → quad` and mapped half-mode cells by slot NUMBER, while the
+# product is COUNT-based and maps half/full cells by ORDER among the active
+# slots — e.g. active "1 3": helper said quad / P3 bottom-left quarter, product
+# says half / P3 bottom half. Every current caller passes a contiguous set so
+# it never showed; the first "P2 leaves, P1+P3 reflow" assertion would have.
+# Cell rule (mirrors apply_layout, the only other place it is spelled):
+#   quad      → cell = slot number (stable quadrants, P1=UL … P4=LR)
+#   half/full → cell = the slot's ORDER among the active slots
 hw_expected_slot_geometry() {
     local slot="$1" active="$2" sw="$3" sh="$4"
 
-    local count
-    count=$(echo "$active" | wc -w)
-
-    # Determine grid mode (mirrors compute_grid_mode in window_manager.sh)
-    local grid="full"
-    if (( count >= 2 )); then
-        grid="half"
-        local s
-        for s in $active; do
-            if (( s >= 3 )); then grid="quad"; break; fi
-        done
+    if ! declare -f compute_grid_mode >/dev/null 2>&1; then
+        # shellcheck source=modules/window_manager.sh
+        source "${REPO_ROOT:?hw_expected_slot_geometry: REPO_ROOT unset}/modules/window_manager.sh"
     fi
-    if (( count >= 3 )); then grid="quad"; fi
 
-    local hw=$(( sw / 2 ))
-    local hh=$(( sh / 2 ))
+    local grid
+    grid=$(compute_grid_mode "$active")
 
-    case "$grid" in
-        full) echo "0 0 ${sw} ${sh}" ;;
-        half)
-            case "$slot" in
-                1) echo "0 0 ${sw} ${hh}" ;;
-                2) echo "0 ${hh} ${sw} ${hh}" ;;
-                *) echo "0 0 ${sw} ${sh}" ;;
-            esac ;;
-        quad)
-            case "$slot" in
-                1) echo "0 0 ${hw} ${hh}" ;;
-                2) echo "${hw} 0 ${hw} ${hh}" ;;
-                3) echo "0 ${hh} ${hw} ${hh}" ;;
-                4) echo "${hw} ${hh} ${hw} ${hh}" ;;
-                *) echo "0 0 ${sw} ${sh}" ;;
-            esac ;;
-    esac
+    local cell=0 order=0 s
+    for s in $active; do
+        order=$(( order + 1 ))
+        if [[ "$s" == "$slot" ]]; then cell=$order; break; fi
+    done
+    if [[ "$grid" == "quad" ]]; then cell="$slot"; fi
+    if (( cell == 0 )); then
+        # SLOT is not in ACTIVE_SLOTS — a caller bug; the old copy fell
+        # through to full-screen, keep that so stages fail on geometry, not
+        # on an empty read.
+        hw_warn "hw_expected_slot_geometry: slot ${slot} not in active set '${active}'"
+        cell=1
+    fi
+
+    compute_slot_geometry "$cell" "$grid" "$sw" "$sh"
 }
 
 # hw_slot_wid SLOT: the window id the orchestrator recorded for SLOT in the
