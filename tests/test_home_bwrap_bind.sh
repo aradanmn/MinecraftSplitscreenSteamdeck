@@ -23,6 +23,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 FAILURES=0
+PASSES=0
 assert_contains() {
     local desc="$1" haystack="$2" needle="$3"
     if [[ "$haystack" != *"$needle"* ]]; then
@@ -32,6 +33,7 @@ assert_contains() {
         FAILURES=$((FAILURES + 1))
     else
         echo "[PASS] $desc"
+        PASSES=$((PASSES + 1))
     fi
 }
 assert_not_contains() {
@@ -43,6 +45,7 @@ assert_not_contains() {
         FAILURES=$((FAILURES + 1))
     else
         echo "[PASS] $desc"
+        PASSES=$((PASSES + 1))
     fi
 }
 assert_word_count() {
@@ -56,6 +59,7 @@ assert_word_count() {
         FAILURES=$((FAILURES + 1))
     else
         echo "[PASS] $desc"
+        PASSES=$((PASSES + 1))
     fi
 }
 
@@ -99,10 +103,11 @@ out="$(_home_bwrap_bind_args)"
 assert_contains "no-arg default targets /home" "$out" "/home"
 
 echo
+# Standard summary footer — the line .github/workflows/ci.yml parses for every
+# suite (X/Y tests passed.); exit status is the gate.
+echo "$PASSES/$((PASSES + FAILURES)) tests passed."
 if (( FAILURES == 0 )); then
-    echo "[OK] all _home_bwrap_bind_args cases passed"
     exit 0
 else
-    echo "[FAIL] $FAILURES case(s) failed"
     exit 1
 fi
