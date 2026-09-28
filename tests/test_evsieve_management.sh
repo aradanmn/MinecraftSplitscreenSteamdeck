@@ -73,7 +73,10 @@ _ISOLATED_BASE=""
 # _build_isolated_base: Populate $_ISOLATED_BASE with a passthrough
 # symlink farm of every real coreutil (cp/mv/grep/cut/dirname/mktemp/
 # timeout/... all keep working) EXCLUDING git/distrobox/podman/cargo/
-# sha256sum. sha256sum is excluded (not just git/distrobox/podman/cargo)
+# sha256sum/fuse-overlayfs. fuse-overlayfs is excluded because T13 asserts
+# the "not available" path and GitHub's ubuntu runner ships it in /usr/bin
+# (the suite went 19/20 the first time CI gated it, #225); T12/T14 add
+# their own placeholder. sha256sum is excluded (not just git/distrobox/podman/cargo)
 # even though it is a plain coreutil: every test that needs it stubs it
 # explicitly via _stub_sha256sum, and _write_stub's rm-before-write is
 # the real safety net — but excluding it here too means a passthrough
@@ -90,7 +93,7 @@ _build_isolated_base() {
             [[ -e "$f" ]] || continue
             name="$(basename "$f")"
             case "$name" in
-                git|distrobox|podman|cargo|sha256sum) continue ;;
+                git|distrobox|podman|cargo|sha256sum|fuse-overlayfs) continue ;;
             esac
             [[ -e "$dir/$name" ]] && continue
             ln -s "$f" "$dir/$name" 2>/dev/null || true
