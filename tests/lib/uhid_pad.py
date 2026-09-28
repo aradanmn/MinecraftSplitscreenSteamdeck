@@ -377,7 +377,15 @@ class UhidPad(object):
         self.send()
 
     def axis(self, name, value):
-        self._axes[normalize_axis(name)] = int(value)
+        # Validate BEFORE storing: encode_report() range-checks too, but by
+        # then the value was already committed to self._axes and every later
+        # send() re-raised on it — one `axis LX 300` poisoned the pad for the
+        # rest of its life (press/hat/release all failed). Same discipline as
+        # press()/hat(): reject first, mutate second.
+        value = int(value)
+        if not 0 <= value <= 255:
+            raise ValueError("axis %s out of range: %r" % (name, value))
+        self._axes[normalize_axis(name)] = value
         self.send()
 
     def hat(self, direction):
@@ -467,6 +475,15 @@ def _self_test():
     trigger = encode_report(axes={"LT": 255, "RT": 64})
     pressed, axes, _spec_hat = parse_report_spec("BTN_SOUTH=1,LX=200")
     _hat_pressed, _hat_axes, spec_hat = parse_report_spec("HAT=NE")
+    # UhidPad.axis must reject an out-of-range value WITHOUT storing it (no fd
+    # needed: the check precedes send()). "rejected,axes=1" is the poisoned-pad
+    # bug — the value was stored, then encode_report raised.
+    probe = UhidPad("probe", "00:00:00:00:00:00", 0, 0)
+    try:
+        probe.axis("LX", 300)
+        axis_reject = "accepted"
+    except ValueError:
+        axis_reject = "rejected,axes=%d" % len(probe._axes)
     lines = [
         ("event_size", UHID_EVENT_SIZE),
         ("descriptor_len", len(desc)),
@@ -486,6 +503,7 @@ def _self_test():
         ("spec_pressed", ",".join(sorted(pressed))),
         ("spec_axes", ",".join("%s=%d" % kv for kv in sorted(axes.items()))),
         ("spec_hat", str(spec_hat)),
+        ("axis_out_of_range", axis_reject),
     ]
     for key, value in lines:
         print("%s=%s" % (key, value))

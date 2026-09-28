@@ -16,7 +16,7 @@ set -euo pipefail
 # Run: bash tests/test_uhid_pad.sh
 # =============================================================================
 
-readonly TEST_TOTAL=23
+readonly TEST_TOTAL=24
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -159,6 +159,14 @@ test_reject_button_value() {
     _expect_error "T5.3 non-boolean button value rejected" "takes 0 or 1" \
         --encode-report "BTN_SOUTH=7"
 }
+# T5.4: the DEVICE-side axis() must reject before it stores — otherwise every
+# later report re-raises on the stored value and the pad is dead until
+# `neutral`. Mutation: move the range check back into encode_report only →
+# the self-test reports "rejected,axes=1" → red.
+test_reject_axis_no_poison() {
+    _expect "T5.4 out-of-range axis on a live pad is rejected without being stored" \
+        "$(_selftest_field axis_out_of_range)" "rejected,axes=0"
+}
 
 run_all_tests() {
     echo "=== uhid_pad.py (pure) ==="
@@ -189,6 +197,7 @@ run_all_tests() {
     test_reject_unknown_button
     test_reject_axis_range
     test_reject_button_value
+    test_reject_axis_no_poison
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then
