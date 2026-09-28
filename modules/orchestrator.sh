@@ -793,6 +793,27 @@ handheld_flow() {
 #            once every joined player has quit
 #   side effects — starts controller/dock/watchdog monitors, spawns/tears
 #   down instances, reflows layout, stderr log
+# _notify_no_controller_docked: best-effort visible message for docked_flow's
+# no-controller startup timeout. Pure side-effect wrapper (no return-value
+# logic) — split out purely so it's callable/testable in isolation, without
+# exercising the rest of docked_flow's monitors/FIFO/spawn machinery.
+# #125: this used to be log-only, reading as a silent crash to the user
+# (brief error sounds, black screen, kicked back to the library, no
+# explanation). Unlike #160's preflight/bare-invocation notify sites — which
+# fire BEFORE the nested session exists, on the outer gamescope Xwayland #160
+# measured as never composited — docked_flow runs INSIDE the already-live
+# nested Plasma session (as prodFromPlasma), a real visible compositor
+# surface, so this is the one mcss_notify_user call site actually positioned
+# to work. Self-dismisses (PRINCIPLES #6): a user with no controller
+# connected has no way to dismiss a modal dialog themselves.
+# Outputs: side effects — mcss_notify_user call if available; no-op otherwise
+_notify_no_controller_docked() {
+    if type mcss_notify_user >/dev/null 2>&1; then
+        mcss_notify_user "Minecraft Splitscreen" \
+            "No controller detected — docked splitscreen needs an external controller connected before launch." 8
+    fi
+}
+
 docked_flow() {
     set +e
     echo "[orchestrator] Starting docked flow" >&2
@@ -848,6 +869,7 @@ docked_flow() {
     done
     if (( ${#_acquired[@]} == 0 )); then
         echo "[orchestrator] No controller within ${ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S}s — docked needs an external controller; exiting to Steam" >&2
+        _notify_no_controller_docked
         cleanup
         return 0
     fi
