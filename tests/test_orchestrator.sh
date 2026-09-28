@@ -23,6 +23,16 @@ set -euo pipefail
 # mocks teardown_instance + start_watchdog so no real reap path ever sees suite
 # state. Both belts are kept.
 #
+# Proxy-path kill-safety (#150 flipped MCSS_CONTROLLER_PROXY to 1): _handle_msg
+# SLOT_DIED now also runs proxy_stop_slot + slot_free, and the real watchdog
+# consults _proxy_tracked_pid. Those resolve $MCSS_HELPER_DIR/proxy-slot<N>.pid
+# and the proxy-pads/proxy-virt symlink farms — the PRODUCTION runtime dir
+# ($XDG_RUNTIME_DIR/mcss) unless overridden. Overriding only LAUNCHER_DIR /
+# SPLITSCREEN_STATE (as this suite did before) let T6.3 kill a live session's
+# slot-2 evsieve and rm its symlinks. So: every helper/proxy dir is pointed
+# under $_TMPDIR BEFORE sourcing (mcss_resolve_paths honors a pre-set value),
+# AND T6.3 stubs proxy_stop_slot/slot_free like test_reconnect_dispatch.sh.
+#
 # Run: bash tests/test_orchestrator.sh   (safe to run un-namespaced)
 # =============================================================================
 
@@ -92,6 +102,13 @@ export LAUNCHER_EXEC="$_TMPDIR/dummy"
 export LAUNCHER_NAME="test"
 export SPLITSCREEN_FIFO="$_TMPDIR/fifo"
 export SPLITSCREEN_STATE="$_TMPDIR/splitscreen_state.json"
+# Proxy/helper state lives under the suite tmpdir, never $XDG_RUNTIME_DIR/mcss
+# (see "Proxy-path kill-safety" above). Exported before the source below so
+# mcss_resolve_paths keeps them.
+export MCSS_HELPER_DIR="$_TMPDIR/helper"
+export MCSS_PROXY_PADS_DIR="$_TMPDIR/helper/proxy-pads"
+export MCSS_PROXY_VIRT_DIR="$_TMPDIR/helper/proxy-virt"
+mkdir -p "$MCSS_HELPER_DIR"
 
 detectLauncher() { return 0; }
 selfUpdate() { return 0; }
@@ -110,6 +127,17 @@ export ORCHESTRATOR_EMPTY_EXIT_TICKS=2
 export ORCHESTRATOR_CONTROLLER_ACQUIRE_TIMEOUT_S=1
 
 source "$REPO_ROOT/minecraftSplitscreen.sh"
+
+# Structural guard (same shape as the pid_max guard): after sourcing, every
+# proxy/helper path MUST resolve under the suite tmpdir. If a future edit
+# drops the exports above, the real proxy_stop_slot in T6.3 would reach
+# $XDG_RUNTIME_DIR/mcss and kill a live session's slot-2 evsieve. Refuse.
+mcss_resolve_paths
+if [[ "$MCSS_HELPER_DIR" != "$_TMPDIR"/* ]]; then
+    echo "FATAL: MCSS_HELPER_DIR=$MCSS_HELPER_DIR is not under the suite tmpdir $_TMPDIR" >&2
+    echo "The proxy-path kill-safety exports above are missing. Refusing to run." >&2
+    exit 1
+fi
 
 # Neutralize environment-touching helpers so the flow/handler LOGIC is
 # deterministic in CI (no X server, no real devices). These are peripheral to
@@ -167,6 +195,11 @@ JSON
     (
         export SPLITSCREEN_STATE="$state_file"
         teardown_instance() { [[ "$1" == "2" ]] && touch "$sentinel"; return 0; }
+        # Flag-on branch of SLOT_DIED: never the real proxy stop / identity
+        # free here — under test is "SLOT_DIED → teardown_instance", nothing
+        # else (the proxy path has its own suite, test_controller_proxy.sh).
+        proxy_stop_slot() { return 0; }
+        slot_free() { return 0; }
         _handle_msg "SLOT_DIED 2"
     ) >/dev/null 2>&1 &
     _wait_bounded "$!" 8 >/dev/null 2>&1 || true
