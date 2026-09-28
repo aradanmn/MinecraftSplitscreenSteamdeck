@@ -117,20 +117,28 @@ source "$(dirname "${BASH_SOURCE[0]}")/runtime_context.sh"
 
 # --- Module-level constants ---
 
-# Bounded poll for a freshly-launched evsieve to produce a live virtual node
-# (§A: "~2s, iters x 0.1s"). Units in name (STYLE-GUIDE §6).
-readonly CONTROLLER_PROXY_START_TIMEOUT_S=2
-readonly CONTROLLER_PROXY_POLL_INTERVAL_S="0.1"
-readonly CONTROLLER_PROXY_START_POLL_ITERS=20
+# Guarded (house pattern from runtime_context.sh's _MCSS_CONSTANTS_LOCKED /
+# dock_detection.sh): modules must be re-sourceable within one process, and
+# an unguarded readonly re-declaration prints "readonly variable" on the
+# second source (tests/test_module_resource.sh was blind to it until its
+# stderr capture was fixed).
+if [[ -z "${_CONTROLLER_PROXY_CONSTANTS_LOCKED:-}" ]]; then
+    # Bounded poll for a freshly-launched evsieve to produce a live virtual node
+    # (§A: "~2s, iters x 0.1s"). Units in name (STYLE-GUIDE §6).
+    readonly CONTROLLER_PROXY_START_TIMEOUT_S=2
+    readonly CONTROLLER_PROXY_POLL_INTERVAL_S="0.1"
+    readonly CONTROLLER_PROXY_START_POLL_ITERS=20
 
-# Bounded poll for a SIGTERM'd evsieve to actually exit before the
-# SIGKILL fallback (review fix: `wait` cannot reap a non-child — the pid
-# was launched in an EARLIER, separate proxy_start_slot invocation, so a
-# later proxy_stop_slot call has no child relationship to it; polling
-# kill -0 is the only reliable "did it actually die" signal across that
-# boundary). Same cadence as the start poll.
-readonly CONTROLLER_PROXY_STOP_TIMEOUT_S=2
-readonly CONTROLLER_PROXY_STOP_POLL_ITERS=20
+    # Bounded poll for a SIGTERM'd evsieve to actually exit before the
+    # SIGKILL fallback (review fix: `wait` cannot reap a non-child — the pid
+    # was launched in an EARLIER, separate proxy_start_slot invocation, so a
+    # later proxy_stop_slot call has no child relationship to it; polling
+    # kill -0 is the only reliable "did it actually die" signal across that
+    # boundary). Same cadence as the start poll.
+    readonly CONTROLLER_PROXY_STOP_TIMEOUT_S=2
+    readonly CONTROLLER_PROXY_STOP_POLL_ITERS=20
+    _CONTROLLER_PROXY_CONSTANTS_LOCKED=1   # process-local — NOT exported
+fi
 
 # --- Internal data structures ---
 
