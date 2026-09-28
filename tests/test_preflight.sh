@@ -13,7 +13,7 @@ set -uo pipefail
 # Run: bash tests/test_preflight.sh
 # =============================================================================
 
-readonly TEST_TOTAL=12
+readonly TEST_TOTAL=13
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -38,6 +38,11 @@ _expect() {
 # argv to $MOCKBIN/<name>.args and then sleeping so "is it still running?" is a
 # meaningful question. PATH is replaced (not prepended) so a real kdialog on the
 # host can never leak into a test that is meant to have none.
+# Each mock records its OWN pid to $MOCKBIN/<name>.pid and then `exec`s the
+# sleep, so that pid IS the sleeping process: _mock_cleanup reaps it by pid
+# (PRINCIPLES #7) and T3.2/T3.3 read it from the file instead of a name match.
+# (Before: nothing wrote a .pid, the cleanup loop was dead code, and every
+# `sleep 30` mock outlived its test — 8-10 orphans per run.)
 _mock_env() {
     MOCKBIN="$(mktemp -d)"
     local tool
@@ -48,8 +53,9 @@ printf '%s\n' "\$@" > "$MOCKBIN/$tool.args"
 { echo "QT_QPA_PLATFORM=\${QT_QPA_PLATFORM:-}"
   echo "GDK_BACKEND=\${GDK_BACKEND:-}"
   echo "DISPLAY=\${DISPLAY:-}"; } > "$MOCKBIN/$tool.env"
+echo \$\$ > "$MOCKBIN/$tool.pid"
 echo running > "$MOCKBIN/$tool.started"
-sleep 30
+exec sleep 30
 EOF
         chmod +x "$MOCKBIN/$tool"
     done
@@ -58,6 +64,17 @@ EOF
     for need in sleep kill command env; do
         [[ -x "/usr/bin/$need" ]] && ln -sf "/usr/bin/$need" "$MOCKBIN/$need" 2>/dev/null
     done
+}
+
+# _mock_pid TOOL: the pid a started mock recorded, waiting (bounded, 2s) for
+# the file — the mock is backgrounded by mcss_notify_user and may not have
+# written it yet when the caller returns. Empty if it never starts.
+_mock_pid() {
+    local f="$MOCKBIN/$1.pid" waited=0
+    while (( waited < 20 )) && [[ ! -s "$f" ]]; do
+        sleep 0.1; waited=$((waited + 1))
+    done
+    cat "$f" 2>/dev/null || true
 }
 
 _mock_cleanup() {
@@ -195,7 +212,7 @@ test_does_not_block() {
 test_self_dismiss_kills_dialog() {
     _mock_env kdialog
     PATH="$MOCKBIN" mcss_notify_user "T" "body" 1 2>/dev/null
-    local pid; pid="$(pgrep -f "$MOCKBIN/kdialog" | head -1)"
+    local pid; pid="$(_mock_pid kdialog)"
     if [[ -z "$pid" ]]; then
         _fail "T3.2 self-dismiss kills the dialog after N seconds" "mock never started"
         _mock_cleanup; return
@@ -215,7 +232,7 @@ test_self_dismiss_kills_dialog() {
 test_no_self_dismiss_without_secs() {
     _mock_env kdialog
     PATH="$MOCKBIN" mcss_notify_user "T" "body" 2>/dev/null
-    local pid; pid="$(pgrep -f "$MOCKBIN/kdialog" | head -1)"
+    local pid; pid="$(_mock_pid kdialog)"
     if [[ -z "$pid" ]]; then
         _fail "T3.3 no self-dismiss when secs is omitted" "mock never started"
         _mock_cleanup; return
@@ -227,6 +244,37 @@ test_no_self_dismiss_without_secs() {
         _fail "T3.3 no self-dismiss when secs is omitted" "dialog was killed anyway"
     fi
     _mock_cleanup
+}
+
+# T3.5: no mock outlives its test. The reaper only works if the mock actually
+# records its pid AND that pid is the sleeper itself (exec) — otherwise the
+# kill lands on a bash parent and orphans the sleep. This is the guard that
+# keeps _mock_cleanup from silently turning back into dead code. Mutations:
+# drop the `.pid` write, or drop the `exec`, in _mock_env → red.
+test_cleanup_reaps_mock() {
+    _mock_env kdialog
+    PATH="$MOCKBIN" mcss_notify_user "T" "body" 2>/dev/null
+    local pid; pid="$(_mock_pid kdialog)"
+    if [[ -z "$pid" ]]; then
+        _fail "T3.5 _mock_cleanup reaps the mock by pid" "mock never recorded a pid"
+        _mock_cleanup; return
+    fi
+    local kids; kids="$(pgrep -P "$pid" 2>/dev/null || true)"   # lookup by pid, not a kill
+    if [[ -n "$kids" ]]; then
+        _fail "T3.5 _mock_cleanup reaps the mock by pid" "mock pid $pid has children ($kids) a pid-kill would orphan"
+        _mock_cleanup; kill $kids 2>/dev/null || true; return
+    fi
+    _mock_cleanup
+    local waited=0
+    while (( waited < 20 )) && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1; waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        _fail "T3.5 _mock_cleanup reaps the mock by pid" "pid $pid still alive after cleanup"
+        kill "$pid" 2>/dev/null || true
+    else
+        _pass "T3.5 _mock_cleanup reaps the mock by pid"
+    fi
 }
 
 # T3.4: the stderr line must stay ONE line — a multi-line body would otherwise
@@ -254,6 +302,7 @@ run_all_tests() {
     test_self_dismiss_kills_dialog
     test_no_self_dismiss_without_secs
     test_stderr_line_is_flattened
+    test_cleanup_reaps_mock
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then
