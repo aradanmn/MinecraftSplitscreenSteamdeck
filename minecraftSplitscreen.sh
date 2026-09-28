@@ -220,6 +220,28 @@ _restore_session_env() {
 #   side effects — writes the wrapper shim + autostart .desktop, prepends
 #   $MCSS_HELPER_DIR to PATH, snapshots session env.
 #   "background" mode sets _NESTED_SESSION_PID; "exec" mode does not return.
+# _kwin_wrapper_script: Return (stdout) the wrapper shim script _start_nested_plasma
+# writes to MCSS_KWIN_WRAPPER_PATH, sized to the resolved screen. Pure — no side
+# effects, no I/O; the caller writes the output itself.
+# Inputs: $1=W $2=H; Globals (read): MCSS_NESTED_KWIN_NNP
+# #198: on hosts where /usr/bin/kwin_wayland carries a file capability (e.g.
+# cap_sys_nice on Bazzite/Framework Desktop), execve makes the process
+# non-dumpable, so mangoapp's fdinfo scan of our focused nested kwin gets EACCES
+# — which MangoHud 0.8.4 doesn't catch (uncaught exception -> abort). With the
+# flag on and setpriv on PATH, run kwin_wayland_wrapper under
+# `setpriv --no-new-privs`, which refuses the capability grant at exec and keeps
+# the process dumpable. Falls back to the plain wrapper if setpriv is missing
+# (fail open, PRINCIPLES #5) — this is a mitigation for a host quirk, not
+# something to hang the launch on.
+_kwin_wrapper_script() {
+    local W="$1" H="$2"
+    local _kwin_wrapper_cmd="/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen \"\$@\""
+    if [[ "${MCSS_NESTED_KWIN_NNP:-0}" == "1" ]] && command -v setpriv >/dev/null 2>&1; then
+        _kwin_wrapper_cmd="setpriv --no-new-privs ${_kwin_wrapper_cmd}"
+    fi
+    printf '#!/bin/bash\n%s\n' "$_kwin_wrapper_cmd"
+}
+
 _start_nested_plasma() {
     local tag="$1" desktop_file="$2" desktop_name="$3" reinvoke_arg="$4"
     local launch_mode="$5"
@@ -249,10 +271,8 @@ _start_nested_plasma() {
     # #45/N6: wrapper shim lives in the 0700 per-user helper dir, not
     # world-writable /tmp — it is injected into PATH and EXECUTED by
     # startplasma.
-    cat > "$MCSS_KWIN_WRAPPER_PATH" <<WEOF
-#!/bin/bash
-/usr/bin/kwin_wayland_wrapper --width ${W} --height ${H} --no-lockscreen "\$@"
-WEOF
+    _kwin_wrapper_script "$W" "$H" > "$MCSS_KWIN_WRAPPER_PATH"
+    echo "[$tag] kwin wrapper: nnp=${MCSS_NESTED_KWIN_NNP:-0}" >> "$LOG"
     chmod +x "$MCSS_KWIN_WRAPPER_PATH"
     export PATH="$MCSS_HELPER_DIR:$PATH"
 
@@ -370,6 +390,18 @@ _mcss_stale_tree_pids() {
 #          session lifetime, then supervises the final reap; stderr log
 launchFromPlasma() {
     echo "[launchFromPlasma] start (production)" >> "$LOG"
+
+    # #198: this entry point is reachable from a Desktop-Mode double-click of the
+    # Steam shortcut (steamwebhelper doesn't require Game Mode to run a non-Steam
+    # shortcut's Exe=). Without this guard, the STARTUP GUARD below reaps a stale
+    # nested session using the *outer* systemd --user manager, and
+    # _supervise_reap_nested_session later stops plasma-workspace.target on that
+    # SAME manager — which is the real desktop's, not a nested one. #42/#43 already
+    # made splitscreen gamescope-only for the bare re-exec dispatch (:1144); this is
+    # the same guard at the one entry point that predates it.
+    if declare -f mcss_require_gamescope >/dev/null 2>&1 && ! mcss_require_gamescope; then
+        return 1
+    fi
 
     # STARTUP GUARD (2026-06-27): reap any LEFTOVER nested session + MC instances BEFORE
     # starting a new one. A prior gamescope reset or failed launch can orphan a
@@ -639,7 +671,16 @@ _supervise_reap_nested_session() {
     echo "[supervise_reap] entered (session_pid=${1:-none}, pid=$$)" >> "$LOG"
     local _session_pid="${1:-}"
     local _tries=0 _max_tries=8
-    if command -v systemctl >/dev/null 2>&1; then
+    # #198 second safeguard: plasma-workspace.target belongs to the OUTER systemd
+    # --user manager. Inside gamescope that manager is our own session's, so
+    # stopping it is the intended surgical teardown; from a Desktop-Mode launch (the
+    # launchFromPlasma guard above should already have refused before we get here,
+    # but this function is cheap to make independently safe) that manager is the
+    # REAL desktop's, and stopping its target takes down the user's live session.
+    if declare -f mcss_resolve_environment >/dev/null 2>&1; then
+        mcss_resolve_environment
+    fi
+    if [[ "${MCSS_ENV_CONTEXT:-}" == "gamescope" ]] && command -v systemctl >/dev/null 2>&1; then
         systemctl --user stop plasma-workspace.target 2>/dev/null || true
     fi
     while (( _tries < _max_tries )); do
