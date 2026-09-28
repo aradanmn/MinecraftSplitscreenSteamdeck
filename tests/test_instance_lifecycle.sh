@@ -11,6 +11,37 @@ set -euo pipefail
 
 readonly TEST_TOTAL=16
 
+# Fixture PIDs for the T4.5/T4.8 state files. teardown_instance sends
+# process-GROUP kills — kill -TERM "-${bwrap_pid}", then kill -KILL
+# "-${bwrap_pid}" / kill -9 "$java_pid" — to whatever PID the state file
+# names, so every fixture MUST exceed kernel.pid_max: the kernel never assigns
+# a PID/PGID above that cap, so these can never resolve to a live process or
+# group. (Same guard as tests/test_orchestrator.sh — the old literals
+# 99998/99999 and 11110..44440 were BELOW pid_max on every Linux and a group
+# kill on a reachable PGID has SIGKILLed a live session before; PRINCIPLES #7.)
+readonly FIXTURE_BWRAP_PID_1=4999910
+readonly FIXTURE_JAVA_PID_1=4999911
+readonly FIXTURE_BWRAP_PID_2=4999920
+readonly FIXTURE_JAVA_PID_2=4999922
+readonly FIXTURE_BWRAP_PID_3=4999930
+readonly FIXTURE_JAVA_PID_3=4999933
+readonly FIXTURE_BWRAP_PID_4=4999940
+readonly FIXTURE_JAVA_PID_4=4999944
+
+_pid_max=$(cat /proc/sys/kernel/pid_max)
+for _fixture_pid in "$FIXTURE_BWRAP_PID_1" "$FIXTURE_JAVA_PID_1" \
+    "$FIXTURE_BWRAP_PID_2" "$FIXTURE_JAVA_PID_2" \
+    "$FIXTURE_BWRAP_PID_3" "$FIXTURE_JAVA_PID_3" \
+    "$FIXTURE_BWRAP_PID_4" "$FIXTURE_JAVA_PID_4"; do
+    if (( _fixture_pid <= _pid_max )); then
+        echo "FATAL: fixture PID $_fixture_pid <= pid_max $_pid_max." >&2
+        echo "teardown_instance does process-GROUP kills on the state-file" >&2
+        echo "PID; a reachable fixture PID risks hitting a REAL process group" >&2
+        echo "in an un-namespaced run. Refusing to run." >&2
+        exit 1
+    fi
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -140,10 +171,12 @@ test_t4_5() {
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
     MCSS_LAUNCHER_ROOT="$tmpdir"
+    MCSS_GEOM_DIR="$tmpdir/geom"   # never the production /tmp/mcss-geom cache
 
-    # Set up: slot 2 active with non-existent PID (kill will fail gracefully)
-    cat > "$state_file" <<'JSON'
-{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"2":{"active":true,"pid":99999,"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":99998},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
+    # Set up: slot 2 active with an unreachable (> pid_max) PID pair, so the
+    # real group kill in teardown_instance can only ever miss.
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"2":{"active":true,"pid":${FIXTURE_JAVA_PID_2},"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":${FIXTURE_BWRAP_PID_2}},"3":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null},"4":{"active":false,"pid":null,"event_node":null,"js_node":null,"bwrap_pid":null}}}
 JSON
 
     # Tear down slot 2 (suppress stderr noise from failed kills)
@@ -273,10 +306,11 @@ test_t4_8() {
     local state_file="$tmpdir/splitscreen_state.json"
     SPLITSCREEN_STATE="$state_file"
     MCSS_LAUNCHER_ROOT="$tmpdir"
+    MCSS_GEOM_DIR="$tmpdir/geom"   # never the production /tmp/mcss-geom cache
 
-    # All 4 slots active with non-existent PIDs
-    cat > "$state_file" <<'JSON'
-{"mode":"docked","slots":{"1":{"active":true,"pid":11111,"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":11110},"2":{"active":true,"pid":22222,"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":22220},"3":{"active":true,"pid":33333,"event_node":"/dev/input/event5","js_node":"/dev/input/js2","bwrap_pid":33330},"4":{"active":true,"pid":44444,"event_node":"/dev/input/event6","js_node":"/dev/input/js3","bwrap_pid":44440}}}
+    # All 4 slots active with unreachable (> pid_max) PIDs
+    cat > "$state_file" <<JSON
+{"mode":"docked","slots":{"1":{"active":true,"pid":${FIXTURE_JAVA_PID_1},"event_node":"/dev/input/event3","js_node":"/dev/input/js0","bwrap_pid":${FIXTURE_BWRAP_PID_1}},"2":{"active":true,"pid":${FIXTURE_JAVA_PID_2},"event_node":"/dev/input/event4","js_node":"/dev/input/js1","bwrap_pid":${FIXTURE_BWRAP_PID_2}},"3":{"active":true,"pid":${FIXTURE_JAVA_PID_3},"event_node":"/dev/input/event5","js_node":"/dev/input/js2","bwrap_pid":${FIXTURE_BWRAP_PID_3}},"4":{"active":true,"pid":${FIXTURE_JAVA_PID_4},"event_node":"/dev/input/event6","js_node":"/dev/input/js3","bwrap_pid":${FIXTURE_BWRAP_PID_4}}}}
 JSON
 
     # Tear down all
