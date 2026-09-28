@@ -9,19 +9,16 @@
 #     cleanup work or a separate pass, not something to silently gate on here — they're
 #     reported (informational, non-blocking) so they're visible without turning CI red on
 #     day one for pre-existing debt unrelated to a given change.
-#   - tests/test_*.sh: none of these scripts exit non-zero on a failed sub-test (they
-#     always exit 0 and print "X/Y tests passed") — see the codebase review. So this
-#     workflow parses that summary line and gates on a documented BASELINE pass count per
-#     suite instead of demanding 100%, which would be immediately red for reasons unrelated
-#     to any given PR (a few sub-tests are pre-existing known-fails tied to gated/
-#     unimplemented features — see TODO.md). A regression BELOW the baseline fails the
-#     build; closing one of the known pre-existing gaps means bumping its baseline up here.
-#   - tests/test_installer.sh is excluded from the pass-count gate: several of its
-#     sub-tests exercise install_runtime_modules()'s network-download fallback against
-#     `${REPO_REF:-main}` on GitHub, which will legitimately miss a file that only exists
-#     on the PR branch until merged — a network/branch-mismatch quirk of that test's
-#     design, not a code regression. It still RUNS (and its output is visible in the log)
-#     so a genuine structural break is still visible, just not auto-failing the build.
+#   - tests/test_*.sh: every suite prints "X/Y tests passed." and exits non-zero when
+#     any sub-test failed, so the gate is the EXIT STATUS of every suite found by glob —
+#     a new suite is gated the day it lands, and a suite cannot pass by printing a big
+#     enough X (the previous per-suite BASELINE pass-count gate let test_uhid_pad.sh lose
+#     5 of 23 tests with CI green, and ignored a suite that recorded [FAIL] lines but
+#     still printed a full count — codebase review 2026-09-28, F2/T5/T6/T23). Suites that
+#     are known-red today are listed in KNOWN_FAIL with the exact summary they must
+#     print; any other number fails the build, and the entry is deleted when the gap
+#     closes. tests/test_installer.sh is gated too: since T7.7 stubs every module it is
+#     network-free.
 #   - Hardware/session-dependent scripts (tests/test_phase_b_lifecycle.sh, tests/kwin-*.sh,
 #     tests/gamescope-*.sh, tests/wintree-capture.sh, tests/window-pos-test.sh,
 #     tests/ssh-override-redirect-test.sh, tests/diagnose.sh, tests/hardware/) require a
@@ -55,59 +52,67 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    # A hung suite must fail this job, not burn the 6 h default (PRINCIPLES #6/#8).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install test dependencies (jq)
         run: sudo apt-get update -qq && sudo apt-get install -y jq
 
-      - name: Run CI-safe test suites and gate on baseline pass counts
+      - name: Run every CI-safe test suite and gate on exit status
         run: |
           set -u
           fail=0
 
-          # suite:minimum_passing_count — bump the count when a pre-existing gap is closed.
-          declare -A BASELINE=(
-            [tests/test_controller_monitor.sh]=22
-            [tests/test_instance_lifecycle.sh]=16
-            [tests/test_watchdog.sh]=15
-            [tests/test_window_manager.sh]=9
-            [tests/test_dock_detection.sh]=8
-            [tests/test_runtime_context.sh]=30
-            [tests/test_curseforge_token.sh]=7
-            [tests/test_utilities.sh]=13
-            [tests/test_orchestrator.sh]=9
-            [tests/test_reconnect_dispatch.sh]=15
-            [tests/test_controller_proxy.sh]=16
-            [tests/test_slot_manager.sh]=17
-            [tests/test_proxy_launch.sh]=7
-            [tests/test_uhid_pad.sh]=18
-            [tests/test_uhid_rig.sh]=93
-            [tests/test_preflight.sh]=12
-            [tests/test_version_stamp.sh]=18
-            [tests/test_workdir.sh]=15
-            [tests/test_uninstall_purge.sh]=22
+          # Suites that need a live Deck session — never run here.
+          declare -A SKIP=(
+            [tests/test_phase_b_lifecycle.sh]="needs a live nested-KDE/gamescope session and real instances"
           )
+          # Suites that are KNOWN red today, with the EXACT summary they must print.
+          # Fewer passes or a changed total fails the build; delete the entry (and
+          # let the exit status gate it) when the gap is closed.
+          declare -A KNOWN_FAIL=(
+            # (empty since #204 fixed test_window_manager.sh; add entries as
+            #  [tests/test_x.sh]="7/9"  # why, and which issue closes it)
+          )
+          # Per-suite wall-clock bound: test_evsieve_management.sh takes ~2 min
+          # (it symlinks /usr/bin into an isolated PATH); everything else is seconds.
+          SUITE_TIMEOUT=600
 
-          for suite in "${!BASELINE[@]}"; do
-            echo "=== $suite (baseline: ${BASELINE[$suite]}) ==="
-            out=$(bash "$suite" 2>&1) || true
-            echo "$out"
-            passed=$(echo "$out" | grep -oE '^[0-9]+/[0-9]+ tests passed' | grep -oE '^[0-9]+' | tail -1)
-            if [[ -z "$passed" ]]; then
-              echo "::error::$suite produced no 'X/Y tests passed' summary line — treating as a hard failure"
+          for suite in tests/test_*.sh; do
+            if [[ -n "${SKIP[$suite]:-}" ]]; then
+              echo "=== $suite — skipped (${SKIP[$suite]})"
+              continue
+            fi
+            echo "=== $suite"
+            # Output goes to a FILE, not a $(...) capture: an orphaned background
+            # process holding a capture pipe blocks the whole step forever (#80/#103).
+            log="$RUNNER_TEMP/$(basename "$suite" .sh).log"
+            rc=0
+            timeout --kill-after=10 "$SUITE_TIMEOUT" bash "$suite" </dev/null >"$log" 2>&1 || rc=$?
+            cat "$log"
+            summary=$(grep -oE '^[0-9]+/[0-9]+ tests passed' "$log" | tail -1 | grep -oE '^[0-9]+/[0-9]+')
+            if [[ -z "$summary" ]]; then
+              echo "::error::$suite printed no 'X/Y tests passed' summary (exit $rc) — it crashed, hung (timeout exits 124), or is not a standard suite"
               fail=1
               continue
             fi
-            if (( passed < BASELINE[$suite] )); then
-              echo "::error::$suite regressed: $passed passed, expected at least ${BASELINE[$suite]}"
+            if [[ -n "${KNOWN_FAIL[$suite]:-}" ]]; then
+              if [[ "$summary" == "${KNOWN_FAIL[$suite]}" ]]; then
+                echo "KNOWN-FAIL (unchanged): $suite $summary (exit $rc)"
+              else
+                echo "::error::$suite printed $summary but KNOWN_FAIL expects exactly ${KNOWN_FAIL[$suite]} — update the entry deliberately (or delete it once the suite is green)"
+                fail=1
+              fi
+              continue
+            fi
+            if (( rc != 0 )); then
+              echo "::error::$suite failed: exit $rc, $summary"
               fail=1
             else
-              echo "OK: $passed >= ${BASELINE[$suite]}"
+              echo "OK: $suite $summary"
             fi
           done
-
-          echo "=== tests/test_installer.sh (informational — network/branch-mismatch quirk, see workflow comment) ==="
-          bash tests/test_installer.sh 2>&1 || true
 
           exit "$fail"

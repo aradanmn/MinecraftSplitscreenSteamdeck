@@ -25,6 +25,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 
 FAILURES=0
+PASSES=0
 assert_contains() {
     local desc="$1" haystack="$2" needle="$3"
     if [[ "$haystack" != *"$needle"* ]]; then
@@ -34,6 +35,7 @@ assert_contains() {
         FAILURES=$((FAILURES + 1))
     else
         echo "[PASS] $desc"
+        PASSES=$((PASSES + 1))
     fi
 }
 assert_equals() {
@@ -43,6 +45,7 @@ assert_equals() {
         FAILURES=$((FAILURES + 1))
     else
         echo "[PASS] $desc"
+        PASSES=$((PASSES + 1))
     fi
 }
 
@@ -76,6 +79,7 @@ if declare -f mcss_notify_user >/dev/null 2>&1; then
 else
     if _notify_no_controller_docked; then
         echo "[PASS] no-op when mcss_notify_user is unavailable (fails open, no error)"
+        PASSES=$((PASSES + 1))
     else
         echo "[FAIL] _notify_no_controller_docked should not error when mcss_notify_user is missing" >&2
         FAILURES=$((FAILURES + 1))
@@ -83,10 +87,11 @@ else
 fi
 
 echo
+# Standard summary footer — the line .github/workflows/ci.yml parses for every
+# suite (X/Y tests passed.); exit status is the gate.
+echo "$PASSES/$((PASSES + FAILURES)) tests passed."
 if (( FAILURES == 0 )); then
-    echo "[OK] all _notify_no_controller_docked cases passed"
     exit 0
 else
-    echo "[FAIL] $FAILURES case(s) failed"
     exit 1
 fi
