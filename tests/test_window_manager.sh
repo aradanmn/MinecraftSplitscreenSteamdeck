@@ -31,6 +31,12 @@ _fail() {
 # =============================================================================
 # Test T3.1 — compute_grid_mode: all slot combinations
 # =============================================================================
+# The contract is COUNT-based (window_manager.sh compute_grid_mode, deployed
+# 2026-06-23): 1 active → full, 2 → half, 3-4 → quad, whatever the slot
+# NUMBERS are. This table used to encode the retired highest-slot rule
+# ({2}→half, {1,3}/{3}/{4}/{2,4}→quad), which made the suite red on correct
+# code and GREEN on the reverted bug (PRINCIPLES #4). Mutation check: make
+# compute_grid_mode highest-slot-based again → cases 3,4,6,7,9 and T3.9 fail.
 test_t3_1() {
     local test_failed=0
     local tests_run=0
@@ -38,13 +44,13 @@ test_t3_1() {
     local cases=(
         "1:full"
         "1 2:half"
-        "2:half"
-        "1 3:quad"
+        "2:full"
+        "1 3:half"
         "1 2 3:quad"
-        "3:quad"
-        "4:quad"
+        "3:full"
+        "4:full"
         "1 2 3 4:quad"
-        "2 4:quad"
+        "2 4:half"
     )
 
     local entry
@@ -211,22 +217,42 @@ test_t3_8() {
 }
 
 # =============================================================================
-# Test T3.9 — slot 3 only → quad mode, correct geometry
+# Test T3.9 — scale-down collapses by COUNT + ORDER: lone slot 3 → full,
+#             {2,4} → half with slot 4 in the BOTTOM half
 # =============================================================================
+# apply_layout maps half/full cells by ORDER among active slots (cell 1 = first
+# active, cell 2 = second), quad cells by slot number. A lone P3 therefore gets
+# the whole screen (cell 1, full) and {2,4} → P2 top / P4 bottom — not a corner
+# each. Was: "slot 3 only → quad, 0 540 960 540" (the retired highest-slot rule).
 test_t3_9() {
+    local test_failed=0
+
     local grid
     grid=$(compute_grid_mode "3")
-    if [[ "$grid" != "quad" ]]; then
-        _fail "T3.9" "slot 3 only: expected grid 'quad', got '$grid'"
-        return
+    if [[ "$grid" != "full" ]]; then
+        _fail "T3.9a" "slot 3 only: expected grid 'full', got '$grid'"
+        test_failed=1
+    fi
+    local geometry
+    geometry=$(compute_slot_geometry 1 full 1920 1080)   # lone slot → cell 1
+    if [[ "$geometry" != "0 0 1920 1080" ]]; then
+        _fail "T3.9b" "lone slot 3 (cell 1, full): expected '0 0 1920 1080', got '$geometry'"
+        test_failed=1
     fi
 
-    local geometry
-    geometry=$(compute_slot_geometry 3 quad 1920 1080)
-    if [[ "$geometry" == "0 540 960 540" ]]; then
-        _pass "T3.9 — slot 3 only → quad, geometry 0 540 960 540"
-    else
-        _fail "T3.9" "expected '0 540 960 540', got '$geometry'"
+    grid=$(compute_grid_mode "2 4")
+    if [[ "$grid" != "half" ]]; then
+        _fail "T3.9c" "slots {2,4}: expected grid 'half', got '$grid'"
+        test_failed=1
+    fi
+    geometry=$(compute_slot_geometry 2 half 1920 1080)   # slot 4 is 2nd active → cell 2
+    if [[ "$geometry" != "0 540 1920 540" ]]; then
+        _fail "T3.9d" "slot 4 in {2,4} (cell 2, half): expected '0 540 1920 540', got '$geometry'"
+        test_failed=1
+    fi
+
+    if (( test_failed == 0 )); then
+        _pass "T3.9 — scale-down: lone slot 3 → full; {2,4} → half, slot 4 bottom"
     fi
 }
 
