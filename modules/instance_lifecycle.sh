@@ -394,6 +394,30 @@ _build_direct_command() {
     printf '%q ' "${cmd[@]}"
 }
 
+# _home_bwrap_bind_args: Return (stdout, word-split, one bwrap flag/value per
+# word) the bwrap args to bind $1 (default /home) into the sandbox. Pure — no
+# side effects — so a test can point it at a fake symlink instead of the real
+# /home.
+# #199: on Bazzite (Fedora Silverblue/Kinoite ostree convention), /home is a
+# symlink to /var/home, not a real mount point, and bwrap refuses to mount
+# onto a symlinked destination ("Can't mount on symlink destination /home"),
+# aborting every spawn. Bind the resolved real target instead and recreate
+# the symlink inside the sandbox so in-sandbox references to $path/$USER
+# still resolve. The Deck's /home is its own real (non-symlink) partition —
+# see ff63dce, the original reason this explicit bind exists at all even
+# though _build_bwrap_command's --dev-bind / / is already recursive — so it
+# takes the plain branch, unchanged from before #199.
+_home_bwrap_bind_args() {
+    local path="${1:-/home}"
+    if [[ -L "$path" ]]; then
+        local real
+        real="$(readlink -f "$path")"
+        printf -- '--dev-bind %s %s --symlink %s %s\n' "$real" "$real" "$real" "$path"
+    else
+        printf -- '--dev-bind %s %s\n' "$path" "$path"
+    fi
+}
+
 # _build_bwrap_command: Construct a bwrap command string with printf '%q'
 # quoting — the DOCKED/multi-player launch path (see _build_direct_command
 # for the handheld/no-sandbox path).
@@ -426,9 +450,9 @@ _build_bwrap_command() {
         # leaving slot 2 with no running Minecraft process.
         --tmpfs /tmp
         --dev-bind /tmp/.X11-unix /tmp/.X11-unix
-        --dev-bind /home /home
         --dev-bind /run /run
         --dev-bind /dev/dri /dev/dri
+        $(_home_bwrap_bind_args /home)
     )
     # STRICT vs POROUS sandbox, decided by whether a specific pad's jsN is bound:
     #   DOCKED / multi-player (a real pad's jsN bound) → STRICT isolation. SDL/Controlify
