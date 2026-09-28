@@ -60,6 +60,14 @@ trap _cleanup EXIT
 # shellcheck source=tests/hardware/lib/helpers.sh
 source "$HELPERS"
 
+# _alive PID: 0 iff PID exists and is not a zombie (a zombie is dead; this
+# container's PID 1 may reap it late, systemd on the Deck reaps at once).
+_alive() {
+    local st
+    st=$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null) || return 1
+    [[ -n "$st" && "$st" != Z ]]
+}
+
 # _descendants PID: every PID under PID (one ps snapshot), plus PID itself.
 _descendants() {
     local root="$1" pid ppid
@@ -134,7 +142,7 @@ esac
 hw_reap_stale_session >/dev/null 2>&1
 sleep 0.5
 left=0
-for p in "${EXPECTED[@]}"; do kill -0 "$p" 2>/dev/null && left=$((left + 1)); done
+for p in "${EXPECTED[@]}"; do _alive "$p" && left=$((left + 1)); done
 if (( left == 0 )); then
     _pass "T1.4 hw_reap_stale_session reaps every pid in the tree"
 else
