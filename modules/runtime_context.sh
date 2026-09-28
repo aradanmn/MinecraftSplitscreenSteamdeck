@@ -223,13 +223,22 @@ if [[ -z "${_MCSS_CONSTANTS_LOCKED:-}" ]]; then
     export MCSS_MAX_REFRESH_FALLBACK_HZ="${MCSS_MAX_REFRESH_FALLBACK_HZ:-60}"
     export MCSS_MAX_REFRESH_FLOOR_HZ="${MCSS_MAX_REFRESH_FLOOR_HZ:-30}"
     export MCSS_MAX_REFRESH_CEIL_HZ="${MCSS_MAX_REFRESH_CEIL_HZ:-360}"
+    # #198: on hosts where /usr/bin/kwin_wayland carries a file capability (e.g.
+    # cap_sys_nice on Bazzite/Framework Desktop), execve makes the process
+    # non-dumpable, so mangoapp's fdinfo scan of our focused nested kwin gets
+    # EACCES — which MangoHud 0.8.4 doesn't catch, so it aborts. Set to run the
+    # nested kwin under `setpriv --no-new-privs`, which drops the capability grant
+    # and keeps it dumpable. Off by default (PRINCIPLES #2): it costs the nested
+    # kwin cap_sys_nice, and isn't yet Deck-validated.
+    export MCSS_NESTED_KWIN_NNP="${MCSS_NESTED_KWIN_NNP:-0}"
 
     readonly MCSS_MAX_PLAYERS MCSS_INSTANCE_PREFIX MCSS_ACCOUNT_PREFIX \
              MCSS_WINDOW_TITLE_PREFIX MCSS_STEAM_VENDOR_ID MCSS_STEAM_PRODUCT_ID \
              MCSS_RAW_BINDING MCSS_STATE_LOCK_TIMEOUT_S \
              MCSS_DISPLAY_PROBE_TIMEOUT_S MCSS_CONTROLLER_PROXY \
              MCSS_CAP_FPS_TO_REFRESH MCSS_MAX_REFRESH_FALLBACK_HZ \
-             MCSS_MAX_REFRESH_FLOOR_HZ MCSS_MAX_REFRESH_CEIL_HZ
+             MCSS_MAX_REFRESH_FLOOR_HZ MCSS_MAX_REFRESH_CEIL_HZ \
+             MCSS_NESTED_KWIN_NNP
     _MCSS_CONSTANTS_LOCKED=1   # process-local — NOT exported (see load-guard rule)
 fi
 
