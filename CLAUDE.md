@@ -38,10 +38,16 @@ hooks in `.claude/settings.json`, but the output lives **outside this repo**:
 `origin` here is the public `aradanmn/MinecraftSplitscreenSteamdeck` fork, and
 full transcripts aren't secret-redacted, so they're written instead to the
 private `claude_sessions` repo, under
-`sessions/minecraft-splitscreen-steamdeck/` (index + details there). This
-project's own persistent memory (`~/.claude/projects/-home-claude-workspace-MinecraftSplitscreenSteamdeck/memory/`)
-is unaffected — still local, still gets distilled into on `SessionEnd`, same
-as before.
+`sessions/minecraft-splitscreen-steamdeck/` (index + details there).
+
+This project's own persistent memory used to live locally
+(`~/.claude/projects/-home-claude-workspace-MinecraftSplitscreenSteamdeck/memory/`),
+outside any git history. As of 2026-09-29 it's distilled into
+`claude_sessions`' `memory/minecraft-splitscreen-steamdeck/` instead (same
+private-repo-for-the-same-reason as the sessions above, plus real git
+history on every distillation pass), and that local path is now a symlink
+into it — so nothing else about how memory reads/writes during a session
+changed, only where the bytes actually live.
 
 The pre-existing `sessions/` dir in *this* repo (`SESSION-*.md`,
 `RAW-SESSION-*.md`, raw `.jsonl`) predates this pipeline, uses a different
