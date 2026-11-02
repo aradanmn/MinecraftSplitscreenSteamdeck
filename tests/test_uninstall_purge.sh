@@ -474,10 +474,23 @@ test_refuses_while_steam_runs() {
 
     # A process whose comm is exactly "steam". Tracked by PID and killed by
     # PID — never a name-matched kill (PRINCIPLES #7).
-    cp /bin/sleep "$TMPDIR_TEST/steam"
-    "$TMPDIR_TEST/steam" 30 &
+    # A script, not a copy of /bin/sleep: on a multi-call coreutils (Ubuntu
+    # 26.04's uutils) the copied binary dispatches on argv[0] and exits with
+    # "unknown program 'steam'". The kernel names a #! script's process after
+    # the script file, so comm is "steam" either way.
+    printf '#!/bin/bash\nwhile :; do sleep 0.2; done\n' > "$TMPDIR_TEST/steam"
+    chmod +x "$TMPDIR_TEST/steam"
+    "$TMPDIR_TEST/steam" &
     local steam_pid=$!
     sleep 0.3
+    if [[ "$(cat "/proc/$steam_pid/comm" 2>/dev/null)" != steam ]]; then
+        _fail "T5.1 refuses (exit 2) and edits nothing while Steam runs" \
+              "fixture: no process with comm 'steam' (pid $steam_pid)"
+        kill "$steam_pid" 2>/dev/null || true
+        wait "$steam_pid" 2>/dev/null || true
+        _teardown
+        return
+    fi
 
     local before after rc=0
     before="$(md5sum < "$cfg/shortcuts.vdf")"
