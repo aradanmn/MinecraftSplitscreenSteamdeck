@@ -18,7 +18,7 @@ set -uo pipefail
 # Run: bash tests/test_uninstall_purge.sh
 # =============================================================================
 
-readonly TEST_TOTAL=22
+readonly TEST_TOTAL=24
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -509,6 +509,40 @@ test_refuses_while_steam_runs() {
     _teardown
 }
 
+# --- T7: Steam helper cleanup (F14) ------------------------------------------
+
+test_checkout_under_tmp_keeps_its_helper() {
+    # Cleanup used to match the helper's path against /tmp/*, so running the
+    # uninstaller from a checkout under /tmp deleted the checkout's own
+    # remove-from-steam.py.
+    _setup
+    local h; h="$(_fake_install)"
+    local co; co="$(mktemp -d /tmp/mcss-checkout.XXXXXX)"
+    cp "$UNINSTALL" "$REMOVER" "$co/"
+    HOME="$h" bash "$co/$(basename "$UNINSTALL")" --purge --yes >/dev/null 2>&1
+    _expect_exists "T7.1 a checkout under /tmp keeps its own remove-from-steam.py" \
+        "$co/remove-from-steam.py"
+    rm -rf "$co"
+    _teardown
+}
+
+test_fetched_helper_is_removed() {
+    # With no sibling helper the uninstaller fetches one into $TMPDIR and must
+    # delete that copy, wherever $TMPDIR points. The fetch dir sits under the
+    # repo, not /tmp, so a path-based cleanup would leak it (F14).
+    _setup
+    local h; h="$(_fake_install)"
+    local co="$TMPDIR_TEST/no-checkout"; mkdir -p "$co"
+    cp "$UNINSTALL" "$co/"
+    local fetch_tmp; fetch_tmp="$(mktemp -d "$REPO_ROOT/tests/.fetch-tmp.XXXXXX")"
+    HOME="$h" TMPDIR="$fetch_tmp" MCSS_REPO_RAW_URL="file://$REPO_ROOT" \
+        bash "$co/$(basename "$UNINSTALL")" --purge --yes >/dev/null 2>&1
+    local left; left="$(find "$fetch_tmp" -name 'mcss-remove-from-steam.*' | wc -l)"
+    _expect "T7.2 a fetched helper copy is deleted after use" "$left" "0"
+    rm -rf "$fetch_tmp"
+    _teardown
+}
+
 run_all_tests() {
     echo "=== uninstall --purge + remove-from-steam.py ==="
     test_purge_and_keep_data_conflict
@@ -533,6 +567,8 @@ run_all_tests() {
     test_dry_run_predicts_keeping_a_shared_store
     test_real_run_never_touches_a_shared_store
     test_refuses_while_steam_runs
+    test_checkout_under_tmp_keeps_its_helper
+    test_fetched_helper_is_removed
     echo ""
     echo "$TESTS_PASSED/$TEST_TOTAL tests passed."
     if (( TESTS_FAILED == 0 && TESTS_PASSED == TEST_TOTAL )); then

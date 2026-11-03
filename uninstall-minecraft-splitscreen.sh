@@ -410,7 +410,11 @@ remove_evsieve_container() {
 # Inputs: Globals: DRY_RUN, SCRIPT_DIR, TARGET_DIR (read); removed_count
 # Outputs: side effects — runs the helper; print_* UX to stdout; return 0
 remove_steam_shortcut() {
-    local helper=""
+    # fetched: set only when we downloaded the helper ourselves. Cleanup keys on
+    # this, never on the path: a checkout under /tmp must keep its own
+    # remove-from-steam.py, and a copy fetched into a non-/tmp $TMPDIR must
+    # still be removed (F14).
+    local helper="" fetched=""
     if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/remove-from-steam.py" ]]; then
         helper="$SCRIPT_DIR/remove-from-steam.py"
     else
@@ -421,6 +425,7 @@ remove_steam_shortcut() {
             && curl -fsSL --max-time 20 "$raw/remove-from-steam.py" -o "$tmp" \
             && [[ -s "$tmp" ]]; then
             helper="$tmp"
+            fetched="$tmp"
         else
             rm -f "$tmp"
         fi
@@ -441,7 +446,7 @@ remove_steam_shortcut() {
         # Exit 2 = Steam is running; the helper already explained it.
         print_warning "Steam shortcut was NOT removed (see the message above)."
     fi
-    [[ "$helper" == /tmp/* ]] && rm -f "$helper"
+    [[ -n "$fetched" ]] && rm -f "$fetched"
     return 0
 }
 
