@@ -30,22 +30,24 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 MODULES_DIR="$REPO_ROOT/modules"
 MANIFEST="$MODULES_DIR/runtime_modules.list"
 
-# Installer-only modules (#7.2/T7.2 in test_installer.sh: 11 of them, never
-# deployed to TARGET_DIR/modules/ and never in runtime_modules.list). Static
-# on purpose — mirrors INSTALLER_MODULE_FILES in
-# install-minecraft-splitscreen.sh, which is itself a literal array.
-INSTALLER_MODULES=(
-    utilities.sh
-    java_management.sh
-    evsieve_management.sh
-    launcher_setup.sh
-    runtime_deploy.sh
-    version_management.sh
-    mod_management.sh
-    instance_creation.sh
-    system_integration.sh
-    main_workflow.sh
-)
+# Installer-only modules (never deployed to TARGET_DIR/modules/, never in
+# runtime_modules.list): parsed from the ONE literal array the installer
+# owns, INSTALLER_MODULE_FILES in install-minecraft-splitscreen.sh — the same
+# grep test_installer.sh T7.2 uses. A hand-copied list here drifted once
+# already (version_stamp.sh, #89, was never added, so its re-source safety
+# went unverified), which is exactly the PRINCIPLES #9 failure this suite
+# exists to catch in others.
+INSTALLER_ENTRY="$REPO_ROOT/install-minecraft-splitscreen.sh"
+INSTALLER_MODULES=()
+while IFS= read -r _mod; do
+    INSTALLER_MODULES+=("$_mod")
+done < <(grep -A 15 'readonly INSTALLER_MODULE_FILES=' "$INSTALLER_ENTRY" \
+    | grep -o '"[a-z_]*\.sh"' | tr -d '"')
+
+if (( ${#INSTALLER_MODULES[@]} == 0 )); then
+    echo "[FAIL] could not parse INSTALLER_MODULE_FILES from $INSTALLER_ENTRY" >&2
+    exit 1
+fi
 
 # Runtime modules: dynamically enumerated from the ONE manifest (#49) so
 # future additions are covered automatically without editing this file.
@@ -81,15 +83,23 @@ _test_double_source() {
         return
     fi
 
+    # NB: the 2>&1 must sit INSIDE the substitution — outside it redirects the
+    # assignment's stderr, not the subshell's, so a "readonly variable" line
+    # (which bash prints but does NOT abort on when it happens inside a
+    # sourced file, even under set -e) escaped to the terminal and the case
+    # still PASSED. Found by mutation (PRINCIPLES #4): a top-level readonly
+    # appended to version_stamp.sh was reported "double-source clean".
     local out rc=0
     out=$(
-        set -euo pipefail
-        # shellcheck disable=SC1090
-        source "$path"
-        # shellcheck disable=SC1090
-        source "$path"
-        echo "__DOUBLE_SOURCE_OK__"
-    ) 2>&1 || rc=$?
+        {
+            set -euo pipefail
+            # shellcheck disable=SC1090
+            source "$path"
+            # shellcheck disable=SC1090
+            source "$path"
+            echo "__DOUBLE_SOURCE_OK__"
+        } 2>&1
+    ) || rc=$?
 
     if (( rc == 0 )) && [[ "$out" == "__DOUBLE_SOURCE_OK__" ]]; then
         _pass "$mod — double-source clean (exit 0, no output)"
