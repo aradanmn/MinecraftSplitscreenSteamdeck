@@ -127,11 +127,17 @@ is useful for isolating whether a controller problem comes from the proxy layer.
 
 ---
 
+## Authorship
+
+Since the fork (June 2026), this project has been built by the repo owner working with Claude (Anthropic's AI model, via Claude Code) across many sessions. **Claude wrote the code, the tests, the CI and this documentation**: the runtime, the installer changes, the hardware test harness, and the 2026-09-28 code review and its fixes. **The owner set the goals, ran every hardware test on the Steam Deck and the Framework Desktop, reported what happened, reviewed and merged the changes, and decided what to build and what to drop.** Most commits carry the owner's account as author because they were made from the owner's machines; a `Co-Authored-By: Claude` trailer marks Claude's work. The original installer, before the fork, is [FlyingEwok's](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck) (see the license note below).
+
+Treat the code accordingly: it is tested on the hardware listed under [Requirements](#requirements) by one careful human reviewer, not a team.
+
 ## Credits & license
 
 - Inspired by [ArnoldSmith86/minecraft-splitscreen](https://github.com/ArnoldSmith86/minecraft-splitscreen).
 - Built and maintained by [aradanmn](https://github.com/aradanmn); the installer originated from [FlyingEwok](https://github.com/FlyingEwok).
-- **The code, tests, and documentation in this repo were written by [Claude](https://www.anthropic.com/claude) (Anthropic's [Claude Code](https://claude.com/claude-code)).**
+- **The code, tests, and documentation in this repo were written by [Claude](https://www.anthropic.com/claude) (Anthropic's [Claude Code](https://claude.com/claude-code)); see [Authorship](#authorship).**
 - Uses [PolyMC](https://github.com/PolyMC/PolyMC) and [Eclipse Temurin (Adoptium)](https://adoptium.net).
 
 > **License / distribution.** This project began as a fork of [FlyingEwok's](https://github.com/FlyingEwok/MinecraftSplitscreenSteamdeck)
