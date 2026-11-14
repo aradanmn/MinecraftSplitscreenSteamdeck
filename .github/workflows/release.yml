@@ -31,6 +31,11 @@ on:
                       # (see the `if: github.event_name == 'push'` guards
                       # below); never creates/modifies a real release.
 
+# Read-only unless a job says otherwise, so the workflow does not depend on
+# the repository's default token setting.
+permissions:
+  contents: read
+
 jobs:
   build-evsieve:
     runs-on: ubuntu-22.04
@@ -111,6 +116,9 @@ jobs:
     needs: build-evsieve
     if: always()
     runs-on: ubuntu-latest
+    # the only job that writes: it creates the release and uploads its files
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
